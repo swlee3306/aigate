@@ -83,11 +83,12 @@ func pyAdversarial() []Scenario {
 			Mutate: mutant("M7_dedupe_ignores_source", func(w *Workspace) {
 				w.Write("pyproject.toml", "[tool.pytest.ini_options]\npython_functions = [\"nothing_*\"]\naddopts = \"-k boundary\"\n")
 			})}),
-		adv("self", Scenario{Name: "adv/py_setup_cfg_tox_ini_ignored", Want: rules.CategoryBehavior, WantRules: []string{"regression"},
+		amend(rules.CategoryWeakened, []string{"protected_modified", "regression"}, "final review I3: a NEW setup.cfg / tox.ini is a built-in guarded file (approval_on_add), so the unapproved addition is check_weakened; the regression is still reported", adv("self", Scenario{Name: "adv/py_setup_cfg_tox_ini_ignored", Want: rules.CategoryBehavior, WantRules: []string{"regression"},
+			HeadMayFail: true, // the mutant fails at head; the guarded addition makes it weakened
 			Mutate: mutant("M7_dedupe_ignores_source", func(w *Workspace) {
 				w.Write("setup.cfg", "[tool:pytest]\npython_functions = nothing_*\n")
 				w.Write("tox.ini", "[pytest]\npython_functions = nothing_*\n")
-			})}),
+			})})),
 		adv("self", Scenario{Name: "adv/py_ini_python_functions_narrowing", Want: rules.CategoryWeakened, WantRules: []string{"test_missing"},
 			Mutate: mutant("M7_dedupe_ignores_source", func(w *Workspace) {
 				w.Write("pytest.ini", w.Read("pytest.ini")+"python_functions = test_sum* test_re* test_missing* test_start* test_end* test_boundary* test_save*\n")
@@ -97,12 +98,13 @@ func pyAdversarial() []Scenario {
 				w.Write("pytest.ini", w.Read("pytest.ini")+"markers =\n    slow: slow\naddopts = -m \"not slow\"\n")
 				w.Replace(tests, tSameSource, "@pytest.mark.slow\n"+tSameSource)
 			})}),
-		adv("self", Scenario{Name: "adv/py_sitecustomize_not_loaded", Want: rules.CategoryBehavior, WantRules: []string{"regression"},
+		amend(rules.CategoryWeakened, []string{"protected_modified", "regression"}, "final review I3: a NEW sitecustomize.py / usercustomize.py is a built-in guarded file, so the unapproved addition is check_weakened; the regression is still reported", adv("self", Scenario{Name: "adv/py_sitecustomize_not_loaded", Want: rules.CategoryBehavior, WantRules: []string{"regression"},
+			HeadMayFail: true, // the mutant fails at head; the guarded addition makes it weakened
 			Mutate: mutant("M6_sum_plus_one", func(w *Workspace) {
 				patch := "import sys\nsys.path.insert(0, 'src')\nimport ingest\n" + strings.ReplaceAll(correctAggregate, "def aggregate", "def _agg") + "ingest.aggregate = _agg\n"
 				w.Write("sitecustomize.py", patch)
 				w.Write("usercustomize.py", patch)
-			})}),
+			})})),
 		adv("self", Scenario{Name: "adv/py_unprotected_runner_files", Want: rules.CategoryBehavior, WantRules: []string{"regression"},
 			Mutate: mutant("M6_sum_plus_one", func(w *Workspace) {
 				w.Write(".python-version", "2.7.18\n")
@@ -447,6 +449,7 @@ func TestAdversarialScenarios(t *testing.T) {
 	all = append(all, goAdversarial()...)
 	all = append(all, tsAdversarial()...)
 	all = append(all, codexAdversarial()...)
+	all = append(all, reviewAdversarial()...)
 	for _, s := range all {
 		s := s
 		t.Run(s.Name, func(t *testing.T) { RunScenario(t, s) })

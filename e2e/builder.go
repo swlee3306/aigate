@@ -270,8 +270,11 @@ type Scenario struct {
 	// FirstWant records the original expectation literal when it was amended
 	// after the first run (both non-ok; reason in Note). Disclosed in 04.
 	FirstWant rules.Category
-	Source    string // "self" or "codex" for adversarial scenarios
+	Source    string // "self", "codex" or "review" for adversarial scenarios
 	Note      string
+	// AfterRun, when set, runs after the final gate run (e.g. a `check` of
+	// the saved report); a non-nil error is a scenario mismatch.
+	AfterRun func(w *Workspace, r report.Report) error
 }
 
 func (w *Workspace) run() (report.Report, float64) {
@@ -401,12 +404,25 @@ func RunScenario(t *testing.T, s Scenario) {
 			fail("ok scenario head passed %d < %d", res.HeadPassed, min)
 		}
 	}
+	if s.AfterRun != nil {
+		if err := s.AfterRun(w, r); err != nil {
+			fail("after run: %v", err)
+		}
+	}
 	if s.Want == rules.CategoryWeakened && !s.HeadMayFail && len(r.Checks) > 0 && res.HeadFailed != 0 {
 		fail("weakened scenario head has %d failed tests; the weakening should make a broken head pass", res.HeadFailed)
 	}
 	resMu.Lock()
 	results = append(results, res)
 	resMu.Unlock()
+}
+
+// Record adds an outcome of a test that is not a RunScenario (e.g. a gate
+// error or a `check` verdict) to Results.
+func Record(r Result) {
+	resMu.Lock()
+	defer resMu.Unlock()
+	results = append(results, r)
 }
 
 func grant(t *testing.T, w *Workspace, repoID, hash string) {
