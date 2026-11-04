@@ -70,6 +70,13 @@ func Parse(data []byte) (Config, error) {
 		}
 		return Config{}, fmt.Errorf("config: %w", err)
 	}
+	var extra yaml.Node
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err != nil {
+			return Config{}, fmt.Errorf("config: multiple documents or trailing content: %w", err)
+		}
+		return Config{}, errors.New("config: multiple documents are not allowed")
+	}
 	if raw.Version != 1 {
 		return Config{}, fmt.Errorf("config: version must be 1 (got %d; missing?)", raw.Version)
 	}

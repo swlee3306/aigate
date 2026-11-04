@@ -179,3 +179,21 @@ version: 1
 		}
 	}
 }
+
+func TestMultipleDocuments(t *testing.T) {
+	_, err := Parse([]byte("version: 1\n---\nchecks:\n  - id: a\n    preset: go\n"))
+	if err == nil || !strings.Contains(err.Error(), "multiple documents") {
+		t.Fatalf("want multiple documents error, got %v", err)
+	}
+	_, err = Parse([]byte("version: 1\n---\nversion: 1\n"))
+	if err == nil || !strings.Contains(err.Error(), "multiple documents") {
+		t.Fatalf("want multiple documents error, got %v", err)
+	}
+	for _, y := range []string{"version: 1\n# trailing comment\n\n", "version: 1\n---\n"} {
+		_, err := Parse([]byte(y))
+		t.Logf("%q -> %v", y, err)
+	}
+	if _, err := Parse([]byte("")); err == nil || !strings.Contains(err.Error(), "version") {
+		t.Fatalf("empty input: %v", err)
+	}
+}
