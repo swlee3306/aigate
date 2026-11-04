@@ -2,3 +2,4 @@
 .aigate/
 bin/
 *.test
+e2e/.cache/
