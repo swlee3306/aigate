@@ -118,8 +118,8 @@ func union(a, b []string) []string {
 // requirements and .npmrc decide which code `setup` installs or the build
 // uses; a new pytest.ini/tox.ini/setup.cfg can take over pytest's config;
 // sitecustomize/usercustomize run at interpreter start. Like every
-// approval_on_add path they are also part of the protected diff, so removing
-// lines from an existing one needs approval too.
+// approval_on_add path they are also part of the protected diff, so any
+// change to an existing one needs approval too.
 var BuiltinGuarded = []string{
 	"**/node_modules/**",
 	".gitattributes", "**/.gitattributes", ".gitmodules",
@@ -140,12 +140,12 @@ type Protected struct {
 }
 
 // NeedsApproval reports whether the protected diff needs a human approval:
-// a removed line in a protected file, a deleted / type-, mode- or
-// binary-changed protected file, or a new guarded file. Pure text-line
-// additions to an existing protected file do not (spec 3.1, pending a user
-// decision).
+// any change to a protected file that exists at base (any hunk, pure text
+// additions included — user decision 2026-11-04, option 1; deletion; type,
+// mode or binary change), or a new guarded file. A new file that matches
+// only the `protected` list is free (spec item [6]).
 func (p Protected) NeedsApproval() bool {
-	return len(p.Diff.RemovedLines) > 0 || len(p.Diff.Changed()) > 0 || len(p.AddedGuarded) > 0
+	return len(p.Diff.Changed()) > 0 || len(p.AddedGuarded) > 0
 }
 
 // Prepare resolves commits and computes the protected diff exactly as Run does.
@@ -362,8 +362,8 @@ func runCompare(ctx context.Context, o Options, home, repoID, top, base, head st
 		}
 	}
 	// Repo-level rules run once, independent of the number of checks.
-	repoVs, _ := rules.Evaluate(rules.Input{Dirty: dirty, ProtectedRemoved: len(p.Diff.RemovedLines),
-		ProtectedFiles: p.Diff.FilesWithRemovals, ProtectedChanged: p.Diff.Changed(), AddedGuardedFiles: p.AddedGuarded, ApprovalHashValid: valid})
+	repoVs, _ := rules.Evaluate(rules.Input{Dirty: dirty, ProtectedChanged: p.Diff.Changed(),
+		AddedGuardedFiles: p.AddedGuarded, ApprovalHashValid: valid})
 	for _, v := range repoVs {
 		if !isRepoLevel(v.Rule) {
 			continue

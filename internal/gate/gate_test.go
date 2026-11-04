@@ -98,6 +98,12 @@ func (e env) opts(base string) Options {
 	return Options{Repo: e.repo, Base: base, HomeDir: e.home}
 }
 
+// initialOpts requests initial mode explicitly (the library no longer enters
+// it on its own).
+func (e env) initialOpts() Options {
+	return Options{Repo: e.repo, HomeDir: e.home, Initial: true}
+}
+
 // C2: comparing a commit with itself gives a vacuous verdict (empty protected
 // diff, base failures waived), so it is a gate error: no report, no ledger.
 func TestBaseEqualsHeadIsGateError(t *testing.T) {
@@ -239,7 +245,7 @@ func TestInitialMode(t *testing.T) {
 	write(t, e.repo, ".aigate.yml", checkYAML(e.log, "", "unit"))
 	write(t, e.repo, "unit.flag", "")
 	commit(t, e.repo, "only") // on main: nothing to compare
-	r, err := Run(context.Background(), e.opts(""))
+	r, err := Run(context.Background(), e.initialOpts())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +258,7 @@ func TestInitialMode(t *testing.T) {
 	// head red -> behavior failure
 	git(t, e.repo, "rm", "-q", "unit.flag")
 	commit(t, e.repo, "red")
-	r, err = Run(context.Background(), e.opts(""))
+	r, err = Run(context.Background(), e.initialOpts())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +273,7 @@ func TestInitialIncompleteOnDirty(t *testing.T) {
 	write(t, e.repo, "unit.flag", "")
 	commit(t, e.repo, "only")
 	write(t, e.repo, "junk", "x")
-	r, err := Run(context.Background(), e.opts(""))
+	r, err := Run(context.Background(), e.initialOpts())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -545,7 +551,7 @@ func TestEmptyChecksInitialMode(t *testing.T) {
 	e := setup(t)
 	write(t, e.repo, ".aigate.yml", "version: 1\n")
 	commit(t, e.repo, "only")
-	r, err := Run(context.Background(), e.opts(""))
+	r, err := Run(context.Background(), e.initialOpts())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1009,5 +1015,54 @@ func TestCheckReportRejectsInitial(t *testing.T) {
 	rp := filepath.Join(e.repo, ".aigate", "reports", head[:10]+".json")
 	if p := checkProblems(t, e, head, rp); len(p) == 0 {
 		t.Fatal("initial report accepted")
+	}
+}
+
+// Decision 1 (user, 2026-11-04, option 1): adding lines to an EXISTING
+// protected file needs approval; a brand-new protected-but-unguarded test
+// file stays free (spec item [6]); approval of the exact hash clears it.
+func TestPureAdditionToExistingProtectedFileNeedsApproval(t *testing.T) {
+	e := setup(t)
+	write(t, e.repo, ".aigate.yml", checkYAML(e.log, "", "unit"))
+	write(t, e.repo, "unit.flag", "")
+	write(t, e.repo, "tests/test_a.py", "def test_a():\n    assert True\n")
+	base := commit(t, e.repo, "base")
+	write(t, e.repo, "tests/test_extra.py", "def test_extra():\n    assert True\n")
+	newOnly := commit(t, e.repo, "new test file only")
+	r, err := Run(context.Background(), Options{Repo: e.repo, Base: base, Head: newOnly, HomeDir: e.home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Category != rules.CategoryOK || len(r.Approvals) != 0 {
+		t.Fatalf("new unguarded test file must stay free: %s %+v", r.Category, r.Violations)
+	}
+	write(t, e.repo, "tests/test_a.py", "def test_a():\n    return\n    assert True\n") // pure insertion
+	commit(t, e.repo, "insert early return")
+	r, err = Run(context.Background(), e.opts(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Category != rules.CategoryWeakened || !hasRule(r.Violations, "protected_modified") || len(r.Approvals) != 1 {
+		t.Fatalf("pure addition must need approval: %s %+v", r.Category, r.Violations)
+	}
+	var v rules.Violation
+	for _, x := range r.Violations {
+		if x.Rule == "protected_modified" {
+			v = x
+		}
+	}
+	if !strings.Contains(v.Detail, "tests/test_a.py") || strings.Contains(v.Detail, "tests/test_extra.py") || !strings.Contains(v.Detail, r.Approvals[0].Hash) {
+		t.Fatalf("detail should name the modified existing file and the hash: %q", v.Detail)
+	}
+	id, _, _ := RepoID(e.repo)
+	if err := (approval.Store{Path: ApprovalsPath(e.home)}).Grant(id, base, r.Approvals[0].Hash, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	r, err = Run(context.Background(), e.opts(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Category != rules.CategoryOK {
+		t.Fatalf("after approval: %s %+v", r.Category, r.Violations)
 	}
 }

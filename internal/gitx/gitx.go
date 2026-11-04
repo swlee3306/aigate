@@ -197,19 +197,34 @@ type ProtDiff struct {
 	AddedFiles        []string
 	// DeletedFiles are protected files deleted at head (empty files too).
 	DeletedFiles []string
-	// ModifiedNonText are protected files whose type or mode changed, or whose
-	// binary content changed (git's NUL heuristic on the blobs, independent of
-	// attributes) without a removed text line.
-	ModifiedNonText []string
+	// ModifiedExisting are protected files that exist at base AND at head and
+	// differ in any way: text lines added or removed, type or mode changed,
+	// binary content changed (user decision 2026-11-04, option 1: every hunk,
+	// pure additions included). Unchanged files and files new at head are
+	// never listed; a rename is a deletion plus an addition (--no-renames).
+	ModifiedExisting []string
+	// Files has one entry per touched protected file (sorted by path).
+	Files []FileChange
 }
 
-// Changed returns the sorted protected files changed in a way that needs
-// approval although it may remove no text line: DeletedFiles and
-// ModifiedNonText.
+// FileChange is one protected file in the diff.
+type FileChange struct {
+	Path   string
+	Status string // git --raw status letter: A, D, M, T, ...
+	// Binary: a NUL in the first 8000 bytes of the base or head blob (git's
+	// heuristic, independent of attributes).
+	Binary             bool
+	BaseSize, HeadSize int64
+	pair               string // "oldsha..newsha" as on the diff "index" line
+}
+
+// Changed returns the sorted protected files that existed at base and were
+// changed in any way (ModifiedExisting) or deleted (DeletedFiles). Every
+// entry needs approval.
 func (d ProtDiff) Changed() []string {
 	seen := map[string]bool{}
 	var out []string
-	for _, l := range [][]string{d.DeletedFiles, d.ModifiedNonText} {
+	for _, l := range [][]string{d.DeletedFiles, d.ModifiedExisting} {
 		for _, f := range l {
 			if !seen[f] {
 				seen[f] = true
@@ -219,6 +234,73 @@ func (d ProtDiff) Changed() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// DisplayText is HashedText with the file section of every binary protected
+// file replaced by one summary line ("binary file changed: <path>, ..."), so
+// the raw bytes of a binary file are never printed. The hash is still over
+// HashedText.
+func (d ProtDiff) DisplayText() string {
+	byPair := map[string][]FileChange{}
+	for _, f := range d.Files {
+		byPair[f.pair] = append(byPair[f.pair], f)
+	}
+	var b strings.Builder
+	for _, sec := range splitSections(d.Text) {
+		pair := sectionPair(sec)
+		if q := byPair[pair]; pair != "" && len(q) > 0 {
+			f := q[0]
+			byPair[pair] = q[1:]
+			if f.Binary {
+				fmt.Fprintf(&b, "binary file changed: %s, %d bytes (base %d bytes)\n", f.Path, f.HeadSize, f.BaseSize)
+				continue
+			}
+		}
+		b.WriteString(sec)
+	}
+	for _, a := range d.AddedFiles {
+		b.WriteString("A " + a + "\n")
+	}
+	return b.String()
+}
+
+// splitSections splits a diff into its "diff --git " sections (any text
+// before the first one is kept as its own section).
+func splitSections(text string) []string {
+	var out []string
+	start := 0
+	for i := 0; i < len(text); {
+		j := strings.IndexByte(text[i:], '\n')
+		next := len(text)
+		if j >= 0 {
+			next = i + j + 1
+		}
+		if i > start && strings.HasPrefix(text[i:], "diff --git ") {
+			out = append(out, text[start:i])
+			start = i
+		}
+		i = next
+	}
+	if start < len(text) {
+		out = append(out, text[start:])
+	}
+	return out
+}
+
+// sectionPair returns the "old..new" blob pair of the section's index line
+// (before its first hunk), or "".
+func sectionPair(sec string) string {
+	for _, l := range strings.Split(sec, "\n") {
+		if strings.HasPrefix(l, "@@") {
+			break
+		}
+		if strings.HasPrefix(l, "index ") {
+			if f := strings.Fields(l); len(f) >= 2 {
+				return f[1]
+			}
+		}
+	}
+	return ""
 }
 
 // HashedText is the exact text Hash is the sha256 prefix of: Text followed by
@@ -278,20 +360,21 @@ func parseRaw(b []byte) ([]rawEntry, error) {
 
 func isZero(sha string) bool { return strings.Trim(sha, "0") == "" }
 
-// blobHasNUL applies git's binary heuristic (a NUL in the first 8000 bytes)
-// to a blob, without consulting attributes.
-func blobHasNUL(repo, sha string) (bool, error) {
+// blobInfo applies git's binary heuristic (a NUL in the first 8000 bytes)
+// to a blob, without consulting attributes, and returns its size.
+func blobInfo(repo, sha string) (bin bool, size int64, err error) {
 	if isZero(sha) {
-		return false, nil
+		return false, 0, nil
 	}
 	b, err := run(repo, "cat-file", "blob", sha)
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
+	size = int64(len(b))
 	if len(b) > 8000 {
 		b = b[:8000]
 	}
-	return bytes.IndexByte(b, 0) >= 0, nil
+	return bytes.IndexByte(b, 0) >= 0, size, nil
 }
 
 // ProtectedDiff diffs base..head restricted to the protected globs.
@@ -336,41 +419,38 @@ func ProtectedDiff(repo, base, head string, protected []string) (ProtDiff, error
 		if withRemovals[e.path] {
 			d.FilesWithRemovals = append(d.FilesWithRemovals, e.path)
 		}
+		fc := FileChange{Path: e.path, Status: e.status, pair: e.oldSHA + ".." + e.newSHA}
+		for i, sha := range []string{e.oldSHA, e.newSHA} {
+			bin, size, err := blobInfo(repo, sha)
+			if err != nil {
+				return d, err
+			}
+			fc.Binary = fc.Binary || bin
+			if i == 0 {
+				fc.BaseSize = size
+			} else {
+				fc.HeadSize = size
+			}
+		}
+		d.Files = append(d.Files, fc)
 		switch e.status {
 		case "A":
 			d.AddedFiles = append(d.AddedFiles, e.path)
 		case "D":
 			d.DeletedFiles = append(d.DeletedFiles, e.path)
-		case "T":
-			d.ModifiedNonText = append(d.ModifiedNonText, e.path)
-		case "M":
-			if e.oldMode != e.newMode {
-				d.ModifiedNonText = append(d.ModifiedNonText, e.path)
-				continue
-			}
-			if withRemovals[e.path] {
-				continue // already needs approval through its removed lines
-			}
-			for _, sha := range []string{e.oldSHA, e.newSHA} {
-				bin, err := blobHasNUL(repo, sha)
-				if err != nil {
-					return d, err
-				}
-				if bin {
-					d.ModifiedNonText = append(d.ModifiedNonText, e.path)
-					break
-				}
-			}
 		default:
-			// Unmerged or unknown status: never silently allowed.
-			d.ModifiedNonText = append(d.ModifiedNonText, e.path)
+			// M (content or mode), T (type), unmerged or unknown: the file
+			// exists at both commits and differs — any hunk, additions
+			// included, needs approval.
+			d.ModifiedExisting = append(d.ModifiedExisting, e.path)
 		}
 	}
+	sort.Slice(d.Files, func(i, j int) bool { return d.Files[i].Path < d.Files[j].Path })
 	sort.Strings(d.TouchedFiles)
 	sort.Strings(d.FilesWithRemovals)
 	sort.Strings(d.AddedFiles)
 	sort.Strings(d.DeletedFiles)
-	sort.Strings(d.ModifiedNonText)
+	sort.Strings(d.ModifiedExisting)
 	d.Hash = hashOf(d.HashedText())
 	return d, nil
 }

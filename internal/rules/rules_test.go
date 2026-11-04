@@ -1,6 +1,7 @@
 package rules
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -48,11 +49,12 @@ func TestEvaluate(t *testing.T) {
 		{"required base all skipped", Input{Required: true, Base: RunInfo{Results: Results{"a": Skipped, "b": Skipped}}, Head: with(okRun(), "a", Skipped).withStatus("b", Skipped)}, []string{"base_not_green"}, CategoryIncomplete, []string{"a", "b"}},
 		{"required passed+skipped rc0", Input{Required: true, Base: RunInfo{Results: Results{"a": Passed, "b": Skipped}}, Head: okRun("a").withStatus("b", Skipped)}, nil, CategoryOK, []string{"b"}},
 		{"dirty", Input{Base: base, Head: okRun("a", "b"), Dirty: true}, []string{"dirty_tree"}, CategoryIncomplete, nil},
-		{"protected removed", Input{Base: base, Head: okRun("a", "b"), ProtectedRemoved: 2, ProtectedFiles: []string{"t.py"}}, []string{"protected_modified"}, CategoryWeakened, nil},
-		{"protected approved", Input{Base: base, Head: okRun("a", "b"), ProtectedRemoved: 2, ApprovalHashValid: true}, nil, CategoryOK, nil},
+		{"existing protected file changed (any hunk, additions too)", Input{Base: base, Head: okRun("a", "b"), ProtectedChanged: []string{"tests/t.py"}}, []string{"protected_modified"}, CategoryWeakened, nil},
+		{"existing protected file changed, approved", Input{Base: base, Head: okRun("a", "b"), ProtectedChanged: []string{"tests/t.py"}, ApprovalHashValid: true}, nil, CategoryOK, nil},
 		{"added guarded", Input{Base: base, Head: okRun("a", "b"), AddedGuardedFiles: []string{"conftest.py"}}, []string{"protected_modified"}, CategoryWeakened, nil},
 		{"protected file deleted/binary/mode changed", Input{Base: base, Head: okRun("a", "b"), ProtectedChanged: []string{"tests/golden.bin"}}, []string{"protected_modified"}, CategoryWeakened, nil},
 		{"protected changed approved", Input{Base: base, Head: okRun("a", "b"), ProtectedChanged: []string{"tests/golden.bin"}, ApprovalHashValid: true}, nil, CategoryOK, nil},
+		{"nothing protected changed", Input{Base: base, Head: okRun("a", "b"), ProtectedChanged: nil}, nil, CategoryOK, nil},
 		{"added guarded approved", Input{Base: base, Head: okRun("a", "b"), AddedGuardedFiles: []string{"conftest.py"}, ApprovalHashValid: true}, nil, CategoryOK, nil},
 		{"new test fails", Input{Base: base, Head: with(okRun("a", "b"), "n", Failed)}, []string{"new_test_fails"}, CategoryBehavior, nil},
 		{"new test skipped", Input{Base: base, Head: with(okRun("a", "b"), "n", Skipped)}, []string{"new_test_skipped"}, CategoryWeakened, nil},
@@ -104,6 +106,21 @@ func TestEvaluateViolationDetails(t *testing.T) {
 		if v.Detail == "" {
 			t.Fatalf("empty detail for %s", v.Rule)
 		}
+	}
+}
+
+// Decision 1: the protected_modified detail names the changed existing files
+// and IDs lists them (sorted, deduplicated).
+func TestProtectedModifiedDetailNamesFiles(t *testing.T) {
+	vs, _ := Evaluate(Input{Base: okRun("a"), Head: okRun("a"), ProtectedChanged: []string{"tests/z.py", "pytest.ini", "tests/z.py"}})
+	if len(vs) != 1 || vs[0].Rule != "protected_modified" || vs[0].Category != CategoryWeakened {
+		t.Fatalf("got %+v", vs)
+	}
+	if !strings.Contains(vs[0].Detail, "pytest.ini") || !strings.Contains(vs[0].Detail, "tests/z.py") {
+		t.Errorf("detail does not name the files: %q", vs[0].Detail)
+	}
+	if want := []string{"pytest.ini", "tests/z.py"}; !reflect.DeepEqual(vs[0].IDs, want) {
+		t.Errorf("IDs=%v want %v", vs[0].IDs, want)
 	}
 }
 

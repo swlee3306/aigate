@@ -530,8 +530,8 @@ func TestProtectedDiffBinaryAppendIsNonText(t *testing.T) {
 	if len(d.RemovedLines) != 0 {
 		t.Errorf("RemovedLines=%q", d.RemovedLines)
 	}
-	if !reflect.DeepEqual(d.ModifiedNonText, []string{"tests/golden.bin"}) {
-		t.Errorf("ModifiedNonText=%q", d.ModifiedNonText)
+	if !reflect.DeepEqual(d.ModifiedExisting, []string{"tests/golden.bin"}) {
+		t.Errorf("ModifiedExisting=%q", d.ModifiedExisting)
 	}
 }
 
@@ -554,29 +554,70 @@ func TestProtectedDiffModeAndTypeChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(d.ModifiedNonText, []string{"tests/data.txt", "tests/run.sh"}) {
-		t.Errorf("ModifiedNonText=%q", d.ModifiedNonText)
+	if !reflect.DeepEqual(d.ModifiedExisting, []string{"tests/data.txt", "tests/run.sh"}) {
+		t.Errorf("ModifiedExisting=%q", d.ModifiedExisting)
 	}
 	if !strings.Contains(d.Text, "new mode 100755") {
 		t.Errorf("mode change not in hashed text: %q", d.Text)
 	}
 }
 
-func TestProtectedDiffPureTextAdditionIsNotAChange(t *testing.T) {
+// Decision 1 (user, 2026-11-04, option 1): a pure text addition to an
+// EXISTING protected file is a change that needs approval. Replaces
+// TestProtectedDiffPureTextAdditionIsNotAChange.
+func TestProtectedDiffPureTextAdditionIsModifiedExisting(t *testing.T) {
 	r := newRepo(t)
 	write(t, r, "tests/a.py", "one\n")
+	write(t, r, "tests/same.py", "same\n")
 	base := commit(t, r, "base")
 	write(t, r, "tests/a.py", "one\ntwo\n")
+	write(t, r, "tests/new_test.py", "def test_x():\n    pass\n")
 	head := commit(t, r, "head")
 	d, err := ProtectedDiff(r, base, head, []string{"tests/**"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(d.RemovedLines) != 0 || len(d.Changed()) != 0 || len(d.FilesWithRemovals) != 0 {
-		t.Errorf("pure addition flagged: %+v", d)
+	if len(d.RemovedLines) != 0 {
+		t.Errorf("RemovedLines=%q", d.RemovedLines)
 	}
-	if !reflect.DeepEqual(d.TouchedFiles, []string{"tests/a.py"}) {
+	// unchanged tests/same.py and new tests/new_test.py are not "modified existing"
+	if !reflect.DeepEqual(d.ModifiedExisting, []string{"tests/a.py"}) {
+		t.Errorf("ModifiedExisting=%q", d.ModifiedExisting)
+	}
+	if !reflect.DeepEqual(d.Changed(), []string{"tests/a.py"}) {
+		t.Errorf("Changed=%q", d.Changed())
+	}
+	if !reflect.DeepEqual(d.AddedFiles, []string{"tests/new_test.py"}) {
+		t.Errorf("AddedFiles=%q", d.AddedFiles)
+	}
+	if !reflect.DeepEqual(d.TouchedFiles, []string{"tests/a.py", "tests/new_test.py"}) {
 		t.Errorf("TouchedFiles=%q", d.TouchedFiles)
+	}
+}
+
+// Every M entry is modified-existing, with or without removed lines; a
+// rename (reported as delete+add with --no-renames) is a deletion plus an
+// addition, never "modified existing".
+func TestProtectedDiffModifiedExistingCoversEveryChange(t *testing.T) {
+	r := newRepo(t)
+	write(t, r, "tests/edit.py", "a\nb\n")
+	write(t, r, "tests/old.py", "keep\n")
+	base := commit(t, r, "base")
+	write(t, r, "tests/edit.py", "a\nB\n")
+	git(t, r, "mv", "tests/old.py", "tests/renamed.py")
+	head := commit(t, r, "head")
+	d, err := ProtectedDiff(r, base, head, []string{"tests/**"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(d.ModifiedExisting, []string{"tests/edit.py"}) {
+		t.Errorf("ModifiedExisting=%q", d.ModifiedExisting)
+	}
+	if !reflect.DeepEqual(d.DeletedFiles, []string{"tests/old.py"}) || !reflect.DeepEqual(d.AddedFiles, []string{"tests/renamed.py"}) {
+		t.Errorf("rename: deleted=%q added=%q", d.DeletedFiles, d.AddedFiles)
+	}
+	if !reflect.DeepEqual(d.Changed(), []string{"tests/edit.py", "tests/old.py"}) {
+		t.Errorf("Changed=%q", d.Changed())
 	}
 }
 

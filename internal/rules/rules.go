@@ -54,15 +54,16 @@ type RunInfo struct {
 }
 
 type Input struct {
-	CheckID          string
-	Required         bool
-	Base, Head       RunInfo
-	Dirty            bool
-	ProtectedRemoved int
-	ProtectedFiles   []string
-	// ProtectedChanged lists protected files changed in a way that has no
-	// removed text line: deleted (also empty files), type or mode changed, or
-	// binary content changed. Any entry needs approval.
+	CheckID    string
+	Required   bool
+	Base, Head RunInfo
+	Dirty      bool
+	// ProtectedChanged lists the protected files that existed at base and
+	// were changed in any way at head: any text hunk (pure additions
+	// included, user decision 2026-11-04 option 1), deletion (also of an
+	// empty file), type or mode change, binary content change. Any entry
+	// needs approval. Files new at head are not listed here (see
+	// AddedGuardedFiles).
 	ProtectedChanged  []string
 	AddedGuardedFiles []string
 	ApprovalHashValid bool
@@ -110,16 +111,9 @@ func Evaluate(in Input) (violations []Violation, waived []string) {
 	}
 
 	if !in.ApprovalHashValid {
-		if in.ProtectedRemoved > 0 || len(in.ProtectedChanged) > 0 {
-			var parts []string
-			if in.ProtectedRemoved > 0 {
-				parts = append(parts, fmt.Sprintf("보호 파일의 기존 줄 %d개가 변경·삭제되었습니다", in.ProtectedRemoved))
-			}
-			if len(in.ProtectedChanged) > 0 {
-				parts = append(parts, fmt.Sprintf("보호 파일 %d개가 삭제·형식·모드·바이너리 변경되었습니다", len(in.ProtectedChanged)))
-			}
+		if files := sorted(dedupe(in.ProtectedChanged)); len(files) > 0 {
 			violations = append(violations, viol("protected_modified", CategoryWeakened,
-				strings.Join(parts, "; ")+" (승인 없음)", union(in.ProtectedFiles, in.ProtectedChanged)))
+				fmt.Sprintf("기존 보호 파일 %d개가 변경·삭제되었습니다(줄 추가만 해도 승인 대상): %s (승인 없음)", len(files), nameList(files)), files))
 		}
 		if len(in.AddedGuardedFiles) > 0 {
 			violations = append(violations, viol("protected_modified", CategoryWeakened,
@@ -336,20 +330,26 @@ func sortedKeys(r Results) []string {
 	return ks
 }
 
-// union returns the sorted distinct elements of a and b.
-func union(a, b []string) []string {
+// dedupe returns the distinct elements of s in first-seen order.
+func dedupe(s []string) []string {
 	seen := map[string]bool{}
 	var out []string
-	for _, l := range [][]string{a, b} {
-		for _, x := range l {
-			if !seen[x] {
-				seen[x] = true
-				out = append(out, x)
-			}
+	for _, x := range s {
+		if !seen[x] {
+			seen[x] = true
+			out = append(out, x)
 		}
 	}
-	sort.Strings(out)
 	return out
+}
+
+// nameList joins file names for a violation detail, at most 20 of them.
+func nameList(files []string) string {
+	const max = 20
+	if len(files) <= max {
+		return strings.Join(files, ", ")
+	}
+	return strings.Join(files[:max], ", ") + fmt.Sprintf(" 외 %d개", len(files)-max)
 }
 
 func sorted(s []string) []string {
