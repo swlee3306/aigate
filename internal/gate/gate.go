@@ -1,0 +1,338 @@
+// Package gate orchestrates a verification run: it resolves base and head,
+// runs each configured check on both commits in isolated worktrees, applies
+// the pure rules, and records the report and ledger event.
+package gate
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"aigate/internal/approval"
+	"aigate/internal/config"
+	"aigate/internal/gitx"
+	"aigate/internal/ledger"
+	"aigate/internal/report"
+	"aigate/internal/rules"
+)
+
+// ToolVersion is recorded in every report.
+const ToolVersion = "0.1.0"
+
+// Options configures Run.
+type Options struct {
+	Repo, Base, Head, TaskClass, ApproveHash, HomeDir string
+}
+
+func sortedCopy(s []string) []string {
+	c := append([]string{}, s...)
+	sort.Strings(c)
+	return c
+}
+
+// Home returns the aigate home directory (override, AIGATE_HOME, user home).
+func Home(override string) (string, error) {
+	if override != "" {
+		return override, nil
+	}
+	if h := os.Getenv("AIGATE_HOME"); h != "" {
+		return h, nil
+	}
+	return os.UserHomeDir()
+}
+
+// RepoID returns the repo id and absolute toplevel path of repo.
+func RepoID(repo string) (id, top string, err error) {
+	cmd := exec.Command("git", "-C", repo, "rev-parse", "--show-toplevel")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", "", fmt.Errorf("git rev-parse --show-toplevel in %q: %w", repo, err)
+	}
+	top = strings.TrimSpace(string(out))
+	sum := sha256.Sum256([]byte(top))
+	return hex.EncodeToString(sum[:])[:12], top, nil
+}
+
+// ApprovalsPath is the approvals store file under home.
+func ApprovalsPath(home string) string { return filepath.Join(home, ".aigate", "approvals.json") }
+
+// LedgerPath is the ledger file of a repo under home.
+func LedgerPath(home, repoID string) string {
+	return filepath.Join(home, ".aigate", "ledger", repoID+".jsonl")
+}
+
+var baseCandidates = []string{"origin/HEAD", "origin/main", "origin/master", "main", "master"}
+
+// resolveBase returns the base SHA, or "" for initial mode.
+func resolveBase(repo, base, head string) (string, error) {
+	if base != "" {
+		return gitx.Resolve(repo, base)
+	}
+	for _, c := range baseCandidates {
+		cs, err := gitx.Resolve(repo, c)
+		if err != nil {
+			continue
+		}
+		mb, err := gitx.MergeBase(repo, head, cs)
+		if err != nil {
+			continue
+		}
+		if mb == head {
+			return "", nil
+		}
+		return mb, nil
+	}
+	return "", nil
+}
+
+func union(a, b []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, l := range [][]string{a, b} {
+		for _, s := range l {
+			if !seen[s] {
+				seen[s] = true
+				out = append(out, s)
+			}
+		}
+	}
+	return out
+}
+
+// Protected describes the repo-level protected diff between base and head.
+type Protected struct {
+	RepoID, Top, Base, Head string
+	Diff                    gitx.ProtDiff
+	AddedGuarded            []string
+	Cfg                     config.Config
+}
+
+// Prepare resolves commits and computes the protected diff exactly as Run does.
+// Base must resolve (initial mode has no protected diff).
+func Prepare(o Options) (Protected, error) {
+	id, top, err := RepoID(o.Repo)
+	if err != nil {
+		return Protected{}, err
+	}
+	hr := o.Head
+	if hr == "" {
+		hr = "HEAD"
+	}
+	head, err := gitx.Resolve(top, hr)
+	if err != nil {
+		return Protected{}, err
+	}
+	base, err := resolveBase(top, o.Base, head)
+	if err != nil {
+		return Protected{}, err
+	}
+	if base == "" {
+		return Protected{}, errors.New("no base to compare against (initial mode has no protected diff)")
+	}
+	cfg, err := loadConfig(top, base)
+	if err != nil {
+		return Protected{}, err
+	}
+	p := Protected{RepoID: id, Top: top, Base: base, Head: head, Cfg: cfg}
+	p.Diff, err = gitx.ProtectedDiff(top, base, head, union(cfg.Protected, cfg.ApprovalOnAdd))
+	if err != nil {
+		return Protected{}, err
+	}
+	p.AddedGuarded, err = gitx.AddedMatching(top, base, head, cfg.ApprovalOnAdd)
+	if err != nil {
+		return Protected{}, err
+	}
+	return p, nil
+}
+
+func loadConfig(top, sha string) (config.Config, error) {
+	data, err := gitx.Show(top, sha, ".aigate.yml")
+	if err != nil {
+		return config.Config{}, fmt.Errorf("read .aigate.yml at %s: %w", short(sha), err)
+	}
+	cfg, err := config.Parse(data)
+	if err != nil {
+		return config.Config{}, fmt.Errorf(".aigate.yml at %s: %w", short(sha), err)
+	}
+	return cfg, nil
+}
+
+func isRepoLevel(rule string) bool { return rule == "dirty_tree" || rule == "protected_modified" }
+
+// Run executes the gate. A non-nil error is a GATE ERROR (never a verdict).
+func Run(ctx context.Context, o Options) (report.Report, error) {
+	started := time.Now().UTC()
+	home, err := Home(o.HomeDir)
+	if err != nil {
+		return report.Report{}, err
+	}
+	repoID, top, err := RepoID(o.Repo)
+	if err != nil {
+		return report.Report{}, err
+	}
+	hr := o.Head
+	if hr == "" {
+		hr = "HEAD"
+	}
+	head, err := gitx.Resolve(top, hr)
+	if err != nil {
+		return report.Report{}, err
+	}
+	base, err := resolveBase(top, o.Base, head)
+	if err != nil {
+		return report.Report{}, err
+	}
+	dirty, err := gitx.Dirty(top)
+	if err != nil {
+		return report.Report{}, err
+	}
+
+	r := report.Report{SchemaVersion: 1, Repo: top, Head: head, ToolVersion: ToolVersion,
+		StartedAt: started.Format(time.RFC3339), Checks: []report.CheckResult{},
+		Violations: []rules.Violation{}, Waived: []string{}, Approvals: []report.ApprovalState{}}
+	counts := map[string]any{}
+
+	switch {
+	case base == "":
+		r.Initial = true
+		err = runInitial(ctx, top, head, dirty != "", &r, counts)
+	default:
+		r.Base = base
+		var anc bool
+		anc, err = gitx.IsAncestor(top, base, head)
+		if err != nil {
+			break
+		}
+		if !anc {
+			r.Violations = append(r.Violations, rules.Violation{Rule: "base_not_ancestor", Category: rules.CategoryIncomplete,
+				Detail: fmt.Sprintf("base %s 는 head %s 의 조상이 아닙니다", short(base), short(head))})
+			break
+		}
+		err = runCompare(ctx, o, home, repoID, top, base, head, dirty != "", &r, counts)
+	}
+	if err != nil {
+		return report.Report{}, err
+	}
+
+	r.Category = rules.Verdict(r.Violations)
+	r.ExitCode = r.Category.ExitCode()
+	r.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+
+	tc := o.TaskClass
+	if tc == "" {
+		tc = "unclassified"
+	}
+	if err := ledger.Append(LedgerPath(home, repoID), "run_result", repoID, map[string]any{
+		"report": short(head), "category": string(r.Category), "base": r.Base, "head": head,
+		"task_class": tc, "initial": r.Initial, "checks": counts,
+	}, time.Now().UTC()); err != nil {
+		return report.Report{}, fmt.Errorf("ledger: %w", err)
+	}
+	if _, err := report.Save(top, r); err != nil {
+		return report.Report{}, fmt.Errorf("save report: %w", err)
+	}
+	return r, nil
+}
+
+func runInitial(ctx context.Context, top, head string, dirty bool, r *report.Report, counts map[string]any) error {
+	cfg, err := loadConfig(top, head)
+	if err != nil {
+		return err
+	}
+	r.ConfigHash = cfg.Hash()
+	if dirty {
+		r.Violations = append(r.Violations, rules.Violation{Rule: "dirty_tree", Category: rules.CategoryIncomplete,
+			Detail: "커밋되지 않은 변경이 있습니다"})
+	}
+	for _, c := range cfg.Checks {
+		hi, hs, err := runSide(ctx, top, head, c)
+		if err != nil {
+			return err
+		}
+		r.Checks = append(r.Checks, report.CheckResult{ID: c.ID, Head: hs})
+		counts[c.ID] = map[string]any{"head_passed": hs.Counts.Passed, "head_failed": hs.Counts.Failed}
+		r.Violations = append(r.Violations, initialViolations(c.ID, c.Required, hi)...)
+	}
+	return nil
+}
+
+func runCompare(ctx context.Context, o Options, home, repoID, top, base, head string, dirty bool, r *report.Report, counts map[string]any) error {
+	p, err := Prepare(Options{Repo: top, Base: base, Head: head})
+	if err != nil {
+		return err
+	}
+	cfg := p.Cfg
+	r.ConfigHash = cfg.Hash()
+
+	hasProt := len(p.Diff.RemovedLines) > 0 || len(p.AddedGuarded) > 0
+	valid := false
+	if hasProt {
+		valid = approval.Store{Path: ApprovalsPath(home)}.Valid(repoID, base, p.Diff.Hash)
+		r.Approvals = append(r.Approvals, report.ApprovalState{Hash: p.Diff.Hash, Valid: valid})
+	}
+
+	seen := map[string]bool{}
+	for i, c := range cfg.Checks {
+		bi, bs, err := runSide(ctx, top, base, c)
+		if err != nil {
+			return err
+		}
+		hi, hsum, err := runSide(ctx, top, head, c)
+		if err != nil {
+			return err
+		}
+		r.Checks = append(r.Checks, report.CheckResult{ID: c.ID, Base: bs, Head: hsum})
+		counts[c.ID] = map[string]any{"head_passed": hsum.Counts.Passed, "head_failed": hsum.Counts.Failed}
+
+		in := rules.Input{CheckID: c.ID, Required: c.Required, Base: bi, Head: hi}
+		if i == 0 {
+			in.Dirty = dirty
+			in.ProtectedRemoved = len(p.Diff.RemovedLines)
+			in.ProtectedFiles = p.Diff.FilesWithRemovals
+			in.AddedGuardedFiles = p.AddedGuarded
+			in.ApprovalHashValid = valid
+		} else {
+			in.ApprovalHashValid = true // repo-level fields are zero here anyway
+		}
+		vs, waived := rules.Evaluate(in)
+		for _, v := range vs {
+			if isRepoLevel(v.Rule) {
+				if v.Rule == "protected_modified" {
+					v.Detail += protectedHint(p.Diff.Hash, o.ApproveHash)
+				}
+			} else if !c.Required {
+				continue
+			} else {
+				v.Detail = "[" + c.ID + "] " + v.Detail
+			}
+			k := v.Rule + "\x00" + v.Detail
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
+			r.Violations = append(r.Violations, v)
+		}
+		if c.Required {
+			for _, w := range waived {
+				r.Waived = append(r.Waived, c.ID+":"+w)
+			}
+		}
+	}
+	return nil
+}
+
+func protectedHint(real, given string) string {
+	s := fmt.Sprintf(" — diff 해시 %s; 사람이 `aigate approve` 로 승인해야 합니다", real)
+	if given != "" && given != real {
+		s += fmt.Sprintf(" (--approve %s 는 실제 해시와 달라 무시됨)", given)
+	}
+	return s
+}
