@@ -252,6 +252,9 @@ func runInitial(ctx context.Context, top, head string, dirty bool, r *report.Rep
 		r.Violations = append(r.Violations, rules.Violation{Rule: "dirty_tree", Category: rules.CategoryIncomplete,
 			Detail: "커밋되지 않은 변경이 있습니다"})
 	}
+	if !hasRequired(cfg) {
+		r.Violations = append(r.Violations, noRequired())
+	}
 	for _, c := range cfg.Checks {
 		hi, hs, err := runSide(ctx, top, head, c)
 		if err != nil {
@@ -280,7 +283,29 @@ func runCompare(ctx context.Context, o Options, home, repoID, top, base, head st
 	}
 
 	seen := map[string]bool{}
-	for i, c := range cfg.Checks {
+	add := func(v rules.Violation) {
+		k := v.Rule + "\x00" + v.Detail
+		if !seen[k] {
+			seen[k] = true
+			r.Violations = append(r.Violations, v)
+		}
+	}
+	// Repo-level rules run once, independent of the number of checks.
+	repoVs, _ := rules.Evaluate(rules.Input{Dirty: dirty, ProtectedRemoved: len(p.Diff.RemovedLines),
+		ProtectedFiles: p.Diff.FilesWithRemovals, AddedGuardedFiles: p.AddedGuarded, ApprovalHashValid: valid})
+	for _, v := range repoVs {
+		if !isRepoLevel(v.Rule) {
+			continue
+		}
+		if v.Rule == "protected_modified" {
+			v.Detail += protectedHint(p.Diff.Hash, o.ApproveHash)
+		}
+		add(v)
+	}
+	if !hasRequired(cfg) {
+		add(noRequired())
+	}
+	for _, c := range cfg.Checks {
 		bi, bs, err := runSide(ctx, top, base, c)
 		if err != nil {
 			return err
@@ -292,33 +317,14 @@ func runCompare(ctx context.Context, o Options, home, repoID, top, base, head st
 		r.Checks = append(r.Checks, report.CheckResult{ID: c.ID, Base: bs, Head: hsum})
 		counts[c.ID] = map[string]any{"head_passed": hsum.Counts.Passed, "head_failed": hsum.Counts.Failed}
 
-		in := rules.Input{CheckID: c.ID, Required: c.Required, Base: bi, Head: hi}
-		if i == 0 {
-			in.Dirty = dirty
-			in.ProtectedRemoved = len(p.Diff.RemovedLines)
-			in.ProtectedFiles = p.Diff.FilesWithRemovals
-			in.AddedGuardedFiles = p.AddedGuarded
-			in.ApprovalHashValid = valid
-		} else {
-			in.ApprovalHashValid = true // repo-level fields are zero here anyway
-		}
+		in := rules.Input{CheckID: c.ID, Required: c.Required, Base: bi, Head: hi, ApprovalHashValid: true}
 		vs, waived := rules.Evaluate(in)
 		for _, v := range vs {
-			if isRepoLevel(v.Rule) {
-				if v.Rule == "protected_modified" {
-					v.Detail += protectedHint(p.Diff.Hash, o.ApproveHash)
-				}
-			} else if !c.Required {
-				continue
-			} else {
-				v.Detail = "[" + c.ID + "] " + v.Detail
-			}
-			k := v.Rule + "\x00" + v.Detail
-			if seen[k] {
+			if isRepoLevel(v.Rule) || !c.Required {
 				continue
 			}
-			seen[k] = true
-			r.Violations = append(r.Violations, v)
+			v.Detail = "[" + c.ID + "] " + v.Detail
+			add(v)
 		}
 		if c.Required {
 			for _, w := range waived {
@@ -335,4 +341,18 @@ func protectedHint(real, given string) string {
 		s += fmt.Sprintf(" (--approve %s 는 실제 해시와 달라 무시됨)", given)
 	}
 	return s
+}
+
+func hasRequired(cfg config.Config) bool {
+	for _, c := range cfg.Checks {
+		if c.Required {
+			return true
+		}
+	}
+	return false
+}
+
+func noRequired() rules.Violation {
+	return rules.Violation{Rule: "no_required_checks", Category: rules.CategoryIncomplete,
+		Detail: "필수(required) 검사가 하나도 없어 검증 증거가 없습니다"}
 }

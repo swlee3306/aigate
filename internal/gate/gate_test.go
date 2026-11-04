@@ -383,9 +383,11 @@ func TestLedgerFailureIsGateError(t *testing.T) {
 
 func TestNonRequiredViolationsDropped(t *testing.T) {
 	e := setup(t)
-	yml := checkYAML(e.log, "    required: false\n", "soft")
+	hard := checkYAML(e.log, "", "hard")
+	yml := checkYAML(e.log, "    required: false\n", "soft") + hard[strings.Index(hard, "  - id: hard"):]
 	write(t, e.repo, ".aigate.yml", yml)
 	write(t, e.repo, "soft.flag", "")
+	write(t, e.repo, "hard.flag", "")
 	base := commit(t, e.repo, "base")
 	git(t, e.repo, "rm", "-q", "soft.flag")
 	commit(t, e.repo, "head")
@@ -396,7 +398,7 @@ func TestNonRequiredViolationsDropped(t *testing.T) {
 	if r.Category != rules.CategoryOK || len(r.Violations) != 0 {
 		t.Fatalf("got %s %+v", r.Category, r.Violations)
 	}
-	if len(r.Checks) != 1 || r.Checks[0].Base.Counts.Passed != 1 || r.Checks[0].Head.Counts.Failed != 1 {
+	if len(r.Checks) != 2 || r.Checks[0].Base.Counts.Passed != 1 || r.Checks[0].Head.Counts.Failed != 1 {
 		t.Fatalf("counts: %+v", r.Checks)
 	}
 }
@@ -455,5 +457,131 @@ func TestMultiCheckProtectedOnce(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("protected_modified x%d: %+v", n, r.Violations)
+	}
+}
+
+func TestEmptyChecksKeepsRepoLevelViolations(t *testing.T) {
+	e := setup(t)
+	write(t, e.repo, ".aigate.yml", "version: 1\nprotected: [\"tests/**\"]\nchecks: []\n")
+	write(t, e.repo, "tests/t.txt", "one\ntwo\n")
+	base := commit(t, e.repo, "base")
+	write(t, e.repo, "tests/t.txt", "one\nTWO\n")
+	commit(t, e.repo, "weaken")
+	write(t, e.repo, "junk", "x")
+	r, err := Run(context.Background(), e.opts(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Category != rules.CategoryIncomplete || !hasRule(r.Violations, "protected_modified") ||
+		!hasRule(r.Violations, "dirty_tree") || !hasRule(r.Violations, "no_required_checks") {
+		t.Fatalf("got %s %+v", r.Category, r.Violations)
+	}
+	if len(r.Approvals) != 1 || r.Approvals[0].Valid {
+		t.Fatalf("approvals: %+v", r.Approvals)
+	}
+}
+
+func TestEmptyChecksInitialMode(t *testing.T) {
+	e := setup(t)
+	write(t, e.repo, ".aigate.yml", "version: 1\n")
+	commit(t, e.repo, "only")
+	r, err := Run(context.Background(), e.opts(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Initial || r.Category != rules.CategoryIncomplete || !hasRule(r.Violations, "no_required_checks") {
+		t.Fatalf("got %s %+v", r.Category, r.Violations)
+	}
+}
+
+func TestAllNonRequiredIsIncomplete(t *testing.T) {
+	e := setup(t)
+	write(t, e.repo, ".aigate.yml", checkYAML(e.log, "    required: false\n", "soft"))
+	write(t, e.repo, "soft.flag", "")
+	c := commit(t, e.repo, "c")
+	r, err := Run(context.Background(), e.opts(c))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Category != rules.CategoryIncomplete || !hasRule(r.Violations, "no_required_checks") {
+		t.Fatalf("got %s %+v", r.Category, r.Violations)
+	}
+}
+
+func TestFirstCheckNonRequiredKeepsProtected(t *testing.T) {
+	e := setup(t)
+	yml := checkYAML(e.log, "    required: false\n", "soft") + strings.TrimPrefix(checkYAML(e.log, "", "hard"), strings.SplitAfter(checkYAML(e.log, "", "hard"), "checks:\n")[0])
+	write(t, e.repo, ".aigate.yml", yml)
+	write(t, e.repo, "soft.flag", "")
+	write(t, e.repo, "hard.flag", "")
+	write(t, e.repo, "tests/t.txt", "one\ntwo\n")
+	base := commit(t, e.repo, "base")
+	write(t, e.repo, "tests/t.txt", "one\nTWO\n")
+	commit(t, e.repo, "weaken")
+	r, err := Run(context.Background(), e.opts(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Checks) != 2 || r.Category != rules.CategoryWeakened || !hasRule(r.Violations, "protected_modified") {
+		t.Fatalf("got %s %+v checks=%d", r.Category, r.Violations, len(r.Checks))
+	}
+}
+
+func TestDifferentGrantedHashNotHonored(t *testing.T) {
+	e, base := protectedScenario(t)
+	id, _, _ := RepoID(e.repo)
+	st := approval.Store{Path: ApprovalsPath(e.home)}
+	if err := st.Grant(id, base, "0123456789abcdef", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	r, err := Run(context.Background(), e.opts(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Category != rules.CategoryWeakened || !hasRule(r.Violations, "protected_modified") || r.Approvals[0].Valid {
+		t.Fatalf("got %s %+v %+v", r.Category, r.Violations, r.Approvals)
+	}
+}
+
+func TestGateErrorLeavesEarlierReportAndLedger(t *testing.T) {
+	e := setup(t)
+	write(t, e.repo, ".aigate.yml", checkYAML(e.log, "", "unit"))
+	write(t, e.repo, "unit.flag", "")
+	c := commit(t, e.repo, "c")
+	if r, err := Run(context.Background(), e.opts(c)); err != nil || r.Category != rules.CategoryOK {
+		t.Fatalf("setup run: %v %s", err, r.Category)
+	}
+	rp := filepath.Join(e.repo, ".aigate", "reports", c[:10]+".json")
+	before, err := os.ReadFile(rp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _, _ := RepoID(e.repo)
+	n0, _ := ledger.Verify(LedgerPath(e.home, id))
+	// gate error: base does not resolve
+	r, err := Run(context.Background(), e.opts("no-such-ref"))
+	if err == nil || r.Category != "" {
+		t.Fatalf("want error and empty report, got %v %+v", err, r)
+	}
+	after, _ := os.ReadFile(rp)
+	if string(before) != string(after) {
+		t.Fatal("earlier report was modified")
+	}
+	if n1, _ := ledger.Verify(LedgerPath(e.home, id)); n1 != n0 {
+		t.Fatalf("ledger grew on gate error: %d -> %d", n0, n1)
+	}
+}
+
+func TestMissingConfigWritesNothing(t *testing.T) {
+	e := setup(t)
+	write(t, e.repo, "a", "1")
+	c := commit(t, e.repo, "c")
+	r, err := Run(context.Background(), e.opts(c))
+	if err == nil || r.Category != "" {
+		t.Fatalf("want error and empty report, got %v %+v", err, r)
+	}
+	id, _, _ := RepoID(e.repo)
+	if _, serr := os.Stat(LedgerPath(e.home, id)); serr == nil {
+		t.Fatal("ledger written on gate error")
 	}
 }
