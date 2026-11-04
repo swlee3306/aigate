@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"aigate/internal/adapter"
@@ -96,11 +97,30 @@ func runSide(ctx context.Context, repo, sha string, c config.Check) (rules.RunIn
 
 const tailRunes = 300
 
-// cleanTail makes runner output safe to embed in a violation detail: valid
-// UTF-8, whitespace collapsed, at most the last tailRunes runes (cut on a rune
-// boundary).
+var (
+	// ANSI CSI sequences, OSC sequences (BEL or ST terminated) and any other
+	// two-byte escape.
+	ansiRe = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b.?`)
+	// NAME=value / NAME: value where NAME mentions a key, token, secret or password.
+	secretAssignRe = regexp.MustCompile(`(?i)\b([a-z0-9_.-]*(?:key|token|secret|passwd|password|pwd)[a-z0-9_.-]*)(\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s"',;]+)`)
+	bearerRe       = regexp.MustCompile(`(?i)\b(bearer)\s+[a-z0-9._~+/=-]+`)
+	urlCredRe      = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@`)
+)
+
+// maskSecrets replaces credential-looking values with ***.
+func maskSecrets(s string) string {
+	s = urlCredRe.ReplaceAllString(s, "${1}***@")
+	s = bearerRe.ReplaceAllString(s, "${1} ***")
+	return secretAssignRe.ReplaceAllString(s, "${1}${2}***")
+}
+
+// cleanTail makes runner output safe to embed in a violation detail: ANSI
+// escapes stripped, valid UTF-8, credential-looking values masked (before
+// cutting, so a cut cannot expose part of a secret), whitespace collapsed, at
+// most the last tailRunes runes (cut on a rune boundary).
 func cleanTail(s string) string {
-	s = strings.Join(strings.Fields(strings.ToValidUTF8(s, "")), " ")
+	s = ansiRe.ReplaceAllString(strings.ToValidUTF8(s, ""), "")
+	s = strings.Join(strings.Fields(maskSecrets(s)), " ")
 	if r := []rune(s); len(r) > tailRunes {
 		s = string(r[len(r)-tailRunes:])
 	}

@@ -634,3 +634,27 @@ func TestInitialRunnerErrorWhenRCNonZeroWithoutFailures(t *testing.T) {
 		t.Fatalf("want one runner_error (incomplete), got %+v", vs)
 	}
 }
+
+func TestOutputTailStripsANSIAndMasksSecrets(t *testing.T) {
+	raw := "\x1b[31mFAIL\x1b[0m \x1b[1;32mok\x1b[m\n" +
+		"API_KEY=sk-live-123 GITHUB_TOKEN=ghp_abc db_password=hunter2 MY_SECRET: s3cr3t\n" +
+		"Authorization: Bearer eyJhbGciOi.payload.sig\n" +
+		"fetch https://alice:pa55w0rd@registry.example.com/pkg failed\n" +
+		"PATH=/usr/bin COUNT=3 ERR_MODULE_NOT_FOUND"
+	got := cleanTail(raw)
+	for _, leak := range []string{"\x1b", "[31m", "sk-live-123", "ghp_abc", "hunter2", "s3cr3t", "eyJhbGciOi", "pa55w0rd", "alice:"} {
+		if strings.Contains(got, leak) {
+			t.Errorf("tail still contains %q: %q", leak, got)
+		}
+	}
+	for _, keep := range []string{"FAIL ok", "API_KEY=***", "GITHUB_TOKEN=***", "db_password=***", "Bearer ***", "https://***@registry.example.com/pkg", "PATH=/usr/bin COUNT=3", "ERR_MODULE_NOT_FOUND"} {
+		if !strings.Contains(got, keep) {
+			t.Errorf("tail lacks %q: %q", keep, got)
+		}
+	}
+	// Masking and stripping happen before the bound, which stays rune-safe.
+	long := strings.Repeat("가", 500) + " TOKEN=abc"
+	if g := cleanTail(long); len([]rune(g)) > 300 || !utf8.ValidString(g) || strings.Contains(g, "abc") || !strings.HasSuffix(g, "TOKEN=***") {
+		t.Fatalf("bounded masked tail wrong: %q", g)
+	}
+}
