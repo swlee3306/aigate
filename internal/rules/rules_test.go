@@ -23,6 +23,8 @@ func with(r RunInfo, id string, s Status) RunInfo {
 	return r
 }
 
+func (r RunInfo) withStatus(id string, st Status) RunInfo { return with(r, id, st) }
+
 func TestEvaluate(t *testing.T) {
 	base := okRun("a", "b")
 	cases := []struct {
@@ -40,7 +42,11 @@ func TestEvaluate(t *testing.T) {
 		{"timeout", Input{Base: base, Head: RunInfo{Results: base.Results, TimedOut: true}}, []string{"timeout"}, CategoryIncomplete, nil},
 		{"no tests ran", Input{Base: base, Head: RunInfo{Results: Results{}}}, []string{"no_tests_ran"}, CategoryIncomplete, nil},
 		{"parse failed", Input{Base: base, Head: RunInfo{ParseFailed: true}}, []string{"parse_failed"}, CategoryIncomplete, nil},
-		{"base failing waived", Input{Base: with(base, "a", Failed), Head: with(base, "a", Failed)}, nil, CategoryOK, []string{"a"}},
+		{"base failing waived", Input{Base: RunInfo{Results: with(base, "a", Failed).Results, RC: 1}, Head: with(base, "a", Failed)}, nil, CategoryOK, []string{"a"}},
+		{"required waived with realistic rc", Input{Required: true, Base: RunInfo{Results: Results{"a": Passed, "b": Failed}, RC: 1}, Head: okRun("a").withStatus("b", Failed)}, nil, CategoryOK, []string{"b"}},
+		{"required base all failed", Input{Required: true, Base: RunInfo{Results: Results{"a": Failed, "b": Failed}, RC: 1}, Head: with(okRun(), "a", Failed).withStatus("b", Failed)}, []string{"base_not_green"}, CategoryIncomplete, []string{"a", "b"}},
+		{"required base all skipped", Input{Required: true, Base: RunInfo{Results: Results{"a": Skipped, "b": Skipped}}, Head: with(okRun(), "a", Skipped).withStatus("b", Skipped)}, []string{"base_not_green"}, CategoryIncomplete, []string{"a", "b"}},
+		{"required passed+skipped rc0", Input{Required: true, Base: RunInfo{Results: Results{"a": Passed, "b": Skipped}}, Head: okRun("a").withStatus("b", Skipped)}, nil, CategoryOK, []string{"b"}},
 		{"dirty", Input{Base: base, Head: okRun("a", "b"), Dirty: true}, []string{"dirty_tree"}, CategoryIncomplete, nil},
 		{"protected removed", Input{Base: base, Head: okRun("a", "b"), ProtectedRemoved: 2, ProtectedFiles: []string{"t.py"}}, []string{"protected_modified"}, CategoryWeakened, nil},
 		{"protected approved", Input{Base: base, Head: okRun("a", "b"), ProtectedRemoved: 2, ApprovalHashValid: true}, nil, CategoryOK, nil},

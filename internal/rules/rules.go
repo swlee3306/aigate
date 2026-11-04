@@ -126,9 +126,23 @@ func baseRules(in Input) []Violation {
 	if unreliable {
 		vs = append(vs, viol("base_unreliable", CategoryIncomplete, "base 실행이 불안정합니다(시간 초과·결과 없음·오류)", nil))
 	}
-	if in.Required && in.Base.RC != 0 {
-		vs = append(vs, viol("base_not_green", CategoryIncomplete,
-			fmt.Sprintf("필수 검사가 base에서 이미 실패합니다 (rc=%d)", in.Base.RC), nil))
+	if in.Required && !in.Base.ParseFailed && len(in.Base.Results) > 0 {
+		// A non-zero rc is normal when some base tests fail (those are waived).
+		// It is only "not green" when there is nothing to protect (no passed id)
+		// or the failure is not explained by a failed id.
+		var passed, failed int
+		for _, s := range in.Base.Results {
+			switch s {
+			case Passed:
+				passed++
+			case Failed:
+				failed++
+			}
+		}
+		if passed == 0 || (in.Base.RC != 0 && failed == 0) {
+			vs = append(vs, viol("base_not_green", CategoryIncomplete,
+				fmt.Sprintf("필수 검사의 base에 보호할 통과 항목이 없거나 실패 원인이 불명확합니다 (rc=%d, passed=%d, failed=%d)", in.Base.RC, passed, failed), nil))
+		}
 	}
 	return vs
 }
