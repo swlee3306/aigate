@@ -159,12 +159,14 @@ func Run(ctx context.Context, s Spec) Out {
 		o.RC = 0
 	default:
 		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			o.RC = ee.ExitCode()
-			if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
-				o.RC = 128 + int(ws.Signal())
-			}
-		} else {
+		switch {
+		case errors.As(err, &ee):
+			o.RC = exitCode(ee.ProcessState)
+		case errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil:
+			// The process itself exited; only a background grandchild kept
+			// the pipes open. Report the real exit status.
+			o.RC = exitCode(cmd.ProcessState)
+		default:
 			o.RC = 1
 			o.Tail += fmt.Sprintf("\nrunner: %v", err)
 			if len(o.Tail) > tailMax {
@@ -173,4 +175,11 @@ func Run(ctx context.Context, s Spec) Out {
 		}
 	}
 	return finish(o)
+}
+
+func exitCode(ps *os.ProcessState) int {
+	if ws, ok := ps.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+		return 128 + int(ws.Signal())
+	}
+	return ps.ExitCode()
 }

@@ -215,3 +215,34 @@ func TestContextCancelKillsGroup(t *testing.T) {
 		t.Fatalf("got %+v after %v", out, time.Since(start))
 	}
 }
+
+func TestBackgroundGrandchildHoldingStdout(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		exit int
+	}{{"exit0", 0}, {"exit3", 3}} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			pidFile := filepath.Join(dir, "pid")
+			start := time.Now()
+			out := Run(context.Background(), Spec{
+				Argv:    sh("sleep 31 & echo $! > " + pidFile + "; echo hi; exit " + strconv.Itoa(tc.exit)),
+				Timeout: 30 * time.Second,
+			})
+			if el := time.Since(start); el > 4*time.Second {
+				t.Fatalf("took too long: %v", el)
+			}
+			if out.RC != tc.exit || out.TimedOut {
+				t.Fatalf("want RC=%d, got %+v", tc.exit, out)
+			}
+			if strings.Contains(out.Tail, "WaitDelay") {
+				t.Fatalf("tail polluted: %q", out.Tail)
+			}
+			pid := readPid(t, pidFile)
+			if !processGone(pid) {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+				t.Fatalf("grandchild %d still alive", pid)
+			}
+		})
+	}
+}
