@@ -59,13 +59,14 @@ checks:
 - `gotest-json`: `go test -json`을 직접 파싱. id는 `패키지/Test/서브테스트`. 컴파일 실패는 `error`.
 - `exit-code`: 통과/실패만(빌드). id는 검사 id.
 - 프리셋은 명령과 "선택 범위 축소 무력화 옵션"을 채운다(예: pytest `-o addopts=`).
+- (적대 검토 반영) pytest 프리셋은 `python -P -m pytest`로 실행한다. `-P`가 없으면 `python -m`이 작업 디렉터리를 `sys.path` 맨 앞에 넣어 저장소 루트의 `pytest.py`가 진짜 pytest 대신 실행된다. 루트에서 import하는 저장소는 pytest 설정에 `pythonpath = .`이 필요하고, 3.11 미만 Python은 실행이 실패해 `verification_incomplete`로 닫힌다.
 
 ### 3.3 판정 규칙
 위반은 여러 개 동시에 나올 수 있고 모두 보고서에 남긴다. 판정은 가장 높은 우선순위: `verification_incomplete > check_weakened > behavior_failure > ok`.
 
 | 범주 | 규칙 |
 |---|---|
-| verification_incomplete | 타임아웃 / 결과 파싱 불가·0건 / 러너 자체 오류 / 수집·컴파일·설정 오류(`error`) / 필수 검사 미실행 / 커밋되지 않은 변경(dirty) / base 불안정 또는 base 필수 검사 실패 |
+| verification_incomplete | 타임아웃 / 결과 파싱 불가·0건 / 러너 자체 오류(head가 실패 코드로 끝났는데 실패·오류 결과가 없음 = `runner_error`) / 수집·컴파일·설정 오류(`error`) / 필수 검사 미실행 / 커밋되지 않은 변경(dirty) / base 불안정 또는 base 필수 검사 실패 |
 | check_weakened | base에서 통과하던 id가 head에서 없음(삭제·이름 변경·deselect) / skip·xfail 처리 / 새 테스트가 skip / 보호 파일 기존 줄 변경·삭제(승인 없음) / `approval_on_add` 경로에 새 파일 추가(승인 없음) |
 | behavior_failure | base에서 통과하던 id가 head에서 실패 / 새 테스트 실패 / base에서 되던 빌드가 head에서 실패 |
 
@@ -73,6 +74,7 @@ checks:
 - base에서 이미 실패하던 id는 비교에서 제외하고 보고서에 `waived`로 표시한다.
 - 컴파일·수집 오류는 코드 문제와 환경 문제를 구분하지 않고 보수적으로 `verification_incomplete`로 둔다.
 - 재시도 없음(재시도가 실제 실패를 가릴 수 있음).
+- (적대 검토 반영) **내장 보호 경로**: `**/node_modules/**`는 설정과 무관하게 항상 `approval_on_add`로 취급한다(커밋된 `node_modules/.bin/vitest`가 러너 자체를 바꿔 결과를 위조할 수 있으므로). 이 경로를 건드리지 않는 diff의 승인 해시는 바뀌지 않는다.
 
 ### 3.4 승인
 - 단위: 보호 파일 diff의 해시(정규화한 diff 텍스트의 sha256). `aigate approve`가 diff를 보여주고, 사람이 확인하면 `(저장소, base, 해시, 시각)`을 `~/.aigate/approvals.json`(저장소 밖)에 기록. **TTY 없는 실행은 거부**한다.
@@ -109,6 +111,7 @@ checks:
 - 게이트 밖(서브프로젝트 ②)이 기록할 사건: `revert_observed`(사람이 되돌림), `human_override`, `promotion_proposed/approved`, `demotion`.
 - `task_class`는 `aigate run --task-class <이름>`으로 받는다(기본 `unclassified`). 분류 체계는 ②에서 정한다.
 - 한계: 같은 사용자 권한의 에이전트가 파일 전체를 다시 쓰면 해시 체인도 위조할 수 있다. 3.4와 같은 이유로 근본 차단은 ②의 샌드박스에서 한다.
+- 무결성 범위(정확히): 해시 체인은 **중간 줄의 수정·삽입·삭제·순서 변경과 깨진 마지막 줄**을 `ledger verify`로 드러낸다(tamper-evident). 그러나 **마지막 N줄을 통째로 지우거나 파일을 비우는 것은 감지하지 못한다**(남은 부분도 유효한 체인이다). 또 체인은 키 없는 sha256이라 파일에 쓸 수 있는 쪽은 전체를 다시 계산할 수 있다. 꼬리 절단 감지는 외부에 마지막 해시·줄 수를 따로 두는 방식(②)이 필요하다.
 - 게이트는 이력을 읽어 승격을 판단하지 않는다(판정은 항상 현재 커밋의 증거만으로).
 
 ## 4. 알려진 한계
@@ -116,6 +119,20 @@ checks:
 - 새 파일 추가로 검사를 무력화하는 우회는 `approval_on_add` 경로(conftest 등)에 한해 승인 대상으로 줄였다. 그 밖의 새 테스트 파일 안에 심은 무력화 코드(예: assert를 무시하는 헬퍼 호출)는 불변식으로 못 잡을 수 있다(변이 테스트 v2 대상). 적대 검토에서 확인한다.
 - 테스트 id가 실행마다 바뀌는 러너(무작위 이름 등)는 지원하지 않는다.
 - base 자체가 불안정(flaky)하면 `verification_incomplete`가 늘어난다.
+- 이력(ledger)은 꼬리 절단·파일 비우기를 감지하지 못하고 키가 없다(3.9 "무결성 범위").
+
+### 4.1 적대 검토(Task 12)에서 확인한 한계
+결과 표는 `04-RESULTS-gate.md` "적대 검토". 아래는 v1 불변식 게이트로는 원리상 못 잡는 것(재현 시나리오는 `KnownGap`으로 남김)과 사용자 결정이 필요한 것이다.
+- **결정 대기: 보호 파일에 줄만 추가하는 무력화.** 3.1은 "새 줄 추가만은 허용"이므로, 기존 테스트 파일에 줄만 끼워 넣는 무력화(본문 맨 앞 `return`, 같은 이름 테스트 재정의, 테스트 모듈 끝에서 대상 함수 재정의, 모든 테스트를 no-op으로 감싸기, `vi.mock` 추가, `//go:build ignore` 한 줄 + 같은 id의 대리 테스트, 보호된 `vitest.config.ts`에 위조 코드 추가, `.aigate.yml`에 `required: false` 추가)가 `protected_modified`에 안 걸린다. 규칙으로 잡을 수 있으나 기존 동작(테스트 추가는 승인 불필요)을 바꾸므로 결정이 필요하다. 선택지: (1) 기존 보호 파일의 모든 hunk(추가 포함)를 승인 대상으로(모두 막힘, 기존 파일에 테스트를 추가하는 정상 변경과 `ok/pytest_ini_addopts_narrowing`이 승인 필요로 바뀜) (2) 파일 끝 추가만 허용(본문 삽입은 막지만 끝에 붙이는 재정의·no-op 래핑·위조는 통과) (3) 현재대로 두고 한계로 문서화.
+- **실행 중 위조(in-process).** 검사 대상 코드가 러너와 같은 프로세스에서 돌기 때문에, 새 일반 테스트 파일(승인 불필요)이 대상 모듈을 monkeypatch하거나, `pytest_plugins`로 보고서를 바꾸는 훅을 싣거나, 종료 시 JUnit 파일을 다시 쓰고 `os._exit(0)`으로 종료 코드까지 맞추거나, Go `TestMain`이 test2json 스트림을 고쳐 쓰면 결과를 구별할 수 없다. `runner_error`는 종료 코드를 안 맞춘 위조만 잡는다. 완화: 승인 대상 경로 확대(설정), head의 소스에 **base의 테스트 파일**만 얹어 한 번 더 돌리는 검사(새 파일을 무력화), 결과 수집을 러너 밖으로 빼는 격리(②).
+- **테스트 환경 감지.** 소스가 `"pytest" in sys.modules`, `AIGATE_JUNIT` 환경 변수, Go `testing.Testing()`이나 `os.Args[0]`의 `.test`로 테스트 중임을 알아채고 그때만 올바르게 동작하면 게이트는 볼 수 없다(테스트 중의 동작만 관찰).
+- **모듈 가리기(shadowing).** 새 `src/calc.js`가 `calc.ts`를 가리거나(vite가 `.js`를 `.ts`보다 먼저 찾음), 새 `tests/ingest.py`가 `src/ingest.py`를 가린다(pytest가 테스트 디렉터리를 `pythonpath`보다 앞에 넣음). 완화: 저장소 설정의 `approval_on_add`에 TS 저장소의 `src/**/*.js`, Python 저장소의 `tests/` 아래 테스트가 아닌 모듈 같은 경로 추가(glob은 저장소별로 정하고 시험할 것).
+- **테스트하지 않는 입력.** 어떤 테스트도 쓰지 않는 입력에서만 깨지는 변경은 통과한다(변이 테스트 v2가 이 빈틈을 측정).
+- **exit-code 검사의 단위.** `go build ./...` 같은 exit-code 검사는 대상별 id가 없어서, 깨진 패키지를 build tag로 빼면 "테스트 없는 패키지 삭제"와 구별되지 않는다.
+- **비필수 검사.** base 설정이 테스트 검사를 `required: false`로 두면 그 검사의 실패는 판정에 안 들어간다(설계상 동작, 설정 선택). 완화: 테스트 검사가 하나도 필수가 아니면 경고.
+- **증거 파일 위조(제안, 미구현).** `aigate check`는 저장소 안 `.aigate/reports/<head>.json`(git 미추적, 에이전트가 쓸 수 있음)을 믿는다. `run` 없이 `category: ok` 파일을 써 두면 `check`가 통과한다. 3.5가 check의 단계를 정하므로 바꾸지 않았다. 제안: `check`가 `~/.aigate/ledger`의 마지막 `run_result`(같은 head·base·판정 ok)와 대조.
+- **base 자동 결정.** `--base`를 생략하면 merge-base로 정한다. 에이전트가 `main`을 head로 옮길 수 있으면 merge-base == head가 되어 초기 모드(회귀 비교 없음)가 된다. 오케스트레이터는 항상 `--base`를 고정해 넘긴다는 전제다.
+- **의존성 디렉터리.** `node_modules/`는 내장 보호 경로로 막았다. Go `vendor/`(수정된 vendored 의존성, 예: 항상 통과하는 assert 라이브러리)와 go.mod의 새 `replace` 줄은 같은 계열이지만 장난감 모듈에 의존성이 없어 재현하지 않았다. 의존성이 있는 저장소는 `vendor/**`를 `approval_on_add`에 넣는 것을 권한다.
 
 ## 5. 테스트 전략
 1. 규칙: Go 표 기반 단위 테스트(합성 결과 입력).

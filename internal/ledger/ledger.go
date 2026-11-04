@@ -1,7 +1,14 @@
 // Package ledger implements an append-only, hash-chained event log stored as
 // one JSON object per line (design 3.9). Each line carries the hash of the
-// previous line, so any edit, deletion, reordering or truncation is detected
-// by Verify.
+// previous line.
+//
+// The chain is tamper-EVIDENT only within limits. Verify detects an edited,
+// inserted, deleted or reordered line anywhere before the last line, and a
+// damaged tail (a partial or malformed last line). It does NOT detect the
+// removal of the last N whole lines, or an emptied file: what remains is still
+// a valid chain. The chain is also unkeyed (plain sha256), so a writer with
+// access to the file can rewrite it and recompute every hash. Real protection
+// needs the file out of the agent's reach (design 3.9, sub-project 2).
 package ledger
 
 import (
