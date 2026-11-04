@@ -1,0 +1,35 @@
+// Small pure functions used by the e2e scenarios.
+
+/** Sum of xs; 0 for an empty array. */
+export function sum(xs: number[]): number {
+  let total = 0;
+  for (const x of xs) {
+    total += x;
+  }
+  return total;
+}
+
+/** xs without repeated values, keeping the first occurrence of each. */
+export function dedupe(xs: number[]): number[] {
+  const seen = new Set<number>();
+  const out: number[] = [];
+  for (const x of xs) {
+    if (seen.has(x)) {
+      continue;
+    }
+    seen.add(x);
+    out.push(x);
+  }
+  return out;
+}
+
+/** Clamp x into the inclusive range [lo, hi]. */
+export function clamp(x: number, lo: number, hi: number): number {
+  if (x < lo) {
+    return lo;
+  }
+  if (x > hi) {
+    return hi;
+  }
+  return x;
+}

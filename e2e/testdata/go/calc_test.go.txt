@@ -1,0 +1,68 @@
+package calc
+
+import (
+	"reflect"
+	"testing"
+)
+
+func TestSum(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []int
+		want int
+	}{
+		{"empty", nil, 0},
+		{"single", []int{5}, 5},
+		{"positives", []int{1, 2, 3}, 6},
+		{"negatives", []int{-1, -2}, -3},
+		{"mixed", []int{10, -4, 1}, 7},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Sum(tc.in); got != tc.want {
+				t.Fatalf("Sum(%v) = %d, want %d", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDedupe(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []int
+		want []int
+	}{
+		{"empty", nil, []int{}},
+		{"no_duplicates", []int{1, 2, 3}, []int{1, 2, 3}},
+		{"adjacent", []int{1, 1, 2}, []int{1, 2}},
+		{"scattered", []int{1, 2, 1, 3, 2}, []int{1, 2, 3}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Dedupe(tc.in); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("Dedupe(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWindow(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []int
+		size int
+		want [][]int
+	}{
+		{"pairs", []int{1, 2, 3}, 2, [][]int{{1, 2}, {2, 3}}},
+		{"full_span", []int{1, 2, 3}, 3, [][]int{{1, 2, 3}}},
+		{"too_large", []int{1, 2}, 3, nil},
+		{"zero_size", []int{1, 2}, 0, nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Window(tc.in, tc.size); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("Window(%v, %d) = %v, want %v", tc.in, tc.size, got, tc.want)
+			}
+		})
+	}
+}

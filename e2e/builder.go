@@ -20,7 +20,7 @@ import (
 	"aigate/internal/rules"
 )
 
-//go:embed testdata/py/*
+//go:embed testdata/py/* testdata/go/* testdata/ts/*
 var pyData embed.FS
 
 // DefaultPyBin is the virtualenv bin directory holding python with pytest.
@@ -40,12 +40,43 @@ func PyBin() (string, error) {
 	return d, nil
 }
 
-func asset(name string) string {
-	b, err := pyData.ReadFile("testdata/py/" + name)
+func asset(name string) string { return stackAsset("py", name) }
+
+// stackAsset reads an embedded asset of one stack (py, go or ts).
+func stackAsset(stack, name string) string {
+	b, err := pyData.ReadFile("testdata/" + stack + "/" + name)
 	if err != nil {
 		panic(err)
 	}
 	return string(b)
+}
+
+// Stack describes one language toy project: how its base commit is laid out
+// and what an "ok" run must at least pass. A nil Stack means Python.
+type Stack struct {
+	Name string
+	// Seed writes the base files (including .aigate.yml with the given yaml).
+	Seed func(w *Workspace, yaml string)
+	// YAML renders the default .aigate.yml for a check timeout ("" = default).
+	YAML func(timeout string) string
+	// MinPassed is the head pass count every ok scenario must reach by default.
+	MinPassed int
+	// Prepare checks that the environment can run this stack (nil = nothing).
+	// A non-nil error fails every scenario of the stack, never skips it.
+	Prepare func() error
+}
+
+// PyStack is the Python/pytest toy (9 tests).
+var PyStack = &Stack{
+	Name: "py",
+	Seed: func(w *Workspace, yaml string) {
+		w.Write("src/ingest.py", asset("ingest.py"))
+		w.Write("tests/test_ingest.py", asset("test_ingest.py"))
+		w.Write("pytest.ini", "[pytest]\npythonpath = src\n")
+		w.Write(".aigate.yml", yaml)
+	},
+	YAML:      BaseYAML,
+	MinPassed: 9,
 }
 
 // BaseYAML renders the scenario repo config.
@@ -60,6 +91,7 @@ func BaseYAML(timeout string) string {
 
 // Workspace is a scenario git repository with its own aigate home.
 type Workspace struct {
+	Stack      *Stack
 	T          *testing.T
 	Dir, Home  string
 	Base, Head string
@@ -69,6 +101,12 @@ type Workspace struct {
 // yaml overrides the .aigate.yml content when non-empty.
 func NewWorkspace(t *testing.T, timeout, yaml string) *Workspace {
 	t.Helper()
+	return NewStackWorkspace(t, PyStack, timeout, yaml)
+}
+
+// NewStackWorkspace creates the repo for a stack and commits its base layout.
+func NewStackWorkspace(t *testing.T, st *Stack, timeout, yaml string) *Workspace {
+	t.Helper()
 	d, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -77,15 +115,12 @@ func NewWorkspace(t *testing.T, timeout, yaml string) *Workspace {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w := &Workspace{T: t, Dir: d, Home: h}
+	w := &Workspace{Stack: st, T: t, Dir: d, Home: h}
 	w.Git("init", "-q", "-b", "main")
 	if yaml == "" {
-		yaml = BaseYAML(timeout)
+		yaml = st.YAML(timeout)
 	}
-	w.Write("src/ingest.py", asset("ingest.py"))
-	w.Write("tests/test_ingest.py", asset("test_ingest.py"))
-	w.Write("pytest.ini", "[pytest]\npythonpath = src\n")
-	w.Write(".aigate.yml", yaml)
+	st.Seed(w, yaml)
 	w.Base = w.Commit("base")
 	return w
 }
@@ -169,12 +204,15 @@ func (w *Workspace) Mutant(id string) {
 
 // Result is one recorded scenario outcome.
 type Result struct {
+	Stack      string   `json:"stack"`
 	Name       string   `json:"name"`
 	Want       string   `json:"want"`
 	Got        string   `json:"got"`
 	Seconds    float64  `json:"seconds"`
 	Rules      []string `json:"rules"`
 	HeadPassed int      `json:"head_passed"`
+	HeadFailed int      `json:"head_failed"`
+	Note       string   `json:"note,omitempty"`
 	Match      bool     `json:"match"`
 }
 
@@ -202,8 +240,16 @@ type Scenario struct {
 	WantDetail string // substring expected in some violation detail
 	Timeout    string // check timeout in .aigate.yml (default 60s)
 	Config     string // full .aigate.yml override at base
-	Approve    bool   // grant the real protected-diff hash and run again
-	WrongHash  bool   // grant a wrong hash and run again
+	Stack      *Stack // nil = Python
+	// MinHeadPassed overrides Stack.MinPassed for ok scenarios.
+	MinHeadPassed int
+	// HeadMayFail opts out of the hardening that a check_weakened scenario
+	// must have a head whose first check has no failed test (i.e. the weakening
+	// really made a broken change pass). Use it only where head failures are
+	// part of the scenario.
+	HeadMayFail bool
+	Approve     bool // grant the real protected-diff hash and run again
+	WrongHash   bool // grant a wrong hash and run again
 }
 
 func (w *Workspace) run() (report.Report, float64) {
@@ -243,7 +289,19 @@ func hasRule(r report.Report, rule string) bool {
 // fit the outcome). Every outcome is recorded in Results.
 func RunScenario(t *testing.T, s Scenario) {
 	t.Helper()
-	w := NewWorkspace(t, s.Timeout, s.Config)
+	st := s.Stack
+	if st == nil {
+		st = PyStack
+	}
+	if st.Prepare != nil {
+		if err := st.Prepare(); err != nil {
+			resMu.Lock()
+			results = append(results, Result{Stack: st.Name, Name: s.Name, Want: string(s.Want), Got: "환경 미충족", Note: err.Error()})
+			resMu.Unlock()
+			t.Fatalf("환경 미충족 (%s): %v", st.Name, err)
+		}
+	}
+	w := NewStackWorkspace(t, st, s.Timeout, s.Config)
 	s.Mutate(w)
 	w.Head = w.Commit("head")
 	if s.Post != nil {
@@ -269,9 +327,10 @@ func RunScenario(t *testing.T, s Scenario) {
 		sec += sec2
 	}
 
-	res := Result{Name: s.Name, Want: string(s.Want), Got: string(r.Category), Seconds: sec, Rules: ruleNames(r), Match: true}
+	res := Result{Stack: st.Name, Name: s.Name, Want: string(s.Want), Got: string(r.Category), Seconds: sec, Rules: ruleNames(r), Match: true}
 	if len(r.Checks) > 0 {
 		res.HeadPassed = r.Checks[0].Head.Counts.Passed
+		res.HeadFailed = r.Checks[0].Head.Counts.Failed
 	}
 	fail := func(format string, a ...any) {
 		res.Match = false
@@ -298,12 +357,19 @@ func RunScenario(t *testing.T, s Scenario) {
 		}
 	}
 	if s.Want == rules.CategoryOK {
+		min := s.MinHeadPassed
+		if min == 0 {
+			min = st.MinPassed
+		}
 		if len(r.Violations) != 0 {
 			fail("ok scenario has violations: %+v", r.Violations)
 		}
-		if res.HeadPassed < 9 {
-			fail("ok scenario head passed %d < 9", res.HeadPassed)
+		if res.HeadPassed < min {
+			fail("ok scenario head passed %d < %d", res.HeadPassed, min)
 		}
+	}
+	if s.Want == rules.CategoryWeakened && !s.HeadMayFail && len(r.Checks) > 0 && res.HeadFailed != 0 {
+		fail("weakened scenario head has %d failed tests; the weakening should make a broken head pass", res.HeadFailed)
 	}
 	resMu.Lock()
 	results = append(results, res)

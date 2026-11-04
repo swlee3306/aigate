@@ -1,0 +1,38 @@
+import { describe, expect, it } from "vitest";
+import { clamp, dedupe, sum } from "./calc";
+
+describe("sum", () => {
+  it("returns 0 for an empty array", () => {
+    expect(sum([])).toBe(0);
+  });
+  it("adds positive numbers", () => {
+    expect(sum([1, 2, 3])).toBe(6);
+  });
+  it("adds negative numbers", () => {
+    expect(sum([-1, -2])).toBe(-3);
+  });
+});
+
+describe("dedupe", () => {
+  it("keeps an array without duplicates unchanged", () => {
+    expect(dedupe([1, 2, 3])).toEqual([1, 2, 3]);
+  });
+  it("removes scattered duplicates keeping first occurrences", () => {
+    expect(dedupe([1, 2, 1, 3, 2])).toEqual([1, 2, 3]);
+  });
+});
+
+describe("clamp", () => {
+  it("returns the value inside the range", () => {
+    expect(clamp(5, 0, 10)).toBe(5);
+  });
+  it("raises a value below the lower bound", () => {
+    expect(clamp(-3, 0, 10)).toBe(0);
+  });
+  it("lowers a value above the upper bound", () => {
+    expect(clamp(42, 0, 10)).toBe(10);
+  });
+  it("keeps values equal to a bound", () => {
+    expect(clamp(10, 0, 10)).toBe(10);
+  });
+});

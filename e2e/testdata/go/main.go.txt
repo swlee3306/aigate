@@ -1,0 +1,12 @@
+// Command toy prints a sum so the module has a main package no test imports.
+package main
+
+import (
+	"fmt"
+
+	"toy/calc"
+)
+
+func main() {
+	fmt.Println(calc.Sum([]int{1, 2, 3}))
+}
