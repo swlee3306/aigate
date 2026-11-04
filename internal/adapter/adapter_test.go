@@ -225,3 +225,25 @@ func TestParseJUnitSuiteLevelFailureIsError(t *testing.T) {
 		t.Errorf("jest fails: %v", j.Results)
 	}
 }
+
+func TestDuplicateIDSeverity(t *testing.T) {
+	// error > failed > skipped > passed: a duplicate title passed+skipped must
+	// not hide the skip.
+	cases := []struct {
+		a, b, want rules.Status
+	}{
+		{rules.Passed, rules.Skipped, rules.Skipped},
+		{rules.Skipped, rules.Passed, rules.Skipped},
+		{rules.Skipped, rules.Failed, rules.Failed},
+		{rules.Failed, rules.Error, rules.Error},
+		{rules.Error, rules.Passed, rules.Error},
+	}
+	for _, c := range cases {
+		r := rules.Results{}
+		put(r, "x", c.a)
+		put(r, "x", c.b)
+		if r["x"] != c.want {
+			t.Errorf("%s then %s: got %s want %s", c.a, c.b, r["x"], c.want)
+		}
+	}
+}

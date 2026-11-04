@@ -23,14 +23,15 @@ func NormalizeID(s string) string {
 	return strings.Join(strings.Fields(norm.NFC.String(s)), " ")
 }
 
-// severity orders statuses for duplicate ids: the worst one wins.
+// severity orders statuses for duplicate ids, error > failed > skipped >
+// passed: the worst one wins, so a passing duplicate cannot hide a skip.
 func severity(s rules.Status) int {
 	switch s {
 	case rules.Error:
 		return 3
 	case rules.Failed:
 		return 2
-	case rules.Passed:
+	case rules.Skipped:
 		return 1
 	}
 	return 0
