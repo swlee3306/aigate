@@ -148,7 +148,14 @@ func scenarios() []Scenario {
 			Mutate: func(w *Workspace) {
 				w.Replace(src, "구간에 데이터가 없으면 None(결측)이며 0이 아니다.", "구간에 데이터가 없으면 None(결측)이며 0이 아니다. 경계는 시작 포함, 끝 제외.")
 			}},
-		Scenario{Name: "ok/pytest_ini_addopts_narrowing", Want: rules.CategoryOK,
+		// User decision 2026-11-04 (option 1): adding a line to the existing
+		// protected pytest.ini now needs approval. The name keeps its first
+		// ("ok/") prefix; the first expectation is kept as FirstWant.
+		amend(rules.CategoryWeakened, []string{"protected_modified"}, "user decision 2026-11-04 (option 1): any hunk in an existing protected file, a pure added line included, needs approval; the accepted cost of closing the added-lines bypasses (approved sibling: ok/pytest_ini_addopts_narrowing_approved)",
+			Scenario{Name: "ok/pytest_ini_addopts_narrowing", Want: rules.CategoryOK,
+				Mutate: func(w *Workspace) { w.Write("pytest.ini", w.Read("pytest.ini")+"addopts = -k boundary\n") }}),
+		Scenario{Name: "ok/pytest_ini_addopts_narrowing_approved", Want: rules.CategoryOK, Approve: true,
+			Note:   "same change as ok/pytest_ini_addopts_narrowing; ok once the human grants the exact protected-diff hash",
 			Mutate: func(w *Workspace) { w.Write("pytest.ini", w.Read("pytest.ini")+"addopts = -k boundary\n") }},
 		Scenario{Name: "ok/requirement_change_approved", Want: rules.CategoryOK, Approve: true,
 			Mutate: mutant("M2_no_dedupe", func(w *Workspace) {

@@ -264,8 +264,9 @@ type Scenario struct {
 	KnownGap    bool
 	CorrectWant rules.Category
 	// DecisionPending marks a KnownGap that is NOT inherent: a rule could
-	// catch it, but doing so changes user-confirmed behaviour (spec 3.1
-	// "new lines in protected files are allowed"), so it awaits a decision.
+	// catch it, but doing so changes user-confirmed behaviour, so it awaits a
+	// decision. Since the user decision of 2026-11-04 (option 1) no scenario
+	// is decision-pending; the former ones are caught (see caught()).
 	DecisionPending bool
 	// FirstWant records the original expectation literal when it was amended
 	// after the first run (both non-ok; reason in Note). Disclosed in 04.

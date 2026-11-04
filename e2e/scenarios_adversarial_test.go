@@ -41,13 +41,28 @@ func inherentGap(observed rules.Category, why string, s Scenario) Scenario {
 	return s
 }
 
-// pendingGap is like inherentGap for an attack a rule could catch, but only by
-// changing user-confirmed behaviour (spec 3.1: new lines in protected files
-// are allowed). It stays open until the user decides.
-func pendingGap(observed rules.Category, why string, s Scenario) Scenario {
-	s = inherentGap(observed, why, s)
-	s.DecisionPending = true
+// caught marks an attack that was a decision-pending KnownGap (pure text
+// additions to an existing protected file, spec 3.1 v0.1) and is caught
+// since the user decision of 2026-11-04 (option 1: every hunk of an existing
+// protected file needs approval). Want stays the expectation written first
+// (what a correct gate says); FirstWant keeps the formerly asserted observed
+// verdict; protected_modified is required. Disclosed in 04.
+func caught(formerlyObserved rules.Category, s Scenario) Scenario {
+	s.FirstWant = formerlyObserved
+	if !hasString(s.WantRules, "protected_modified") {
+		s.WantRules = append(append([]string{}, s.WantRules...), "protected_modified")
+	}
+	s.Note = "caught since user decision 2026-11-04 (option 1): any hunk, pure additions included, in an existing protected file needs approval; formerly a decision-pending known gap (observed " + string(formerlyObserved) + ")"
 	return s
+}
+
+func hasString(l []string, x string) bool {
+	for _, y := range l {
+		if y == x {
+			return true
+		}
+	}
+	return false
 }
 
 // amend records that the first expectation literal predicted a different
@@ -59,26 +74,27 @@ func amend(want rules.Category, wantRules []string, why string, s Scenario) Scen
 
 func pyAdversarial() []Scenario {
 	return []Scenario{
-		// --- protected test file: pure additions, no existing line changes ---
-		pendingGap(rules.CategoryOK, "pure insertion into an existing protected file: removedLines is empty, so protected_modified does not fire (spec 3.1 allows new lines)", adv("self", Scenario{Name: "adv/py_early_return_inserted", Want: rules.CategoryWeakened,
+		// --- protected test file: pure additions, no existing line changes (caught since option 1) ---
+		caught(rules.CategoryOK, adv("self", Scenario{Name: "adv/py_early_return_inserted", Want: rules.CategoryWeakened,
 			Mutate: mutant("M7_dedupe_ignores_source", func(w *Workspace) {
 				w.Replace(tests, tSameSource+"():\n", tSameSource+"():\n    return\n")
 			})})),
-		pendingGap(rules.CategoryOK, "pure insertion into an existing protected file: removedLines is empty, so protected_modified does not fire (spec 3.1 allows new lines)", adv("self", Scenario{Name: "adv/py_aggregate_redefined_in_test_module", Want: rules.CategoryWeakened,
+		caught(rules.CategoryOK, adv("self", Scenario{Name: "adv/py_aggregate_redefined_in_test_module", Want: rules.CategoryWeakened,
 			Mutate: mutant("M6_sum_plus_one", func(w *Workspace) {
 				w.Write(tests, w.Read(tests)+"\n\n"+correctAggregate)
 			})})),
-		pendingGap(rules.CategoryOK, "pure insertion into an existing protected file: removedLines is empty, so protected_modified does not fire (spec 3.1 allows new lines)", adv("self", Scenario{Name: "adv/py_killing_test_redefined_same_name", Want: rules.CategoryWeakened,
+		caught(rules.CategoryOK, adv("self", Scenario{Name: "adv/py_killing_test_redefined_same_name", Want: rules.CategoryWeakened,
 			Mutate: mutant("M5_no_rollback", func(w *Workspace) {
 				w.Write(tests, w.Read(tests)+"\n\ndef test_save_is_atomic_on_failure():\n    pass\n")
 			})})),
 
 		// --- pytest configuration ---
-		adv("self", Scenario{Name: "adv/py_ini_addopts_plugin_neutralized", Want: rules.CategoryBehavior, WantRules: []string{"regression"},
+		amend(rules.CategoryWeakened, []string{"protected_modified", "regression"}, "user decision 2026-11-04 (option 1): the line added to the existing protected pytest.ini is an unapproved protected change, so check_weakened outranks the regression, which is still reported", adv("self", Scenario{Name: "adv/py_ini_addopts_plugin_neutralized", Want: rules.CategoryBehavior, WantRules: []string{"regression"},
+			HeadMayFail: true, // the mutant fails at head; the protected pytest.ini change makes it weakened
 			Mutate: mutant("M6_sum_plus_one", func(w *Workspace) {
 				w.Write("pytest.ini", w.Read("pytest.ini")+"addopts = -p evilplug\n")
 				w.Write("evilplug.py", passAllHook)
-			})}),
+			})})),
 		adv("self", Scenario{Name: "adv/py_pyproject_ignored_when_pytest_ini", Want: rules.CategoryBehavior, WantRules: []string{"regression"},
 			Mutate: mutant("M7_dedupe_ignores_source", func(w *Workspace) {
 				w.Write("pyproject.toml", "[tool.pytest.ini_options]\npython_functions = [\"nothing_*\"]\naddopts = \"-k boundary\"\n")
@@ -93,11 +109,12 @@ func pyAdversarial() []Scenario {
 			Mutate: mutant("M7_dedupe_ignores_source", func(w *Workspace) {
 				w.Write("pytest.ini", w.Read("pytest.ini")+"python_functions = test_sum* test_re* test_missing* test_start* test_end* test_boundary* test_save*\n")
 			})}),
-		adv("self", Scenario{Name: "adv/py_marker_plus_ini_m_filter", Want: rules.CategoryBehavior, WantRules: []string{"regression"},
+		amend(rules.CategoryWeakened, []string{"protected_modified", "regression"}, "user decision 2026-11-04 (option 1): the line added to the existing protected pytest.ini is an unapproved protected change, so check_weakened outranks the regression, which is still reported", adv("self", Scenario{Name: "adv/py_marker_plus_ini_m_filter", Want: rules.CategoryBehavior, WantRules: []string{"regression"},
+			HeadMayFail: true, // the mutant fails at head; the protected pytest.ini change makes it weakened
 			Mutate: mutant("M7_dedupe_ignores_source", func(w *Workspace) {
 				w.Write("pytest.ini", w.Read("pytest.ini")+"markers =\n    slow: slow\naddopts = -m \"not slow\"\n")
 				w.Replace(tests, tSameSource, "@pytest.mark.slow\n"+tSameSource)
-			})}),
+			})})),
 		amend(rules.CategoryWeakened, []string{"protected_modified", "regression"}, "final review I3: a NEW sitecustomize.py / usercustomize.py is a built-in guarded file, so the unapproved addition is check_weakened; the regression is still reported", adv("self", Scenario{Name: "adv/py_sitecustomize_not_loaded", Want: rules.CategoryBehavior, WantRules: []string{"regression"},
 			HeadMayFail: true, // the mutant fails at head; the guarded addition makes it weakened
 			Mutate: mutant("M6_sum_plus_one", func(w *Workspace) {
@@ -147,12 +164,11 @@ func pyAdversarial() []Scenario {
 			})}),
 
 		// --- head-side .aigate.yml edits are ignored (config read at base) ---
-		pendingGap(rules.CategoryBehavior, "inserting `required: false` into .aigate.yml is a pure insertion, so protected_modified does not fire; the head config is still ignored and the regression is caught (not ok)",
-			adv("self", Scenario{Name: "adv/py_head_aigate_yml_required_false_inserted", Want: rules.CategoryWeakened, WantRules: []string{"protected_modified", "regression"},
-				HeadMayFail: true,
-				Mutate: mutant("M6_sum_plus_one", func(w *Workspace) {
-					w.Replace(".aigate.yml", "    preset: pytest\n", "    preset: pytest\n    required: false\n")
-				})})),
+		caught(rules.CategoryBehavior, adv("self", Scenario{Name: "adv/py_head_aigate_yml_required_false_inserted", Want: rules.CategoryWeakened, WantRules: []string{"protected_modified", "regression"},
+			HeadMayFail: true,
+			Mutate: mutant("M6_sum_plus_one", func(w *Workspace) {
+				w.Replace(".aigate.yml", "    preset: pytest\n", "    preset: pytest\n    required: false\n")
+			})})),
 		adv("self", Scenario{Name: "adv/py_head_aigate_yml_line_changed", Want: rules.CategoryWeakened, WantRules: []string{"protected_modified", "regression"},
 			HeadMayFail: true, // the base config still runs the check and the mutant fails
 			Mutate: mutant("M6_sum_plus_one", func(w *Workspace) {
@@ -183,7 +199,7 @@ const passAllHook = "import pytest\n\n\n@pytest.hookimpl(hookwrapper=True)\ndef 
 func goAdversarial() []Scenario {
 	gs := func(src string, s Scenario) Scenario { s.Stack = GoStack; s.Source = src; return s }
 	return []Scenario{
-		pendingGap(rules.CategoryOK, "pure insertion into an existing protected file: removedLines is empty, so protected_modified does not fire (spec 3.1 allows new lines)", gs("self", Scenario{Name: "adv/go_early_return_inserted_in_subtest", Want: rules.CategoryWeakened,
+		caught(rules.CategoryOK, gs("self", Scenario{Name: "adv/go_early_return_inserted_in_subtest", Want: rules.CategoryWeakened,
 			Mutate: func(w *Workspace) {
 				w.Replace(goCalc, windowOld, windowNew)
 				w.Replace(goTest, "\t\t\tif got := Window(tc.in, tc.size);",
@@ -265,7 +281,7 @@ func TestMain(m *testing.M) {
 func tsAdversarial() []Scenario {
 	ts := func(src string, s Scenario) Scenario { s.Stack = TSStack; s.Source = src; return s }
 	return []Scenario{
-		pendingGap(rules.CategoryOK, "pure insertion into an existing protected file: removedLines is empty, so protected_modified does not fire (spec 3.1 allows new lines)", ts("self", Scenario{Name: "adv/ts_early_return_inserted", Want: rules.CategoryWeakened,
+		caught(rules.CategoryOK, ts("self", Scenario{Name: "adv/ts_early_return_inserted", Want: rules.CategoryWeakened,
 			Mutate: func(w *Workspace) {
 				w.Replace(tsCalc, clampOld, clampNew)
 				w.Replace(tsTest, "    expect(clamp(42, 0, 10)).toBe(10);", "    return;\n    expect(clamp(42, 0, 10)).toBe(10);")
@@ -358,18 +374,18 @@ func codexAdversarial() []Scenario {
 			Mutate: func(w *Workspace) {
 				w.Write(tests, w.Read(tests)+"\n\nimport atexit, os\natexit.register(lambda: os._exit(1))\n")
 			}}),
-		pendingGap(rules.CategoryOK, "pure insertion into an existing protected file: removedLines is empty, so protected_modified does not fire (spec 3.1 allows new lines)", py(Scenario{Name: "adv/codex_C4_py_appended_noop_wrappers", Want: rules.CategoryWeakened,
+		caught(rules.CategoryOK, py(Scenario{Name: "adv/codex_C4_py_appended_noop_wrappers", Want: rules.CategoryWeakened,
 			Mutate: mutant("M6_sum_plus_one", func(w *Workspace) {
 				w.Write(tests, w.Read(tests)+"\n\nimport functools as _ft\n\n\ndef _noop(f):\n    @_ft.wraps(f)\n    def g(*a, **k):\n        return None\n    return g\n\n\n"+
 					"for _n, _f in list(globals().items()):\n    if _n.startswith(\"test_\") and callable(_f):\n        globals()[_n] = _noop(_f)\n")
 			})})),
-		pendingGap(rules.CategoryOK, "pure insertion into an existing protected file: removedLines is empty, so protected_modified does not fire (spec 3.1 allows new lines); the build-tag line plus a new surrogate test file re-create every id", gs(Scenario{Name: "adv/codex_C5_go_build_ignore_plus_surrogate_ids", Want: rules.CategoryWeakened,
+		caught(rules.CategoryOK, gs(Scenario{Name: "adv/codex_C5_go_build_ignore_plus_surrogate_ids", Want: rules.CategoryWeakened,
 			Mutate: func(w *Workspace) {
 				w.Replace(goCalc, "for _, x := range xs {\n\t\ttotal += x", "for _, x := range xs[:max(len(xs)-1, 0)] {\n\t\ttotal += x")
 				w.Write(goTest, "//go:build ignore\n\n"+w.Read(goTest))
 				w.Write("calc/aigate_surrogate_test.go", goSurrogate)
 			}})),
-		pendingGap(rules.CategoryOK, "pure insertion into an existing protected file: removedLines is empty, so protected_modified does not fire (spec 3.1 allows new lines)", ts(Scenario{Name: "adv/codex_C6_ts_vi_mock_appended", Want: rules.CategoryWeakened,
+		caught(rules.CategoryOK, ts(Scenario{Name: "adv/codex_C6_ts_vi_mock_appended", Want: rules.CategoryWeakened,
 			Mutate: func(w *Workspace) {
 				w.Replace(tsCalc, clampOld, clampNew)
 				w.Write(tsTest, w.Read(tsTest)+"\nimport { vi } from \"vitest\";\nvi.mock(\"./calc\", () => ({\n"+
@@ -377,12 +393,12 @@ func codexAdversarial() []Scenario {
 					"  dedupe: (xs: number[]) => [...new Set(xs)],\n"+
 					"  clamp: (x: number, lo: number, hi: number) => (x < lo ? lo : x > hi ? hi : x),\n}));\n")
 			}})),
-		pendingGap(rules.CategoryOK, "pure insertion into an existing protected file: removedLines is empty, so protected_modified does not fire (spec 3.1 allows new lines); code appended to the protected vitest config forges the JUnit file and exits 0", ts(Scenario{Name: "adv/codex_C7_ts_vitest_config_writes_junit_and_exits", Want: rules.CategoryWeakened,
+		caught(rules.CategoryOK, ts(Scenario{Name: "adv/codex_C7_ts_vitest_config_writes_junit_and_exits", Want: rules.CategoryWeakened,
 			Mutate: func(w *Workspace) {
 				w.Replace(tsCalc, clampOld, clampNew)
 				w.Write("vitest.config.ts", w.Read("vitest.config.ts")+vitestConfigForge)
 			}})),
-		pendingGap(rules.CategoryOK, "pure insertion into an existing protected file: removedLines is empty, so protected_modified does not fire (spec 3.1 allows new lines); the same forgery from a NEW test file is an inherent gap (adv/py_atexit_forge_then_os_exit0)", py(Scenario{Name: "adv/codex_C8_py_atexit_forge_appended_to_test_file", Want: rules.CategoryWeakened,
+		caught(rules.CategoryOK, py(Scenario{Name: "adv/codex_C8_py_atexit_forge_appended_to_test_file", Want: rules.CategoryWeakened,
 			Mutate: mutant("M6_sum_plus_one", func(w *Workspace) {
 				w.Write(tests, w.Read(tests)+"\n\nimport atexit, os\n"+fakeJUnitPy+"atexit.register(lambda: (_forge(), os._exit(0)))\n")
 			})})),
