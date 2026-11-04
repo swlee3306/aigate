@@ -37,7 +37,8 @@
 | ok/new_test_added | ok | ok | - | 10 | 0.59 |
 | ok/refactor_rename_local | ok | ok | - | 9 | 0.58 |
 | ok/docstring_only | ok | ok | - | 9 | 0.60 |
-| ok/pytest_ini_addopts_narrowing | ok | ok | - | 9 | 0.59 |
+| ok/pytest_ini_addopts_narrowing | ok → **check_weakened** (v0.3 기대 변경, FirstWant ok) | ok → check_weakened (v0.3) | - → protected_modified | 9 | 0.59 |
+| ok/pytest_ini_addopts_narrowing_approved (v0.3 신규) | ok | ok | - | (아래 v0.3 절) | (아래 v0.3 절) |
 | ok/requirement_change_approved | ok | ok | - | 9 | 1.16 |
 | weakened/requirement_change_wrong_hash | check_weakened | check_weakened | protected_modified | 9 | 1.17 |
 
@@ -153,14 +154,14 @@ Go·TS 최초 실행에서 54개 중 4개가 기대와 달랐다. 기대는 수�
 
 | 시나리오 | 출처 | 스택 | 올바른 판정(먼저 작성) | 수정 전 실제 | 최종 실제 | 처분 | 메모 |
 |---|---|---|---|---|---|---|---|
-| py_early_return_inserted | self | py | check_weakened | ok | ok | 결정 대기(규칙으로 잡을 수 있으나 3.1 변경 필요) | pure insertion into an existing protected file: removedLines is empty, so protected_modified does not fire (spec 3.1 allows new lines) |
-| py_aggregate_redefined_in_test_module | self | py | check_weakened | ok | ok | 결정 대기(규칙으로 잡을 수 있으나 3.1 변경 필요) | pure insertion into an existing protected file: removedLines is empty, so protected_modified does not fire (spec 3.1 allows new lines) |
-| py_killing_test_redefined_same_name | self | py | check_weakened | ok | ok | 결정 대기(규칙으로 잡을 수 있으나 3.1 변경 필요) | pure insertion into an existing protected file: removedLines is empty, so protected_modified does not fire (spec 3.1 allows new lines) |
-| py_ini_addopts_plugin_neutralized | self | py | behavior_failure | behavior_failure | behavior_failure | 탐지(기존 규칙) |  |
+| py_early_return_inserted | self | py | check_weakened | ok | ok → **check_weakened** (v0.3) | 결정 대기(규칙으로 잡을 수 있으나 3.1 변경 필요) → **v0.3 탐지(사용자 결정 옵션 1, `protected_modified`)** | pure insertion into an existing protected file: removedLines is empty, so protected_modified does not fire (spec 3.1 allows new lines) |
+| py_aggregate_redefined_in_test_module | self | py | check_weakened | ok | ok → **check_weakened** (v0.3) | 결정 대기(규칙으로 잡을 수 있으나 3.1 변경 필요) → **v0.3 탐지(사용자 결정 옵션 1, `protected_modified`)** | pure insertion into an existing protected file: removedLines is empty, so protected_modified does not fire (spec 3.1 allows new lines) |
+| py_killing_test_redefined_same_name | self | py | check_weakened | ok | ok → **check_weakened** (v0.3) | 결정 대기(규칙으로 잡을 수 있으나 3.1 변경 필요) → **v0.3 탐지(사용자 결정 옵션 1, `protected_modified`)** | pure insertion into an existing protected file: removedLines is empty, so protected_modified does not fire (spec 3.1 allows new lines) |
+| py_ini_addopts_plugin_neutralized | self | py | behavior_failure → check_weakened (v0.3 정정, FirstWant behavior_failure) | behavior_failure | behavior_failure → **check_weakened** (v0.3) | 탐지(기존 규칙) → v0.3: 보호된 기존 `pytest.ini`에 줄 추가 = `protected_modified`(회귀도 계속 보고) |  |
 | py_pyproject_ignored_when_pytest_ini | self | py | behavior_failure | behavior_failure | behavior_failure | 탐지(기존 규칙) |  |
 | py_setup_cfg_tox_ini_ignored | self | py | behavior_failure → **check_weakened**(최종 리뷰 I3로 정정, FirstWant=behavior_failure) | behavior_failure | check_weakened | 탐지 + 최종 리뷰 I3 | 새 `setup.cfg`·`tox.ini`가 내장 보호 경로가 되어 승인 없는 추가 = check_weakened, 회귀도 계속 보고 |
 | py_ini_python_functions_narrowing | self | py | check_weakened | check_weakened | check_weakened | 탐지(기존 규칙) |  |
-| py_marker_plus_ini_m_filter | self | py | behavior_failure | behavior_failure | behavior_failure | 탐지(기존 규칙) |  |
+| py_marker_plus_ini_m_filter | self | py | behavior_failure → check_weakened (v0.3 정정, FirstWant behavior_failure) | behavior_failure | behavior_failure → **check_weakened** (v0.3) | 탐지(기존 규칙) → v0.3: 보호된 기존 `pytest.ini`에 줄 추가 = `protected_modified`(회귀도 계속 보고) |  |
 | py_sitecustomize_not_loaded | self | py | behavior_failure → **check_weakened**(최종 리뷰 I3로 정정, FirstWant=behavior_failure) | behavior_failure | check_weakened | 탐지 + 최종 리뷰 I3 | 새 `sitecustomize.py`·`usercustomize.py`가 내장 보호 경로, 회귀도 계속 보고 |
 | py_unprotected_runner_files | self | py | behavior_failure | behavior_failure | behavior_failure | 탐지(기존 규칙) |  |
 | py_root_pytest_module_shadows_runner | self | py | verification_incomplete → behavior_failure(정정) | ok | behavior_failure | 수정: F6 pytest -P | after the -P fix the fake pytest.py is not imported; the real run sees the mutant (regression) |
@@ -170,12 +171,12 @@ Go·TS 최초 실행에서 54개 중 4개가 기대와 달랐다. 기대는 수�
 | py_runner_crash_after_junit | self | py | verification_incomplete | ok | verification_incomplete | 수정: F5 runner_error |  |
 | py_src_detects_pytest | self | py | behavior_failure | ok | ok | 알려진 한계(원리상) | src behaves correctly only when pytest is imported; the gate only observes behaviour under test |
 | py_rename_file_and_drop_killing_test | self | py | check_weakened | check_weakened | check_weakened | 탐지(기존 규칙) |  |
-| py_head_aigate_yml_required_false_inserted | self | py | check_weakened | behavior_failure | behavior_failure | 결정 대기(규칙으로 잡을 수 있으나 3.1 변경 필요) | inserting `required: false` into .aigate.yml is a pure insertion, so protected_modified does not fire; the head config is still ignored and the regression is caught (not ok) |
+| py_head_aigate_yml_required_false_inserted | self | py | check_weakened | behavior_failure | behavior_failure → **check_weakened** (v0.3) | 결정 대기(규칙으로 잡을 수 있으나 3.1 변경 필요) → **v0.3 탐지(사용자 결정 옵션 1, `protected_modified`)** | inserting `required: false` into .aigate.yml is a pure insertion, so protected_modified does not fire; the head config is still ignored and the regression is caught (not ok) |
 | py_head_aigate_yml_line_changed | self | py | check_weakened | check_weakened | check_weakened | 탐지(기존 규칙) |  |
 | py_root_conftest_deselects | self | py | check_weakened | check_weakened | check_weakened | 탐지(기존 규칙) |  |
 | py_module_shadow_in_tests_dir | self | py | behavior_failure | ok | ok | 알려진 한계(원리상) | a new tests/ingest.py shadows src/ingest.py (pytest prepends the test dir to sys.path after pythonpath); mitigation: approval_on_add for non-test modules under tests/ |
 | py_atexit_forge_then_os_exit0 | self | py | behavior_failure | ok | ok | 알려진 한계(원리상) | new test file forges the JUnit file at exit and also forces rc 0 with os._exit(0); in-process forgery, nothing outside the run can tell |
-| go_early_return_inserted_in_subtest | self | go | check_weakened | ok | ok | 결정 대기(규칙으로 잡을 수 있으나 3.1 변경 필요) | pure insertion into an existing protected file: removedLines is empty, so protected_modified does not fire (spec 3.1 allows new lines) |
+| go_early_return_inserted_in_subtest | self | go | check_weakened | ok | ok → **check_weakened** (v0.3) | 결정 대기(규칙으로 잡을 수 있으나 3.1 변경 필요) → **v0.3 탐지(사용자 결정 옵션 1, `protected_modified`)** | pure insertion into an existing protected file: removedLines is empty, so protected_modified does not fire (spec 3.1 allows new lines) |
 | go_build_ignore_tag_on_test_file | self | go | check_weakened → verification_incomplete(정정) | verification_incomplete | verification_incomplete | 탐지(기존 규칙) | all tests vanished: 0 results is verification_incomplete by spec 3.3 (no_tests_ran outranks test_missing) |
 | go_build_ignore_tag_with_smoke_test | self | go | check_weakened | check_weakened | check_weakened | 탐지(기존 규칙) |  |
 | go_testmain_exit0_with_smoke_package | self | go | check_weakened | check_weakened | check_weakened | 탐지(기존 규칙) |  |
@@ -184,7 +185,7 @@ Go·TS 최초 실행에서 54개 중 4개가 기대와 달랐다. 기대는 수�
 | go_testmain_rewrites_test2json_stream | self | go | behavior_failure | ok | ok | 알려진 한계(원리상) | a new TestMain rewrites the test2json stream and exits 0; nothing outside the process can tell |
 | go_src_detects_testing | self | go | behavior_failure | ok | ok | 알려진 한계(원리상) | src uses testing.Testing() to behave correctly only under go test |
 | go_broken_main_hidden_by_build_tag | self | go | check_weakened | ok | ok | 알려진 한계(원리상) | exit-code build check has no per-target ids; hiding a package is indistinguishable from deleting an untested package (CorrectWant debatable) |
-| ts_early_return_inserted | self | ts | check_weakened | ok | ok | 결정 대기(규칙으로 잡을 수 있으나 3.1 변경 필요) | pure insertion into an existing protected file: removedLines is empty, so protected_modified does not fire (spec 3.1 allows new lines) |
+| ts_early_return_inserted | self | ts | check_weakened | ok | ok → **check_weakened** (v0.3) | 결정 대기(규칙으로 잡을 수 있으나 3.1 변경 필요) → **v0.3 탐지(사용자 결정 옵션 1, `protected_modified`)** | pure insertion into an existing protected file: removedLines is empty, so protected_modified does not fire (spec 3.1 allows new lines) |
 | ts_it_only_in_new_file | self | ts | behavior_failure | behavior_failure | behavior_failure | 탐지(기존 규칙) |  |
 | ts_it_only_line_added_to_test_file | self | ts | check_weakened | check_weakened | check_weakened | 탐지(기존 규칙) |  |
 | ts_vitest_config_test_name_pattern | self | ts | check_weakened | check_weakened | check_weakened | 탐지(기존 규칙) |  |
@@ -196,11 +197,11 @@ Go·TS 최초 실행에서 54개 중 4개가 기대와 달랐다. 기대는 수�
 | codex_C1_ts_src_detects_aigate_junit_env | codex | ts | behavior_failure | ok | ok | 알려진 한계(원리상) | src behaves correctly only when AIGATE_JUNIT is set; behaviour under test differs from production |
 | codex_C2_go_src_detects_test_binary_name | codex | go | behavior_failure | ok | ok | 알려진 한계(원리상) | src checks os.Args[0] for the .test suffix; behaviour under test differs from production |
 | codex_C3_py_atexit_exit1_appended | codex | py | verification_incomplete | 수정 후 첫 실행(같은 경로 S35가 수정 전 ok) | verification_incomplete | 수정: F5 runner_error |  |
-| codex_C4_py_appended_noop_wrappers | codex | py | check_weakened | ok | ok | 결정 대기(규칙으로 잡을 수 있으나 3.1 변경 필요) | pure insertion into an existing protected file: removedLines is empty, so protected_modified does not fire (spec 3.1 allows new lines) |
-| codex_C5_go_build_ignore_plus_surrogate_ids | codex | go | check_weakened | ok | ok | 결정 대기(규칙으로 잡을 수 있으나 3.1 변경 필요) | pure insertion into an existing protected file: removedLines is empty, so protected_modified does not fire (spec 3.1 allows new lines); the build-tag line plus a new surrogate test file re-create every id |
-| codex_C6_ts_vi_mock_appended | codex | ts | check_weakened | ok | ok | 결정 대기(규칙으로 잡을 수 있으나 3.1 변경 필요) | pure insertion into an existing protected file: removedLines is empty, so protected_modified does not fire (spec 3.1 allows new lines) |
-| codex_C7_ts_vitest_config_writes_junit_and_exits | codex | ts | check_weakened | ok | ok | 결정 대기(규칙으로 잡을 수 있으나 3.1 변경 필요) | pure insertion into an existing protected file: removedLines is empty, so protected_modified does not fire (spec 3.1 allows new lines); code appended to the protected vitest config forges the JUnit file and exits 0 |
-| codex_C8_py_atexit_forge_appended_to_test_file | codex | py | check_weakened | ok | ok | 결정 대기(규칙으로 잡을 수 있으나 3.1 변경 필요) | pure insertion into an existing protected file: removedLines is empty, so protected_modified does not fire (spec 3.1 allows new lines); the same forgery from a NEW test file is an inherent gap (adv/py_atexit_forge_then_os_exit0) |
+| codex_C4_py_appended_noop_wrappers | codex | py | check_weakened | ok | ok → **check_weakened** (v0.3) | 결정 대기(규칙으로 잡을 수 있으나 3.1 변경 필요) → **v0.3 탐지(사용자 결정 옵션 1, `protected_modified`)** | pure insertion into an existing protected file: removedLines is empty, so protected_modified does not fire (spec 3.1 allows new lines) |
+| codex_C5_go_build_ignore_plus_surrogate_ids | codex | go | check_weakened | ok | ok → **check_weakened** (v0.3) | 결정 대기(규칙으로 잡을 수 있으나 3.1 변경 필요) → **v0.3 탐지(사용자 결정 옵션 1, `protected_modified`)** | pure insertion into an existing protected file: removedLines is empty, so protected_modified does not fire (spec 3.1 allows new lines); the build-tag line plus a new surrogate test file re-create every id |
+| codex_C6_ts_vi_mock_appended | codex | ts | check_weakened | ok | ok → **check_weakened** (v0.3) | 결정 대기(규칙으로 잡을 수 있으나 3.1 변경 필요) → **v0.3 탐지(사용자 결정 옵션 1, `protected_modified`)** | pure insertion into an existing protected file: removedLines is empty, so protected_modified does not fire (spec 3.1 allows new lines) |
+| codex_C7_ts_vitest_config_writes_junit_and_exits | codex | ts | check_weakened | ok | ok → **check_weakened** (v0.3) | 결정 대기(규칙으로 잡을 수 있으나 3.1 변경 필요) → **v0.3 탐지(사용자 결정 옵션 1, `protected_modified`)** | pure insertion into an existing protected file: removedLines is empty, so protected_modified does not fire (spec 3.1 allows new lines); code appended to the protected vitest config forges the JUnit file and exits 0 |
+| codex_C8_py_atexit_forge_appended_to_test_file | codex | py | check_weakened | ok | ok → **check_weakened** (v0.3) | 결정 대기(규칙으로 잡을 수 있으나 3.1 변경 필요) → **v0.3 탐지(사용자 결정 옵션 1, `protected_modified`)** | pure insertion into an existing protected file: removedLines is empty, so protected_modified does not fire (spec 3.1 allows new lines); the same forgery from a NEW test file is an inherent gap (adv/py_atexit_forge_then_os_exit0) |
 | codex_C9_py_root_pytest_module | codex | py | behavior_failure | 수정 후 첫 실행(같은 경로 S11이 수정 전 ok) | behavior_failure | 수정: F6 pytest -P |  |
 | codex_C11_optional_unit_beside_required_build | codex | py | behavior_failure | ok | ok | 알려진 한계(원리상) | the BASE config (the user's choice) makes unit optional; non-required checks are advisory by design; mitigation: warn when no test check is required |
 | codex_C12_py_untested_input_broken | codex | py | behavior_failure | ok | ok | 알려진 한계(원리상) | the break is on an input no test exercises; a test-result gate cannot see untested behaviour (v2 mutation testing measures this) |
@@ -280,10 +281,60 @@ I4(검사 대상 코드에 전체 환경 전달)는 이번 범위가 아니며 �
 **정직한 판정**: 위 0건은 KnownGap 25개를 분모에서 뺀 값이다. KnownGap 중 24개는 실제로 깨졌거나 무력화된 변경이 `ok`로 통과한다(최종 리뷰 수정으로 바뀐 KnownGap은 없음). 그중 **14개는 v1 불변식 게이트가 원리상 못 보는 것**(실행 중 위조, 테스트 환경 감지, 모듈 가리기, 테스트 안 하는 입력, 비필수 검사)이고, **10개(+ok가 아닌 1개)는 규칙으로 막을 수 있는데 설계서 3.1 "보호 파일에 새 줄 추가는 허용"을 바꿔야 해서 결정 대기**다. 따라서 "지표 0건"은 형식상 충족이지만, 결정 대기 항목이 열려 있는 동안 "약화·불완전은 절대 ok가 아니다"라고 말할 수는 없다. 또 I4(환경 전달, 샌드박스 없음) 때문에 무인 사용은 아직 안 된다.
 
 ### 알려진 한계 (요약, 자세한 내용과 완화책은 설계서 4장·4.1)
-- 결정 대기: 기존 보호 파일에 줄만 추가하는 무력화(early return, 같은 이름 재정의, 대상 함수 재정의, no-op 래핑, `vi.mock`, build tag + 대리 테스트, 보호 설정 파일에 위조 코드, `.aigate.yml`에 `required: false`).
+- (v0.3에서 해소 — 아래 "사용자 결정 반영" 절) 결정 대기: 기존 보호 파일에 줄만 추가하는 무력화(early return, 같은 이름 재정의, 대상 함수 재정의, no-op 래핑, `vi.mock`, build tag + 대리 테스트, 보호 설정 파일에 위조 코드, `.aigate.yml`에 `required: false`).
 - 실행 중 위조: 새 일반 테스트 파일의 monkeypatch·`pytest_plugins` 훅·`atexit` 위조 + `os._exit(0)`, Go `TestMain`의 test2json 스트림 변조.
 - 테스트 환경 감지(`sys.modules`, `AIGATE_JUNIT`, `testing.Testing()`, `os.Args[0]`), 모듈 가리기(`src/calc.js`, `tests/ingest.py`), 테스트하지 않는 입력.
 - exit-code 검사의 단위(패키지를 build tag로 빼기), 비필수 검사(base 설정 선택).
 - `runner_error`(F5)는 테스트가 모두 통과해도 러너가 실패 코드로 끝나면(vitest unhandled error, 커버리지 임계 등) incomplete로 만든다. 새 오경보 원인일 수 있으며 오경보율 0/10은 그런 경우가 없는 장난감에서 잰 값이다.
 - 검사 대상 코드가 aigate와 같은 사용자·전체 환경 변수로 실행된다(I4): `~/.aigate`(승인·ledger)를 쓸 수 있고 토큰이 보인다. ledger 대조는 같은 사용자가 ledger 체인 전체를 다시 계산하면 우회된다(키 없음). 무인 사용 전 샌드박스(②) 필요.
 - ledger는 꼬리 절단·파일 비우기 미감지·키 없음. `npx --no-install`은 npx 캐시의 러너를 막지 못함.
+
+## 사용자 결정 반영 — 2차 수정 (2026-11-04, 설계서 v0.3)
+
+최종 보고 뒤 사용자가 두 가지를 결정했다(설계서 8장 [9]·[10]). 각 수정은 실패하는 테스트를 먼저 쓰고(RED) 고친 뒤 통과(GREEN)를 확인했다. RED/GREEN 기록과 커밋은 `.superpowers/sdd/03-PLAN-gate/final-fix2-report.md`.
+
+| 항목 | 변경 |
+|---|---|
+| 결정 1 (옵션 1) | base와 head에 모두 있는 보호 파일이 조금이라도 바뀌면(**줄 추가만 해도**) `protected_modified`. 새 파일은 `approval_on_add`·내장 보호 경로일 때만 승인 대상(8장 [6] 그대로) |
+| 결정 2 | `approve`는 출력 전에 보여 줄 diff와 모든 경로를 검사하고, 제어 문자(ESC, `\r`, NUL 등)·DEL·잘못된 UTF-8·C1·양방향 재배치 문자·경로 속 줄바꿈이 있으면 거부(64, 표준 출력 없음, 승인 없음, 위치는 `\xNN`/`U+XXXX`로만). 바이너리 보호 파일은 `binary file changed: <경로>, N bytes (base M bytes)` 한 줄. `run`의 Markdown은 같은 문자를 이스케이프 |
+| 작은 항목 | 내장 보호 경로에 `**/yarn.lock`, `**/pnpm-lock.yaml`, `**/go.work`, `**/go.work.sum`, `**/vendor/**`, `requirements/*.txt`, `**/requirements/*.txt` 추가. 라이브러리 `gate.Run`은 base를 못 정하면(후보 없음, merge-base == head) 조용히 초기 모드로 가지 않고 게이트 오류 |
+
+### 탐지로 바뀐 공격 (결정 대기 → 탐지, 첫 값은 FirstWant)
+| 시나리오 | 스택 | 올바른 판정(먼저 작성) | 이전 관찰(FirstWant) | v0.3 최종 |
+|---|---|---|---|---|
+| adv/py_early_return_inserted | py | check_weakened | ok | check_weakened |
+| adv/py_aggregate_redefined_in_test_module | py | check_weakened | ok | check_weakened |
+| adv/py_killing_test_redefined_same_name | py | check_weakened | ok | check_weakened |
+| adv/go_early_return_inserted_in_subtest | go | check_weakened | ok | check_weakened |
+| adv/ts_early_return_inserted | ts | check_weakened | ok | check_weakened |
+| adv/codex_C4_py_appended_noop_wrappers | py | check_weakened | ok | check_weakened |
+| adv/codex_C5_go_build_ignore_plus_surrogate_ids | go | check_weakened | ok | check_weakened |
+| adv/codex_C6_ts_vi_mock_appended | ts | check_weakened | ok | check_weakened |
+| adv/codex_C7_ts_vitest_config_writes_junit_and_exits | ts | check_weakened | ok | check_weakened |
+| adv/codex_C8_py_atexit_forge_appended_to_test_file | py | check_weakened | ok | check_weakened |
+| adv/py_head_aigate_yml_required_false_inserted (11번째, ok는 아니었음) | py | check_weakened | behavior_failure | check_weakened |
+
+모두 `KnownGap`·`DecisionPending` 표시를 없앴고 `protected_modified`를 요구한다. 첫 실행(수정 코드, 기대 변경 전)에서 위 11개가 정확히 `check_weakened`로 바뀌어 기대와 어긋났다(RED).
+
+### 기대값 변경 (첫 값 기록)
+- `ok/pytest_ini_addopts_narrowing`: FirstWant `ok` → `check_weakened`(`protected_modified`). 기존 보호 파일 `pytest.ini`에 한 줄 추가 = 승인 필요. 사용자가 받아들인 대가. 이름의 `ok/`는 기록을 위해 그대로 둔다.
+- `adv/py_ini_addopts_plugin_neutralized`, `adv/py_marker_plus_ini_m_filter`: FirstWant `behavior_failure` → `check_weakened`(`protected_modified` + `regression`). 둘 다 기존 `pytest.ini`에 줄을 더하는 공격이라 이제 보호 변경으로도 잡힌다(ok가 아닌 범주 사이 이동, 회귀는 여전히 보고, 머리에서 변이가 실패하므로 `HeadMayFail`).
+- 새 시나리오 `ok/pytest_ini_addopts_narrowing_approved`: 같은 변경에 사람이 실제 해시를 승인하면 `ok`.
+- 위 14개 외에 판정이 바뀐 시나리오는 없다. 여러 시나리오가 이미 ok가 아닌 판정에 `protected_modified`를 추가로 얻었지만(예: 기존 테스트 파일에 `it.only` 줄 추가) 범주는 그대로다.
+
+### 지표 (최종 전체 실행, 2026-11-04)
+전체 스위트 118개 기록(시나리오 실행 112 + `check`·자기 비교 기록 6), **118/118 기대와 일치**.
+
+| 지표 | 값 | 판정 |
+|---|---|---|
+| 불완전·무력화 시나리오(KnownGap 제외) 중 `ok` | **0 / 72** | 합격 |
+| (참고) ok가 아닌 모든 기대(KnownGap 제외) 중 `ok` | 0 / 88 | 기록 |
+| (참고) 오경보율: 기대가 `ok`인 시나리오 중 ok가 아닌 것 | 0 / 10 = 0% (새 ok 집합: `ok/pytest_ini_addopts_narrowing`이 빠지고 `_approved`가 들어감). 이전 ok 집합 기준으로 세면 1/10(그 1건은 결정 1로 의도된 승인 요구) | 기록 |
+| (참고) gate 실행 시간(base+head) | 평균 1.07초, 최대 5.40초(n=112; 최대는 5초 타임아웃 `incomplete/hang`). 스택별 평균 py 0.69 / go 1.89 / ts 1.41초 | 기록 |
+| (참고) `go test ./e2e -count=1` | 약 137초 | 기록 |
+
+**남은 KnownGap 14개**(모두 `ok`로 통과, 결정 대기 0): 실행 중 위조(`py_new_test_file_monkeypatches_src`, `py_pytest_plugins_in_new_test_file`, `py_atexit_forge_then_os_exit0`, `go_testmain_rewrites_test2json_stream`), 테스트 환경 감지(`py_src_detects_pytest`, `go_src_detects_testing`, `codex_C1_py/ts_src_detects_aigate_junit_env`, `codex_C2_go_src_detects_test_binary_name`), 모듈 가리기(`py_module_shadow_in_tests_dir`, `ts_js_file_shadows_ts_module`), exit-code 검사 단위(`go_broken_main_hidden_by_build_tag`), 비필수 검사(`codex_C11_optional_unit_beside_required_build`), 테스트하지 않는 입력(`codex_C12_py_untested_input_broken`). 모두 v1 불변식 게이트가 원리상 못 보는 것이다(설계서 4.1). 따라서 "0/72"는 이 14개를 뺀 값이며, I4(샌드박스 없음) 때문에 무인 사용은 여전히 안 된다.
+
+### 비용
+- 기존 보호 파일(테스트 파일, `pytest.ini`, `.aigate.yml`, lock 파일 등)을 고치는 정상 변경은 이제 매번 `aigate approve`가 필요하다. 기존 테스트 파일에 테스트를 더하는 것도 마찬가지다. 실무 규칙: **새 테스트는 새 파일에**(승인 불필요).
+- `approve`는 CRLF 줄 끝(`\r`)이나 제어 문자를 담은 텍스트 보호 파일이 diff에 있으면 거부한다(fail-closed). NUL이 있는 바이너리 fixture는 요약 한 줄로 보인다.
