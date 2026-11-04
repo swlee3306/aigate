@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"aigate/internal/rules"
+	"aigate/internal/textsafe"
 )
 
 type Counts struct {
@@ -86,8 +87,11 @@ func short(s string) string {
 	return s
 }
 
+// oneLine renders a value on one markdown line with every control, invalid
+// UTF-8 or bidi byte escaped (`\x1b`, `\xff`, `\u202e`), so a file name or
+// runner tail in a detail cannot drive the terminal `run` prints to.
 func oneLine(s string) string {
-	return strings.Join(strings.Fields(s), " ")
+	return textsafe.Escape(strings.Join(strings.Fields(s), " "))
 }
 
 func (r Report) Markdown() string {

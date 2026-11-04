@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"aigate/internal/rules"
 )
@@ -230,5 +231,24 @@ func TestLoadStrict(t *testing.T) {
 	}
 	if _, err := Load(filepath.Join(d, "nope.json")); err == nil {
 		t.Error("missing file accepted")
+	}
+}
+
+// Decision 2 (report side): the markdown printed by `run` escapes control
+// and bidi bytes in violation details (e.g. a protected file name or a
+// runner tail), so it cannot drive the terminal. Escaping is fine here:
+// nothing is approved from this text.
+func TestMarkdownEscapesControlBytes(t *testing.T) {
+	r := Report{Category: rules.CategoryWeakened, ExitCode: 3, Checks: []CheckResult{{ID: "u\x1b[2Jnit"}},
+		Violations: []rules.Violation{{Rule: "protected_modified", Category: rules.CategoryWeakened,
+			Detail: "기존 보호 파일 1개: tests/e\x1b[1A\x1b[2Kx.py, bad\xff, rlo\u202e, c1\u009b (승인 없음)"}}}
+	md := r.Markdown()
+	if strings.ContainsAny(md, "\x1b\u202e\u009b") || !utf8.ValidString(md) {
+		t.Fatalf("raw control bytes in markdown: %q", md)
+	}
+	for _, want := range []string{`tests/e\x1b[1A\x1b[2Kx.py`, `bad\xff`, `rlo\u202e`, `c1\u009b`, `u\x1b[2Jnit`, "기존 보호 파일"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("markdown lacks %q:\n%s", want, md)
+		}
 	}
 }
