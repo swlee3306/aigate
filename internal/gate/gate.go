@@ -74,7 +74,10 @@ func LedgerPath(home, repoID string) string {
 
 var baseCandidates = []string{"origin/HEAD", "origin/main", "origin/master", "main", "master"}
 
-// resolveBase returns the base SHA, or "" for initial mode.
+// resolveBase returns the base SHA. With base empty it uses the merge-base of
+// head with the first candidate ref; when there is none, or it equals head,
+// it is an error: initial mode is only ever entered explicitly
+// (Options.Initial).
 func resolveBase(repo, base, head string) (string, error) {
 	if base != "" {
 		return gitx.Resolve(repo, base)
@@ -89,11 +92,11 @@ func resolveBase(repo, base, head string) (string, error) {
 			continue
 		}
 		if mb == head {
-			return "", nil
+			return "", fmt.Errorf("no base given and the merge-base with %s is head %s itself: pass the base the task started from, or request initial mode explicitly", c, short(head))
 		}
 		return mb, nil
 	}
-	return "", nil
+	return "", errors.New("no base given and no base candidate (origin/HEAD, origin/main, origin/master, main, master) found: pass the base the task started from, or request initial mode explicitly")
 }
 
 func union(a, b []string) []string {
@@ -166,9 +169,6 @@ func Prepare(o Options) (Protected, error) {
 	base, err := resolveBase(top, o.Base, head)
 	if err != nil {
 		return Protected{}, err
-	}
-	if base == "" {
-		return Protected{}, errors.New("no base to compare against (initial mode has no protected diff)")
 	}
 	if base == head {
 		return Protected{}, selfCompare(base)
@@ -261,7 +261,7 @@ func Run(ctx context.Context, o Options) (report.Report, error) {
 	counts := map[string]any{}
 
 	switch {
-	case base == "":
+	case o.Initial:
 		r.Initial = true
 		err = runInitial(ctx, top, head, dirty != "", &r, counts)
 	default:

@@ -1089,3 +1089,35 @@ func TestNestedBuiltinGuardedFilesNeedApproval(t *testing.T) {
 		})
 	}
 }
+
+// Re-review minor: the library no longer enters initial mode on its own when
+// Base is empty and no base can be found (merge-base == head, or no
+// candidate). Only an explicit Options.Initial does; otherwise gate error,
+// no report, no ledger.
+func TestNoSilentInitialMode(t *testing.T) {
+	e := setup(t)
+	write(t, e.repo, ".aigate.yml", checkYAML(e.log, "", "unit"))
+	write(t, e.repo, "unit.flag", "")
+	head := commit(t, e.repo, "only") // on main: merge-base(main, HEAD) == HEAD
+	r, err := Run(context.Background(), e.opts(""))
+	if err == nil || r.Category != "" || r.Initial {
+		t.Fatalf("want gate error, got %v %+v", err, r)
+	}
+	if !strings.Contains(err.Error(), "initial") {
+		t.Errorf("error should point at explicit initial mode: %v", err)
+	}
+	git(t, e.repo, "branch", "-m", "main", "work") // no candidate ref at all
+	if _, err := Run(context.Background(), e.opts("")); err == nil {
+		t.Fatal("no base candidate: want gate error")
+	}
+	if n := len(lines(t, e.log)); n != 0 {
+		t.Fatalf("checks executed: %d", n)
+	}
+	if _, err := os.Stat(filepath.Join(e.repo, ".aigate", "reports", head[:10]+".json")); err == nil {
+		t.Fatal("report written")
+	}
+	id, _, _ := RepoID(e.repo)
+	if _, err := os.Stat(LedgerPath(e.home, id)); err == nil {
+		t.Fatal("ledger written")
+	}
+}
