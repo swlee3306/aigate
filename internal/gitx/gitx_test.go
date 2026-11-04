@@ -715,3 +715,43 @@ func TestWithWorktreeNotInsideRepoEvenIfTMPDIRIs(t *testing.T) {
 		t.Errorf("dir remains: %v", err)
 	}
 }
+
+// ITEM 2 (fix wave 3): a gitlink (mode 160000) has no blob to read; adding,
+// bumping or removing one under a protected path is a normal changed entry.
+func TestProtectedDiffGitlink(t *testing.T) {
+	r := newRepo(t)
+	write(t, r, "vendor/keep.txt", "k\n")
+	base := commit(t, r, "base")
+	sha1 := strings.Repeat("1", 40)
+	sha2 := strings.Repeat("2", 40)
+	git(t, r, "update-index", "--add", "--cacheinfo", "160000,"+sha1+",vendor/sub")
+	git(t, r, "commit", "-q", "-m", "add gitlink")
+	added := git(t, r, "rev-parse", "HEAD")
+	git(t, r, "update-index", "--cacheinfo", "160000,"+sha2+",vendor/sub")
+	git(t, r, "commit", "-q", "-m", "bump gitlink")
+	bumped := git(t, r, "rev-parse", "HEAD")
+	git(t, r, "update-index", "--force-remove", "vendor/sub")
+	git(t, r, "commit", "-q", "-m", "remove gitlink")
+	removed := git(t, r, "rev-parse", "HEAD")
+	for _, c := range []struct {
+		name, from, to, status string
+	}{{"add", base, added, "A"}, {"bump", added, bumped, "M"}, {"remove", bumped, removed, "D"}} {
+		t.Run(c.name, func(t *testing.T) {
+			d, err := ProtectedDiff(r, c.from, c.to, []string{"vendor/**"})
+			if err != nil {
+				t.Fatalf("gitlink %s: %v", c.name, err)
+			}
+			if len(d.Files) != 1 || d.Files[0].Path != "vendor/sub" || d.Files[0].Status != c.status ||
+				d.Files[0].Binary {
+				t.Fatalf("files=%+v", d.Files)
+			}
+			if !strings.Contains(d.Text, "Subproject commit") {
+				t.Fatalf("no Subproject line:\n%s", d.Text)
+			}
+			disp := d.DisplayText()
+			if strings.Contains(disp, "binary file changed") || !strings.Contains(disp, "Subproject commit") {
+				t.Fatalf("display:\n%s", disp)
+			}
+		})
+	}
+}

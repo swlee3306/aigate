@@ -461,3 +461,26 @@ func TestApproveCleanKoreanAndTabs(t *testing.T) {
 		t.Fatalf("after approval: %d %s", c, e)
 	}
 }
+
+// ITEM 2 (fix wave 3): a submodule (gitlink, mode 160000) added under the
+// built-in guarded vendor/** is a normal protected change: run says
+// check_weakened (not a gate error) and approve shows the Subproject line.
+func TestGitlinkUnderVendorIsApprovable(t *testing.T) {
+	repo, base := newRepo(t)
+	git(t, repo, "update-index", "--add", "--cacheinfo", "160000,"+strings.Repeat("3", 40)+",vendor/sub")
+	git(t, repo, "commit", "-q", "-m", "add submodule")
+	// an unpopulated submodule is an empty directory (else status says deleted)
+	if err := os.MkdirAll(filepath.Join(repo, "vendor", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if c, out, e := run("run", "--repo", repo, "--base", base); c != 3 || !strings.Contains(out, "protected_modified") {
+		t.Fatalf("run: %d %s %s", c, out, e)
+	}
+	code, out, errOut := approveTTY(t, repo, base, "yes\n")
+	if code != 0 || !strings.Contains(out, "+Subproject commit "+strings.Repeat("3", 40)) || strings.Contains(out, "binary file changed") {
+		t.Fatalf("approve: %d %q %q", code, out, errOut)
+	}
+	if c, out, e := run("run", "--repo", repo, "--base", base); c != 0 {
+		t.Fatalf("after approval: %d %s %s", c, out, e)
+	}
+}

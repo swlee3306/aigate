@@ -360,6 +360,9 @@ func parseRaw(b []byte) ([]rawEntry, error) {
 
 func isZero(sha string) bool { return strings.Trim(sha, "0") == "" }
 
+// gitlinkMode is the raw-diff mode of a submodule entry (a commit id).
+const gitlinkMode = "160000"
+
 // blobInfo applies git's binary heuristic (a NUL in the first 8000 bytes)
 // to a blob, without consulting attributes, and returns its size.
 func blobInfo(repo, sha string) (bin bool, size int64, err error) {
@@ -420,8 +423,13 @@ func ProtectedDiff(repo, base, head string, protected []string) (ProtDiff, error
 			d.FilesWithRemovals = append(d.FilesWithRemovals, e.path)
 		}
 		fc := FileChange{Path: e.path, Status: e.status, pair: e.oldSHA + ".." + e.newSHA}
-		for i, sha := range []string{e.oldSHA, e.newSHA} {
-			bin, size, err := blobInfo(repo, sha)
+		for i, side := range [][2]string{{e.oldMode, e.oldSHA}, {e.newMode, e.newSHA}} {
+			if side[0] == gitlinkMode {
+				// a submodule commit, not a blob: nothing to read; the diff
+				// text shows it as a "Subproject commit <sha>" line
+				continue
+			}
+			bin, size, err := blobInfo(repo, side[1])
 			if err != nil {
 				return d, err
 			}
