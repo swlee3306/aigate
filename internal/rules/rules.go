@@ -54,12 +54,16 @@ type RunInfo struct {
 }
 
 type Input struct {
-	CheckID           string
-	Required          bool
-	Base, Head        RunInfo
-	Dirty             bool
-	ProtectedRemoved  int
-	ProtectedFiles    []string
+	CheckID          string
+	Required         bool
+	Base, Head       RunInfo
+	Dirty            bool
+	ProtectedRemoved int
+	ProtectedFiles   []string
+	// ProtectedChanged lists protected files changed in a way that has no
+	// removed text line: deleted (also empty files), type or mode changed, or
+	// binary content changed. Any entry needs approval.
+	ProtectedChanged  []string
 	AddedGuardedFiles []string
 	ApprovalHashValid bool
 }
@@ -106,9 +110,16 @@ func Evaluate(in Input) (violations []Violation, waived []string) {
 	}
 
 	if !in.ApprovalHashValid {
-		if in.ProtectedRemoved > 0 {
+		if in.ProtectedRemoved > 0 || len(in.ProtectedChanged) > 0 {
+			var parts []string
+			if in.ProtectedRemoved > 0 {
+				parts = append(parts, fmt.Sprintf("보호 파일의 기존 줄 %d개가 변경·삭제되었습니다", in.ProtectedRemoved))
+			}
+			if len(in.ProtectedChanged) > 0 {
+				parts = append(parts, fmt.Sprintf("보호 파일 %d개가 삭제·형식·모드·바이너리 변경되었습니다", len(in.ProtectedChanged)))
+			}
 			violations = append(violations, viol("protected_modified", CategoryWeakened,
-				fmt.Sprintf("보호 파일의 기존 줄 %d개가 변경·삭제되었습니다 (승인 없음)", in.ProtectedRemoved), sorted(in.ProtectedFiles)))
+				strings.Join(parts, "; ")+" (승인 없음)", union(in.ProtectedFiles, in.ProtectedChanged)))
 		}
 		if len(in.AddedGuardedFiles) > 0 {
 			violations = append(violations, viol("protected_modified", CategoryWeakened,
@@ -299,13 +310,18 @@ func suffix(id string) string {
 }
 
 // Verdict returns the highest-priority category:
-// incomplete > weakened > behavior > ok.
+// incomplete > weakened > behavior > ok. A violation with an unknown (or
+// empty) category counts as incomplete: a violation never passes as ok.
 func Verdict(vs []Violation) Category {
 	rank := map[Category]int{CategoryOK: 0, CategoryBehavior: 1, CategoryWeakened: 2, CategoryIncomplete: 3}
 	best := CategoryOK
 	for _, v := range vs {
-		if rank[v.Category] > rank[best] {
-			best = v.Category
+		c := v.Category
+		if _, known := rank[c]; !known || c == CategoryOK {
+			c = CategoryIncomplete
+		}
+		if rank[c] > rank[best] {
+			best = c
 		}
 	}
 	return best
@@ -318,6 +334,22 @@ func sortedKeys(r Results) []string {
 	}
 	sort.Strings(ks)
 	return ks
+}
+
+// union returns the sorted distinct elements of a and b.
+func union(a, b []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, l := range [][]string{a, b} {
+		for _, x := range l {
+			if !seen[x] {
+				seen[x] = true
+				out = append(out, x)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func sorted(s []string) []string {

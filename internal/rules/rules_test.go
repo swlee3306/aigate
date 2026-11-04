@@ -51,6 +51,8 @@ func TestEvaluate(t *testing.T) {
 		{"protected removed", Input{Base: base, Head: okRun("a", "b"), ProtectedRemoved: 2, ProtectedFiles: []string{"t.py"}}, []string{"protected_modified"}, CategoryWeakened, nil},
 		{"protected approved", Input{Base: base, Head: okRun("a", "b"), ProtectedRemoved: 2, ApprovalHashValid: true}, nil, CategoryOK, nil},
 		{"added guarded", Input{Base: base, Head: okRun("a", "b"), AddedGuardedFiles: []string{"conftest.py"}}, []string{"protected_modified"}, CategoryWeakened, nil},
+		{"protected file deleted/binary/mode changed", Input{Base: base, Head: okRun("a", "b"), ProtectedChanged: []string{"tests/golden.bin"}}, []string{"protected_modified"}, CategoryWeakened, nil},
+		{"protected changed approved", Input{Base: base, Head: okRun("a", "b"), ProtectedChanged: []string{"tests/golden.bin"}, ApprovalHashValid: true}, nil, CategoryOK, nil},
 		{"added guarded approved", Input{Base: base, Head: okRun("a", "b"), AddedGuardedFiles: []string{"conftest.py"}, ApprovalHashValid: true}, nil, CategoryOK, nil},
 		{"new test fails", Input{Base: base, Head: with(okRun("a", "b"), "n", Failed)}, []string{"new_test_fails"}, CategoryBehavior, nil},
 		{"new test skipped", Input{Base: base, Head: with(okRun("a", "b"), "n", Skipped)}, []string{"new_test_skipped"}, CategoryWeakened, nil},
@@ -135,6 +137,8 @@ func TestVerdict(t *testing.T) {
 		{"all three", []Violation{v(CategoryBehavior), v(CategoryWeakened), v(CategoryIncomplete)}, CategoryIncomplete},
 		{"weakened+behavior", []Violation{v(CategoryBehavior), v(CategoryWeakened)}, CategoryWeakened},
 		{"behavior", []Violation{v(CategoryBehavior)}, CategoryBehavior},
+		{"unknown category fails closed", []Violation{v(Category("bogus"))}, CategoryIncomplete},
+		{"empty category fails closed", []Violation{v("")}, CategoryIncomplete},
 	}
 	for _, c := range cases {
 		if got := Verdict(c.vs); got != c.want {
