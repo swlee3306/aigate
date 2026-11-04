@@ -17,6 +17,7 @@ import (
 	"aigate/internal/approval"
 	"aigate/internal/gate"
 	"aigate/internal/ledger"
+	"aigate/internal/textsafe"
 )
 
 const exitGateError = 64
@@ -177,13 +178,22 @@ func cmdApprove(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
+	// Everything shown is checked BEFORE anything is printed: a control
+	// sequence (ESC, CR, ...) or bidi override in a line or path could make
+	// the screen hide what the human approves. Binary files are shown as a
+	// summary line; the hash stays over the raw bytes (HashedText).
+	display := p.Diff.DisplayText()
+	if msg := unsafeApproveText(p, display); msg != "" {
+		fmt.Fprintf(stderr, "aigate: approve 거부: %s. 터미널 제어·비정상 문자가 있는 diff는 화면에서 내용을 숨길 수 있어 승인하지 않습니다(아무것도 기록하지 않음). 해당 문자를 없앤 커밋으로 다시 실행하세요.\n", msg)
+		return exitGateError
+	}
 	fmt.Fprintf(stdout, "base: %s\nhead: %s\n", p.Base, p.Head)
 	fmt.Fprintf(stdout, "files touched (%d):\n", len(p.Diff.TouchedFiles))
 	for _, f := range p.Diff.TouchedFiles {
 		fmt.Fprintf(stdout, "  %s\n", f)
 	}
-	fmt.Fprintf(stdout, "removed/changed lines: %d; deleted/type/mode/binary-changed files: %d; added guarded files: %d\n",
-		len(p.Diff.RemovedLines), len(p.Diff.Changed()), len(p.AddedGuarded))
+	fmt.Fprintf(stdout, "changed or deleted existing protected files (any hunk, additions too): %d; removed lines: %d; added guarded files: %d\n",
+		len(p.Diff.Changed()), len(p.Diff.RemovedLines), len(p.AddedGuarded))
 	for _, f := range p.Diff.Changed() {
 		fmt.Fprintf(stdout, "  ! %s\n", f)
 	}
@@ -191,8 +201,11 @@ func cmdApprove(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "  + %s\n", f)
 	}
 	// The full text the hash is computed over, untruncated: the human
-	// approves exactly what they read.
-	fmt.Fprint(stdout, "the approval binds exactly this text (sha256 prefix = hash):\n", beginMark, p.Diff.HashedText(), endMark)
+	// approves exactly what they read (binary files as a summary line).
+	fmt.Fprint(stdout, "the approval binds exactly this text (sha256 prefix = hash):\n", beginMark, display, endMark)
+	if n := binaryCount(p); n > 0 {
+		fmt.Fprintf(stdout, "(%d binary file(s) shown as a summary line; the hash covers their raw bytes)\n", n)
+	}
 	fmt.Fprintf(stdout, "hash: %s\n", p.Diff.Hash)
 	if !p.NeedsApproval() {
 		fmt.Fprintln(stdout, "nothing needs approval.")
@@ -225,6 +238,48 @@ func cmdApprove(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintln(stdout, "approved.")
 	return 0
+}
+
+func binaryCount(p gate.Protected) int {
+	n := 0
+	for _, f := range p.Diff.Files {
+		if f.Binary {
+			n++
+		}
+	}
+	return n
+}
+
+// unsafeApproveText returns a description (with escapes only, never the raw
+// bytes) of the first unsafe byte in a path or line approve would print, or
+// "" when everything is safe to show.
+func unsafeApproveText(p gate.Protected, display string) string {
+	lists := []struct {
+		what  string
+		paths []string
+	}{{"변경 파일", p.Diff.TouchedFiles}, {"변경·삭제 파일", p.Diff.Changed()}, {"새 보호 파일", p.AddedGuarded}, {"새 파일", p.Diff.AddedFiles}}
+	for _, l := range lists {
+		for i, f := range l.paths {
+			// a path is printed on one line: a newline in it is unsafe too
+			if fd, bad := textsafe.FirstUnsafe(f); bad {
+				return fmt.Sprintf("%s 목록 %d번째 경로 %q 의 %d번째 바이트에 %s", l.what, i+1, textsafe.Escape(f), fd.Offset+1, fd.Desc)
+			} else if j := strings.IndexByte(f, '\n'); j >= 0 {
+				return fmt.Sprintf("%s 목록 %d번째 경로 %q 의 %d번째 바이트에 \\x0a(줄바꿈)", l.what, i+1, textsafe.Escape(f), j+1)
+			}
+		}
+	}
+	if fd, bad := textsafe.FirstUnsafe(display); bad {
+		file := "(파일 머리 앞)"
+		lines := strings.Split(display[:fd.Offset], "\n")
+		for k := len(lines) - 1; k >= 0; k-- {
+			if strings.HasPrefix(lines[k], "diff --git ") || strings.HasPrefix(lines[k], "A ") {
+				file = textsafe.Escape(lines[k])
+				break
+			}
+		}
+		return fmt.Sprintf("승인할 diff 텍스트 %d번째 줄(%s)에 %s", fd.Line, file, fd.Desc)
+	}
+	return ""
 }
 
 func cmdLedger(args []string, stdout, stderr io.Writer) int {

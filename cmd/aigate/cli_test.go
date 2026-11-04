@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func git(t *testing.T, repo string, args ...string) string {
@@ -332,5 +333,131 @@ func TestInterruptIsGateError(t *testing.T) {
 	}
 	if wl := git(t, repo, "worktree", "list", "--porcelain"); strings.Count(wl, "worktree ") != 1 {
 		t.Fatalf("worktree entries left: %s", wl)
+	}
+}
+
+// approveTTY runs approve with the TTY check injected as passing.
+func approveTTY(t *testing.T, repo, base, answer string) (int, string, string) {
+	t.Helper()
+	orig := requireTTY
+	requireTTY = func() error { return nil }
+	t.Cleanup(func() { requireTTY = orig })
+	var o, e bytes.Buffer
+	c := Main([]string{"approve", "--repo", repo, "--base", base}, strings.NewReader(answer), &o, &e)
+	return c, o.String(), e.String()
+}
+
+// rawUnsafe reports raw control / bidi bytes that must never reach the
+// terminal.
+func rawUnsafe(s string) bool {
+	return strings.ContainsAny(s, "\x1b\r\x00\x7f\u202e\u0085\u009b") || !utf8.ValidString(s)
+}
+
+// Decision 2: approve refuses (64, nothing printed to stdout, nothing granted)
+// when the text it would show contains terminal control or otherwise unsafe
+// bytes; stderr names the location with escapes, never the raw bytes.
+func TestApproveRefusesUnsafeDiffText(t *testing.T) {
+	pad := strings.Repeat("x", 8100) + "\n" // keeps a NUL past git's 8000-byte binary window
+	cases := []struct {
+		name, content, wantDesc string
+	}{
+		{"ESC cursor-up/erase", "one\ntwo\nok = 1\x1b[1A\x1b[2K\n", `\x1b`},
+		{"carriage return", "one\ntwo\nshown\rhidden\n", `\x0d`},
+		{"NUL past binary window", "one\ntwo\n" + pad + "nul\x00here\n", `\x00`},
+		{"invalid UTF-8", "one\ntwo\nbad \xff\xfe\n", `\xff`},
+		{"bidi override", "one\ntwo\nx = \"\u202eabc\"\n", "U+202E"},
+		{"C1 CSI", "one\ntwo\n\u009b2J\n", "U+009B"},
+		{"DEL", "one\ntwo\nx\x7f\n", `\x7f`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			repo, base := newRepo(t)
+			write(t, repo, "tests/t.txt", c.content) // only lines added after "two": a pure addition
+			commit(t, repo, "inject")
+			code, out, errOut := approveTTY(t, repo, base, "yes\n")
+			if code != 64 {
+				t.Fatalf("want 64, got %d\nstdout=%q\nstderr=%q", code, out, errOut)
+			}
+			if out != "" {
+				t.Fatalf("nothing may be printed to stdout before refusing: %q", out)
+			}
+			if rawUnsafe(errOut) {
+				t.Fatalf("stderr echoes raw unsafe bytes: %q", errOut)
+			}
+			if !strings.Contains(errOut, c.wantDesc) || !strings.Contains(errOut, "줄") || !strings.Contains(errOut, "tests/t.txt") {
+				t.Fatalf("stderr should name the line, the file and %s: %q", c.wantDesc, errOut)
+			}
+			if c, _, _ := run("run", "--repo", repo, "--base", base); c != 3 {
+				t.Fatalf("refused approve must grant nothing: run exit %d", c)
+			}
+		})
+	}
+}
+
+// A path from `git diff --raw -z` is printed unquoted, so a newline or ESC
+// in a protected file name is refused as well.
+func TestApproveRefusesUnsafePath(t *testing.T) {
+	for _, name := range []string{"tests/a\nb.txt", "tests/e\x1b[2Kx.txt"} {
+		t.Run(fmt.Sprintf("%q", name), func(t *testing.T) {
+			repo, base := newRepo(t)
+			p := filepath.Join(repo, name)
+			probe := filepath.Join(t.TempDir(), filepath.Base(name))
+			if err := os.WriteFile(probe, []byte("x\n"), 0o644); err != nil {
+				t.Skipf("filesystem refuses the name: %v (covered by textsafe unit tests)", err)
+			}
+			write(t, repo, ".aigate.yml", cfg+"approval_on_add: [\"tests/**\"]\n")
+			base = commit(t, repo, "base with guard")
+			if err := os.WriteFile(p, []byte("x\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			commit(t, repo, "odd name")
+			code, out, errOut := approveTTY(t, repo, base, "yes\n")
+			if code != 64 || out != "" || rawUnsafe(errOut) || strings.Contains(errOut, name) {
+				t.Fatalf("want refusal without raw output: %d stdout=%q stderr=%q", code, out, errOut)
+			}
+			if !strings.Contains(errOut, "경로") {
+				t.Fatalf("stderr should say a path is unsafe: %q", errOut)
+			}
+			if c, _, _ := run("run", "--repo", repo, "--base", base); c != 3 {
+				t.Fatalf("refused approve must grant nothing: run exit %d", c)
+			}
+		})
+	}
+}
+
+// A binary protected file is shown as one summary line, never as raw bytes,
+// and still contributes to the hash: approving it works.
+func TestApproveSummarisesBinaryFile(t *testing.T) {
+	repo, base := newRepo(t)
+	write(t, repo, "tests/golden.bin", "a\x00b\x1b[2K\n")
+	base = commit(t, repo, "base bin")
+	write(t, repo, "tests/golden.bin", "a\x00b\x1b[2K\nc\x00\r\x1b[1A\n")
+	commit(t, repo, "change bin")
+	code, out, errOut := approveTTY(t, repo, base, "yes\n")
+	if code != 0 {
+		t.Fatalf("approve: %d %q %q", code, out, errOut)
+	}
+	if rawUnsafe(out) {
+		t.Fatalf("raw binary bytes printed: %q", out)
+	}
+	if !strings.Contains(out, "binary file changed: tests/golden.bin, 16 bytes (base 8 bytes)") {
+		t.Fatalf("no binary summary: %q", out)
+	}
+	if c, _, e := run("run", "--repo", repo, "--base", base); c != 0 {
+		t.Fatalf("binary approval did not take: %d %s", c, e)
+	}
+}
+
+// A clean diff with Korean text and tabs is shown and approved as before.
+func TestApproveCleanKoreanAndTabs(t *testing.T) {
+	repo, base := newRepo(t)
+	write(t, repo, "tests/t.txt", "one\ntwo\n\t# 합계를 확인한다\t(탭)\n")
+	commit(t, repo, "korean")
+	code, out, errOut := approveTTY(t, repo, base, "yes\n")
+	if code != 0 || !strings.Contains(out, "+\t# 합계를 확인한다\t(탭)\n") || !strings.Contains(out, "approved.") {
+		t.Fatalf("clean approve: %d %q %q", code, out, errOut)
+	}
+	if c, _, e := run("run", "--repo", repo, "--base", base); c != 0 {
+		t.Fatalf("after approval: %d %s", c, e)
 	}
 }
