@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<testsuites name="vitest tests" tests="5" failures="1" errors="0" time="0.004798875">
+    <testsuite name="src/a.test.js" timestamp="2026-11-04T06:09:10.052Z" hostname="dev-macbook.local" tests="5" failures="1" errors="0" skipped="1" time="0.004798875">
+        <testcase classname="src/a.test.js" name="passes" time="0.000877625">
+        </testcase>
+        <testcase classname="src/a.test.js" name="fails" time="0.003049958">
+            <failure message="expected 1 to be 2 // Object.is equality" type="AssertionError">
+AssertionError: expected 1 to be 2 // Object.is equality
+
+- Expected
++ Received
+
+- 2
++ 1
+
+ ❯ src/a.test.js:3:33
+            </failure>
+        </testcase>
+        <testcase classname="src/a.test.js" name="skipped one" time="0">
+            <skipped/>
+        </testcase>
+        <testcase classname="src/a.test.js" name="param a b" time="0.000102041">
+        </testcase>
+        <testcase classname="src/a.test.js" name="param 한글" time="0.000075291">
+        </testcase>
+    </testsuite>
+</testsuites>
