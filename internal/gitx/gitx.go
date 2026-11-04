@@ -112,9 +112,15 @@ func Show(repo, sha, p string) ([]byte, error) {
 }
 
 // WithWorktree checks out sha in a detached temporary worktree outside the
-// repo, runs fn, and always removes the worktree (even on error or panic).
+// repo, runs fn, and always removes the worktree (even on error, panic or a
+// cancelled run: cleanup does not depend on any context). Repository hooks
+// do not run during the checkout (core.hooksPath=/dev/null).
 func WithWorktree(repo, sha string, fn func(dir string) error) (err error) {
-	tmp, err := os.MkdirTemp("", "aigate-wt-")
+	parent, err := worktreeParent(repo)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.MkdirTemp(parent, "aigate-wt-")
 	if err != nil {
 		return err
 	}
@@ -128,76 +134,269 @@ func WithWorktree(repo, sha string, fn func(dir string) error) (err error) {
 			panic(r)
 		}
 	}()
-	if _, err := run(repo, "worktree", "add", "--detach", dir, sha); err != nil {
+	if _, err := run(repo, "-c", "core.hooksPath=/dev/null", "worktree", "add", "--detach", dir, sha); err != nil {
 		return fmt.Errorf("worktree add %s: %w", sha, err)
 	}
 	return fn(dir)
 }
 
+// worktreeParent returns os.TempDir(), or <user cache dir>/aigate-wt when the
+// temp dir lies inside the repository (a worktree there would be part of the
+// repo's working tree).
+func worktreeParent(repo string) (string, error) {
+	tmp := os.TempDir()
+	if !inside(repo, tmp) {
+		return tmp, nil
+	}
+	c, err := os.UserCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("temp dir %s is inside the repo and no user cache dir: %w", tmp, err)
+	}
+	c = filepath.Join(c, "aigate-wt")
+	if inside(repo, c) {
+		return "", fmt.Errorf("temp dir %s and cache dir %s are both inside the repo %s", tmp, c, repo)
+	}
+	if err := os.MkdirAll(c, 0o700); err != nil {
+		return "", err
+	}
+	return c, nil
+}
+
+func realAbs(p string) string {
+	if a, err := filepath.Abs(p); err == nil {
+		p = a
+	}
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return filepath.Clean(p)
+}
+
+// inside reports whether p is repo or below it (symlinks resolved).
+func inside(repo, p string) bool {
+	rel, err := filepath.Rel(realAbs(repo), realAbs(p))
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, "../"))
+}
+
 // ProtDiff describes changes to protected paths between two commits.
+//
+// Text is the exact diff the approval hash is computed over (see
+// HashedText): `git diff --text -U0 --full-index` with every attribute,
+// textconv, external-diff and layout setting that could hide or reshape lines
+// pinned or disabled, so a `-diff`/`binary` attribute cannot turn removed
+// lines into "Binary files differ".
 type ProtDiff struct {
 	Hash              string
+	Text              string
 	RemovedLines      []string
 	TouchedFiles      []string
 	FilesWithRemovals []string
 	AddedFiles        []string
+	// DeletedFiles are protected files deleted at head (empty files too).
+	DeletedFiles []string
+	// ModifiedNonText are protected files whose type or mode changed, or whose
+	// binary content changed (git's NUL heuristic on the blobs, independent of
+	// attributes) without a removed text line.
+	ModifiedNonText []string
+}
+
+// Changed returns the sorted protected files changed in a way that needs
+// approval although it may remove no text line: DeletedFiles and
+// ModifiedNonText.
+func (d ProtDiff) Changed() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, l := range [][]string{d.DeletedFiles, d.ModifiedNonText} {
+		for _, f := range l {
+			if !seen[f] {
+				seen[f] = true
+				out = append(out, f)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// HashedText is the exact text Hash is the sha256 prefix of: Text followed by
+// one "A <path>" line per added protected file (sorted).
+func (d ProtDiff) HashedText() string {
+	var b strings.Builder
+	b.WriteString(d.Text)
+	for _, a := range d.AddedFiles {
+		b.WriteString("A " + a + "\n")
+	}
+	return b.String()
+}
+
+// diffConfig pins every git setting that changes what `git diff` prints for
+// the protected paths, so the hash and the removed lines depend only on the
+// two commits.
+var diffConfig = []string{
+	"-c", "core.quotepath=false", "-c", "core.attributesFile=/dev/null",
+	"-c", "diff.algorithm=myers", "-c", "diff.indentHeuristic=false", "-c", "diff.interHunkContext=0",
+	"-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false", "-c", "diff.relative=false",
+	"-c", "diff.orderFile=/dev/null", "-c", "diff.submodule=short", "-c", "diff.ignoreSubmodules=none",
+	"-c", "diff.renames=false", "-c", "diff.external=",
+}
+
+func diffCmd(base, head string, specs []string, extra ...string) []string {
+	a := append([]string{}, diffConfig...)
+	a = append(a, "diff", "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv", "--no-relative",
+		"--ignore-submodules=none", "--submodule=short", "--full-index", "--diff-algorithm=myers",
+		"--src-prefix=a/", "--dst-prefix=b/")
+	a = append(a, extra...)
+	a = append(a, base, head)
+	return append(a, specs...)
+}
+
+type rawEntry struct {
+	oldMode, newMode, oldSHA, newSHA, status, path string
+}
+
+// parseRaw parses `git diff --raw -z --no-abbrev` output.
+func parseRaw(b []byte) ([]rawEntry, error) {
+	parts := splitZ(b)
+	var out []rawEntry
+	for i := 0; i < len(parts); i++ {
+		meta := parts[i]
+		if !strings.HasPrefix(meta, ":") {
+			return nil, fmt.Errorf("unexpected raw diff record %q", meta)
+		}
+		f := strings.Fields(meta[1:])
+		if len(f) != 5 || i+1 >= len(parts) {
+			return nil, fmt.Errorf("unexpected raw diff record %q", meta)
+		}
+		i++
+		out = append(out, rawEntry{oldMode: f[0], newMode: f[1], oldSHA: f[2], newSHA: f[3], status: f[4][:1], path: parts[i]})
+	}
+	return out, nil
+}
+
+func isZero(sha string) bool { return strings.Trim(sha, "0") == "" }
+
+// blobHasNUL applies git's binary heuristic (a NUL in the first 8000 bytes)
+// to a blob, without consulting attributes.
+func blobHasNUL(repo, sha string) (bool, error) {
+	if isZero(sha) {
+		return false, nil
+	}
+	b, err := run(repo, "cat-file", "blob", sha)
+	if err != nil {
+		return false, err
+	}
+	if len(b) > 8000 {
+		b = b[:8000]
+	}
+	return bytes.IndexByte(b, 0) >= 0, nil
 }
 
 // ProtectedDiff diffs base..head restricted to the protected globs.
 func ProtectedDiff(repo, base, head string, protected []string) (ProtDiff, error) {
 	var d ProtDiff
 	if len(protected) == 0 {
-		d.Hash = hashOf("", nil)
+		d.Hash = hashOf(d.HashedText())
 		return d, nil
 	}
 	specs := []string{"--"}
 	for _, p := range protected {
 		specs = append(specs, ":(glob)"+p)
 	}
-	diffArgs := func(extra ...string) []string {
-		a := []string{"-c", "core.quotepath=false", "-c", "diff.algorithm=myers", "diff", "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv",
-			"--full-index", "--diff-algorithm=myers", "--src-prefix=a/", "--dst-prefix=b/"}
-		a = append(a, extra...)
-		a = append(a, base, head)
-		return append(a, specs...)
-	}
 
-	text, err := run(repo, diffArgs("-U0", "--binary")...)
+	text, err := run(repo, diffCmd(base, head, specs, "--text", "-U0")...)
 	if err != nil {
 		return d, err
 	}
-	d.RemovedLines = removedLines(string(text))
+	d.Text = string(text)
+	d.RemovedLines = removedLines(d.Text)
 
-	ns, err := run(repo, diffArgs("--numstat", "-z")...)
+	rawOut, err := run(repo, diffCmd(base, head, specs, "--raw", "-z", "--no-abbrev")...)
 	if err != nil {
 		return d, err
 	}
-	for _, rec := range splitZ(ns) {
-		f := strings.SplitN(rec, "\t", 3)
-		if len(f) != 3 {
-			continue
-		}
-		d.TouchedFiles = append(d.TouchedFiles, f[2])
-		if f[1] != "0" { // "-" means binary
-			d.FilesWithRemovals = append(d.FilesWithRemovals, f[2])
+	entries, err := parseRaw(rawOut)
+	if err != nil {
+		return d, err
+	}
+	byPair := map[string][]string{}
+	for _, e := range entries {
+		byPair[e.oldSHA+".."+e.newSHA] = append(byPair[e.oldSHA+".."+e.newSHA], e.path)
+	}
+	withRemovals := map[string]bool{}
+	for _, pair := range pairsWithRemovals(d.Text) {
+		for _, p := range byPair[pair] {
+			withRemovals[p] = true
 		}
 	}
-
-	st, err := run(repo, diffArgs("--name-status", "-z")...)
-	if err != nil {
-		return d, err
-	}
-	parts := splitZ(st)
-	for i := 0; i+1 < len(parts); i += 2 {
-		if parts[i] == "A" {
-			d.AddedFiles = append(d.AddedFiles, parts[i+1])
+	for _, e := range entries {
+		d.TouchedFiles = append(d.TouchedFiles, e.path)
+		if withRemovals[e.path] {
+			d.FilesWithRemovals = append(d.FilesWithRemovals, e.path)
+		}
+		switch e.status {
+		case "A":
+			d.AddedFiles = append(d.AddedFiles, e.path)
+		case "D":
+			d.DeletedFiles = append(d.DeletedFiles, e.path)
+		case "T":
+			d.ModifiedNonText = append(d.ModifiedNonText, e.path)
+		case "M":
+			if e.oldMode != e.newMode {
+				d.ModifiedNonText = append(d.ModifiedNonText, e.path)
+				continue
+			}
+			if withRemovals[e.path] {
+				continue // already needs approval through its removed lines
+			}
+			for _, sha := range []string{e.oldSHA, e.newSHA} {
+				bin, err := blobHasNUL(repo, sha)
+				if err != nil {
+					return d, err
+				}
+				if bin {
+					d.ModifiedNonText = append(d.ModifiedNonText, e.path)
+					break
+				}
+			}
+		default:
+			// Unmerged or unknown status: never silently allowed.
+			d.ModifiedNonText = append(d.ModifiedNonText, e.path)
 		}
 	}
 	sort.Strings(d.TouchedFiles)
 	sort.Strings(d.FilesWithRemovals)
 	sort.Strings(d.AddedFiles)
-	d.Hash = hashOf(string(text), d.AddedFiles)
+	sort.Strings(d.DeletedFiles)
+	sort.Strings(d.ModifiedNonText)
+	d.Hash = hashOf(d.HashedText())
 	return d, nil
+}
+
+// pairsWithRemovals returns the "old..new" blob pairs (from the "index" line
+// of each file section) of the sections that remove at least one line.
+func pairsWithRemovals(text string) []string {
+	var out []string
+	pair, inHunk, counted := "", false, false
+	for _, l := range strings.Split(text, "\n") {
+		switch {
+		case strings.HasPrefix(l, "diff --git "):
+			pair, inHunk, counted = "", false, false
+		case !inHunk && strings.HasPrefix(l, "index "):
+			f := strings.Fields(l)
+			if len(f) >= 2 {
+				pair = f[1]
+			}
+		case strings.HasPrefix(l, "@@"):
+			inHunk = true
+		case inHunk && strings.HasPrefix(l, "-") && !counted && pair != "":
+			counted = true
+			out = append(out, pair)
+		}
+	}
+	return out
 }
 
 func splitZ(b []byte) []string {
@@ -226,13 +425,9 @@ func removedLines(text string) []string {
 	return out
 }
 
-func hashOf(diff string, added []string) string {
-	h := sha256.New()
-	h.Write([]byte(diff))
-	for _, a := range added {
-		h.Write([]byte("A " + a + "\n"))
-	}
-	return hex.EncodeToString(h.Sum(nil))[:16]
+func hashOf(hashed string) string {
+	sum := sha256.Sum256([]byte(hashed))
+	return hex.EncodeToString(sum[:])[:16]
 }
 
 // AddedMatching returns the sorted paths added between base and head that match
@@ -242,7 +437,7 @@ func AddedMatching(repo, base, head string, globs []string) ([]string, error) {
 	if len(globs) == 0 {
 		return nil, nil
 	}
-	args := []string{"-c", "core.quotepath=false", "diff", "--name-status", "-z", "--no-renames", "--diff-filter=A", base, head, "--"}
+	args := append(append([]string{}, diffConfig...), "diff", "--name-status", "-z", "--no-renames", "--diff-filter=A", base, head, "--")
 	for _, g := range globs {
 		args = append(args, ":(glob)"+g)
 	}

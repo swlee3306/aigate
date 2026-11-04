@@ -1,6 +1,8 @@
 package gitx
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -462,5 +464,213 @@ func TestAddedMatching(t *testing.T) {
 	}
 	if _, err := AddedMatching(r, base, head, []string{"../outside"}); err == nil {
 		t.Error("invalid pathspec must error")
+	}
+}
+
+// C1: attributes from the main worktree (.gitattributes of the agent's head)
+// or .git/info/attributes must not hide removed lines behind "Binary files
+// differ".
+func TestProtectedDiffIgnoresDiffAttributes(t *testing.T) {
+	r := newRepo(t)
+	write(t, r, "tests/test_a.py", "def test_a():\n    assert add(1,2)==3\n")
+	base := commit(t, r, "base")
+	write(t, r, "tests/test_a.py", "def test_a():\n    assert True\n")
+	write(t, r, ".gitattributes", "tests/** -diff\n")
+	head := commit(t, r, "head")
+	write(t, r, ".git/info/attributes", "tests/** binary\n")
+	d, err := ProtectedDiff(r, base, head, []string{"tests/**"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(d.RemovedLines, []string{"    assert add(1,2)==3"}) {
+		t.Errorf("RemovedLines=%q", d.RemovedLines)
+	}
+	if !reflect.DeepEqual(d.FilesWithRemovals, []string{"tests/test_a.py"}) {
+		t.Errorf("FilesWithRemovals=%q", d.FilesWithRemovals)
+	}
+	if !strings.Contains(d.Text, "-    assert add(1,2)==3\n") || strings.Contains(d.Text, "Binary files") {
+		t.Errorf("Text=%q", d.Text)
+	}
+}
+
+func TestProtectedDiffDeletedEmptyFile(t *testing.T) {
+	r := newRepo(t)
+	write(t, r, "tests/__init__.py", "")
+	write(t, r, "tests/a.py", "x\n")
+	base := commit(t, r, "base")
+	if err := os.Remove(filepath.Join(r, "tests/__init__.py")); err != nil {
+		t.Fatal(err)
+	}
+	head := commit(t, r, "head")
+	d, err := ProtectedDiff(r, base, head, []string{"tests/**"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.RemovedLines) != 0 {
+		t.Errorf("RemovedLines=%q", d.RemovedLines)
+	}
+	if !reflect.DeepEqual(d.DeletedFiles, []string{"tests/__init__.py"}) {
+		t.Errorf("DeletedFiles=%q", d.DeletedFiles)
+	}
+	if !reflect.DeepEqual(d.Changed(), []string{"tests/__init__.py"}) {
+		t.Errorf("Changed=%q", d.Changed())
+	}
+}
+
+func TestProtectedDiffBinaryAppendIsNonText(t *testing.T) {
+	r := newRepo(t)
+	write(t, r, "tests/golden.bin", "a\x00b\n")
+	base := commit(t, r, "base")
+	write(t, r, "tests/golden.bin", "a\x00b\nc\x00d\n") // only an added "line"
+	head := commit(t, r, "head")
+	d, err := ProtectedDiff(r, base, head, []string{"tests/**"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.RemovedLines) != 0 {
+		t.Errorf("RemovedLines=%q", d.RemovedLines)
+	}
+	if !reflect.DeepEqual(d.ModifiedNonText, []string{"tests/golden.bin"}) {
+		t.Errorf("ModifiedNonText=%q", d.ModifiedNonText)
+	}
+}
+
+func TestProtectedDiffModeAndTypeChange(t *testing.T) {
+	r := newRepo(t)
+	write(t, r, "tests/run.sh", "echo hi\n")
+	write(t, r, "tests/data.txt", "d\n")
+	base := commit(t, r, "base")
+	if err := os.Chmod(filepath.Join(r, "tests/run.sh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(r, "tests/data.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("run.sh", filepath.Join(r, "tests/data.txt")); err != nil {
+		t.Fatal(err)
+	}
+	head := commit(t, r, "head")
+	d, err := ProtectedDiff(r, base, head, []string{"tests/**"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(d.ModifiedNonText, []string{"tests/data.txt", "tests/run.sh"}) {
+		t.Errorf("ModifiedNonText=%q", d.ModifiedNonText)
+	}
+	if !strings.Contains(d.Text, "new mode 100755") {
+		t.Errorf("mode change not in hashed text: %q", d.Text)
+	}
+}
+
+func TestProtectedDiffPureTextAdditionIsNotAChange(t *testing.T) {
+	r := newRepo(t)
+	write(t, r, "tests/a.py", "one\n")
+	base := commit(t, r, "base")
+	write(t, r, "tests/a.py", "one\ntwo\n")
+	head := commit(t, r, "head")
+	d, err := ProtectedDiff(r, base, head, []string{"tests/**"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.RemovedLines) != 0 || len(d.Changed()) != 0 || len(d.FilesWithRemovals) != 0 {
+		t.Errorf("pure addition flagged: %+v", d)
+	}
+	if !reflect.DeepEqual(d.TouchedFiles, []string{"tests/a.py"}) {
+		t.Errorf("TouchedFiles=%q", d.TouchedFiles)
+	}
+}
+
+func TestProtectedDiffHashedTextMatchesHash(t *testing.T) {
+	r := newRepo(t)
+	write(t, r, "tests/a.py", "one\n")
+	base := commit(t, r, "base")
+	write(t, r, "tests/a.py", "ONE\nadded\n")
+	write(t, r, "tests/conftest.py", "import os\n")
+	head := commit(t, r, "head")
+	d, err := ProtectedDiff(r, base, head, []string{"tests/**"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ht := d.HashedText()
+	sum := sha256.Sum256([]byte(ht))
+	if hex.EncodeToString(sum[:])[:16] != d.Hash {
+		t.Errorf("hash %s is not sha256(HashedText)", d.Hash)
+	}
+	for _, want := range []string{"+added\n", "+import os\n", "\nA tests/conftest.py\n"} {
+		if !strings.Contains("\n"+ht, want) {
+			t.Errorf("HashedText lacks %q:\n%s", want, ht)
+		}
+	}
+}
+
+func TestHashPinnedAgainstDiffConfig(t *testing.T) {
+	r := newRepo(t)
+	write(t, r, "tests/a.py", "def f():\n    a\n\n    b\n\ndef g():\n    c\n")
+	write(t, r, "tests/b.py", "1\n")
+	base := commit(t, r, "base")
+	write(t, r, "tests/a.py", "def f():\n    A\n\n    b\n\ndef g():\n    C\n")
+	write(t, r, "tests/b.py", "2\n")
+	head := commit(t, r, "head")
+	pat := []string{"tests/**"}
+	d1, err := ProtectedDiff(r, base, head, pat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	order := filepath.Join(t.TempDir(), "order")
+	if err := os.WriteFile(order, []byte("tests/b.py\ntests/a.py\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, kv := range [][2]string{{"diff.noprefix", "true"}, {"diff.mnemonicPrefix", "true"}, {"diff.interHunkContext", "10"},
+		{"diff.indentHeuristic", "true"}, {"diff.orderFile", order}, {"diff.submodule", "log"}, {"diff.ignoreSubmodules", "all"}} {
+		git(t, r, "config", kv[0], kv[1])
+	}
+	d2, err := ProtectedDiff(r, base, head, pat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d1.Hash != d2.Hash || d1.Text != d2.Text {
+		t.Errorf("hash depends on diff config:\n%s\nvs\n%s", d1.Text, d2.Text)
+	}
+}
+
+func TestWithWorktreeRunsNoHooks(t *testing.T) {
+	r := newRepo(t)
+	write(t, r, "f.txt", "v1\n")
+	sha := commit(t, r, "c1")
+	marker := filepath.Join(t.TempDir(), "hook-ran")
+	hook := "#!/bin/sh\ntouch " + marker + "\n"
+	write(t, r, ".git/hooks/post-checkout", hook)
+	if err := os.Chmod(filepath.Join(r, ".git/hooks/post-checkout"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := WithWorktree(r, sha, func(string) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("post-checkout hook ran during worktree add")
+	}
+}
+
+func TestWithWorktreeNotInsideRepoEvenIfTMPDIRIs(t *testing.T) {
+	r, err := filepath.EvalSymlinks(newRepo(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, r, "f.txt", "v1\n")
+	sha := commit(t, r, "c1")
+	inside := filepath.Join(r, "tmp")
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", inside)
+	var dir string
+	if err := WithWorktree(r, sha, func(d string) error { dir = d; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if rel, err := filepath.Rel(r, dir); err == nil && !strings.HasPrefix(rel, "..") {
+		t.Fatalf("worktree %s is inside the repo %s", dir, r)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("dir remains: %v", err)
 	}
 }
