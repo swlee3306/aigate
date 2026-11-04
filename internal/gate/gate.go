@@ -107,6 +107,12 @@ func union(a, b []string) []string {
 	return out
 }
 
+// BuiltinGuarded are approval_on_add paths that apply whatever the repo
+// config says: a committed node_modules/ can replace the test runner itself
+// (npx resolves node_modules/.bin first), so the run could be forged without
+// touching any test.
+var BuiltinGuarded = []string{"**/node_modules/**"}
+
 // Protected describes the repo-level protected diff between base and head.
 type Protected struct {
 	RepoID, Top, Base, Head string
@@ -142,11 +148,12 @@ func Prepare(o Options) (Protected, error) {
 		return Protected{}, err
 	}
 	p := Protected{RepoID: id, Top: top, Base: base, Head: head, Cfg: cfg}
-	p.Diff, err = gitx.ProtectedDiff(top, base, head, union(cfg.Protected, cfg.ApprovalOnAdd))
+	guarded := union(cfg.ApprovalOnAdd, BuiltinGuarded)
+	p.Diff, err = gitx.ProtectedDiff(top, base, head, union(cfg.Protected, guarded))
 	if err != nil {
 		return Protected{}, err
 	}
-	p.AddedGuarded, err = gitx.AddedMatching(top, base, head, cfg.ApprovalOnAdd)
+	p.AddedGuarded, err = gitx.AddedMatching(top, base, head, guarded)
 	if err != nil {
 		return Protected{}, err
 	}

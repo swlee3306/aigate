@@ -658,3 +658,30 @@ func TestOutputTailStripsANSIAndMasksSecrets(t *testing.T) {
 		t.Fatalf("bounded masked tail wrong: %q", g)
 	}
 }
+
+// A committed node_modules/ can replace the test runner itself (npx prefers
+// node_modules/.bin), so any change under it needs approval even when the
+// repo config does not list it.
+func TestNodeModulesChangeAlwaysNeedsApproval(t *testing.T) {
+	e := setup(t)
+	write(t, e.repo, ".aigate.yml", checkYAML(e.log, "", "unit"))
+	write(t, e.repo, "unit.flag", "")
+	base := commit(t, e.repo, "base")
+	write(t, e.repo, "node_modules/.bin/vitest", "#!/bin/sh\nexit 0\n")
+	write(t, e.repo, "web/node_modules/x/index.js", "x\n")
+	commit(t, e.repo, "add")
+	r, err := Run(context.Background(), e.opts(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Category != rules.CategoryWeakened || !hasRule(r.Violations, "protected_modified") {
+		t.Fatalf("got %s %+v", r.Category, r.Violations)
+	}
+	var ids []string
+	for _, v := range r.Violations {
+		ids = append(ids, v.IDs...)
+	}
+	if !strings.Contains(strings.Join(ids, " "), "node_modules/.bin/vitest") {
+		t.Fatalf("violation does not name the node_modules file: %+v", r.Violations)
+	}
+}
