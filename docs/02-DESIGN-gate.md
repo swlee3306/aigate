@@ -59,7 +59,7 @@ checks:
 - `gotest-json`: `go test -json`을 직접 파싱. id는 `패키지/Test/서브테스트`. 컴파일 실패는 `error`.
 - `exit-code`: 통과/실패만(빌드). id는 검사 id.
 - 프리셋은 명령과 "선택 범위 축소 무력화 옵션"을 채운다(예: pytest `-o addopts=`).
-- (적대 검토 반영) pytest 프리셋은 `python -P -m pytest`로 실행한다. `-P`가 없으면 `python -m`이 작업 디렉터리를 `sys.path` 맨 앞에 넣어 저장소 루트의 `pytest.py`가 진짜 pytest 대신 실행된다. 루트에서 import하는 저장소는 pytest 설정에 `pythonpath = .`이 필요하고, 3.11 미만 Python은 실행이 실패해 `verification_incomplete`로 닫힌다.
+- (적대 검토 반영) pytest 프리셋은 `python -P -m pytest`로 실행한다. `-P`가 없으면 `python -m`이 작업 디렉터리를 `sys.path` 맨 앞에 넣어 저장소 루트의 `pytest.py`가 진짜 pytest 대신 실행된다. 루트에서 import하는 저장소는 pytest 설정에 `pythonpath = .`이 필요하고, 3.11 미만 Python은 `-P`를 몰라 실행이 실패하고 JUnit이 없어 `verification_incomplete`로 닫힐 것으로 추정한다(3.14에서만 확인, 미검증).
 
 ### 3.3 판정 규칙
 위반은 여러 개 동시에 나올 수 있고 모두 보고서에 남긴다. 판정은 가장 높은 우선순위: `verification_incomplete > check_weakened > behavior_failure > ok`.
@@ -74,7 +74,7 @@ checks:
 - base에서 이미 실패하던 id는 비교에서 제외하고 보고서에 `waived`로 표시한다.
 - 컴파일·수집 오류는 코드 문제와 환경 문제를 구분하지 않고 보수적으로 `verification_incomplete`로 둔다.
 - 재시도 없음(재시도가 실제 실패를 가릴 수 있음).
-- (적대 검토 반영) **내장 보호 경로**: `**/node_modules/**`는 설정과 무관하게 항상 `approval_on_add`로 취급한다(커밋된 `node_modules/.bin/vitest`가 러너 자체를 바꿔 결과를 위조할 수 있으므로). 이 경로를 건드리지 않는 diff의 승인 해시는 바뀌지 않는다.
+- (적대 검토 반영) **내장 보호 경로**: `**/node_modules/**`는 설정과 무관하게 항상 `approval_on_add`로 취급한다(커밋된 `node_modules/.bin/vitest`가 러너 자체를 바꿔 결과를 위조할 수 있으므로). 이 경로를 건드리지 않는 diff의 승인 해시는 구성상 바뀌지 않는다(pathspec이 diff 텍스트에 아무것도 더하지 않음).
 
 ### 3.4 승인
 - 단위: 보호 파일 diff의 해시(정규화한 diff 텍스트의 sha256). `aigate approve`가 diff를 보여주고, 사람이 확인하면 `(저장소, base, 해시, 시각)`을 `~/.aigate/approvals.json`(저장소 밖)에 기록. **TTY 없는 실행은 거부**한다.
@@ -120,6 +120,7 @@ checks:
 - 테스트 id가 실행마다 바뀌는 러너(무작위 이름 등)는 지원하지 않는다.
 - base 자체가 불안정(flaky)하면 `verification_incomplete`가 늘어난다.
 - 이력(ledger)은 꼬리 절단·파일 비우기를 감지하지 못하고 키가 없다(3.9 "무결성 범위").
+- `runner_error`는 모든 테스트가 통과해도 러너가 0이 아닌 코드로 끝나는 경우(예: vitest의 unhandled error·커버리지 임계 실패)를 `verification_incomplete`로 만든다. 보수적인 판정이지만 오경보 원인이 될 수 있고, 장난감 시나리오의 오경보율 0%에는 이런 경우가 없다.
 
 ### 4.1 적대 검토(Task 12)에서 확인한 한계
 결과 표는 `04-RESULTS-gate.md` "적대 검토". 아래는 v1 불변식 게이트로는 원리상 못 잡는 것(재현 시나리오는 `KnownGap`으로 남김)과 사용자 결정이 필요한 것이다.

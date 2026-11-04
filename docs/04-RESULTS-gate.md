@@ -222,8 +222,8 @@ Go·TS 최초 실행에서 54개 중 4개가 기대와 달랐다. 기대는 수�
 
 ### 이번 수정 (모두 단위 테스트 RED 확인 후 수정)
 - **F5 `runner_error`** (`internal/rules` `RunnerError`, 초기 모드 포함): head 러너가 0이 아닌 코드로 끝났는데 실패·오류 결과가 없으면 `verification_incomplete`. JUnit을 쓴 뒤 죽는 러너(INTERNALERROR, `atexit`의 `os._exit(3)`)와 실제 종료 코드를 둔 채 JUnit만 위조하는 경우를 잡는다. 종료 코드까지 `os._exit(0)`으로 맞춘 위조는 못 잡는다(알려진 한계).
-- **F6 pytest `-P`** (`internal/adapter/preset.go`): 저장소 루트의 `pytest.py`가 진짜 pytest를 대신하던 우회를 막음. 대가: 루트 import에 기대던 저장소는 `pythonpath = .`이 필요하고, 3.11 미만 Python은 incomplete로 닫힘.
-- **F7 내장 보호 경로 `**/node_modules/**`** (`internal/gate` `BuiltinGuarded`): 커밋된 `node_modules/.bin/vitest`가 러너를 대신해 결과를 위조하던 우회를 막음. 설정과 무관하게 추가·변경은 승인 필요. node_modules를 건드리지 않으면 승인 해시는 그대로.
+- **F6 pytest `-P`** (`internal/adapter/preset.go`): 저장소 루트의 `pytest.py`가 진짜 pytest를 대신하던 우회를 막음. 대가: 루트 import에 기대던 저장소는 `pythonpath = .`이 필요하고, 3.11 미만 Python은 incomplete로 닫힐 것으로 추정(3.14에서만 확인, 미검증).
+- **F7 내장 보호 경로 `**/node_modules/**`** (`internal/gate` `BuiltinGuarded`): 커밋된 `node_modules/.bin/vitest`가 러너를 대신해 결과를 위조하던 우회를 막음. 설정과 무관하게 추가·변경은 승인 필요. node_modules를 건드리지 않으면 승인 해시는 구성상 그대로(pathspec이 diff 텍스트를 바꾸지 않음).
 - **F8 출력 꼬리 정리(공격 아님, 컨트롤러 요청)** (`internal/gate/exec.go` `cleanTail`): ANSI 제거, `KEY=`/`TOKEN=`/`SECRET=`/`PASSWORD=` 류 값·`Bearer` 토큰·`://user:pass@`를 `***`로 가림. 가리기를 자르기 전에 해서 잘린 꼬리로 비밀 일부가 새지 않음. 300 rune 경계 유지.
 
 ## 성공 지표 판정 (게이트 범위)
@@ -243,4 +243,5 @@ Go·TS 최초 실행에서 54개 중 4개가 기대와 달랐다. 기대는 수�
 - 실행 중 위조: 새 일반 테스트 파일의 monkeypatch·`pytest_plugins` 훅·`atexit` 위조 + `os._exit(0)`, Go `TestMain`의 test2json 스트림 변조.
 - 테스트 환경 감지(`sys.modules`, `AIGATE_JUNIT`, `testing.Testing()`, `os.Args[0]`), 모듈 가리기(`src/calc.js`, `tests/ingest.py`), 테스트하지 않는 입력.
 - exit-code 검사의 단위(패키지를 build tag로 빼기), 비필수 검사(base 설정 선택).
+- `runner_error`(F5)는 테스트가 모두 통과해도 러너가 실패 코드로 끝나면(vitest unhandled error, 커버리지 임계 등) incomplete로 만든다. 새 오경보 원인일 수 있으며 오경보율 0/10은 그런 경우가 없는 장난감에서 잰 값이다.
 - `aigate check`가 저장소 안 보고서 파일을 믿음(위조 보고서 통과, 제안만), `--base` 생략 시 자동 base에 의존, ledger는 꼬리 절단·파일 비우기 미감지·키 없음.
