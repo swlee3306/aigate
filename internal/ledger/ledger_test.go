@@ -242,3 +242,67 @@ func TestConcurrentAppend(t *testing.T) {
 		t.Fatalf("n=%d err=%v", n, err)
 	}
 }
+
+type sPayload struct {
+	Z int
+	A string
+}
+
+func TestRoundTripCompositePayload(t *testing.T) {
+	p := newPath(t)
+	pl := map[string]any{
+		"struct": sPayload{Z: 1, A: "x"},
+		"float":  1.5,
+		"big":    int64(1<<53 + 1),
+		"huge":   1e21,
+		"html":   "<>&",
+		"uni":    "한글   é",
+		"nested": map[string]any{"b": 1, "a": []any{1, "two", nil}},
+		"slice":  []int{3, 2, 1},
+		"nil":    nil,
+	}
+	for i := 0; i < 2; i++ {
+		if err := Append(p, "t", "r", pl, t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, err := Verify(p); n != 2 || err != nil {
+		t.Fatalf("n=%d err=%v", n, err)
+	}
+}
+
+func TestAppendVerifiesTailHash(t *testing.T) {
+	p := newPath(t)
+	seed(t, p, 2)
+	orig, _ := os.ReadFile(p)
+	ls := readLines(t, p)
+
+	cases := map[string]string{
+		"payload edit": strings.Replace(ls[1], `"i":1`, `"i":99`, 1),
+		"wrong hash":   strings.Replace(ls[1], extractHash(t, ls[1]), strings.Repeat("b", 64), 1),
+		"non-hex hash": strings.Replace(ls[1], extractHash(t, ls[1]), strings.Repeat("z", 64), 1),
+	}
+	for name, bad := range cases {
+		writeLines(t, p, []string{ls[0], bad})
+		before, _ := os.ReadFile(p)
+		err := Append(p, "t", "r", nil, t0)
+		if err == nil {
+			t.Fatalf("%s: expected error", name)
+		}
+		after, _ := os.ReadFile(p)
+		if string(before) != string(after) {
+			t.Fatalf("%s: file changed", name)
+		}
+	}
+	_ = orig
+}
+
+func extractHash(t *testing.T, line string) string {
+	t.Helper()
+	const k = `"hash":"`
+	i := strings.Index(line, k)
+	if i < 0 {
+		t.Fatal("no hash")
+	}
+	return line[i+len(k) : i+len(k)+64]
+}

@@ -176,14 +176,21 @@ func Append(path string, typ, repo string, payload map[string]any, now time.Time
 		if perr != nil {
 			return fmt.Errorf("ledger: tail line is corrupt (%v); refusing to append", perr)
 		}
-		if last.Seq < 1 || len(last.Hash) != 64 {
-			return errors.New("ledger: tail line is corrupt (bad seq/hash); refusing to append")
+		if last.Seq < 1 || !isHex64(last.Hash) || !isHex64(last.PrevHash) {
+			return errors.New("ledger: tail line is corrupt (bad seq/hash format); refusing to append")
+		}
+		want, herr := computeHash(last.Seq, last.TS, last.PrevHash, last.Type, last.Repo, last.Payload)
+		if herr != nil || want != last.Hash {
+			return fmt.Errorf("ledger: tail line (seq %d) fails hash verification; refusing to append", last.Seq)
 		}
 		seq, prev = last.Seq+1, last.Hash
 	}
 
-	if payload == nil {
-		payload = map[string]any{}
+	// Canonicalize first: round-trip through JSON so the hashed and stored
+	// payload is exactly what Verify will decode and recompute.
+	payload, err = canonicalPayload(payload)
+	if err != nil {
+		return err
 	}
 	ts := now.UTC().Format(time.RFC3339)
 	h, err := computeHash(seq, ts, prev, typ, repo, payload)
@@ -257,4 +264,36 @@ func Verify(path string) (n int, err error) {
 		prev = e.Hash
 		n++
 	}
+}
+
+func canonicalPayload(p map[string]any) (map[string]any, error) {
+	if p == nil {
+		return map[string]any{}, nil
+	}
+	b, err := json.Marshal(p)
+	if err != nil {
+		return nil, fmt.Errorf("ledger: marshal payload: %w", err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+	var out map[string]any
+	if err := dec.Decode(&out); err != nil {
+		return nil, fmt.Errorf("ledger: canonicalize payload: %w", err)
+	}
+	if out == nil {
+		out = map[string]any{}
+	}
+	return out, nil
+}
+
+func isHex64(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
 }
