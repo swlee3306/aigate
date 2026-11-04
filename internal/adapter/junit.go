@@ -18,7 +18,8 @@ type junitCase struct {
 
 // ParseJUnit reads a JUnit XML file. The id is "classname::name" (just name
 // when classname is empty), each part normalized. error beats failure beats
-// skipped; duplicate ids keep the worst status.
+// skipped; a failure whose name equals its classname and the enclosing suite
+// name is an error (suite-level load failure); duplicate ids keep the worst status.
 func ParseJUnit(path string) Parsed {
 	f, err := os.Open(path)
 	if err != nil {
@@ -26,6 +27,7 @@ func ParseJUnit(path string) Parsed {
 	}
 	defer f.Close()
 	res := rules.Results{}
+	var suites []string // names of the enclosing <testsuite> elements
 	dec := xml.NewDecoder(f)
 	for {
 		tok, err := dec.Token()
@@ -35,8 +37,25 @@ func ParseJUnit(path string) Parsed {
 		if err != nil {
 			return Parsed{Results: res, ParseFailed: true}
 		}
+		if ee, ok := tok.(xml.EndElement); ok && ee.Name.Local == "testsuite" && len(suites) > 0 {
+			suites = suites[:len(suites)-1]
+			continue
+		}
 		se, ok := tok.(xml.StartElement)
-		if !ok || se.Name.Local != "testcase" {
+		if !ok {
+			continue
+		}
+		if se.Name.Local == "testsuite" {
+			name := ""
+			for _, a := range se.Attr {
+				if a.Name.Local == "name" {
+					name = NormalizeID(a.Value)
+				}
+			}
+			suites = append(suites, name)
+			continue
+		}
+		if se.Name.Local != "testcase" {
 			continue
 		}
 		var c junitCase
@@ -53,6 +72,12 @@ func ParseJUnit(path string) Parsed {
 			st = rules.Error
 		case len(c.Failure) > 0:
 			st = rules.Failed
+			// A failed case named like its own suite (vitest: the file path)
+			// is a suite-level load failure (syntax/import error), the
+			// analogue of a collection error, not a failed test.
+			if len(suites) > 0 && NormalizeID(c.Name) == NormalizeID(c.Classname) && NormalizeID(c.Name) == suites[len(suites)-1] {
+				st = rules.Error
+			}
 		case len(c.Skipped) > 0:
 			st = rules.Skipped
 		}

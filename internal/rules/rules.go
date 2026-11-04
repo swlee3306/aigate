@@ -48,6 +48,9 @@ type RunInfo struct {
 	RC          int
 	TimedOut    bool
 	ParseFailed bool
+	// Tail is the cleaned end of the runner output, kept only for diagnostics;
+	// the rules never read it.
+	Tail string
 }
 
 type Input struct {
@@ -209,29 +212,52 @@ func compare(base, head Results) ([]Violation, []string) {
 	return vs, waived
 }
 
-// missingDetail adds a rename hint when a vanished id and exactly one new id
-// share the same suffix (last path / "::" segment).
+// missingDetail adds a rename hint for a removed id that pairs 1:1 with an
+// added id, either by the same suffix (last path / "::" segment) or by the
+// same parent path (everything before the last segment).
 func missingDetail(missing, added []string) string {
 	d := "base에서 통과하던 테스트가 head에 없습니다(삭제·이름 변경·deselect)"
-	byMissing := map[string][]string{}
-	for _, id := range missing {
-		byMissing[suffix(id)] = append(byMissing[suffix(id)], id)
-	}
-	byAdded := map[string][]string{}
-	for _, id := range added {
-		byAdded[suffix(id)] = append(byAdded[suffix(id)], id)
-	}
 	var hints []string
-	for _, id := range missing {
-		s := suffix(id)
-		if len(byMissing[s]) == 1 && len(byAdded[s]) == 1 {
-			hints = append(hints, fmt.Sprintf("%s -> %s", id, byAdded[s][0]))
+	seen := map[string]bool{}
+	for _, key := range []func(string) string{suffix, parent} {
+		byMissing := map[string][]string{}
+		for _, id := range missing {
+			byMissing[key(id)] = append(byMissing[key(id)], id)
+		}
+		byAdded := map[string][]string{}
+		for _, id := range added {
+			byAdded[key(id)] = append(byAdded[key(id)], id)
+		}
+		for _, id := range missing {
+			k := key(id)
+			if k == "" {
+				continue
+			}
+			if len(byMissing[k]) == 1 && len(byAdded[k]) == 1 {
+				h := fmt.Sprintf("%s -> %s", id, byAdded[k][0])
+				if !seen[h] {
+					seen[h] = true
+					hints = append(hints, h)
+				}
+			}
 		}
 	}
 	if len(hints) > 0 {
 		d += "; 이름 변경 의심: " + strings.Join(hints, ", ")
 	}
 	return d
+}
+
+// parent is the id without its last segment ("::" separated if present, else
+// "/" separated); "" when there is no separator.
+func parent(id string) string {
+	if i := strings.LastIndex(id, "::"); i >= 0 {
+		return id[:i]
+	}
+	if i := strings.LastIndex(id, "/"); i >= 0 {
+		return id[:i]
+	}
+	return ""
 }
 
 func suffix(id string) string {

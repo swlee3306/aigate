@@ -172,3 +172,41 @@ func TestRenameHint(t *testing.T) {
 		}
 	}
 }
+
+func TestRenameHintSameParent(t *testing.T) {
+	hint := func(base, head RunInfo) string {
+		vs, _ := Evaluate(Input{Base: base, Head: head})
+		for _, v := range vs {
+			if v.Rule == "test_missing" {
+				return v.Detail
+			}
+		}
+		t.Fatal("no test_missing violation")
+		return ""
+	}
+	// Go subtest renamed under the same parent test.
+	d := hint(okRun("pkg/TestA/old", "pkg/TestA/keep"), okRun("pkg/TestA/new", "pkg/TestA/keep"))
+	if !strings.Contains(d, "이름 변경 의심") || !strings.Contains(d, "pkg/TestA/old -> pkg/TestA/new") {
+		t.Errorf("go subtest rename: %q", d)
+	}
+	// vitest `describe > it` title renamed in the same file.
+	d = hint(okRun("src/a.test.ts::clamp > lowers", "src/a.test.ts::sum > x"), okRun("src/a.test.ts::clamp > caps", "src/a.test.ts::sum > x"))
+	if !strings.Contains(d, "이름 변경 의심") || !strings.Contains(d, "src/a.test.ts::clamp > lowers -> src/a.test.ts::clamp > caps") {
+		t.Errorf("vitest title rename: %q", d)
+	}
+	// Two removed, one added under the same parent: ambiguous, no hint.
+	d = hint(okRun("pkg/TestA/one", "pkg/TestA/two"), okRun("pkg/TestA/three"))
+	if strings.Contains(d, "이름 변경 의심") {
+		t.Errorf("ambiguous pairing must not hint: %q", d)
+	}
+	// One removed, two added under the same parent: ambiguous, no hint.
+	d = hint(okRun("pkg/TestA/one"), okRun("pkg/TestA/two", "pkg/TestA/three"))
+	if strings.Contains(d, "이름 변경 의심") {
+		t.Errorf("ambiguous pairing must not hint: %q", d)
+	}
+	// Unrelated ids in different parents: no hint.
+	d = hint(okRun("pkg/TestA/one"), okRun("pkg/TestB/two"))
+	if strings.Contains(d, "이름 변경 의심") {
+		t.Errorf("unrelated ids must not hint: %q", d)
+	}
+}

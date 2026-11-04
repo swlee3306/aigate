@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"aigate/internal/approval"
 	"aigate/internal/ledger"
@@ -583,5 +584,45 @@ func TestMissingConfigWritesNothing(t *testing.T) {
 	id, _, _ := RepoID(e.repo)
 	if _, serr := os.Stat(LedgerPath(e.home, id)); serr == nil {
 		t.Fatal("ledger written on gate error")
+	}
+}
+
+func TestFailureCauseTailInDetail(t *testing.T) {
+	e := setup(t)
+	write(t, e.repo, ".aigate.yml", "version: 1\nchecks:\n  - id: unit\n    adapter: junit\n    command: [\"sh\", \"-c\", \"echo 'ERR_MODULE_NOT_FOUND: cannot find package vitest' >&2; exit 1\"]\n    timeout: 20s\n")
+	c := commit(t, e.repo, "c")
+	write(t, e.repo, "x.txt", "x")
+	commit(t, e.repo, "head")
+	r, err := Run(context.Background(), e.opts(c))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Category != rules.CategoryIncomplete {
+		t.Fatalf("got %s %+v", r.Category, r.Violations)
+	}
+	for _, rule := range []string{"base_unreliable", "parse_failed"} {
+		found := false
+		for _, v := range r.Violations {
+			if v.Rule == rule {
+				found = true
+				if !strings.Contains(v.Detail, " | 출력 끝: ") || !strings.Contains(v.Detail, "ERR_MODULE_NOT_FOUND: cannot find package vitest") {
+					t.Errorf("%s detail lacks the printed cause: %q", rule, v.Detail)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("missing rule %s in %+v", rule, r.Violations)
+		}
+	}
+}
+
+func TestOutputTailIsBoundedValidUTF8(t *testing.T) {
+	raw := "\xff\xfe" + strings.Repeat("가나다 \n\t", 400) + "끝"
+	got := cleanTail(raw)
+	if !utf8.ValidString(got) || len([]rune(got)) > 300 || !strings.HasSuffix(got, "끝") || strings.ContainsAny(got, "\n\t") {
+		t.Fatalf("bad tail (%d runes): %q", len([]rune(got)), got)
+	}
+	if cleanTail("  \n ") != "" {
+		t.Fatal("blank output must give empty tail")
 	}
 }

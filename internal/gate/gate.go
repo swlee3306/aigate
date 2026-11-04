@@ -262,7 +262,9 @@ func runInitial(ctx context.Context, top, head string, dirty bool, r *report.Rep
 		}
 		r.Checks = append(r.Checks, report.CheckResult{ID: c.ID, Head: hs})
 		counts[c.ID] = map[string]any{"head_passed": hs.Counts.Passed, "head_failed": hs.Counts.Failed}
-		r.Violations = append(r.Violations, initialViolations(c.ID, c.Required, hi)...)
+		for _, v := range initialViolations(c.ID, c.Required, hi) {
+			r.Violations = append(r.Violations, withCause(v, rules.RunInfo{}, hi))
+		}
 	}
 	return nil
 }
@@ -324,7 +326,7 @@ func runCompare(ctx context.Context, o Options, home, repoID, top, base, head st
 				continue
 			}
 			v.Detail = "[" + c.ID + "] " + v.Detail
-			add(v)
+			add(withCause(v, bi, hi))
 		}
 		if c.Required {
 			for _, w := range waived {

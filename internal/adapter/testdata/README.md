@@ -38,3 +38,12 @@ JEST_JUNIT_OUTPUT_FILE=jest.xml npx jest --ci --reporters=jest-junit
 ```
 jest-junit quirks: classname and name both default to "{classname} {title}"
 with a leading space, and suite name is "undefined".
+
+## vitest_syntax_error.xml
+Same layout as vitest.xml but `src/calc.ts` imported by the test contains a
+syntax error (`export function sum( {`). vitest reports ONE failed testcase
+whose `name` equals its `classname` and the `<testsuite name>` (the file path):
+a suite-level load failure. Temp paths rewritten to `/tmp/toy`.
+```
+npx vitest run --reporter=junit --outputFile=vitest_syntax_error.xml
+```

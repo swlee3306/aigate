@@ -66,41 +66,35 @@
 
 ## Go (`go test -json` + `go build` 검사)
 
-실행: `go test ./e2e -run Go -count=1 -v`. 장난감 모듈 `toy`(`calc` 패키지의 `Sum`·`Dedupe`·`Window`, 표 기반 테스트와 서브테스트 16개 통과, `cmd/toy`의 main 패키지). 검사 두 개: `unit`(프리셋 go)와 `build`(`go build ./...`, exit-code). 기대 판정은 실행 전에 작성했고 수정하지 않았다. head 통과/실패는 `unit` 기준.
+실행: `go test ./e2e -run Go -count=1 -v`. 장난감 모듈 `toy`(`calc` 패키지의 `Sum`·`Dedupe`·`Window`, 표 기반 테스트와 서브테스트 16개 통과, `cmd/toy`의 main 패키지). 검사 두 개: `unit`(프리셋 go)와 `build`(`go build ./...`, exit-code). 기대 판정은 실행 전에 작성했다. 아래 표는 게이트 수정(F1~F3) 이후 최종 실행이다. head 통과/실패는 `unit` 기준.
 
 ### 시나리오별 결과
 
 | 시나리오 | 기대 | 실제 | 일치 | 위반 규칙 | head 통과/실패 | 초 |
 |---|---|---|---|---|---|---|
-| behavior/sum_skips_last_element | behavior_failure | behavior_failure | 예 | regression | 11/5 | 1.83 |
-| weakened/killing_subtest_deleted | check_weakened | check_weakened | 예 | protected_modified, test_missing | 15/0 | 1.78 |
-| weakened/t_skip_added_to_killing_subtest | check_weakened | check_weakened | 예 | test_skipped | 15/0 | 1.87 |
-| incomplete/compile_error_in_source | verification_incomplete | verification_incomplete | 예 | regression, setup_or_collection_error, test_missing | 0/0 | 1.33 |
-| incomplete/syntax_error_in_test_file | verification_incomplete | verification_incomplete | 예 | setup_or_collection_error, test_missing | 0/0 | 1.40 |
-| weakened/subtest_renamed_with_mutant | check_weakened | check_weakened | **아니오** | new_test_fails, protected_modified, regression, test_missing | 14/2 | 1.87 |
-| weakened/test_function_renamed_hint | check_weakened | check_weakened | 예 | protected_modified, test_missing | 16/0 | 1.85 |
-| weakened/expected_value_changed_with_mutant | check_weakened | check_weakened | 예 | protected_modified | 16/0 | 1.84 |
-| incomplete/untested_main_build_break | verification_incomplete | verification_incomplete | 예 | regression, setup_or_collection_error | 16/0 | 1.85 |
-| ok/new_test_file | ok | ok | 예 | - | 17/0 | 1.86 |
-| ok/refactor_rename_local | ok | ok | 예 | - | 16/0 | 1.86 |
+| behavior/sum_skips_last_element | behavior_failure | behavior_failure | 예 | regression | 11/5 | 1.84 |
+| weakened/killing_subtest_deleted | check_weakened | check_weakened | 예 | protected_modified, test_missing | 15/0 | 1.84 |
+| weakened/t_skip_added_to_killing_subtest | check_weakened | check_weakened | 예 | test_skipped | 15/0 | 1.84 |
+| incomplete/compile_error_in_source | verification_incomplete | verification_incomplete | 예 | regression, setup_or_collection_error, test_missing | 0/0 | 1.31 |
+| incomplete/syntax_error_in_test_file | verification_incomplete | verification_incomplete | 예 | setup_or_collection_error, test_missing | 0/0 | 1.38 |
+| weakened/subtest_renamed_with_mutant | check_weakened | check_weakened | 예 | new_test_fails, protected_modified, regression, test_missing | 14/2 | 1.86 |
+| weakened/test_function_renamed_hint | check_weakened | check_weakened | 예 | protected_modified, test_missing | 16/0 | 2.20 |
+| weakened/expected_value_changed_with_mutant | check_weakened | check_weakened | 예 | protected_modified | 16/0 | 1.85 |
+| incomplete/untested_main_build_break | verification_incomplete | verification_incomplete | 예 | regression, setup_or_collection_error | 16/0 | 1.77 |
+| ok/new_test_file | ok | ok | 예 | - | 17/0 | 1.85 |
+| ok/refactor_rename_local | ok | ok | 예 | - | 16/0 | 1.83 |
 
 ### 집계
 
-- 시나리오 11개, 기대와 일치 10개, 불일치 1개
-- 약화·불완전 시나리오에서 `ok`가 나온 경우(놓침): 0건. 오경보(정상 `ok` 시나리오 중 ok가 아닌 것): 0/2
-- gate 실행 시간(시나리오당 base+head, 검사 2개): 평균 1.76초, 최대 1.87초
-
-### 불일치 (findings)
-
-1. **`weakened/subtest_renamed_with_mutant`**: 범주(check_weakened)·종료 코드·규칙은 일치했지만 `test_missing` detail에 `이름 변경 의심` 힌트가 **없다**. 원인: 힌트는 사라진 id와 새 id의 마지막 세그먼트(`/` 뒤)가 같을 때만 붙는데, 서브테스트 이름 자체를 바꾸면 마지막 세그먼트가 바뀌어 매칭되지 않는다(`.../TestWindow/full_span` → `.../TestWindow/entire_span`). 판정은 맞고(약화로 잡힘) 사람을 위한 힌트만 빠진다. 같은 이유로 이름이 바뀐 id가 head에서 실패하는 경우 `regression`(부모 테스트)·`new_test_fails`도 함께 나온다. 기대는 수정하지 않았다.
-2. 시나리오 변경 없이 확인한 대조군 `weakened/test_function_renamed_hint`: 테스트 함수 이름만 바꾸면(서브테스트 이름 유지) 힌트가 붙는다. 즉 힌트는 "상위 이름이 바뀌고 마지막 세그먼트가 같은" 경우에만 동작한다.
+- 시나리오 11개, 기대와 일치 11개, 불일치 0개
+- 약화·불완전 시나리오에서 `ok`가 나온 경우(놓침): 0건. 오경보: 0/2
+- gate 실행 시간(base+head, 검사 2개): 평균 1.78초, 최대 2.20초
 
 ### 관찰
 
-- **빌드 검사만 볼 수 있는 변이는 이 Go 버전에서 만들 수 없다.** 브리프의 "`cmd/` main 패키지를 깨뜨리면 build 검사만 실패" 시나리오는 불가능했다. `go test ./...`는 테스트 파일이 없는 패키지도 컴파일하고 컴파일 실패를 `FAIL toy/cmd/toy [build failed]`(`go test -json`의 `FailedBuild`)로 보고하기 때문이다(go1.27.1에서 직접 확인). `go build ./...`가 실패하는 소스 변경은 항상 unit 검사에서도 빌드 오류(`error`)가 된다. 그래서 `behavior_failure`(빌드만 실패) 경로는 Go 스택에서 재현되지 않고, 대신 같은 변이를 `incomplete/untested_main_build_break`로 두고 실제 동작(`verification_incomplete`: unit의 빌드 오류 + build 검사 `regression`)을 기대로 고정했다(unit이 빌드 오류로 incomplete가 되므로 build 검사의 `regression`은 부수적이다). 즉 "base에서 되던 빌드가 head에서 실패 → behavior_failure" 규칙은 Go에서는 exit-code 어댑터 단위 테스트로만 검증되고 종단에서는 닿지 않는다.
-- 소스 컴파일 오류(`incomplete/compile_error_in_source`)는 `setup_or_collection_error`(unit의 `[build]` error)와 `regression`(build 검사), `test_missing`이 함께 나오고 incomplete가 이긴다.
-- `t.Skip()`을 서브테스트에 넣으면 보호 파일에서 줄만 추가되므로 `protected_modified` 없이 `test_skipped`만 나온다(Python 마커와 같은 구조).
-- 서브테스트 삭제와 기대값 변경은 `protected_modified`로도 잡힌다(삭제·수정된 기존 줄).
+- `go test ./...`는 테스트 파일이 없는 패키지도 컴파일하고 실패를 `FAIL toy/cmd/toy [build failed]`로 보고한다(go1.27.1). 그래서 `go build ./...`만 실패하고 unit은 통과하는 변이는 만들 수 없다(F4 참조). 같은 변경을 `incomplete/untested_main_build_break`로 두고 실제 동작을 기대로 고정했다.
+- 소스 컴파일 오류는 `setup_or_collection_error`(unit의 `[build]` error)와 build 검사의 `regression`, `test_missing`이 함께 나오고 incomplete가 이긴다.
+- `t.Skip()` 추가는 줄만 추가하므로 `protected_modified` 없이 `test_skipped`만 나온다.
 
 ## TypeScript (vitest)
 
@@ -110,34 +104,39 @@
 
 | 시나리오 | 기대 | 실제 | 일치 | 위반 규칙 | head 통과/실패 | 초 |
 |---|---|---|---|---|---|---|
-| behavior/sum_skips_last_element | behavior_failure | behavior_failure | 예 | regression | 7/2 | 1.57 |
-| weakened/it_skip_on_killing_test | check_weakened | check_weakened | 예 | protected_modified, test_skipped | 8/0 | 1.32 |
+| behavior/sum_skips_last_element | behavior_failure | behavior_failure | 예 | regression | 7/2 | 1.34 |
+| weakened/it_skip_on_killing_test | check_weakened | check_weakened | 예 | protected_modified, test_skipped | 8/0 | 1.33 |
 | weakened/killing_it_deleted | check_weakened | check_weakened | 예 | protected_modified, test_missing | 8/0 | 1.34 |
-| weakened/it_title_renamed_with_mutant | check_weakened | check_weakened | **아니오** | new_test_fails, protected_modified, test_missing | 8/1 | 1.33 |
-| weakened/test_file_renamed_hint | check_weakened | check_weakened | 예 | protected_modified, test_missing | 9/0 | 1.32 |
+| weakened/it_title_renamed_with_mutant | check_weakened | check_weakened | 예 | new_test_fails, protected_modified, test_missing | 8/1 | 1.33 |
+| weakened/test_file_renamed_hint | check_weakened | check_weakened | 예 | protected_modified, test_missing | 9/0 | 1.34 |
 | weakened/assertion_weakened_to_truthy | check_weakened | check_weakened | 예 | protected_modified | 9/0 | 1.34 |
-| incomplete/syntax_error_in_source | verification_incomplete | check_weakened | **아니오** | new_test_fails, test_missing | 0/1 | 1.34 |
-| ok/new_test_file | ok | ok | 예 | - | 10/0 | 1.34 |
-| ok/refactor_sum_with_reduce | ok | ok | 예 | - | 9/0 | 1.35 |
-| incomplete/no_node_modules_no_setup | verification_incomplete | verification_incomplete | **아니오** | base_unreliable, parse_failed | 0/0 | 1.29 |
-| ok/real_npm_ci_setup_SLOW | ok | ok | 예 | - | 9/0 | 4.12 |
+| incomplete/syntax_error_in_source | verification_incomplete | verification_incomplete | 예 | setup_or_collection_error, test_missing | 0/0 | 1.33 |
+| ok/new_test_file | ok | ok | 예 | - | 10/0 | 1.36 |
+| ok/refactor_sum_with_reduce | ok | ok | 예 | - | 9/0 | 1.33 |
+| incomplete/no_node_modules_no_setup | verification_incomplete | verification_incomplete | 예 | base_unreliable, parse_failed | 0/0 | 1.25 |
+| ok/real_npm_ci_setup_SLOW | ok | ok | 예 | - | 9/0 | 3.11 |
 
-`ok/real_npm_ci_setup_SLOW`는 base와 head worktree 각각에서 실제 `npm ci`(커밋된 lockfile)를 실행한다(npm 캐시가 따뜻한 상태의 시간이다. 캐시가 비어 있으면 훨씬 길다).
+`ok/real_npm_ci_setup_SLOW`는 base와 head worktree 각각에서 실제 `npm ci`(커밋된 lockfile)를 실행한다(npm 캐시가 따뜻한 상태의 시간).
 
 ### 집계
 
-- 시나리오 11개, 기대와 일치 8개, 불일치 3개
+- 시나리오 11개, 기대와 일치 11개, 불일치 0개
 - 약화·불완전 시나리오에서 `ok`가 나온 경우(놓침): 0건. 오경보: 0/3
-- gate 실행 시간: 평균 1.60초, 최대 4.12초 (최대는 실제 `npm ci` 시나리오)
-
-### 불일치 (findings)
-
-1. **`incomplete/syntax_error_in_source`: 기대 verification_incomplete, 실제 check_weakened (종료 코드 3 대 2).** 설계서 3.3은 "수집·컴파일·설정 오류"를 `verification_incomplete`로 정하지만, vitest의 JUnit 보고서는 `src/calc.ts`의 구문 오류를 오류(`<error>`)가 아니라 파일 이름을 id로 한 **실패한 테스트케이스 1개**(`src/calc.test.ts::src/calc.test.ts`, `<failure>`)로 내보내고 나머지 테스트는 보고하지 않는다. 어댑터는 이를 `failed`로 읽어 base의 통과 id 9개가 모두 사라진 것(`test_missing`, check_weakened)과 새 실패 id(`new_test_fails`, behavior)로 판정했고 weakened가 behavior를 이긴다. 결과는 "ok가 아님"이라 안전한 방향이지만 범주가 틀렸고(원인은 코드 문제인데 "검사를 약화했다"로 보고됨) 사람에게 잘못된 사유가 간다. 기대는 수정하지 않았다. 개선 후보: junit 어댑터에서 id가 파일 경로와 같은 케이스(스위트 수준 실패)를 `error`로 매핑.
-2. **`incomplete/no_node_modules_no_setup`: 범주는 일치(verification_incomplete)하지만 원인이 보이지 않는다.** `npx vitest run`이 `ERR_MODULE_NOT_FOUND`(vitest 패키지를 찾지 못함)로 종료되고 JUnit 파일이 만들어지지 않아 위반은 `base_unreliable`과 `parse_failed`(detail: "base 실행이 불안정합니다", "head 결과를 해석하지 못했습니다")뿐이다. 러너가 보관한 출력 꼬리(tail)는 보고서에 들어가지 않으므로 "node_modules가 없다"는 원인 문구가 위반에 나타나지 않는다. 시나리오는 위반 detail에 `node_modules`가 포함되어야 한다고 기대했고 이는 충족되지 않았다. 브리프 Step 2(원인 문구)가 요구한 동작이 구현에 없다.
-3. **`weakened/it_title_renamed_with_mutant`**: Go finding 1과 같은 원인으로 `이름 변경 의심` 힌트가 없다. TS id는 `파일::describe > 제목`이고 마지막 세그먼트가 `describe > 제목` 전체라서 제목이나 describe 이름을 바꾸면 힌트가 불가능하다. 대조군 `weakened/test_file_renamed_hint`(파일 이름만 변경)는 힌트가 붙었다. 판정(check_weakened)은 맞다.
+- gate 실행 시간: 평균 1.49초, 최대 3.11초 (최대는 실제 `npm ci` 시나리오)
 
 ### 관찰
 
-- 시나리오 `ok/real_npm_ci_setup_SLOW`로 `setup: npm ci`가 base·head 양쪽에서 실제로 동작하고 lockfile만으로 재현 가능한 실행이 됨을 확인했다.
+- `ok/real_npm_ci_setup_SLOW`로 `setup: npm ci`가 base·head 양쪽에서 동작함을 확인했다.
 - `it.skip`은 `it(` 줄을 바꾸므로 `test_skipped`와 `protected_modified`가 함께 나온다(Go의 `t.Skip()` 추가와 다름).
-- 시나리오 작성 중 실제 `npm ci` 시나리오의 첫 실행이 behavior_failure였던 것은 게이트 문제가 아니라 시나리오 편집 오류(`Replace`가 첫 `total`만 바꿔 코드가 깨짐)였고 `ReplaceAll`로 고쳤다(기대는 처음부터 `ok`). 이 외에 기대를 바꾼 시나리오는 없다.
+- 시나리오 작성 중 실제 `npm ci` 시나리오의 첫 실행이 behavior_failure였던 것은 시나리오 편집 오류(`Replace`가 첫 `total`만 바꿔 코드가 깨짐)였고 `ReplaceAll`로 고쳤다.
+
+## 발견과 수정
+
+Go·TS 최초 실행에서 54개 중 4개가 기대와 달랐다. 기대는 수정하지 않고 게이트를 고쳤다(단위 테스트를 먼저 작성해 RED를 확인한 뒤 수정).
+
+- **F1 vitest 구문 오류가 incomplete가 아니라 check_weakened로 판정됨.** vitest JUnit은 파일 로드 실패를 `name == classname == testsuite name`(파일 경로)인 실패 testcase 1개로 낸다. 수정: `internal/adapter/junit.go`에서 `<failure>` testcase의 name·classname이 둘러싼 testsuite 이름과 모두 같으면 `error`로 매핑(스위트 수준 로드 실패 = 수집 오류). 지시서의 "name == classname"에 "testsuite 이름과도 같음" 조건을 더했다. jest-junit은 일반 테스트도 name == classname이라 지시서 그대로면 실패한 jest 테스트가 전부 `error`가 되기 때문이다(jest 스위트 이름은 `undefined`). 실제 vitest 출력을 `testdata/vitest_syntax_error.xml`에 고정하고 README에 명령을 기록했다. 기존 pytest/jest/vitest 픽스처 결과는 그대로이고 테스트로 확인한다. 결과: `incomplete/syntax_error_in_source`가 verification_incomplete(`setup_or_collection_error`)로 일치.
+- **F2 실패 원인이 보고서에 안 보임.** 수정: 러너 출력의 끝 300자(공백 정리, 유효 UTF-8, rune 경계 절단)를 각 측 `RunInfo.Tail`로 보관하고, 결과가 없거나 오류·타임아웃인 측에 한해 규칙 `no_tests_ran`·`parse_failed`·`base_unreliable`·`timeout`·`setup_or_collection_error`·`base_not_green`의 detail 끝에 ` | 출력 끝: <tail>`을 붙인다(규칙 이름 불변, 규칙 판정은 Tail을 읽지 않음). 초기 모드와 setup 실패에도 적용. `incomplete/no_node_modules_no_setup`은 detail에 `ERR_MODULE_NOT_FOUND`가 보인다. 이 시나리오의 WantDetail은 코디네이터 지시에 따라 `node_modules`에서 실제 원인 문구 `ERR_MODULE_NOT_FOUND`로 바꿨다(출력 꼬리에는 `node_modules` 문자열이 없다). 이 시나리오는 이 변경만이 기대 수정이고, 그 외 기대는 모두 최초 그대로다.
+- **F3 이름 변경 힌트 누락.** 수정: `internal/rules`의 `missingDetail`이 마지막 세그먼트 일치에 더해 "부모 경로(마지막 `::`/`/` 앞)가 같고 사라진 id와 새 id가 각각 정확히 1개"일 때도 힌트를 낸다(1:1이 아니거나 부모가 다르면 안 냄). Go 서브테스트(`pkg/TestA/old` → `new`)·vitest `describe > it` 제목 변경·모호한(2:1, 1:2)·무관한 경우를 규칙 단위 테스트로 추가. 결과: `weakened/subtest_renamed_with_mutant`(Go)와 `weakened/it_title_renamed_with_mutant`(TS)가 힌트를 포함해 일치.
+- **F4 Go에서 build 검사만 실패하는 시나리오: 제외(수용).** `go test ./...`가 테스트 없는 패키지도 컴파일해 build 실패를 unit에서도 `[build failed]`(error)로 만들기 때문에 "빌드만 실패"를 만들 수 없다. 같은 변경을 `incomplete/untested_main_build_break`로 두었다. "base에서 되던 빌드가 head에서 실패 → behavior_failure" 규칙은 Go 종단 시나리오로는 닿지 않는다.
+
+최종: Python 32/32, Go 11/11, TS 11/11 일치(전체 54개, 불일치 0개). `go test ./... -count=1` 전 패키지 통과.

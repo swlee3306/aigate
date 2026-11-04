@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"aigate/internal/adapter"
 	"aigate/internal/config"
@@ -43,7 +44,7 @@ func runSide(ctx context.Context, repo, sha string, c config.Check) (rules.RunIn
 			so := runner.Run(ctx, runner.Spec{Dir: dir, Argv: c.Setup, Timeout: c.Timeout})
 			seconds += so.Seconds
 			if so.TimedOut || so.RC != 0 {
-				info = rules.RunInfo{RC: so.RC, TimedOut: so.TimedOut}
+				info = rules.RunInfo{RC: so.RC, TimedOut: so.TimedOut, Tail: cleanTail(so.Tail)}
 				return nil
 			}
 		}
@@ -65,7 +66,7 @@ func runSide(ctx context.Context, repo, sha string, c config.Check) (rules.RunIn
 		}
 		o := runner.Run(ctx, spec)
 		seconds += o.Seconds
-		info = rules.RunInfo{RC: o.RC, TimedOut: o.TimedOut}
+		info = rules.RunInfo{RC: o.RC, TimedOut: o.TimedOut, Tail: cleanTail(o.Tail)}
 		if o.TimedOut || o.RC == 127 { // timed out, or command could not be started
 			return nil
 		}
@@ -91,6 +92,50 @@ func runSide(ctx context.Context, repo, sha string, c config.Check) (rules.RunIn
 		return rules.RunInfo{}, report.RunSummary{}, fmt.Errorf("check %q at %s: %w", c.ID, short(sha), err)
 	}
 	return info, summary(info, seconds), nil
+}
+
+const tailRunes = 300
+
+// cleanTail makes runner output safe to embed in a violation detail: valid
+// UTF-8, whitespace collapsed, at most the last tailRunes runes (cut on a rune
+// boundary).
+func cleanTail(s string) string {
+	s = strings.Join(strings.Fields(strings.ToValidUTF8(s, "")), " ")
+	if r := []rune(s); len(r) > tailRunes {
+		s = string(r[len(r)-tailRunes:])
+	}
+	return s
+}
+
+// hasCause reports whether a run had no usable results or an error, i.e.
+// whether its output tail helps explain a violation.
+func hasCause(i rules.RunInfo) bool {
+	if i.TimedOut || i.ParseFailed || len(i.Results) == 0 {
+		return true
+	}
+	for _, st := range i.Results {
+		if st == rules.Error {
+			return true
+		}
+	}
+	return false
+}
+
+// withCause appends the output tail of the relevant side to the detail of
+// violations whose rule it can explain. Rule names are not changed.
+func withCause(v rules.Violation, base, head rules.RunInfo) rules.Violation {
+	side := head
+	switch v.Rule {
+	case "base_unreliable", "base_not_green":
+		side = base
+	case "no_tests_ran", "parse_failed", "timeout", "setup_or_collection_error":
+	default:
+		return v
+	}
+	if side.Tail != "" && hasCause(side) {
+		v.Detail += " | 출력 끝: " + side.Tail
+	}
+	return v
 }
 
 func summary(i rules.RunInfo, seconds float64) report.RunSummary {

@@ -199,3 +199,24 @@ func TestPresetFor(t *testing.T) {
 		t.Error("preset slices are shared")
 	}
 }
+
+func TestParseJUnitSuiteLevelFailureIsError(t *testing.T) {
+	p := ParseJUnit(filepath.Join("testdata", "vitest_syntax_error.xml"))
+	if p.ParseFailed {
+		t.Fatal("ParseFailed")
+	}
+	if p.Results["src/calc.test.ts::src/calc.test.ts"] != rules.Error || len(p.Results) != 1 {
+		t.Fatalf("suite-level load failure must be error: %v", p.Results)
+	}
+	// A normal failing test whose name differs from classname stays failed
+	// (vitest fixture), and jest's failing test (name == classname, but the
+	// suite name differs) stays failed too.
+	v := ParseJUnit(filepath.Join("testdata", "vitest.xml"))
+	if v.Results["src/a.test.js::fails"] != rules.Failed {
+		t.Errorf("vitest fails: %v", v.Results)
+	}
+	j := ParseJUnit(filepath.Join("testdata", "jest.xml"))
+	if j.Results["fails::fails"] != rules.Failed {
+		t.Errorf("jest fails: %v", j.Results)
+	}
+}

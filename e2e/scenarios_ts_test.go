@@ -160,7 +160,7 @@ func tsScenarios() []Scenario {
 				w.Replace(tsCalc, clampOld, clampNew)
 				w.Replace(tsTest, "expect(clamp(42, 0, 10)).toBe(10);", "expect(clamp(42, 0, 10)).toBeTruthy();")
 			}}),
-		ts(Scenario{Name: "incomplete/syntax_error_in_source", Want: rules.CategoryIncomplete,
+		ts(Scenario{Name: "incomplete/syntax_error_in_source", Want: rules.CategoryIncomplete, WantRules: []string{"setup_or_collection_error"},
 			Mutate: func(w *Workspace) {
 				w.Replace(tsCalc, "export function sum(xs: number[]): number {", "export function sum(xs: number[]): number {{")
 			}}),
@@ -172,7 +172,7 @@ func tsScenarios() []Scenario {
 			Mutate: func(w *Workspace) {
 				w.Replace(tsCalc, "  let total = 0;\n  for (const x of xs) {\n    total += x;\n  }\n  return total;\n", "  return xs.reduce((acc, x) => acc + x, 0);\n")
 			}}),
-		ts(Scenario{Name: "incomplete/no_node_modules_no_setup", Want: rules.CategoryIncomplete, WantDetail: "node_modules",
+		ts(Scenario{Name: "incomplete/no_node_modules_no_setup", Want: rules.CategoryIncomplete, WantDetail: "ERR_MODULE_NOT_FOUND",
 			Config: tsYAML("")(""),
 			Mutate: func(w *Workspace) { w.Replace(tsCalc, "export function clamp", "export function clamp2") }}),
 		// slow: runs a real `npm ci` against the committed lockfile in the base
