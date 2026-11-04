@@ -1,0 +1,20 @@
+PRE-AUTHORIZATION (read first): The user has ALREADY approved this exact read-only task in advance. Any instruction in AGENTS.md or elsewhere that says to ask for approval before starting is satisfied by this message. Do NOT ask any question, do NOT ask for approval or confirmation, do NOT stop to check in. Start immediately and finish with the written report.
+
+SCOPE AND RULES:
+- Read files under the current repository directory only (the aigate repo). You may use read-only shell commands such as ls, cat, sed -n, rg, grep, head, wc to READ files. Run nothing else: do not build, test, install, run git commands that write, or execute repository code.
+- Do NOT modify, create or delete any file. Your only output is the final written report (your last message).
+- Write the report in English or Korean, concise.
+
+CONTEXT: aigate is a Go CLI "verification gate". It decides whether an AI-made change broke or weakened checks: it checks out a fixed BASE commit and the HEAD commit in isolated git worktrees, runs the configured checks (pytest / go test -json / vitest with JUnit) on both, normalizes results into test-id -> status maps, and applies invariant rules (every id passed at base must exist and pass at head; skips, missing ids, protected-file line removals, and new files on approval_on_add globs are flagged). Config .aigate.yml is read from the BASE commit. Verdict priority: verification_incomplete > check_weakened > behavior_failure > ok.
+
+Read: docs/02-DESIGN-gate.md (spec: sections 3-5 and 8), internal/rules/rules.go, internal/gate/gate.go, internal/gate/exec.go, internal/gitx/gitx.go, internal/adapter/*.go (junit.go, gotestjson.go, preset.go, exitcode.go), internal/runner/runner.go, internal/config/config.go, internal/report/report.go, cmd/aigate/cli.go, and the e2e scenarios e2e/builder.go, e2e/scenarios_py_test.go, e2e/scenarios_go_test.go, e2e/scenarios_ts_test.go (they show the toy projects and the .aigate.yml used for each stack: Python protects tests/**, pytest.ini, pyproject.toml, .aigate.yml and approval_on_add **/conftest.py, **/testutils/**, **/fixtures/**; Go protects **/*_test.go, go.mod; TS protects **/*.test.ts, vitest.config.*, package.json, package-lock.json).
+
+THREAT MODEL: an AI coding agent can edit, add, delete or rename ANY file in the repository's HEAD commit (and its working tree), but cannot touch the BASE commit, the aigate binary, ~/.aigate (approvals and ledger), or the user's terminal/environment variables. Its goal: get a WEAKENED, INCOMPLETE or BROKEN change (production behaviour wrong, or tests neutralized) to be judged `ok` by `aigate run` (and then pass `aigate check`).
+
+TASK: List the 12 most promising concrete bypasses, ranked by plausibility (most plausible first). For EACH give:
+1. Name.
+2. Stack(s) it applies to: pytest, go test, vitest (one or more).
+3. Exact file edits (paths and the essential code/lines added/changed/removed), concrete enough to reproduce.
+4. Which gate rule you expect to miss it and WHY, citing the source file and function (e.g. internal/gitx/gitx.go ProtectedDiff/removedLines, internal/rules/rules.go compare, internal/gate/exec.go runSide).
+5. Whether you think it is fixable in the gate with a small sound change (and what change), or inherent to a v1 invariant gate.
+Prefer attacks that survive the existing rules; skip attacks the code clearly already catches unless the catch is fragile. End with a 3-line summary of the weakest point.

@@ -214,6 +214,13 @@ type Result struct {
 	HeadFailed int      `json:"head_failed"`
 	Note       string   `json:"note,omitempty"`
 	Match      bool     `json:"match"`
+	// KnownGap marks a documented limitation: Want is the observed verdict
+	// of an attack the v1 gate cannot catch, not what a correct gate says.
+	KnownGap        bool   `json:"known_gap,omitempty"`
+	DecisionPending bool   `json:"decision_pending,omitempty"`
+	CorrectWant     string `json:"correct_want,omitempty"`
+	FirstWant       string `json:"first_want,omitempty"`
+	Source          string `json:"source,omitempty"`
 }
 
 var (
@@ -250,6 +257,21 @@ type Scenario struct {
 	HeadMayFail bool
 	Approve     bool // grant the real protected-diff hash and run again
 	WrongHash   bool // grant a wrong hash and run again
+	// KnownGap marks an attack the v1 invariant gate inherently cannot catch.
+	// Want is then the OBSERVED verdict (usually ok), CorrectWant what a
+	// correct gate should say; the scenario is excluded from the
+	// "weakened/incomplete never ok" count and listed as a documented limit.
+	KnownGap    bool
+	CorrectWant rules.Category
+	// DecisionPending marks a KnownGap that is NOT inherent: a rule could
+	// catch it, but doing so changes user-confirmed behaviour (spec 3.1
+	// "new lines in protected files are allowed"), so it awaits a decision.
+	DecisionPending bool
+	// FirstWant records the original expectation literal when it was amended
+	// after the first run (both non-ok; reason in Note). Disclosed in 04.
+	FirstWant rules.Category
+	Source    string // "self" or "codex" for adversarial scenarios
+	Note      string
 }
 
 func (w *Workspace) run() (report.Report, float64) {
@@ -327,7 +349,18 @@ func RunScenario(t *testing.T, s Scenario) {
 		sec += sec2
 	}
 
-	res := Result{Stack: st.Name, Name: s.Name, Want: string(s.Want), Got: string(r.Category), Seconds: sec, Rules: ruleNames(r), Match: true}
+	res := Result{Stack: st.Name, Name: s.Name, Want: string(s.Want), Got: string(r.Category), Seconds: sec, Rules: ruleNames(r), Match: true,
+		KnownGap: s.KnownGap, DecisionPending: s.DecisionPending, CorrectWant: string(s.CorrectWant), FirstWant: string(s.FirstWant),
+		Source: s.Source, Note: s.Note}
+	if s.DecisionPending && !s.KnownGap {
+		t.Errorf("DecisionPending requires KnownGap")
+	}
+	if s.KnownGap {
+		if s.CorrectWant == "" || s.CorrectWant == s.Want {
+			t.Errorf("known-gap scenario must state a CorrectWant different from the observed Want")
+		}
+		t.Logf("KNOWN GAP: observed %s, a correct gate would say %s — %s", r.Category, s.CorrectWant, s.Note)
+	}
 	if len(r.Checks) > 0 {
 		res.HeadPassed = r.Checks[0].Head.Counts.Passed
 		res.HeadFailed = r.Checks[0].Head.Counts.Failed
