@@ -62,10 +62,10 @@ type Input struct {
 }
 
 type Violation struct {
-	Rule     string
-	Category Category
-	Detail   string
-	IDs      []string
+	Rule     string   `json:"rule"`
+	Category Category `json:"category"`
+	Detail   string   `json:"detail"`
+	IDs      []string `json:"ids,omitempty"`
 }
 
 func viol(rule string, c Category, detail string, ids []string) Violation {
