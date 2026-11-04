@@ -1066,3 +1066,26 @@ func TestPureAdditionToExistingProtectedFileNeedsApproval(t *testing.T) {
 		t.Fatalf("after approval: %s %+v", r.Category, r.Violations)
 	}
 }
+
+// Re-review gap of I3: the nested (**/) variants of lock files, go.work,
+// vendor/ and requirements/*.txt are built-in guarded too.
+func TestNestedBuiltinGuardedFilesNeedApproval(t *testing.T) {
+	for _, p := range []string{"web/yarn.lock", "web/pnpm-lock.yaml", "mod/go.work", "mod/go.work.sum", "mod/vendor/x/x.go",
+		"requirements/dev.txt", "svc/requirements/base.txt"} {
+		t.Run(p, func(t *testing.T) {
+			e := setup(t)
+			write(t, e.repo, ".aigate.yml", checkYAML(e.log, "", "unit"))
+			write(t, e.repo, "unit.flag", "")
+			base := commit(t, e.repo, "base")
+			write(t, e.repo, p, "x\n")
+			commit(t, e.repo, "add")
+			r, err := Run(context.Background(), e.opts(base))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r.Category != rules.CategoryWeakened || !hasRule(r.Violations, "protected_modified") {
+				t.Fatalf("%s: got %s %+v", p, r.Category, r.Violations)
+			}
+		})
+	}
+}

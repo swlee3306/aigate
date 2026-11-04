@@ -125,10 +125,10 @@ var BuiltinGuarded = []string{
 	".gitattributes", "**/.gitattributes", ".gitmodules",
 	".npmrc", "**/.npmrc",
 	"pytest.ini", "**/pytest.ini", "tox.ini", "**/tox.ini", "setup.cfg", "**/setup.cfg",
-	"go.work", "go.work.sum", "vendor/**",
+	"go.work", "**/go.work", "go.work.sum", "**/go.work.sum", "vendor/**", "**/vendor/**",
 	"**/sitecustomize.py", "**/usercustomize.py",
-	"requirements*.txt", "**/requirements*.txt",
-	"package-lock.json", "**/package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+	"requirements*.txt", "**/requirements*.txt", "requirements/*.txt", "**/requirements/*.txt",
+	"package-lock.json", "**/package-lock.json", "yarn.lock", "**/yarn.lock", "pnpm-lock.yaml", "**/pnpm-lock.yaml",
 }
 
 // Protected describes the repo-level protected diff between base and head.
