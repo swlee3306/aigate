@@ -306,3 +306,20 @@ func extractHash(t *testing.T, line string) string {
 	}
 	return line[i+len(k) : i+len(k)+64]
 }
+
+func TestEvents(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "l.jsonl")
+	if evs, err := Events(p); err != nil || evs != nil {
+		t.Fatalf("missing file: %v %v", evs, err)
+	}
+	now := time.Date(2026, 11, 4, 0, 0, 0, 0, time.UTC)
+	for i, cat := range []string{"ok", "check_weakened"} {
+		if err := Append(p, "run_result", "r1", map[string]any{"category": cat, "n": i}, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	evs, err := Events(p)
+	if err != nil || len(evs) != 2 || evs[1].Seq != 2 || evs[1].Payload["category"] != "check_weakened" || evs[0].Type != "run_result" {
+		t.Fatalf("events %+v %v", evs, err)
+	}
+}

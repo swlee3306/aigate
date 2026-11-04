@@ -304,3 +304,27 @@ func isHex64(s string) bool {
 	}
 	return true
 }
+
+// Events returns every event of the ledger at path in order (nil for a
+// missing file). It only parses; call Verify for integrity.
+func Events(path string) ([]Event, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var evs []Event
+	for i, l := range bytes.Split(data, []byte("\n")) {
+		if len(l) == 0 {
+			continue
+		}
+		e, err := parseLine(l)
+		if err != nil {
+			return nil, fmt.Errorf("ledger: line %d: bad json: %v", i+1, err)
+		}
+		evs = append(evs, e)
+	}
+	return evs, nil
+}
