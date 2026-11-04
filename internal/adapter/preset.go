@@ -31,9 +31,9 @@ func PresetFor(name string) (Preset, bool) {
 	case "go":
 		p = Preset{Command: []string{"go", "test", "-json", "-count=1", "./..."}, Adapter: "gotest-json"}
 	case "vitest":
-		p = Preset{Command: []string{"npx", "vitest", "run", "--reporter=junit", "--outputFile=${AIGATE_JUNIT}"}, Adapter: "junit"}
+		p = Preset{Command: []string{"npx", "--no-install", "vitest", "run", "--reporter=junit", "--outputFile=${AIGATE_JUNIT}"}, Adapter: "junit"}
 	case "jest":
-		p = Preset{Command: []string{"env", "JEST_JUNIT_OUTPUT_FILE=${AIGATE_JUNIT}", "npx", "jest", "--ci", "--reporters=jest-junit"}, Adapter: "junit"}
+		p = Preset{Command: []string{"env", "JEST_JUNIT_OUTPUT_FILE=${AIGATE_JUNIT}", "npx", "--no-install", "jest", "--ci", "--reporters=jest-junit"}, Adapter: "junit"}
 	default:
 		return Preset{}, false
 	}

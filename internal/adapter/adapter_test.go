@@ -247,3 +247,17 @@ func TestDuplicateIDSeverity(t *testing.T) {
 		}
 	}
 }
+
+// A missing local install must fail, not download an unpinned runner.
+func TestNodePresetsNeverInstall(t *testing.T) {
+	for _, name := range []string{"vitest", "jest"} {
+		p, ok := PresetFor(name)
+		if !ok {
+			t.Fatal(name)
+		}
+		argv := strings.Join(p.Command, " ")
+		if !strings.Contains(argv, "npx --no-install "+name+" ") {
+			t.Errorf("%s preset: %s", name, argv)
+		}
+	}
+}
