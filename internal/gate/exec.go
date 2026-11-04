@@ -92,6 +92,11 @@ func runSide(ctx context.Context, repo, sha string, c config.Check) (rules.RunIn
 	if err != nil {
 		return rules.RunInfo{}, report.RunSummary{}, fmt.Errorf("check %q at %s: %w", c.ID, short(sha), err)
 	}
+	// A cancelled run (Ctrl-C, SIGTERM) is never a verdict: the runner killed
+	// the process group, so its results say nothing about the code.
+	if err := ctx.Err(); err != nil {
+		return rules.RunInfo{}, report.RunSummary{}, fmt.Errorf("interrupted during check %q at %s: %w", c.ID, short(sha), err)
+	}
 	return info, summary(info, seconds), nil
 }
 

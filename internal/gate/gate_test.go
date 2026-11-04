@@ -2,6 +2,8 @@ package gate
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -96,12 +98,42 @@ func (e env) opts(base string) Options {
 	return Options{Repo: e.repo, Base: base, HomeDir: e.home}
 }
 
-func TestBaseEqualsHeadOK(t *testing.T) {
+// C2: comparing a commit with itself gives a vacuous verdict (empty protected
+// diff, base failures waived), so it is a gate error: no report, no ledger.
+func TestBaseEqualsHeadIsGateError(t *testing.T) {
 	e := setup(t)
 	write(t, e.repo, ".aigate.yml", checkYAML(e.log, "", "unit", "build"))
 	write(t, e.repo, "unit.flag", "")
 	write(t, e.repo, "build.flag", "")
 	c := commit(t, e.repo, "c1")
+	for _, base := range []string{c, "HEAD", "main"} {
+		r, err := Run(context.Background(), e.opts(base))
+		if err == nil || r.Category != "" {
+			t.Fatalf("base %s: want gate error, got %v %+v", base, err, r)
+		}
+		if !strings.Contains(err.Error(), "base") {
+			t.Errorf("error should name the base: %v", err)
+		}
+	}
+	if n := len(lines(t, e.log)); n != 0 {
+		t.Fatalf("checks executed: %d", n)
+	}
+	if _, err := os.Stat(filepath.Join(e.repo, ".aigate", "reports")); err == nil {
+		t.Fatal("report written on self-compare")
+	}
+	id, _, _ := RepoID(e.repo)
+	if _, err := os.Stat(LedgerPath(e.home, id)); err == nil {
+		t.Fatal("ledger written on self-compare")
+	}
+}
+
+func TestBaseNotHeadOK(t *testing.T) {
+	e := setup(t)
+	write(t, e.repo, ".aigate.yml", checkYAML(e.log, "", "unit", "build"))
+	write(t, e.repo, "unit.flag", "")
+	write(t, e.repo, "build.flag", "")
+	c := commit(t, e.repo, "c1")
+	head := commit(t, e.repo, "c2")
 	r, err := Run(context.Background(), e.opts(c))
 	if err != nil {
 		t.Fatal(err)
@@ -109,15 +141,37 @@ func TestBaseEqualsHeadOK(t *testing.T) {
 	if r.Category != rules.CategoryOK || r.ExitCode != 0 {
 		t.Fatalf("got %s %+v", r.Category, r.Violations)
 	}
-	got := lines(t, e.log)
-	if len(got) != 4 {
+	if got := lines(t, e.log); len(got) != 4 {
 		t.Fatalf("each check once per side, got %v", got)
 	}
-	if r.Base != c || r.Head != c || r.SchemaVersion != 1 || r.ToolVersion != "0.1.0" || r.ConfigHash == "" || r.Initial {
+	if r.Base != c || r.Head != head || r.SchemaVersion != 1 || r.ToolVersion != "0.1.0" || r.ConfigHash == "" || r.Initial {
 		t.Fatalf("report fields: %+v", r)
 	}
-	if _, err := os.Stat(filepath.Join(e.repo, ".aigate", "reports", c[:10]+".json")); err != nil {
+	if _, err := os.Stat(filepath.Join(e.repo, ".aigate", "reports", head[:10]+".json")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// C2: explicit initial mode is the only way to run without a base.
+func TestExplicitInitialMode(t *testing.T) {
+	e := setup(t)
+	write(t, e.repo, ".aigate.yml", checkYAML(e.log, "", "unit"))
+	write(t, e.repo, "unit.flag", "")
+	main1 := commit(t, e.repo, "m1")
+	git(t, e.repo, "checkout", "-q", "-b", "feature")
+	commit(t, e.repo, "f1")
+	o := e.opts("")
+	o.Initial = true
+	r, err := Run(context.Background(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Initial || r.Base != "" || r.Category != rules.CategoryOK {
+		t.Fatalf("explicit initial ignored (merge-base %s): %+v", main1[:7], r)
+	}
+	o.Base = main1
+	if _, err := Run(context.Background(), o); err == nil {
+		t.Fatal("Initial together with Base must be an error")
 	}
 }
 
@@ -226,6 +280,7 @@ func TestMissingConfigIsError(t *testing.T) {
 	e := setup(t)
 	write(t, e.repo, "a", "1")
 	c := commit(t, e.repo, "c")
+	commit(t, e.repo, "head") // base != head: self-compare is a gate error (C2)
 	r, err := Run(context.Background(), e.opts(c))
 	if err == nil {
 		t.Fatal("want error")
@@ -351,6 +406,7 @@ func TestLedgerOneLinePerRun(t *testing.T) {
 	write(t, e.repo, ".aigate.yml", checkYAML(e.log, "", "unit"))
 	write(t, e.repo, "unit.flag", "")
 	c := commit(t, e.repo, "c")
+	commit(t, e.repo, "head") // base != head: self-compare is a gate error (C2)
 	for i := 0; i < 2; i++ {
 		if _, err := Run(context.Background(), e.opts(c)); err != nil {
 			t.Fatal(err)
@@ -373,6 +429,7 @@ func TestLedgerFailureIsGateError(t *testing.T) {
 	write(t, e.repo, ".aigate.yml", checkYAML(e.log, "", "unit"))
 	write(t, e.repo, "unit.flag", "")
 	c := commit(t, e.repo, "c")
+	commit(t, e.repo, "head") // base != head: self-compare is a gate error (C2)
 	// a file where the ledger dir should be
 	if err := os.WriteFile(filepath.Join(e.home, ".aigate"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
@@ -410,6 +467,7 @@ func TestSetupFailureIsIncomplete(t *testing.T) {
 	write(t, e.repo, ".aigate.yml", yml)
 	write(t, e.repo, "unit.flag", "")
 	c := commit(t, e.repo, "c")
+	commit(t, e.repo, "head") // base != head: self-compare is a gate error (C2)
 	r, err := Run(context.Background(), e.opts(c))
 	if err != nil {
 		t.Fatal(err)
@@ -427,6 +485,7 @@ func TestDirtyIsIncomplete(t *testing.T) {
 	write(t, e.repo, ".aigate.yml", checkYAML(e.log, "", "unit"))
 	write(t, e.repo, "unit.flag", "")
 	c := commit(t, e.repo, "c")
+	commit(t, e.repo, "head") // base != head: self-compare is a gate error (C2)
 	write(t, e.repo, "junk", "x")
 	r, err := Run(context.Background(), e.opts(c))
 	if err != nil {
@@ -500,6 +559,7 @@ func TestAllNonRequiredIsIncomplete(t *testing.T) {
 	write(t, e.repo, ".aigate.yml", checkYAML(e.log, "    required: false\n", "soft"))
 	write(t, e.repo, "soft.flag", "")
 	c := commit(t, e.repo, "c")
+	commit(t, e.repo, "head") // base != head: self-compare is a gate error (C2)
 	r, err := Run(context.Background(), e.opts(c))
 	if err != nil {
 		t.Fatal(err)
@@ -549,10 +609,11 @@ func TestGateErrorLeavesEarlierReportAndLedger(t *testing.T) {
 	write(t, e.repo, ".aigate.yml", checkYAML(e.log, "", "unit"))
 	write(t, e.repo, "unit.flag", "")
 	c := commit(t, e.repo, "c")
+	head := commit(t, e.repo, "head") // base != head: self-compare is a gate error (C2)
 	if r, err := Run(context.Background(), e.opts(c)); err != nil || r.Category != rules.CategoryOK {
 		t.Fatalf("setup run: %v %s", err, r.Category)
 	}
-	rp := filepath.Join(e.repo, ".aigate", "reports", c[:10]+".json")
+	rp := filepath.Join(e.repo, ".aigate", "reports", head[:10]+".json")
 	before, err := os.ReadFile(rp)
 	if err != nil {
 		t.Fatal(err)
@@ -577,6 +638,7 @@ func TestMissingConfigWritesNothing(t *testing.T) {
 	e := setup(t)
 	write(t, e.repo, "a", "1")
 	c := commit(t, e.repo, "c")
+	commit(t, e.repo, "head") // base != head: self-compare is a gate error (C2)
 	r, err := Run(context.Background(), e.opts(c))
 	if err == nil || r.Category != "" {
 		t.Fatalf("want error and empty report, got %v %+v", err, r)
@@ -591,6 +653,7 @@ func TestFailureCauseTailInDetail(t *testing.T) {
 	e := setup(t)
 	write(t, e.repo, ".aigate.yml", "version: 1\nchecks:\n  - id: unit\n    adapter: junit\n    command: [\"sh\", \"-c\", \"echo 'ERR_MODULE_NOT_FOUND: cannot find package vitest' >&2; exit 1\"]\n    timeout: 20s\n")
 	c := commit(t, e.repo, "c")
+	commit(t, e.repo, "head") // base != head: self-compare is a gate error (C2)
 	write(t, e.repo, "x.txt", "x")
 	commit(t, e.repo, "head")
 	r, err := Run(context.Background(), e.opts(c))
@@ -683,5 +746,183 @@ func TestNodeModulesChangeAlwaysNeedsApproval(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(ids, " "), "node_modules/.bin/vitest") {
 		t.Fatalf("violation does not name the node_modules file: %+v", r.Violations)
+	}
+}
+
+// C1: a new .gitattributes marking tests as -diff must not hide a weakened
+// assert (the diff used to show "Binary files differ" with no removed line).
+func TestGitattributesCannotHideProtectedChange(t *testing.T) {
+	e := setup(t)
+	write(t, e.repo, ".aigate.yml", checkYAML(e.log, "", "unit"))
+	write(t, e.repo, "unit.flag", "")
+	write(t, e.repo, "tests/test_a.py", "def test_a():\n    assert add(1,2)==3\n")
+	write(t, e.repo, ".gitattributes", "*.png binary\n")
+	base := commit(t, e.repo, "base")
+	// existing .gitattributes gets one ADDED line (not itself a removal)
+	write(t, e.repo, ".gitattributes", "*.png binary\ntests/** -diff\n")
+	write(t, e.repo, "tests/test_a.py", "def test_a():\n    assert True\n")
+	commit(t, e.repo, "head")
+	r, err := Run(context.Background(), e.opts(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Category != rules.CategoryWeakened || !hasRule(r.Violations, "protected_modified") {
+		t.Fatalf("got %s %+v", r.Category, r.Violations)
+	}
+}
+
+// C1: deleting an empty protected file, changing a binary protected file
+// (append only) and a mode-only change all need approval.
+func TestNonLineProtectedChangesNeedApproval(t *testing.T) {
+	cases := map[string]func(e env){
+		"empty file deleted": func(e env) { git(t, e.repo, "rm", "-q", "tests/__init__.py") },
+		"binary appended":    func(e env) { write(t, e.repo, "tests/golden.bin", "a\x00b\nc\x00d\n") },
+		"mode only": func(e env) {
+			if err := os.Chmod(filepath.Join(e.repo, "tests/run.sh"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			e := setup(t)
+			write(t, e.repo, ".aigate.yml", checkYAML(e.log, "", "unit"))
+			write(t, e.repo, "unit.flag", "")
+			write(t, e.repo, "tests/__init__.py", "")
+			write(t, e.repo, "tests/golden.bin", "a\x00b\n")
+			write(t, e.repo, "tests/run.sh", "echo\n")
+			base := commit(t, e.repo, "base")
+			mutate(e)
+			commit(t, e.repo, "head")
+			r, err := Run(context.Background(), e.opts(base))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r.Category != rules.CategoryWeakened || !hasRule(r.Violations, "protected_modified") || len(r.Approvals) != 1 {
+				t.Fatalf("got %s %+v approvals=%v", r.Category, r.Violations, r.Approvals)
+			}
+			id, _, _ := RepoID(e.repo)
+			if err := (approval.Store{Path: ApprovalsPath(e.home)}).Grant(id, base, r.Approvals[0].Hash, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			if r, err = Run(context.Background(), e.opts(base)); err != nil || r.Category != rules.CategoryOK {
+				t.Fatalf("after approval: %v %s %+v", err, r.Category, r.Violations)
+			}
+		})
+	}
+}
+
+// C1(c)/I3: files that change how the runner or its dependencies behave are
+// guarded when NEW, whatever the repo config says.
+func TestBuiltinGuardedNewFiles(t *testing.T) {
+	for _, f := range []string{".gitattributes", ".gitmodules", ".npmrc", "web/.npmrc", "pytest.ini", "sub/pytest.ini",
+		"tox.ini", "sub/tox.ini", "setup.cfg", "sub/setup.cfg", "go.work", "go.work.sum", "vendor/x/y.go",
+		"sitecustomize.py", "lib/sitecustomize.py", "usercustomize.py", "requirements.txt", "requirements-dev.txt",
+		"sub/requirements-test.txt", "package-lock.json", "web/package-lock.json", "yarn.lock", "pnpm-lock.yaml"} {
+		t.Run(f, func(t *testing.T) {
+			e := setup(t)
+			write(t, e.repo, ".aigate.yml", checkYAML(e.log, "", "unit"))
+			write(t, e.repo, "unit.flag", "")
+			base := commit(t, e.repo, "base")
+			write(t, e.repo, f, "x\n")
+			commit(t, e.repo, "add")
+			r, err := Run(context.Background(), e.opts(base))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r.Category != rules.CategoryWeakened || !hasRule(r.Violations, "protected_modified") {
+				t.Fatalf("new %s: got %s %+v", f, r.Category, r.Violations)
+			}
+		})
+	}
+}
+
+// I2: every base run happens before any head run, so head code cannot poison
+// shared state ($TMPDIR, caches) before a later check's base run.
+func TestAllBaseRunsBeforeHeadRuns(t *testing.T) {
+	e := setup(t)
+	yml := "version: 1\nchecks:\n"
+	for _, id := range []string{"one", "two"} {
+		yml += "  - id: " + id + "\n    adapter: exit-code\n    command: [\"sh\", \"-c\", \"echo " + id + "-$(git rev-parse HEAD) >> " + e.log + "\"]\n    timeout: 20s\n"
+	}
+	write(t, e.repo, ".aigate.yml", yml)
+	base := commit(t, e.repo, "base")
+	head := commit(t, e.repo, "head")
+	if _, err := Run(context.Background(), e.opts(base)); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"one-" + base, "two-" + base, "one-" + head, "two-" + head}
+	if got := lines(t, e.log); strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("order\n got %v\nwant %v", got, want)
+	}
+}
+
+// I5: cancelling mid-check is a gate error and leaves no worktree, no
+// .git/worktrees entry, no report and no ledger line.
+func TestCancelLeavesNothingBehind(t *testing.T) {
+	e := setup(t)
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	started := filepath.Join(t.TempDir(), "started")
+	write(t, e.repo, ".aigate.yml", "version: 1\nchecks:\n  - id: unit\n    adapter: exit-code\n    command: [\"sh\", \"-c\", \"touch "+started+"; sleep 30\"]\n    timeout: 60s\n")
+	base := commit(t, e.repo, "base")
+	commit(t, e.repo, "head")
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		for i := 0; i < 400; i++ {
+			if _, err := os.Stat(started); err == nil {
+				break
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+		cancel()
+	}()
+	t0 := time.Now()
+	r, err := Run(ctx, e.opts(base))
+	if err == nil || r.Category != "" {
+		t.Fatalf("want gate error on cancel, got %v %+v", err, r)
+	}
+	if time.Since(t0) > 15*time.Second {
+		t.Fatalf("cancel took %s", time.Since(t0))
+	}
+	if m, _ := filepath.Glob(filepath.Join(tmp, "aigate-wt-*")); len(m) != 0 {
+		t.Fatalf("worktree dirs left: %v", m)
+	}
+	if out := git(t, e.repo, "worktree", "list", "--porcelain"); strings.Count(out, "worktree ") != 1 {
+		t.Fatalf("worktree entries left: %s", out)
+	}
+	if _, err := os.Stat(filepath.Join(e.repo, ".aigate", "reports")); err == nil {
+		t.Fatal("report written on cancel")
+	}
+	id, _, _ := RepoID(e.repo)
+	if _, err := os.Stat(LedgerPath(e.home, id)); err == nil {
+		t.Fatal("ledger written on cancel")
+	}
+}
+
+// C2(d): the run_result event binds the saved report file and the config.
+func TestLedgerBindsReportAndConfig(t *testing.T) {
+	e := setup(t)
+	write(t, e.repo, ".aigate.yml", checkYAML(e.log, "", "unit"))
+	write(t, e.repo, "unit.flag", "")
+	base := commit(t, e.repo, "base")
+	head := commit(t, e.repo, "head")
+	r, err := Run(context.Background(), e.opts(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(e.repo, ".aigate", "reports", head[:10]+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(b)
+	id, _, _ := RepoID(e.repo)
+	evs, err := ledger.Events(LedgerPath(e.home, id))
+	if err != nil || len(evs) != 1 {
+		t.Fatalf("events %v %v", evs, err)
+	}
+	p := evs[0].Payload
+	if p["report_sha256"] != hex.EncodeToString(sum[:]) || p["config_hash"] != r.ConfigHash || p["base"] != base || p["head"] != head {
+		t.Fatalf("payload %+v", p)
 	}
 }

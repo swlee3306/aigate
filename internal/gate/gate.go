@@ -30,6 +30,9 @@ const ToolVersion = "0.1.0"
 // Options configures Run.
 type Options struct {
 	Repo, Base, Head, TaskClass, ApproveHash, HomeDir string
+	// Initial requests initial mode explicitly (no base; head-only green
+	// check, config read from head). Base must then be empty.
+	Initial bool
 }
 
 func sortedCopy(s []string) []string {
@@ -108,10 +111,25 @@ func union(a, b []string) []string {
 }
 
 // BuiltinGuarded are approval_on_add paths that apply whatever the repo
-// config says: a committed node_modules/ can replace the test runner itself
-// (npx resolves node_modules/.bin first), so the run could be forged without
-// touching any test.
-var BuiltinGuarded = []string{"**/node_modules/**"}
+// config says. Each one can change how the runner or its dependencies behave
+// without touching any test: a committed node_modules/ can replace the test
+// runner itself (npx resolves node_modules/.bin first); .gitattributes can
+// change how git presents diffs; .gitmodules, go.work, vendor/, lock files,
+// requirements and .npmrc decide which code `setup` installs or the build
+// uses; a new pytest.ini/tox.ini/setup.cfg can take over pytest's config;
+// sitecustomize/usercustomize run at interpreter start. Like every
+// approval_on_add path they are also part of the protected diff, so removing
+// lines from an existing one needs approval too.
+var BuiltinGuarded = []string{
+	"**/node_modules/**",
+	".gitattributes", "**/.gitattributes", ".gitmodules",
+	".npmrc", "**/.npmrc",
+	"pytest.ini", "**/pytest.ini", "tox.ini", "**/tox.ini", "setup.cfg", "**/setup.cfg",
+	"go.work", "go.work.sum", "vendor/**",
+	"**/sitecustomize.py", "**/usercustomize.py",
+	"requirements*.txt", "**/requirements*.txt",
+	"package-lock.json", "**/package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+}
 
 // Protected describes the repo-level protected diff between base and head.
 type Protected struct {
@@ -119,6 +137,15 @@ type Protected struct {
 	Diff                    gitx.ProtDiff
 	AddedGuarded            []string
 	Cfg                     config.Config
+}
+
+// NeedsApproval reports whether the protected diff needs a human approval:
+// a removed line in a protected file, a deleted / type-, mode- or
+// binary-changed protected file, or a new guarded file. Pure text-line
+// additions to an existing protected file do not (spec 3.1, pending a user
+// decision).
+func (p Protected) NeedsApproval() bool {
+	return len(p.Diff.RemovedLines) > 0 || len(p.Diff.Changed()) > 0 || len(p.AddedGuarded) > 0
 }
 
 // Prepare resolves commits and computes the protected diff exactly as Run does.
@@ -143,6 +170,9 @@ func Prepare(o Options) (Protected, error) {
 	if base == "" {
 		return Protected{}, errors.New("no base to compare against (initial mode has no protected diff)")
 	}
+	if base == head {
+		return Protected{}, selfCompare(base)
+	}
 	cfg, err := loadConfig(top, base)
 	if err != nil {
 		return Protected{}, err
@@ -158,6 +188,20 @@ func Prepare(o Options) (Protected, error) {
 		return Protected{}, err
 	}
 	return p, nil
+}
+
+func selfCompare(sha string) error {
+	return fmt.Errorf("base and head are the same commit %s: comparing a commit with itself proves nothing (pass the base the task started from, or use initial mode explicitly)", short(sha))
+}
+
+// ConfigHashAt returns the hash of the .aigate.yml committed at sha (what a
+// report made against base sha records as config_hash).
+func ConfigHashAt(repo, sha string) (string, error) {
+	cfg, err := loadConfig(repo, sha)
+	if err != nil {
+		return "", err
+	}
+	return cfg.Hash(), nil
 }
 
 func loadConfig(top, sha string) (config.Config, error) {
@@ -193,9 +237,18 @@ func Run(ctx context.Context, o Options) (report.Report, error) {
 	if err != nil {
 		return report.Report{}, err
 	}
-	base, err := resolveBase(top, o.Base, head)
-	if err != nil {
-		return report.Report{}, err
+	var base string
+	switch {
+	case o.Initial && o.Base != "":
+		return report.Report{}, errors.New("initial mode takes no base")
+	case o.Initial:
+	default:
+		if base, err = resolveBase(top, o.Base, head); err != nil {
+			return report.Report{}, err
+		}
+		if base == head {
+			return report.Report{}, selfCompare(base)
+		}
 	}
 	dirty, err := gitx.Dirty(top)
 	if err != nil {
@@ -237,14 +290,23 @@ func Run(ctx context.Context, o Options) (report.Report, error) {
 	if tc == "" {
 		tc = "unclassified"
 	}
+	// Save first, then bind the saved bytes in the ledger. A report saved
+	// without its ledger event (ledger failure = gate error) fails `check`.
+	path, err := report.Save(top, r)
+	if err != nil {
+		return report.Report{}, fmt.Errorf("save report: %w", err)
+	}
+	saved, err := os.ReadFile(path)
+	if err != nil {
+		return report.Report{}, fmt.Errorf("read saved report: %w", err)
+	}
+	sum := sha256.Sum256(saved)
 	if err := ledger.Append(LedgerPath(home, repoID), "run_result", repoID, map[string]any{
 		"report": short(head), "category": string(r.Category), "base": r.Base, "head": head,
 		"task_class": tc, "initial": r.Initial, "checks": counts,
+		"config_hash": r.ConfigHash, "report_sha256": hex.EncodeToString(sum[:]),
 	}, time.Now().UTC()); err != nil {
-		return report.Report{}, fmt.Errorf("ledger: %w", err)
-	}
-	if _, err := report.Save(top, r); err != nil {
-		return report.Report{}, fmt.Errorf("save report: %w", err)
+		return report.Report{}, fmt.Errorf("ledger (report %s was saved but is not bound; `aigate check` will reject it): %w", path, err)
 	}
 	return r, nil
 }
@@ -284,7 +346,7 @@ func runCompare(ctx context.Context, o Options, home, repoID, top, base, head st
 	cfg := p.Cfg
 	r.ConfigHash = cfg.Hash()
 
-	hasProt := len(p.Diff.RemovedLines) > 0 || len(p.AddedGuarded) > 0
+	hasProt := p.NeedsApproval()
 	valid := false
 	if hasProt {
 		valid = approval.Store{Path: ApprovalsPath(home)}.Valid(repoID, base, p.Diff.Hash)
@@ -301,7 +363,7 @@ func runCompare(ctx context.Context, o Options, home, repoID, top, base, head st
 	}
 	// Repo-level rules run once, independent of the number of checks.
 	repoVs, _ := rules.Evaluate(rules.Input{Dirty: dirty, ProtectedRemoved: len(p.Diff.RemovedLines),
-		ProtectedFiles: p.Diff.FilesWithRemovals, AddedGuardedFiles: p.AddedGuarded, ApprovalHashValid: valid})
+		ProtectedFiles: p.Diff.FilesWithRemovals, ProtectedChanged: p.Diff.Changed(), AddedGuardedFiles: p.AddedGuarded, ApprovalHashValid: valid})
 	for _, v := range repoVs {
 		if !isRepoLevel(v.Rule) {
 			continue
@@ -314,11 +376,18 @@ func runCompare(ctx context.Context, o Options, home, repoID, top, base, head st
 	if !hasRequired(cfg) {
 		add(noRequired())
 	}
-	for _, c := range cfg.Checks {
-		bi, bs, err := runSide(ctx, top, base, c)
-		if err != nil {
+	// All base runs first, then all head runs: head code must not run before
+	// any base run, or it could poison shared state ($TMPDIR, caches) and turn
+	// base results into waived failures.
+	baseRuns := make([]rules.RunInfo, len(cfg.Checks))
+	baseSums := make([]report.RunSummary, len(cfg.Checks))
+	for i, c := range cfg.Checks {
+		if baseRuns[i], baseSums[i], err = runSide(ctx, top, base, c); err != nil {
 			return err
 		}
+	}
+	for i, c := range cfg.Checks {
+		bi, bs := baseRuns[i], baseSums[i]
 		hi, hsum, err := runSide(ctx, top, head, c)
 		if err != nil {
 			return err
