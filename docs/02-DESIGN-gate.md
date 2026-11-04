@@ -1,4 +1,4 @@
-# 서브프로젝트 1 — 검증 게이트(aigate) 설계서 (v0.1, 2026-11-04)
+# 서브프로젝트 1 — 검증 게이트(aigate) 설계서 (v0.2, 2026-11-04 — 최종 리뷰 반영)
 
 상위 문서: `01-REQUIREMENTS.md`. 이 문서는 서브프로젝트 ①(검증 게이트)만 다룬다. 오케스트레이터·워커 어댑터·모델 게이트웨이·알림은 별도 설계.
 
@@ -53,6 +53,12 @@ checks:
     required: true
 ```
 
+**v0.2 추가 — 최종 리뷰 반영(2026-11-04)**
+- `protected_modified`는 보호 파일(보호 glob과 `approval_on_add`·내장 보호 경로의 합집합)의 **기존 줄 변경·삭제**뿐 아니라 **파일 삭제(빈 파일 포함)·형식 변경(T, 예: 파일→심볼릭 링크)·모드만 변경·바이너리 내용 변경**에도 발동한다. 바이너리 판정은 속성과 무관하게 blob 내용(앞 8000바이트의 NUL, git과 같은 기준)으로 한다.
+- 보호 diff(해시·삭제 줄·추가 파일·approve 화면)는 모두 `git diff --text -U0 --full-index`로 만들고 textconv·외부 diff·속성 파일·diff 배치 설정(`indentHeuristic`, `interHunkContext`, `noprefix`, `mnemonicPrefix`, `orderFile`, `submodule`, `ignoreSubmodules`, `relative`)을 고정한다. 그래서 head의 `.gitattributes`나 `.git/info/attributes`의 `-diff`/`binary`가 지운 줄을 가릴 수 없다. `--numstat`은 `--text`를 무시하므로 판정에 쓰지 않는다(`--raw`로 상태·모드·blob).
+- 기존 보호 파일에 **텍스트 줄만 추가**하는 것은 여전히 승인 대상이 아니다(4.1 결정 대기).
+- **내장 보호 경로**(설정과 무관하게 `approval_on_add`로 취급, 따라서 보호 diff에도 포함): `**/node_modules/**`, `.gitattributes`, `**/.gitattributes`, `.gitmodules`, `.npmrc`, `**/.npmrc`, `pytest.ini`, `**/pytest.ini`, `tox.ini`, `**/tox.ini`, `setup.cfg`, `**/setup.cfg`, `go.work`, `go.work.sum`, `vendor/**`, `**/sitecustomize.py`, `**/usercustomize.py`, `requirements*.txt`, `**/requirements*.txt`, `package-lock.json`, `**/package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`. 러너 설정·의존성 설치·인터프리터 시작 코드를 바꿀 수 있는 파일들이다. 새로 추가하면 승인이 필요하고, 이미 있는 파일에서 줄을 지우거나 바꾸는 것도(보호 diff에 들어가므로) 승인이 필요하다.
+
 ### 3.2 어댑터
 공통 인터페이스: `Run(check, workdir) → {rc, timedOut, results[id→status], tail}`. 상태는 `passed | failed | error | skipped`.
 - `junit`: 명령이 `$AIGATE_JUNIT` 경로에 JUnit XML을 쓰게 한다(pytest, vitest, jest).
@@ -80,9 +86,21 @@ checks:
 - 단위: 보호 파일 diff의 해시(정규화한 diff 텍스트의 sha256). `aigate approve`가 diff를 보여주고, 사람이 확인하면 `(저장소, base, 해시, 시각)`을 `~/.aigate/approvals.json`(저장소 밖)에 기록. **TTY 없는 실행은 거부**한다.
 - 해시가 정확히 같을 때만 유효. 승인 후 보호 파일이 더 바뀌면 재승인.
 - 승인은 `protected_modified` 위반만 해소한다. 다른 위반은 그대로 남는다.
+- **v0.2 추가 — 최종 리뷰 반영(2026-11-04)**: `approve`는 해시를 계산하는 텍스트 **전체**(diff 텍스트와 정렬된 `A <경로>` 줄)를 자르지 않고 `----- BEGIN HASHED DIFF -----` / `----- END HASHED DIFF -----` 사이에 출력한 뒤 `yes`를 묻는다. 표시된 텍스트의 sha256 앞 16자가 곧 표시된 해시다. 새 보호 파일(conftest.py, node_modules 항목 등)도 이름만이 아니라 내용이 보인다. 이전에는 삭제 줄 40개와 파일 이름만 보여 줘서 보이지 않는 부분에 위조를 숨길 수 있었다.
 
 ### 3.5 증거 신선도
 보고서는 head SHA, base SHA, 설정 해시, 도구 버전, 실행 명령, 시각을 묶는다. `aigate check`는 (a) 보고서 head == 현재 HEAD (b) 작업 트리 clean (c) 판정 ok (d) 승인 유효를 확인한다. 오케스트레이터는 완료 선언·push 전에 반드시 호출한다.
+
+**v0.2 추가 — 최종 리뷰 반영(2026-11-04)**: 사용법은 `aigate check REPORT.json --repo DIR --base REF`이고 `--base`는 필수다. 위 (a)~(d)에 더해 다음 중 하나라도 맞지 않으면 신선하지 않다(종료 1, 문제 목록 출력).
+- (e) base 고정: 보고서 base == `--base`가 가리키는 커밋. 초기(initial) 모드 보고서와 base == head 보고서(자기 비교)는 증거로 인정하지 않는다.
+- (f) 저장소: 보고서 repo == 현재 git 최상위 경로.
+- (g) 설정: 보고서 config_hash == **base 커밋**의 `.aigate.yml` 해시.
+- (h) 내부 일관성: 판정 ok인데 위반이 있거나 종료 코드가 0이 아니거나 무효 승인이 있으면 모순으로 거부.
+- (i) 이력 대조: ledger가 `ledger verify`를 통과하고, 이 저장소의 (head, base)에 대한 **마지막** `run_result`가 판정 ok, 같은 config_hash, 그리고 검사하는 보고서 파일 바이트의 sha256(`report_sha256`)과 같아야 한다. 보고서 파일만 손으로 쓰거나 실행 뒤 고친 경우는 여기서 걸린다.
+- `run`은 보고서를 먼저 저장하고 그 바이트의 sha256을 ledger `run_result`에 기록한다. ledger 쓰기가 실패하면 게이트 오류(64)이고, 그때 남은 보고서는 (i)에 걸려 `check`를 통과하지 못한다.
+- `run`은 base == head(해석 후 같은 커밋)이면 게이트 오류다. CLI `run`은 `--base REF`가 필수이고, `--initial`을 명시할 때만 base 없이 초기 모드로 돈다(보고서에 initial로 표시, 위 (e)에 따라 `check` 증거가 아님). 둘 다 주거나 둘 다 없으면 사용법 오류(64).
+- 읽을 수 없는 보고서·풀 수 없는 base·base에 설정 없음·홈 디렉터리 오류는 게이트 오류(64)이며 절대 fresh가 아니다.
+- 한계: ledger는 키 없는 해시 체인이라, 같은 사용자 권한의 에이전트가 ledger 전체를 다시 계산해 쓰면 (i)도 우회된다(3.9·4장, 근본 차단은 ②).
 
 ### 3.6 보고서 스키마 v1
 ```json
@@ -100,6 +118,7 @@ checks:
 
 ### 3.7 종료 코드
 0 ok / 1 behavior_failure / 2 verification_incomplete / 3 check_weakened / **64 게이트 자체 오류**(git 실패, 설정 오류 등). 자체 오류에서는 절대 ok를 내지 않는다.
+- v0.2 추가: SIGINT(Ctrl-C)·SIGTERM으로 중단된 `run`도 64("interrupted; nothing recorded")다. 러너가 검사의 프로세스 그룹을 죽이고, worktree는 컨텍스트와 무관하게 지우며, 보고서·ledger는 쓰지 않는다. 검사 실행 순서는 모든 검사의 base 실행을 먼저, 그다음 모든 head 실행이다(head 코드가 공유 상태를 더럽혀 base 결과를 바꾸지 못하게).
 
 ### 3.8 실행 안전
 검사는 프로세스 그룹 단위로 타임아웃 시 종료한다. 에이전트가 쓴 코드를 실행하므로 샌드박스가 이상적이나 v1에는 없고 서브프로젝트 ②에서 다룬다.
@@ -107,7 +126,7 @@ checks:
 ### 3.9 이력(ledger) — FR14 대응 (사용자 검토 대기)
 점진적 자율성의 근거 데이터를 쌓기 위해 게이트는 사건을 **추가 전용 이력**으로 남긴다.
 - 위치: `~/.aigate/ledger/<repo-id>.jsonl` (저장소 밖). 한 줄 = 한 사건, 각 줄에 직전 줄의 해시(`prev_hash`)를 넣어 변조를 감지한다(`aigate ledger verify`).
-- 게이트가 직접 기록하는 사건: `run_result`(보고서 id, 판정, base/head, 검사별 개수, `task_class`), `approval_granted`, `approval_rejected`.
+- 게이트가 직접 기록하는 사건: `run_result`(보고서 id, 판정, base/head, 검사별 개수, `task_class`; v0.2부터 `config_hash`, `report_sha256` 추가), `approval_granted`, `approval_rejected`.
 - 게이트 밖(서브프로젝트 ②)이 기록할 사건: `revert_observed`(사람이 되돌림), `human_override`, `promotion_proposed/approved`, `demotion`.
 - `task_class`는 `aigate run --task-class <이름>`으로 받는다(기본 `unclassified`). 분류 체계는 ②에서 정한다.
 - 한계: 같은 사용자 권한의 에이전트가 파일 전체를 다시 쓰면 해시 체인도 위조할 수 있다. 3.4와 같은 이유로 근본 차단은 ②의 샌드박스에서 한다.
@@ -120,6 +139,11 @@ checks:
 - 테스트 id가 실행마다 바뀌는 러너(무작위 이름 등)는 지원하지 않는다.
 - base 자체가 불안정(flaky)하면 `verification_incomplete`가 늘어난다.
 - 이력(ledger)은 꼬리 절단·파일 비우기를 감지하지 못하고 키가 없다(3.9 "무결성 범위").
+- **(v0.2, 무인 사용 차단 요인) 검사 대상 코드에 넘기는 환경(I4).** 검사·`setup` 명령은 aigate와 같은 사용자 권한과 전체 환경 변수(예: `GH_TOKEN`, 클라우드 자격 증명)로 실행된다. 에이전트가 쓴 테스트 코드가 토큰을 읽고 `~/.aigate`(승인·ledger)를 직접 쓸 수 있다. 출력 꼬리는 가리지만 실행 자체는 막지 않는다. 환경 허용 목록과 샌드박스(서브프로젝트 ②)가 생기기 전에는 **사람 없이 판정을 믿는 무인 사용을 하면 안 된다.**
+- **(v0.2) pytest `-P`.** pytest 프리셋은 `python -P -m pytest`라 Python 3.11 이상이 필요하다. 루트에서 import하는 저장소는 `pythonpath = .` 설정이 필요하다. 3.11 미만에서는 실행이 실패해 `verification_incomplete`로 닫힐 것으로 추정한다(미검증).
+- **(v0.2) `--base`는 항상 명시.** CLI `run`·`check`는 `--base` 없이는 돌지 않는다(초기 모드는 `--initial` 명시). 오케스트레이터는 작업을 시작할 때 고정한 base를 두 명령에 같은 값으로 넘긴다. 라이브러리 `gate.Run`은 Base가 비면 예전처럼 merge-base를 자동으로 정한다(테스트용).
+- **(v0.2) 결정 대기: 보호 파일에 줄만 추가.** 기존 보호 파일에 텍스트 줄만 추가하는 변경은 여전히 승인 없이 통과한다(3.1). 이것으로 테스트를 무력화하는 우회 10개가 `ok`로 남아 있다(4.1 첫 항목, 사용자 결정 필요).
+- **(v0.2) `npx --no-install`.** vitest/jest 프리셋은 새 다운로드를 하지 않지만, `~/.npm/_npx` 캐시에 예전에 받은 러너가 있으면 그것을 실행한다(고정되지 않은 버전). 실제 저장소는 `setup: npm ci`로 로컬 설치를 쓴다.
 - `runner_error`는 모든 테스트가 통과해도 러너가 0이 아닌 코드로 끝나는 경우(예: vitest의 unhandled error·커버리지 임계 실패)를 `verification_incomplete`로 만든다. 보수적인 판정이지만 오경보 원인이 될 수 있고, 장난감 시나리오의 오경보율 0%에는 이런 경우가 없다.
 
 ### 4.1 적대 검토(Task 12)에서 확인한 한계
@@ -131,9 +155,9 @@ checks:
 - **테스트하지 않는 입력.** 어떤 테스트도 쓰지 않는 입력에서만 깨지는 변경은 통과한다(변이 테스트 v2가 이 빈틈을 측정).
 - **exit-code 검사의 단위.** `go build ./...` 같은 exit-code 검사는 대상별 id가 없어서, 깨진 패키지를 build tag로 빼면 "테스트 없는 패키지 삭제"와 구별되지 않는다.
 - **비필수 검사.** base 설정이 테스트 검사를 `required: false`로 두면 그 검사의 실패는 판정에 안 들어간다(설계상 동작, 설정 선택). 완화: 테스트 검사가 하나도 필수가 아니면 경고.
-- **증거 파일 위조(제안, 미구현).** `aigate check`는 저장소 안 `.aigate/reports/<head>.json`(git 미추적, 에이전트가 쓸 수 있음)을 믿는다. `run` 없이 `category: ok` 파일을 써 두면 `check`가 통과한다. 3.5가 check의 단계를 정하므로 바꾸지 않았다. 제안: `check`가 `~/.aigate/ledger`의 마지막 `run_result`(같은 head·base·판정 ok)와 대조.
-- **base 자동 결정.** `--base`를 생략하면 merge-base로 정한다. 에이전트가 `main`을 head로 옮길 수 있으면 merge-base == head가 되어 초기 모드(회귀 비교 없음)가 된다. 오케스트레이터는 항상 `--base`를 고정해 넘긴다는 전제다.
-- **의존성 디렉터리.** `node_modules/`는 내장 보호 경로로 막았다. Go `vendor/`(수정된 vendored 의존성, 예: 항상 통과하는 assert 라이브러리)와 go.mod의 새 `replace` 줄은 같은 계열이지만 장난감 모듈에 의존성이 없어 재현하지 않았다. 의존성이 있는 저장소는 `vendor/**`를 `approval_on_add`에 넣는 것을 권한다.
+- **증거 파일 위조 → v0.2에서 수정(최종 리뷰 C2).** 예전에는 `check`가 저장소 안 보고서 파일만 믿어 손으로 쓴 `category: ok` 파일이 통과했다. 이제 3.5 (e)~(i)로 base·설정·ledger의 `run_result`(보고서 sha256)와 대조한다. 남은 한계: ledger 체인 전체를 다시 쓰는 같은 사용자 에이전트(키 없음).
+- **base 자동 결정 → v0.2에서 CLI는 `--base` 필수.** 예전에는 `--base`를 생략하면 merge-base로 정했고, 에이전트가 `main`을 head로 옮기면 초기 모드가 되었으며 `--base HEAD`(자기 비교)도 ok를 냈다. 이제 자기 비교는 오류, 초기 모드는 `--initial` 명시, 초기 모드 보고서는 `check` 증거가 아니다.
+- **의존성 디렉터리.** `node_modules/`는 내장 보호 경로로 막았다(v0.2: `vendor/**`, `go.work`, lock 파일, `requirements*.txt`, `.npmrc`도 내장 보호, 3.1). Go `vendor/`(수정된 vendored 의존성, 예: 항상 통과하는 assert 라이브러리)와 go.mod의 새 `replace` 줄은 같은 계열이지만 장난감 모듈에 의존성이 없어 재현하지 않았다. 의존성이 있는 저장소는 `vendor/**`를 `approval_on_add`에 넣는 것을 권한다.
 
 ## 5. 테스트 전략
 1. 규칙: Go 표 기반 단위 테스트(합성 결과 입력).
