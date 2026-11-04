@@ -155,13 +155,14 @@ func ProtectedDiff(repo, base, head string, protected []string) (ProtDiff, error
 		specs = append(specs, ":(glob)"+p)
 	}
 	diffArgs := func(extra ...string) []string {
-		a := []string{"diff", "--no-renames", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/"}
+		a := []string{"-c", "core.quotepath=false", "-c", "diff.algorithm=myers", "diff", "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv",
+			"--full-index", "--diff-algorithm=myers", "--src-prefix=a/", "--dst-prefix=b/"}
 		a = append(a, extra...)
 		a = append(a, base, head)
 		return append(a, specs...)
 	}
 
-	text, err := run(repo, diffArgs("-U0")...)
+	text, err := run(repo, diffArgs("-U0", "--binary")...)
 	if err != nil {
 		return d, err
 	}
@@ -234,6 +235,37 @@ func hashOf(diff string, added []string) string {
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
+// AddedMatching returns the sorted paths added between base and head that match
+// any glob, using git's own ":(glob)" pathspec semantics. Invalid pathspecs
+// yield an error (never fail open).
+func AddedMatching(repo, base, head string, globs []string) ([]string, error) {
+	if len(globs) == 0 {
+		return nil, nil
+	}
+	args := []string{"-c", "core.quotepath=false", "diff", "--name-status", "-z", "--no-renames", "--diff-filter=A", base, head, "--"}
+	for _, g := range globs {
+		args = append(args, ":(glob)"+g)
+	}
+	out, err := run(repo, args...)
+	if err != nil {
+		return nil, err
+	}
+	var res []string
+	parts := splitZ(out)
+	for i := 0; i+1 < len(parts); i += 2 {
+		if parts[i] == "A" {
+			res = append(res, parts[i+1])
+		}
+	}
+	sort.Strings(res)
+	return res, nil
+}
+
+// MatchGlob is a pure-Go approximation of glob matching. It is NOT used for
+// guard decisions (use ProtectedDiff/AddedMatching, which rely on git's own
+// pathspec semantics); it differs from git for bare directory patterns,
+// "[!x]" classes and malformed patterns.
+//
 // MatchGlob matches a slash-separated path against a glob where "**" matches
 // any number of segments (a trailing "/**" needs at least one), "*" and "?"
 // stay within one segment.

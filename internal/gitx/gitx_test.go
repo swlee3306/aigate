@@ -397,3 +397,70 @@ func TestMatchGlob(t *testing.T) {
 		}
 	}
 }
+
+func TestHashPinnedAgainstConfigAndClone(t *testing.T) {
+	r := newRepo(t)
+	write(t, r, "tests/a.py", "1\n2\n")
+	write(t, r, "tests/b.bin", "a\x00b")
+	base := commit(t, r, "base")
+	write(t, r, "tests/a.py", "1\n")
+	write(t, r, "tests/b.bin", "a\x00c")
+	head := commit(t, r, "head")
+	pat := []string{"tests/**"}
+	d1, err := ProtectedDiff(r, base, head, pat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	git(t, r, "config", "core.abbrev", "4")
+	git(t, r, "config", "diff.algorithm", "patience")
+	d2, _ := ProtectedDiff(r, base, head, pat)
+	if d1.Hash != d2.Hash {
+		t.Errorf("hash depends on config: %s vs %s", d1.Hash, d2.Hash)
+	}
+	clone := filepath.Join(t.TempDir(), "c")
+	git(t, r, "clone", "-q", r, clone)
+	d3, err := ProtectedDiff(clone, base, head, pat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d1.Hash != d3.Hash {
+		t.Errorf("hash differs in clone: %s vs %s", d1.Hash, d3.Hash)
+	}
+	// binary content change alters hash
+	write(t, r, "tests/b.bin", "a\x00d")
+	head2 := commit(t, r, "head2")
+	d4, _ := ProtectedDiff(r, base, head2, pat)
+	if d4.Hash == d1.Hash {
+		t.Error("binary content change must change hash")
+	}
+}
+
+func TestAddedMatching(t *testing.T) {
+	r := newRepo(t)
+	write(t, r, "README", "r\n")
+	base := commit(t, r, "base")
+	for _, f := range []string{"tests/a.py", "a.py", "b.py", "conftest.py", "x/y/conftest.py", "docs/내 파일 x.md"} {
+		write(t, r, f, "x\n")
+	}
+	head := commit(t, r, "head")
+	cases := []struct {
+		globs []string
+		want  []string
+	}{
+		{[]string{"tests"}, []string{"tests/a.py"}},
+		{[]string{"tests/"}, []string{"tests/a.py"}},
+		{[]string{"[!a]*.py"}, []string{"b.py", "conftest.py"}},
+		{[]string{"**/conftest.py"}, []string{"conftest.py", "x/y/conftest.py"}},
+		{[]string{"docs/*.md"}, []string{"docs/내 파일 x.md"}},
+		{nil, nil},
+	}
+	for _, c := range cases {
+		got, err := AddedMatching(r, base, head, c.globs)
+		if err != nil || !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%q: got %q err %v want %q", c.globs, got, err, c.want)
+		}
+	}
+	if _, err := AddedMatching(r, base, head, []string{"../outside"}); err == nil {
+		t.Error("invalid pathspec must error")
+	}
+}
