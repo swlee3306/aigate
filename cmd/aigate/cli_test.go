@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -177,5 +178,28 @@ func TestApprovePositivePath(t *testing.T) {
 	}
 	if c, out, _ := run("ledger", "verify", "--repo", repo); c != 0 || !strings.HasPrefix(out, "OK ") {
 		t.Fatalf("ledger: %d %s", c, out)
+	}
+}
+
+// KNOWN GAP (Task 12, self S34): `check` trusts the report file, which lives
+// in the agent-writable repo (.aigate/reports, untracked). A report written
+// by hand, without any `aigate run`, passes as fresh. Proposed fix (needs a
+// spec 3.5 decision): require a matching run_result in ~/.aigate/ledger.
+// This test pins the current behaviour so a fix makes it fail on purpose.
+func TestKnownGapForgedReportPassesCheck(t *testing.T) {
+	repo, base := newRepo(t)
+	git(t, repo, "checkout", "-q", "-b", "f")
+	write(t, repo, "tests/t.txt", "one\n") // a protected removal: run would say check_weakened
+	head := commit(t, repo, "f1")
+	forged := fmt.Sprintf(`{"schema_version":1,"category":"ok","exit_code":0,"repo":%q,"base":%q,"head":%q,`+
+		`"config_hash":"x","tool_version":"0.1.0","started_at":"","finished_at":"","checks":[],"violations":[],"waived":[],"approvals":[],"initial":false}`,
+		repo, base, head)
+	rp := filepath.Join(repo, ".aigate", "reports", head[:10]+".json")
+	write(t, repo, ".aigate/reports/"+head[:10]+".json", forged)
+	if c, out, e := run("check", rp, "--repo", repo); c != 0 || !strings.Contains(out, "fresh") {
+		t.Fatalf("gap closed? forged report no longer passes check: %d %s %s", c, out, e)
+	}
+	if c, _, _ := run("run", "--repo", repo, "--base", base); c != 3 {
+		t.Fatalf("the real verdict should be check_weakened (3), got %d", c)
 	}
 }
