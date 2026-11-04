@@ -1,0 +1,50 @@
+{
+ "M1_end_inclusive": [
+  [
+   "start <= ts < end",
+   "start <= ts <= end"
+  ]
+ ],
+ "M2_no_dedupe": [
+  [
+   "if key in store.seen:",
+   "if False:"
+  ]
+ ],
+ "M3_missing_zero": [
+  [
+   "        return None\n    return sum(values)",
+   "        return 0\n    return sum(values)"
+  ]
+ ],
+ "M4_start_exclusive": [
+  [
+   "start <= ts < end",
+   "start < ts < end"
+  ]
+ ],
+ "M5_no_rollback": [
+  [
+   "        store.results.clear()\n        store.results.update(snapshot)\n",
+   ""
+  ]
+ ],
+ "M6_sum_plus_one": [
+  [
+   "    return sum(values)",
+   "    return sum(values) + 1"
+  ]
+ ],
+ "M7_dedupe_ignores_source": [
+  [
+   "key = (r[\"source\"], r[\"ts\"])",
+   "key = (r[\"ts\"],)"
+  ]
+ ],
+ "M8_swallow_failure": [
+  [
+   "        raise\n",
+   "        return False\n"
+  ]
+ ]
+}
