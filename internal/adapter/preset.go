@@ -20,7 +20,11 @@ func PresetFor(name string) (Preset, bool) {
 	switch name {
 	case "pytest":
 		p = Preset{
-			Command:    []string{"python", "-m", "pytest", "-q", "--junitxml=${AIGATE_JUNIT}"},
+			// -P (Python 3.11+): do not prepend the cwd to sys.path, so a
+			// pytest.py / pytest/ committed at the repo root cannot stand in
+			// for the real runner. Repos importing from the root need
+			// `pythonpath = .` in their pytest config.
+			Command:    []string{"python", "-P", "-m", "pytest", "-q", "--junitxml=${AIGATE_JUNIT}"},
 			Neutralize: []string{"-o", "addopts="},
 			Adapter:    "junit",
 		}

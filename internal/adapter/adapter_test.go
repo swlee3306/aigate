@@ -189,6 +189,11 @@ func TestPresetFor(t *testing.T) {
 	if py.Adapter != "junit" || strings.Join(py.Neutralize, " ") != "-o addopts=" || !strings.Contains(strings.Join(py.Command, " "), "--junitxml=${AIGATE_JUNIT}") {
 		t.Errorf("pytest: %+v", py)
 	}
+	// -P (safe path): cwd must not be prepended to sys.path, or a pytest.py
+	// committed at the repo root would replace the real runner.
+	if got := strings.Join(py.Command[:4], " "); got != "python -P -m pytest" {
+		t.Errorf("pytest preset must start with \"python -P -m pytest\", got %q", got)
+	}
 	g, _ := PresetFor("go")
 	if g.Adapter != "gotest-json" || strings.Join(g.Command, " ") != "go test -json -count=1 ./..." {
 		t.Errorf("go: %+v", g)
