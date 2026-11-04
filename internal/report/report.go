@@ -130,24 +130,80 @@ func countsLine(s RunSummary) string {
 	return fmt.Sprintf("rc=%d 통과 %d 실패 %d 오류 %d 건너뜀 %d", s.RC, c.Passed, c.Failed, c.Error, c.Skipped)
 }
 
-// Check returns Korean problem descriptions; empty means the evidence is fresh.
-func Check(r Report, headNow string, dirty bool, approvalValid func(hash string) bool) []string {
+// LedgerRun is the last run_result ledger event for (repo, head, base).
+type LedgerRun struct{ Category, ConfigHash, ReportSHA256 string }
+
+// Expect is what the current repository state says a fresh report must match.
+type Expect struct {
+	Head, Base, Repo, ConfigHash string
+	Dirty                        bool
+	ApprovalValid                func(hash string) bool
+	ReportSHA256                 string
+	LedgerErr                    error
+	LedgerRun                    *LedgerRun
+}
+
+// Check returns Korean problem descriptions; empty means the evidence is
+// fresh. It is pure: the caller (gate.CheckReport) gathers Expect from git,
+// the base config and the ledger. A report is fresh only when it is an ok,
+// internally consistent compare-mode report for exactly this repo, HEAD,
+// base and base config, and the ledger's last run_result for (head, base)
+// says ok with the same config hash and the sha256 of this very file.
+func Check(r Report, e Expect) []string {
 	var p []string
+	add := func(format string, a ...any) { p = append(p, fmt.Sprintf(format, a...)) }
 	if r.SchemaVersion != 1 {
-		p = append(p, fmt.Sprintf("보고서 스키마 버전이 지원되지 않습니다: %d", r.SchemaVersion))
+		add("보고서 스키마 버전이 지원되지 않습니다: %d", r.SchemaVersion)
 	}
-	if r.Head != headNow {
-		p = append(p, fmt.Sprintf("증거는 %s 기준인데 현재 HEAD는 %s 입니다", short(r.Head), short(headNow)))
+	if r.Head == "" || r.Head != e.Head {
+		add("증거는 %s 기준인데 현재 HEAD는 %s 입니다", short(r.Head), short(e.Head))
 	}
-	if dirty {
+	if e.Dirty {
 		p = append(p, "작업 트리에 커밋되지 않은 변경이 있습니다")
 	}
 	if r.Category != rules.CategoryOK {
-		p = append(p, fmt.Sprintf("보고서 판정이 ok가 아닙니다: %s", r.Category))
+		add("보고서 판정이 ok가 아닙니다: %s", r.Category)
+	}
+	switch {
+	case r.Initial:
+		p = append(p, "초기(initial) 모드 보고서는 회귀 비교가 없어 완료 증거로 인정하지 않습니다")
+	case r.Base == "" || r.Base != e.Base:
+		add("보고서의 base %q 가 지정한 base %s 와 다릅니다", short(r.Base), short(e.Base))
+	}
+	if r.Base != "" && r.Base == r.Head {
+		p = append(p, "보고서의 base와 head가 같은 커밋입니다(자기 비교는 증거가 아님)")
+	}
+	if r.Repo != e.Repo {
+		add("보고서의 저장소 %q 가 현재 저장소 %q 와 다릅니다", r.Repo, e.Repo)
+	}
+	if r.ConfigHash == "" || r.ConfigHash != e.ConfigHash {
+		add("보고서의 설정 해시 %q 가 base의 .aigate.yml 해시 %q 와 다릅니다", r.ConfigHash, e.ConfigHash)
+	}
+	if r.Category == rules.CategoryOK && (len(r.Violations) > 0 || r.ExitCode != 0) {
+		add("보고서가 모순됩니다: 판정 ok인데 위반 %d건, 종료 코드 %d", len(r.Violations), r.ExitCode)
 	}
 	for _, a := range r.Approvals {
-		if a.Valid && (approvalValid == nil || !approvalValid(a.Hash)) {
-			p = append(p, fmt.Sprintf("보고서가 의존한 승인 %s 이(가) 더 이상 유효하지 않습니다", short(a.Hash)))
+		switch {
+		case !a.Valid && r.Category == rules.CategoryOK:
+			add("보고서가 모순됩니다: 판정 ok인데 무효 승인 %s 이(가) 있습니다", short(a.Hash))
+		case a.Valid && (e.ApprovalValid == nil || !e.ApprovalValid(a.Hash)):
+			add("보고서가 의존한 승인 %s 이(가) 더 이상 유효하지 않습니다", short(a.Hash))
+		}
+	}
+	switch lr := e.LedgerRun; {
+	case e.LedgerErr != nil:
+		add("이력(ledger)을 검증할 수 없습니다: %v", e.LedgerErr)
+	case lr == nil:
+		p = append(p, "이력(ledger)에 이 head·base의 run_result가 없습니다(aigate run 없이 만든 보고서)")
+	default:
+		if lr.Category != string(rules.CategoryOK) {
+			add("이력(ledger)의 마지막 run_result 판정이 ok가 아닙니다: %s", lr.Category)
+		}
+		if lr.ConfigHash != r.ConfigHash {
+			add("이력(ledger)의 설정 해시 %q 가 보고서 %q 와 다릅니다", lr.ConfigHash, r.ConfigHash)
+		}
+		if e.ReportSHA256 == "" || lr.ReportSHA256 != e.ReportSHA256 {
+			p = append(p, "이력(ledger)에 기록된 보고서 sha256이 이 파일과 다릅니다(실행 후 보고서가 바뀜)")
 		}
 	}
 	return p
@@ -199,17 +255,22 @@ func Load(path string) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
+	return Decode(data, path)
+}
+
+// Decode strictly decodes a schema v1 report from data (name is for errors).
+func Decode(data []byte, name string) (Report, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	var r Report
 	if err := dec.Decode(&r); err != nil {
-		return Report{}, fmt.Errorf("decode %s: %w", path, err)
+		return Report{}, fmt.Errorf("decode %s: %w", name, err)
 	}
 	if _, err := dec.Token(); err != io.EOF {
-		return Report{}, fmt.Errorf("decode %s: trailing data", path)
+		return Report{}, fmt.Errorf("decode %s: trailing data", name)
 	}
 	if r.SchemaVersion != 1 {
-		return Report{}, fmt.Errorf("%s: unsupported schema_version %d", path, r.SchemaVersion)
+		return Report{}, fmt.Errorf("%s: unsupported schema_version %d", name, r.SchemaVersion)
 	}
 	return r, nil
 }

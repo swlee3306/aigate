@@ -100,44 +100,93 @@ func TestMarkdown(t *testing.T) {
 	}
 }
 
+// freshSample is sample() made internally consistent (ok, no violations,
+// compare mode): sample() itself is a rendering fixture (ok + a violation +
+// initial) that check must reject since the final review (C2).
+func freshSample() Report {
+	r := sample()
+	r.Violations = nil
+	r.Initial = false
+	return r
+}
+
+// expect returns the Expect under which freshSample() is fresh.
+func expect(head string, dirty bool, av func(string) bool) Expect {
+	return Expect{Head: head, Base: baseSHA, Repo: "/r", ConfigHash: "ch", Dirty: dirty, ApprovalValid: av,
+		ReportSHA256: "s", LedgerRun: &LedgerRun{Category: "ok", ConfigHash: "ch", ReportSHA256: "s"}}
+}
+
 func TestCheck(t *testing.T) {
 	yes := func(string) bool { return true }
-	if p := Check(sample(), headSHA, false, yes); len(p) != 0 {
+	if p := Check(freshSample(), expect(headSHA, false, yes)); len(p) != 0 {
 		t.Fatalf("fresh report has problems: %v", p)
 	}
-	p := Check(sample(), "ffffffffff0000", false, yes)
+	p := Check(freshSample(), expect("ffffffffff0000", false, yes))
 	if len(p) != 1 || !strings.Contains(p[0], "aaaaaaaaaa") || !strings.Contains(p[0], "ffffffffff") {
 		t.Fatalf("head mismatch: %v", p)
 	}
-	if p := Check(sample(), headSHA, true, yes); len(p) != 1 {
+	if p := Check(freshSample(), expect(headSHA, true, yes)); len(p) != 1 {
 		t.Fatalf("dirty: %v", p)
 	}
-	bad := sample()
+	bad := freshSample()
 	bad.Category = rules.CategoryWeakened
-	if p := Check(bad, headSHA, false, yes); len(p) != 1 || !strings.Contains(p[0], "check_weakened") {
+	if p := Check(bad, expect(headSHA, false, yes)); len(p) != 1 || !strings.Contains(p[0], "check_weakened") {
 		t.Fatalf("category: %v", p)
 	}
-	if p := Check(sample(), headSHA, false, func(string) bool { return false }); len(p) != 1 || !strings.Contains(p[0], "h1") {
+	if p := Check(freshSample(), expect(headSHA, false, func(string) bool { return false })); len(p) != 1 || !strings.Contains(p[0], "h1") {
 		t.Fatalf("approval vanished: %v", p)
 	}
-	if p := Check(sample(), headSHA, false, nil); len(p) != 1 {
+	if p := Check(freshSample(), expect(headSHA, false, nil)); len(p) != 1 {
 		t.Fatalf("nil approvalValid: %v", p)
 	}
-	inv := sample()
-	inv.Approvals[0].Valid = false
-	if p := Check(inv, headSHA, false, nil); len(p) != 0 {
-		t.Fatalf("report-invalid approval should not add problem: %v", p)
-	}
-	sv := sample()
+	sv := freshSample()
 	sv.SchemaVersion = 2
-	if p := Check(sv, headSHA, false, yes); len(p) != 1 {
+	if p := Check(sv, expect(headSHA, false, yes)); len(p) != 1 {
 		t.Fatalf("schema: %v", p)
 	}
-	all := sample()
+	all := freshSample()
 	all.SchemaVersion = 0
 	all.Category = rules.CategoryBehavior
-	if p := Check(all, "x", true, nil); len(p) != 5 {
+	if p := Check(all, expect("x", true, nil)); len(p) != 5 {
 		t.Fatalf("all problems: %v", p)
+	}
+}
+
+// C2 / T8 / T9: check binds the report to base, repo, config and the ledger,
+// rejects initial and self-compare reports and internally inconsistent ones.
+func TestCheckBindings(t *testing.T) {
+	yes := func(string) bool { return true }
+	cases := []struct {
+		name   string
+		mut    func(r *Report, e *Expect)
+		needle string
+	}{
+		{"wrong base", func(r *Report, e *Expect) { e.Base = "2222222222" }, "base"},
+		{"empty base", func(r *Report, e *Expect) { r.Base = "" }, "base"},
+		{"initial report", func(r *Report, e *Expect) { r.Initial = true }, "초기"},
+		{"self compare", func(r *Report, e *Expect) { r.Base, e.Base = headSHA, headSHA }, "같은 커밋"},
+		{"other repo", func(r *Report, e *Expect) { e.Repo = "/other" }, "저장소"},
+		{"config hash", func(r *Report, e *Expect) { e.ConfigHash = "other" }, "설정"},
+		{"ok with violations", func(r *Report, e *Expect) {
+			r.Violations = []rules.Violation{{Rule: "protected_modified", Category: rules.CategoryWeakened}}
+		}, "모순"},
+		{"ok with exit 3", func(r *Report, e *Expect) { r.ExitCode = 3 }, "모순"},
+		{"ok with invalid approval", func(r *Report, e *Expect) { r.Approvals = append(r.Approvals, ApprovalState{Hash: "h2"}) }, "h2"},
+		{"ledger broken", func(r *Report, e *Expect) { e.LedgerErr = os.ErrInvalid }, "이력"},
+		{"no ledger event", func(r *Report, e *Expect) { e.LedgerRun = nil }, "이력"},
+		{"ledger not ok", func(r *Report, e *Expect) { e.LedgerRun.Category = "check_weakened" }, "이력"},
+		{"ledger config differs", func(r *Report, e *Expect) { e.LedgerRun.ConfigHash = "zz" }, "이력"},
+		{"report edited after run", func(r *Report, e *Expect) { e.ReportSHA256 = "edited" }, "이력"},
+	}
+	for _, c := range cases {
+		r, e := freshSample(), expect(headSHA, false, yes)
+		lr := *e.LedgerRun
+		e.LedgerRun = &lr
+		c.mut(&r, &e)
+		p := Check(r, e)
+		if len(p) == 0 || !strings.Contains(strings.Join(p, "\n"), c.needle) {
+			t.Errorf("%s: want a problem mentioning %q, got %v", c.name, c.needle, p)
+		}
 	}
 }
 

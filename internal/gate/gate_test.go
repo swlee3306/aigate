@@ -926,3 +926,88 @@ func TestLedgerBindsReportAndConfig(t *testing.T) {
 		t.Fatalf("payload %+v", p)
 	}
 }
+
+func checkProblems(t *testing.T, e env, base, path string) []string {
+	t.Helper()
+	p, err := CheckReport(CheckOptions{Repo: e.repo, Base: base, ReportPath: path, HomeDir: e.home})
+	if err != nil {
+		t.Fatalf("CheckReport: %v", err)
+	}
+	return p
+}
+
+// C2: check binds the report to the base, the repo, the base config and the
+// ledger event of the run that saved it.
+func TestCheckReportBindings(t *testing.T) {
+	e := setup(t)
+	write(t, e.repo, ".aigate.yml", checkYAML(e.log, "", "unit"))
+	write(t, e.repo, "unit.flag", "")
+	write(t, e.repo, "tests/t.txt", "one\ntwo\n")
+	base := commit(t, e.repo, "base")
+	mid := commit(t, e.repo, "mid")
+	head := commit(t, e.repo, "head")
+	if r, err := Run(context.Background(), e.opts(base)); err != nil || r.Category != rules.CategoryOK {
+		t.Fatalf("run: %v %s", err, r.Category)
+	}
+	rp := filepath.Join(e.repo, ".aigate", "reports", head[:10]+".json")
+	if p := checkProblems(t, e, base, rp); len(p) != 0 {
+		t.Fatalf("fresh report rejected: %v", p)
+	}
+	git(t, e.repo, "tag", "start", base)
+	if p := checkProblems(t, e, "start", rp); len(p) != 0 {
+		t.Fatalf("base given by name rejected: %v", p)
+	}
+	if p := checkProblems(t, e, mid, rp); len(p) == 0 {
+		t.Fatal("wrong --base accepted")
+	}
+	if _, err := CheckReport(CheckOptions{Repo: e.repo, ReportPath: rp, HomeDir: e.home}); err == nil {
+		t.Fatal("check without base must be an error")
+	}
+	orig, _ := os.ReadFile(rp)
+	// edited after the run (still a valid, consistent ok report)
+	write(t, e.repo, ".aigate/reports/"+head[:10]+".json", strings.Replace(string(orig), `"tool_version": "0.1.0"`, `"tool_version": "0.1.1"`, 1))
+	if p := checkProblems(t, e, base, rp); len(p) == 0 {
+		t.Fatal("report edited after the run accepted")
+	}
+	// forged: a weakened run edited to ok while the violation remains
+	write(t, e.repo, ".aigate/reports/"+head[:10]+".json", string(orig))
+	write(t, e.repo, "tests/t.txt", "one\n")
+	head2 := commit(t, e.repo, "weaken")
+	r, err := Run(context.Background(), e.opts(base))
+	if err != nil || r.Category != rules.CategoryWeakened {
+		t.Fatalf("weakened run: %v %s", err, r.Category)
+	}
+	rp2 := filepath.Join(e.repo, ".aigate", "reports", head2[:10]+".json")
+	b, _ := os.ReadFile(rp2)
+	forged := strings.Replace(strings.Replace(string(b), `"category": "check_weakened",`, `"category": "ok",`, 1), `"exit_code": 3`, `"exit_code": 0`, 1)
+	write(t, e.repo, ".aigate/reports/"+head2[:10]+".json", forged)
+	if p := checkProblems(t, e, base, rp2); len(p) == 0 {
+		t.Fatal("forged ok report accepted")
+	}
+	// a report written by hand with no run at all
+	_, top, _ := RepoID(e.repo)
+	hand := fmt.Sprintf(`{"schema_version":1,"category":"ok","exit_code":0,"repo":%q,"base":%q,"head":%q,"config_hash":%q,`+
+		`"tool_version":"0.1.0","started_at":"","finished_at":"","checks":[],"violations":[],"waived":[],"approvals":[],"initial":false}`,
+		top, base, head2, r.ConfigHash)
+	write(t, e.repo, ".aigate/reports/"+head2[:10]+".json", hand)
+	if p := checkProblems(t, e, base, rp2); len(p) == 0 {
+		t.Fatal("hand-written report accepted")
+	}
+}
+
+// C2: an initial-mode report is never completion evidence.
+func TestCheckReportRejectsInitial(t *testing.T) {
+	e := setup(t)
+	write(t, e.repo, ".aigate.yml", checkYAML(e.log, "", "unit"))
+	write(t, e.repo, "unit.flag", "")
+	head := commit(t, e.repo, "only")
+	o := e.opts("")
+	o.Initial = true
+	if r, err := Run(context.Background(), o); err != nil || r.Category != rules.CategoryOK || !r.Initial {
+		t.Fatalf("initial run: %v %+v", err, r)
+	}
+	rp := filepath.Join(e.repo, ".aigate", "reports", head[:10]+".json")
+	if p := checkProblems(t, e, head, rp); len(p) == 0 {
+		t.Fatal("initial report accepted")
+	}
+}
