@@ -262,9 +262,9 @@ func unsafeApproveText(p gate.Protected, display string) string {
 		for i, f := range l.paths {
 			// a path is printed on one line: a newline in it is unsafe too
 			if fd, bad := textsafe.FirstUnsafe(f); bad {
-				return fmt.Sprintf("%s 목록 %d번째 경로 %q 의 %d번째 바이트에 %s", l.what, i+1, textsafe.Escape(f), fd.Offset+1, fd.Desc)
+				return fmt.Sprintf("%s 목록 %d번째 경로 '%s' 의 %d번째 바이트에 %s", l.what, i+1, textsafe.Escape(f), fd.Offset+1, fd.Desc)
 			} else if j := strings.IndexByte(f, '\n'); j >= 0 {
-				return fmt.Sprintf("%s 목록 %d번째 경로 %q 의 %d번째 바이트에 \\x0a(줄바꿈)", l.what, i+1, textsafe.Escape(f), j+1)
+				return fmt.Sprintf("%s 목록 %d번째 경로 '%s' 의 %d번째 바이트에 \\x0a(줄바꿈)", l.what, i+1, textsafe.Escape(f), j+1)
 			}
 		}
 	}
