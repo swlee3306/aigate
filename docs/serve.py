@@ -9,6 +9,7 @@ DOCS = {  # URL 이름 -> 파일 (여기에 없는 파일은 절대 제공하지
     "design-gate": ("02 검증 게이트 설계서", BASE / "aigate/docs/02-DESIGN-gate.md"),
     "plan-gate": ("03 검증 게이트 구현 계획", BASE / "aigate/docs/03-PLAN-gate.md"),
     "results-gate": ("04 검증 게이트 결과", BASE / "aigate/docs/04-RESULTS-gate.md"),
+    "build-ledger": ("05 구축 기록과 판정", BASE / "aigate/docs/05-BUILD-LEDGER.md"),
     "harness-results": ("verify-harness 평가 결과", BASE / "verify-harness/RESULTS.md"),
     "harness-spec": ("verify-harness 대상 스펙", BASE / "verify-harness/spec.md"),
 }
