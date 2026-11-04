@@ -626,3 +626,11 @@ func TestOutputTailIsBoundedValidUTF8(t *testing.T) {
 		t.Fatal("blank output must give empty tail")
 	}
 }
+
+func TestInitialRunnerErrorWhenRCNonZeroWithoutFailures(t *testing.T) {
+	h := rules.RunInfo{Results: rules.Results{"a": rules.Passed}, RC: 3}
+	vs := initialViolations("unit", true, h)
+	if len(vs) != 1 || vs[0].Rule != "runner_error" || vs[0].Category != rules.CategoryIncomplete {
+		t.Fatalf("want one runner_error (incomplete), got %+v", vs)
+	}
+}

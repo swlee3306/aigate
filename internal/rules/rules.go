@@ -97,6 +97,9 @@ func Evaluate(in Input) (violations []Violation, waived []string) {
 		violations = append(violations, viol("no_tests_ran", CategoryIncomplete, "head에서 실행된 테스트가 0건입니다", nil))
 	}
 	if headOK {
+		if RunnerError(in.Head) {
+			violations = append(violations, runnerErrorViolation(in.Head.RC))
+		}
 		vs, w := compare(in.Base.Results, in.Head.Results)
 		violations = append(violations, vs...)
 		waived = w
@@ -114,6 +117,31 @@ func Evaluate(in Input) (violations []Violation, waived []string) {
 	}
 	return violations, waived
 }
+
+// RunnerError reports a run whose runner exited non-zero although no result
+// is failed or error (e.g. a crash or INTERNALERROR after the report file was
+// written): the results do not explain the exit status, so they cannot be
+// trusted as a green run.
+func RunnerError(r RunInfo) bool {
+	if r.RC == 0 || r.TimedOut || r.ParseFailed || len(r.Results) == 0 {
+		return false
+	}
+	for _, s := range r.Results {
+		if s == Failed || s == Error {
+			return false
+		}
+	}
+	return true
+}
+
+func runnerErrorViolation(rc int) Violation {
+	return viol("runner_error", CategoryIncomplete,
+		fmt.Sprintf("head 러너가 실패 코드(rc=%d)로 끝났지만 실패·오류 결과가 없습니다(러너 자체 오류)", rc), nil)
+}
+
+// RunnerErrorViolation is the runner_error violation for callers outside
+// Evaluate (initial mode).
+func RunnerErrorViolation(rc int) Violation { return runnerErrorViolation(rc) }
 
 func baseRules(in Input) []Violation {
 	var vs []Violation

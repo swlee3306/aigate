@@ -129,6 +129,11 @@ func withCause(v rules.Violation, base, head rules.RunInfo) rules.Violation {
 	case "base_unreliable", "base_not_green":
 		side = base
 	case "no_tests_ran", "parse_failed", "timeout", "setup_or_collection_error":
+	case "runner_error": // results exist but do not explain the exit status
+		if side.Tail != "" {
+			v.Detail += " | 출력 끝: " + side.Tail
+		}
+		return v
 	default:
 		return v
 	}

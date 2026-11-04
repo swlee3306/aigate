@@ -59,6 +59,10 @@ func TestEvaluate(t *testing.T) {
 		{"base has error", Input{Base: with(base, "a", Error), Head: okRun("a", "b")}, []string{"base_unreliable"}, CategoryIncomplete, nil},
 		{"required base not green", Input{Required: true, Base: RunInfo{Results: base.Results, RC: 1}, Head: okRun("a", "b")}, []string{"base_not_green"}, CategoryIncomplete, nil},
 		{"optional base rc!=0 ok", Input{Base: RunInfo{Results: base.Results, RC: 1}, Head: okRun("a", "b")}, nil, CategoryOK, nil},
+		{"head rc!=0 with nothing failed", Input{Base: base, Head: RunInfo{Results: base.Results, RC: 3}}, []string{"runner_error"}, CategoryIncomplete, nil},
+		{"head rc!=0 with only skips and passes", Input{Base: base, Head: RunInfo{Results: with(base, "n", Skipped).Results, RC: 1}}, []string{"runner_error", "new_test_skipped"}, CategoryIncomplete, nil},
+		{"head rc!=0 explained by a failure", Input{Base: base, Head: RunInfo{Results: with(base, "a", Failed).Results, RC: 1}}, []string{"regression"}, CategoryBehavior, nil},
+		{"head rc!=0 explained by an error", Input{Base: base, Head: RunInfo{Results: with(base, "a", Error).Results, RC: 1}}, []string{"setup_or_collection_error"}, CategoryIncomplete, nil},
 		{"multiple violations", Input{Base: base, Head: with(okRun("a"), "n", Failed), Dirty: true}, []string{"dirty_tree", "test_missing", "new_test_fails"}, CategoryIncomplete, nil},
 	}
 	for _, c := range cases {

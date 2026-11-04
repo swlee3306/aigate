@@ -33,6 +33,11 @@ func initialViolations(id string, required bool, h rules.RunInfo) []rules.Violat
 			errs = append(errs, k)
 		}
 	}
+	if rules.RunnerError(h) {
+		v := rules.RunnerErrorViolation(h.RC)
+		v.Detail = p + v.Detail
+		vs = append(vs, v)
+	}
 	if len(errs) > 0 {
 		v := inc("setup_or_collection_error", "head에서 수집·컴파일·설정 오류가 발생했습니다")
 		v.IDs = sortedCopy(errs)
