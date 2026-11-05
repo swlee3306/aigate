@@ -27,6 +27,9 @@ var schemaV2 string
 //go:embed schema_v3.sql
 var schemaV3 string
 
+//go:embed schema_v4.sql
+var schemaV4 string
+
 // MaxErrorText caps Task.ErrorText so a noisy failure cannot bloat the DB.
 const MaxErrorText = 4096
 
@@ -54,6 +57,8 @@ type Task struct {
 	HeadSHA    string // the agent's head commit, set by the collecting step
 	Verdict    string // gate category of the last verification
 	ReportPath string // saved report JSON of the last verification
+	// PolicyHash is the hash of the policy.yml the task started under.
+	PolicyHash string
 }
 
 // Approval is a pending-approvals entry (design section 6).
@@ -95,6 +100,7 @@ var migrations = []func(tx *sql.Tx) error{
 	func(tx *sql.Tx) error { _, err := tx.Exec(schemaV1); return err },
 	func(tx *sql.Tx) error { _, err := tx.Exec(schemaV2); return err },
 	func(tx *sql.Tx) error { _, err := tx.Exec(schemaV3); return err },
+	func(tx *sql.Tx) error { _, err := tx.Exec(schemaV4); return err },
 }
 
 // Open creates or opens the database at path with mode 0600.
@@ -182,7 +188,7 @@ func capText(s string) string {
 	return s + "…[cut]"
 }
 
-const taskCols = `id, repo, base, prompt, class, agent, state, attempts, retry_state, error_text, created_at, updated_at, head_sha, verdict, report_path`
+const taskCols = `id, repo, base, prompt, class, agent, state, attempts, retry_state, error_text, created_at, updated_at, head_sha, verdict, report_path, policy_hash`
 
 type scanner interface{ Scan(...any) error }
 
@@ -190,7 +196,7 @@ func scanTask(r scanner) (Task, error) {
 	var t Task
 	var c, u int64
 	err := r.Scan(&t.ID, &t.Repo, &t.Base, &t.Prompt, &t.Class, &t.Agent, &t.State,
-		&t.Attempts, &t.RetryState, &t.ErrorText, &c, &u, &t.HeadSHA, &t.Verdict, &t.ReportPath)
+		&t.Attempts, &t.RetryState, &t.ErrorText, &c, &u, &t.HeadSHA, &t.Verdict, &t.ReportPath, &t.PolicyHash)
 	t.CreatedAt, t.UpdatedAt = ts(c), ts(u)
 	return t, err
 }
@@ -251,6 +257,12 @@ func (s *Store) ListTasks(ctx context.Context, limit int) ([]Task, error) {
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// SetPolicyHash records the hash of the policy the task runs under. It is
+// idempotent and overwrites (a retried first step records the current hash).
+func (s *Store) SetPolicyHash(ctx context.Context, id int64, hash string) error {
+	return s.setCols(ctx, id, `policy_hash=?`, hash)
 }
 
 // SetHeadSHA records the agent's head commit. It is idempotent.

@@ -89,6 +89,9 @@ type GitLab struct {
 // Config configures a Publisher.
 type Config struct {
 	Allow policy.Allowlist
+	// AllowSource, when set, supplies the allowlist at every action (so a
+	// re-read policy takes effect); Allow is then ignored.
+	AllowSource func() policy.Allowlist
 	// Remote is where push_branch pushes: an absolute local path or an
 	// https:// URL without credentials.
 	Remote string
@@ -163,6 +166,15 @@ func New(cfg Config) (*Publisher, error) {
 // PublishNote is the transition note of the publishing step.
 func (p *Publisher) PublishNote() string { return "published: " + strings.Join(p.plan, ", ") }
 
+// Plan returns the action kinds Publish will run, in order.
+func (p *Publisher) Plan() []string { return append([]string(nil), p.plan...) }
+
+// Granted reports whether a human granted exactly this task's head for kind
+// (the publish_outside_allowlist approval).
+func (p *Publisher) Granted(t store.Task, kind string) bool {
+	return p.humanApproved(Action{Kind: kind, Task: t.ID, Repo: t.Repo, Base: t.Base, Head: t.HeadSHA})
+}
+
 // Publish runs the configured actions for a passed task (steps.Publisher). It
 // returns a *NeedsApprovalError for the first action that may not run alone.
 func (p *Publisher) Publish(ctx context.Context, t store.Task) error {
@@ -185,7 +197,11 @@ func (p *Publisher) Do(ctx context.Context, a Action) error {
 	if a.Task <= 0 {
 		return errors.New("publish: action needs a task id")
 	}
-	if err := p.cfg.Allow.Permit(a.Kind); err != nil {
+	allow := p.cfg.Allow
+	if p.cfg.AllowSource != nil {
+		allow = p.cfg.AllowSource()
+	}
+	if err := allow.Permit(a.Kind); err != nil {
 		if !p.humanApproved(a) {
 			return &NeedsApprovalError{Action: a, Hash: approvals.PublishHash(a.Task, a.Head, a.Kind),
 				Reason: fmt.Sprintf("%s is not in the allowlist", a.Kind)}

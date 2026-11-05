@@ -382,7 +382,7 @@ func TestMigrateV1ToV2KeepsTasks(t *testing.T) {
 	}
 	var v int
 	s.db.QueryRow(`SELECT version FROM schema_version`).Scan(&v)
-	if v != 3 {
+	if v != 4 {
 		t.Fatalf("version %d", v)
 	}
 	if err := s.SetHeadSHA(context.Background(), 1, "deadbeef"); err != nil {
@@ -440,5 +440,42 @@ func TestMigrateV2ToV3KeepsApprovals(t *testing.T) {
 	}
 	if err := s.ApproveApproval(ctx, 7); !errors.Is(err, ErrNotPending) {
 		t.Fatalf("superseded must not be approvable: %v", err)
+	}
+}
+
+// A version-3 database keeps its tasks through the v4 migration; old tasks have
+// no policy hash, and the hash can then be recorded.
+func TestMigrateV3ToV4KeepsTasks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v3.db")
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{schemaV1, schemaV2, schemaV3,
+		`CREATE TABLE schema_version (version INTEGER NOT NULL)`,
+		`INSERT INTO schema_version(version) VALUES (3)`,
+		`INSERT INTO tasks(repo, base, prompt, class, agent, state, created_at, updated_at)
+		 VALUES ('/r','abc','old','docs','claude','queued',1,2)`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	got, err := s.GetTask(ctx, 1)
+	if err != nil || got.Prompt != "old" || got.PolicyHash != "" {
+		t.Fatalf("%+v %v", got, err)
+	}
+	if err := s.SetPolicyHash(ctx, 1, "abc123"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = s.GetTask(ctx, 1); got.PolicyHash != "abc123" {
+		t.Fatalf("%+v", got)
 	}
 }

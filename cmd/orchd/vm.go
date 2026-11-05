@@ -31,6 +31,8 @@ type vmFlags struct {
 	RestoreEachJob                                             bool
 	ReportDir, GateHome                                        string
 	// Publishing (all optional; none given = local-only, nothing is pushed).
+	// live is the policy in force (nil without --policy); limits come from it.
+	live                                                                       *policy.Live
 	PublishAllow, GitRemote, GitLabURL, GitLabProject, GitLabTarget, TokenFile string
 }
 
@@ -140,6 +142,11 @@ func (v *vmFlags) provider(st *store.Store, dbPath string) (api.StepProvider, er
 	}
 	agent := &vm.AgentVM{Host: v.AgentHost, User: v.AgentUser, KeyPath: v.AgentKey,
 		KnownHosts: v.AgentKnownHosts, JumpHost: v.AgentJump}
+	if v.live != nil {
+		lim := v.live.Current().Limits
+		agent.MaxCommits = lim.MaxCommits
+		agent.MaxBytes = lim.MaxFetchBytes
+	}
 	sshCfg := remote.Config{Host: v.TestHost, User: v.TestUser, KeyPath: v.TestKey,
 		KnownHosts: v.TestKnownHosts, RepoDir: v.TestRepoDir, WorkDir: v.TestWorkDir, JumpHost: v.TestJump}
 	if _, err := remote.NewSSH(sshCfg); err != nil { // validates host, user, paths early
@@ -151,11 +158,20 @@ func (v *vmFlags) provider(st *store.Store, dbPath string) (api.StepProvider, er
 	cfg.Agent, cfg.Test = agent, test
 	cfg.AgentTimeout, cfg.RestoreEachJob = v.AgentTimeout, v.RestoreEachJob
 	cfg.ReportDir, cfg.GateHome = reportDir, gateHome
+	cfg.Policy = v.live
+	if v.live != nil && !v.publishConfigured() {
+		// Nothing is published, but a policy still decides (and a human can
+		// only approve what the publisher plans): LocalOnlyPublisher plans nothing.
+		cfg.Publisher = steps.LocalOnlyPublisher{}
+	}
 	if v.publishConfigured() {
 		pcfg := publish.Config{Remote: v.GitRemote, TokenFile: v.TokenFile,
 			Allow:  policy.NewAllowlist(splitList(v.PublishAllow)...),
 			GitLab: publish.GitLab{BaseURL: v.GitLabURL, Project: v.GitLabProject, TargetBranch: v.GitLabTarget},
 			Grants: approvals.Grants{Home: gateHome}}
+		if v.live != nil {
+			pcfg.AllowSource = func() policy.Allowlist { return v.live.Current().AllowList() }
+		}
 		pub, err := publish.New(pcfg)
 		if err != nil {
 			return nil, err

@@ -29,6 +29,7 @@ import (
 	"aigate/internal/orch/approvals"
 	"aigate/internal/orch/machine"
 	"aigate/internal/orch/policy"
+	"aigate/internal/orch/policy/autonomy"
 	"aigate/internal/orch/publish"
 	"aigate/internal/orch/store"
 	"aigate/internal/orch/vm"
@@ -65,6 +66,21 @@ type Publisher interface {
 	Publish(ctx context.Context, task store.Task) error
 }
 
+// Planner is what a Publisher must offer when a policy is in force: the
+// action kinds it will run (so each can be decided before any runs) and
+// whether a human granted exactly this task's head for a kind.
+// publish.Publisher and LocalOnlyPublisher implement it.
+type Planner interface {
+	Plan() []string
+	Granted(t store.Task, kind string) bool
+}
+
+// Plan returns no actions.
+func (LocalOnlyPublisher) Plan() []string { return nil }
+
+// Granted is always false.
+func (LocalOnlyPublisher) Granted(store.Task, string) bool { return false }
+
 // LocalOnlyPublisher publishes nothing; it only lets the task finish locally.
 type LocalOnlyPublisher struct{}
 
@@ -97,6 +113,13 @@ type Config struct {
 	LedgerPath string
 	// Gate defaults to gate.Run.
 	Gate GateFunc
+	// Policy, when set, is re-read at the start of every task (its hash is
+	// recorded on the task), and publishing then goes through
+	// autonomy.Decide at the class's effective level. Publisher must be a
+	// Planner. Nil keeps the behaviour without a policy.
+	Policy *policy.Live
+	// Notifier receives the L2/L3 notifications (best effort; may be nil).
+	Notifier publish.Notifier
 }
 
 // DefaultConfig returns a Config with the documented defaults.
@@ -132,6 +155,11 @@ func NewProvider(st *store.Store, cfg Config) (*Provider, error) {
 	if cfg.Gate == nil {
 		cfg.Gate = gate.Run
 	}
+	if cfg.Policy != nil {
+		if _, ok := cfg.Publisher.(Planner); !ok {
+			return nil, errors.New("steps: with a policy the Publisher must implement Planner")
+		}
+	}
 	return &Provider{st: st, cfg: cfg}, nil
 }
 
@@ -163,6 +191,17 @@ func failed(note string) (machine.Outcome, error) {
 }
 
 func (p *Provider) prepare(ctx context.Context, t store.Task) (machine.Outcome, error) {
+	if p.cfg.Policy != nil {
+		// A policy that no longer loads stops the task (an infrastructure
+		// error): falling back to an older policy could be more permissive.
+		pol, err := p.cfg.Policy.Reload()
+		if err != nil {
+			return machine.Outcome{}, fmt.Errorf("policy: %w", err)
+		}
+		if err := p.st.SetPolicyHash(ctx, t.ID, pol.Hash()); err != nil {
+			return machine.Outcome{}, err
+		}
+	}
 	base, err := gitx.Resolve(t.Repo, t.Base)
 	if err != nil {
 		return machine.Outcome{}, fmt.Errorf("resolve base: %w", err)
@@ -241,6 +280,9 @@ func (p *Provider) verify(ctx context.Context, t store.Task) (machine.Outcome, e
 	if err := p.st.SetVerdict(ctx, t.ID, string(r.Category), path); err != nil {
 		return machine.Outcome{}, err
 	}
+	if r.Category != rules.CategoryOK && p.wasPublished(ctx, t) {
+		p.incident(ctx, t, fmt.Sprintf("verdict %s after the task had been published", r.Category))
+	}
 	switch r.Category {
 	case rules.CategoryOK:
 		return machine.Outcome{Next: machine.StatePassed, Note: "verdict ok"}, nil
@@ -314,6 +356,9 @@ func (p *Provider) needApproval(ctx context.Context, t store.Task, r report.Repo
 	if err := approvals.New(p.st).Enqueue(ctx, t.ID, store.KindProtectedModified, r.Base, r.Head, hash, text); err != nil {
 		return machine.Outcome{}, err
 	}
+	if p.cfg.Policy != nil && autonomy.NotifyOnPark(p.level(t)) {
+		p.notify(ctx, t, "task needs approval of protected-file changes")
+	}
 	return machine.Outcome{Next: machine.StateNeedsApproval, Note: "check_weakened: protected files changed, approval " + short(hash)}, nil
 }
 
@@ -344,6 +389,11 @@ func (p *Provider) saveReport(t store.Task, r report.Report) (string, error) {
 }
 
 func (p *Provider) publish(ctx context.Context, t store.Task) (machine.Outcome, error) {
+	if p.cfg.Policy != nil {
+		if out, handled, err := p.decidePublish(ctx, t); handled {
+			return out, err
+		}
+	}
 	err := p.cfg.Publisher.Publish(ctx, t)
 	var na *publish.NeedsApprovalError
 	switch {
@@ -357,13 +407,105 @@ func (p *Provider) publish(ctx context.Context, t store.Task) (machine.Outcome, 
 		// Record only: nothing can approve it. The task fails.
 		sum := approvals.PublishHash(t.ID, t.HeadSHA, "floor")
 		_ = approvals.New(p.st).Enqueue(ctx, t.ID, store.KindDestructiveBlocked, t.Base, t.HeadSHA, sum, err.Error())
+		p.incident(ctx, t, "floor denial: "+err.Error())
 		return failed("publishing blocked by the hard floor: " + err.Error())
 	case err != nil:
 		return machine.Outcome{}, fmt.Errorf("publish: %w", err)
+	}
+	if p.cfg.Policy != nil && autonomy.NotifyAfterPublish(p.level(t)) {
+		p.notify(ctx, t, fmt.Sprintf("task %d was published automatically", t.ID))
 	}
 	note := "published"
 	if n, ok := p.cfg.Publisher.(interface{ PublishNote() string }); ok {
 		note = n.PublishNote()
 	}
 	return machine.Outcome{Next: machine.StateDone, Note: note}, nil
+}
+
+// level is the effective autonomy level of the task's class. A state file
+// that cannot be read yields L0 (the most restrictive).
+func (p *Provider) level(t store.Task) autonomy.Level {
+	lvl, _ := autonomy.Effective(p.cfg.Policy.Current(), t.Class)
+	return lvl
+}
+
+// decidePublish asks autonomy.Decide about every action the publisher will
+// run before it runs any. handled is true when the step is decided here
+// (failed, or parked for a human); false means every action may run.
+func (p *Provider) decidePublish(ctx context.Context, t store.Task) (out machine.Outcome, handled bool, err error) {
+	verdict := rules.Category(t.Verdict)
+	if verdict != rules.CategoryOK {
+		out, err = failed(fmt.Sprintf("publishing refused: verdict is %q, not ok", t.Verdict))
+		return out, true, err
+	}
+	level := p.level(t)
+	pl := p.cfg.Publisher.(Planner)
+	for _, kind := range pl.Plan() {
+		switch autonomy.Decide(level, verdict, autonomy.Action(kind)) {
+		case autonomy.Allow:
+		case autonomy.Park:
+			if pl.Granted(t, kind) {
+				continue // a human approved exactly this action for this head
+			}
+			hash := approvals.PublishHash(t.ID, t.HeadSHA, kind)
+			reason := fmt.Sprintf("%s: autonomy level %s needs a human approval", kind, level)
+			if qerr := approvals.New(p.st).Enqueue(ctx, t.ID, store.KindPublishOutsideAllowlist, t.Base, t.HeadSHA, hash, reason); qerr != nil {
+				return machine.Outcome{}, true, qerr
+			}
+			if autonomy.NotifyOnPark(level) {
+				p.notify(ctx, t, "task is waiting for approval: "+reason)
+			}
+			return machine.Outcome{Next: machine.StateNeedsApproval,
+				Note: fmt.Sprintf("publish_outside_allowlist: %s needs approval (level %s)", kind, level)}, true, nil
+		default: // Deny
+			if ferr := policy.Floor(kind); ferr != nil {
+				sum := approvals.PublishHash(t.ID, t.HeadSHA, "floor")
+				_ = approvals.New(p.st).Enqueue(ctx, t.ID, store.KindDestructiveBlocked, t.Base, t.HeadSHA, sum, ferr.Error())
+				p.incident(ctx, t, "floor denial: "+ferr.Error())
+			}
+			out, err = failed(fmt.Sprintf("publishing denied: %s at level %s", kind, level))
+			return out, true, err
+		}
+	}
+	return machine.Outcome{}, false, nil
+}
+
+func (p *Provider) notify(ctx context.Context, t store.Task, msg string) {
+	if p.cfg.Notifier != nil {
+		_ = p.cfg.Notifier.Notify(ctx, t.ID, msg)
+	}
+}
+
+// wasPublished reports whether the task has ever reached done.
+func (p *Provider) wasPublished(ctx context.Context, t store.Task) bool {
+	evs, err := p.st.Events(ctx, t.ID)
+	if err != nil {
+		return false
+	}
+	for _, e := range evs {
+		if e.To == machine.StateDone {
+			return true
+		}
+	}
+	return false
+}
+
+// incident lowers the task class by one level (see autonomy.Demote) and
+// writes the ledger event into the task repository's ledger. It never fails
+// the step; the state file is the authority for what was demoted.
+func (p *Provider) incident(ctx context.Context, t store.Task, reason string) {
+	if p.cfg.Policy == nil {
+		return
+	}
+	home, err := gate.Home(p.cfg.GateHome)
+	if err != nil {
+		return
+	}
+	repoID := policy.OrchRepo
+	ledgerPath := policy.OrchLedgerPath(home)
+	if id, _, err := gate.RepoID(t.Repo); err == nil {
+		repoID, ledgerPath = id, gate.LedgerPath(home, id)
+	}
+	_, _, _ = autonomy.Demote(p.cfg.Policy.Current(), autonomy.Incident{Class: t.Class, Task: t.ID, Reason: reason},
+		ledgerPath, repoID, time.Now())
 }

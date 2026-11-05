@@ -30,6 +30,8 @@ const usage = `사용법: orch [--socket PATH] [--json] <명령>
   approve ID                                                        승인(사람이 터미널에서 직접, TTY 필요)
   reverify ID                                                       이미 승인한 항목의 재검증 요청(승인 기록이 있어야 함)
 
+` + policyUsage + `
+
 소켓: --socket 또는 ORCHD_SOCKET (기본 ` + defaultSocket + `)
 승인 기록 위치: --gate-home 또는 ORCH_GATE_HOME (orchd의 --gate-home과 같아야 함)`
 
@@ -96,6 +98,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	rest := fs.Args()
 	cmd, rest := rest[0], rest[1:]
+	if cmd == "propose" || cmd == "policy" {
+		return localCmd(cmd, rest, *asJSON, *gateHomeFlag, stdout, stderr)
+	}
 	c := newClient(*sock)
 
 	// --json is also accepted after the command.

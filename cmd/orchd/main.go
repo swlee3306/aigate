@@ -14,6 +14,7 @@ import (
 	"aigate/internal/orch/api"
 	"aigate/internal/orch/approvals"
 	"aigate/internal/orch/machine"
+	"aigate/internal/orch/policy"
 	"aigate/internal/orch/store"
 )
 
@@ -63,10 +64,19 @@ func run(args []string) int {
 	fs.Var(&repos, "allow-repo", "repository root tasks may use (repeatable; none = refuse all)")
 	var vf vmFlags
 	vf.register(fs)
+	policyPath := fs.String("policy", envOr("ORCHD_POLICY", ""), "policy.yml (autonomy levels, allowlist, limits); re-read when each task starts")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	cfg.AllowedRepos = repos
+	if *policyPath != "" {
+		live, err := applyPolicy(fs, *policyPath, &cfg, &vf)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "orchd:", err)
+			return 2
+		}
+		vf.live = live
+	}
 	if vf.enabled() {
 		// Refuse before touching the database or the socket.
 		if err := vf.validate(); err != nil {
@@ -117,4 +127,65 @@ func run(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// applyPolicy loads the policy and merges it with the flags. A value given
+// both by a flag and by the policy must be the same, otherwise orchd refuses
+// to start: neither silently wins. The publish allowlist comes only from the
+// policy when one is given.
+func applyPolicy(fs *flag.FlagSet, path string, cfg *api.Config, vf *vmFlags) (*policy.Live, error) {
+	setFlags := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { setFlags[f.Name] = true })
+	home := vf.gateHome(cfg.DB)
+	live, err := policy.NewLive(path, policy.OrchLedgerPath(home))
+	if err != nil {
+		return nil, err
+	}
+	pol := live.Current()
+	conflict := func(what string) error {
+		return fmt.Errorf("%s is set by a flag and by the policy %s with different values; remove one of them", what, path)
+	}
+	if pol.Limits.MaxConcurrent != 0 {
+		if setFlags["concurrency"] && cfg.Concurrency != pol.Limits.MaxConcurrent {
+			return nil, conflict("concurrency (limits.max_concurrent)")
+		}
+		cfg.Concurrency = pol.Limits.MaxConcurrent
+	}
+	if pol.Limits.AgentTimeout != 0 {
+		if setFlags["agent-timeout"] && vf.AgentTimeout != pol.Limits.AgentTimeout {
+			return nil, conflict("agent-timeout (limits.agent_timeout)")
+		}
+		vf.AgentTimeout = pol.Limits.AgentTimeout
+	}
+	if len(pol.RepoRoots) > 0 {
+		if len(cfg.AllowedRepos) > 0 && !sameSet(cfg.AllowedRepos, pol.RepoRoots) {
+			return nil, conflict("the repository roots (--allow-repo, repo_roots)")
+		}
+		cfg.AllowedRepos = pol.RepoRoots
+	}
+	if vf.PublishAllow != "" {
+		return nil, errors.New("--publish-allow cannot be combined with --policy: put the allowlist in the policy file")
+	}
+	if cfg.AllowedRepos != nil {
+		if err := approvals.CheckOutside(path, cfg.AllowedRepos); err != nil {
+			return nil, fmt.Errorf("policy file: %w", err)
+		}
+	}
+	return live, nil
+}
+
+func sameSet(a, b []string) bool {
+	m := map[string]int{}
+	for _, x := range a {
+		m[x]++
+	}
+	for _, x := range b {
+		m[x]--
+	}
+	for _, n := range m {
+		if n != 0 {
+			return false
+		}
+	}
+	return len(a) == len(b)
 }
