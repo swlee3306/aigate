@@ -538,3 +538,49 @@ e2e 기대는 하나도 고치지 않았고 기존 시나리오 중 판정이 �
 - Windows에만 있는 동등성(예약 장치 이름, 끝의 점·공백, 8.3 짧은 이름, 대체 데이터 스트림)은 처리하지 않는다.
 - base에 똑같이 있던 충돌은 무시한다(그 base는 지금도 합쳐진 채 checkout됨). base 철자와 head 철자의 차이(이름만 바뀐 경우)는 따로 checkout되므로 대상이 아니다.
 - 메인 작업 트리 `dirty_tree` 규칙은 그대로다. 사용자 glob(`protected`·`approval_on_add`)은 대소문자를 구분한다(예: `**/conftest.py`는 새 `Conftest.py`에 안 맞음 — 기존 승인 해시를 바꾸지 않으려는 사용자 결정 범위).
+
+## 수정 라운드 8 (2026-11-05, 설계서 v0.9)
+사용자 결정(2026-11-05, "수정 라운드 8 진행해줘")으로 7차 재리뷰의 잔여 넷을 고쳤다. (R1+R3) `Prepare`가 base..head의 **새 경로 전체**(`gitx.AddedPaths`, A·`--no-renames`)의 접기 키(`pathfold.KeyPath`)를 같은 키로 접은 내장 guard glob과 사용자 `approval_on_add` glob(`pathfold.FoldGlob`)에 맞춰 보고, git 자체 매칭이 놓친 것(접은 별칭)을 새 guarded 파일로 취급한다 — `AddedGuarded`·`protected_modified`, `approve` 화면, 정확한 경로를 `:(literal)` pathspec으로 보호 diff에 더해 승인 해시가 덮음. 별칭이 없으면 pathspec·해시는 그대로다. (R2) 충돌 그룹은 멤버 이름과 모든 멤버의 mode·객체 id(`git ls-tree -r -t`, 디렉터리는 tree id)가 base·head에서 같을 때만 기존으로 인정한다. (R4) 비ASCII 멤버가 있는 충돌 그룹은 각 멤버 뒤에 코드 포인트를 붙여 NFC·NFD를 구별한다. 설계서 3.1·3.3·3.4·4장 v0.9, 8장 [17].
+
+### 재현한 공격 (수정 전 cb35145 → 수정 후 c41b5d7)
+e2e `e2e/scenarios_foldalias_test.go`(기대값은 수정 전에 씀). 별칭 파일은 git plumbing(`Scenario.HeadFiles`)으로 넣었다(macOS git의 `precomposeunicode`가 켈빈 기호를 ASCII `K`로 바꾸므로). 수정 전 결과는 같은 시나리오·builder로 코드 파일 세 개(`gate.go`·`gitx.go`·`pathfold.go`)만 cb35145 상태로 되돌려(stash) 실행한 것이다. 각 공격은 헤드의 첫 검사에서 실패가 0개였다 — 망가뜨린 코드가 실제로 가려졌다는 뜻이다.
+
+| 공격 (head) | 수정 전 | 수정 후 |
+|---|---|---|
+| Go: `go.mod`에 `replace example.com/assert => ./assert`, head가 `Add`를 망가뜨리고 no-op `lax/` 모듈과 `go.worK`(켈빈 U+212A, `replace example.com/assert => ./lax`) 추가 — `go env GOWORK`가 `go.worK`를 찾음 | **`ok`(거짓)**, 17 통과 | `check_weakened` `protected_modified`(IDs `go.worK`) |
+| Python(루트 pytest 설정 없음): `pyteſt.ini`(U+017F, `pythonpath = shadow`) + 원본을 복사한 `shadow/ingest.py`, `src/ingest.py` 망가뜨림 | **`ok`(거짓)**, 9 통과 | `check_weakened` `protected_modified` |
+| 같은 스택: `ſetup.cfg`(`[tool:pytest] pythonpath = shadow`) | **`ok`(거짓)** | `check_weakened` `protected_modified` |
+| Python(`pyproject.toml` pythonpath, 검사 명령에 `--import-mode=importlib`): 새 `tests/Conftest.py`(shadow를 sys.path 앞에), 사용자 glob `**/conftest.py` | **`ok`(거짓)** | `check_weakened` `protected_modified` |
+| Node: base에 `src/sum.js`·`src/Sum.js`(같은 내용, plumbing), head가 `Sum.js`만 바꿈 | **`ok`(거짓)** | `verification_incomplete` `path_case_collision`, 검사 미실행 |
+| 대조군: Go replace 스택 리팩터링 / 새 `Straße.txt` / 새 `docs/Überblick.md` | `ok` | `ok` |
+| (단위·gate) `ſetup.cfg`·`requirementſ.txt`·`package-locK.json`·`pyteﬆ.ini`(합자)·`tests/ﬁxtures/…`(합자, 사용자 glob)·`node_moduleſ/…`(base에 `node_modules` 없음)·`a/b/Conftest.py` | `ok` | `check_weakened`; 승인 해시가 경로·내용을 덮고, 승인하면 같은 head는 `ok`, 내용이 다르면 승인 무효 |
+| (CLI) `approve`, head에 `go.worK` | "nothing needs approval" | `+ go.worK`와 diff 표시, 승인 후 `run` 종료 0 |
+| 충돌 목록 NFC `문서` vs NFD `문서` | `{문서, 문서}` | `{문서 [U+1106 U+116E U+11AB U+1109 U+1165], 문서 [U+BB38 U+C11C]}` |
+
+처음 쓴 `Conftest.py` 시나리오는 importlib 모드를 `pyproject.toml`의 `addopts`에 두었는데, pytest 프리셋이 `-o addopts=`로 그것을 지우므로 기본 import 모드에서 `ImportError`(수집 오류, `verification_incomplete`)가 났다 — 공격이 성립하지 않는 fixture였다. 기대값은 그대로 두고 fixture만 바꿨다(검사 명령에 `--import-mode=importlib`를 직접 씀). 그 뒤 수정 전 실행에서 `ok`(거짓)를 확인했다.
+
+### 단위 테스트
+- `internal/pathfold`: `KeyPath`(켈빈·`ſ`·합자 `ﬆ`·`ß`·중첩·NFC=NFD), `FoldGlob`(`**`·`*`·`?` 유지, 리터럴 접기, 클래스 ASCII 소문자, 이스케이프, 닫히지 않은 클래스), `New`의 서명 비교(같은 멤버·blob → 기존, blob 하나 변경 → 새, mode 변경 → 새, 한쪽 서명 없음 → 새, 디렉터리 멤버의 tree id 변경 → 새). 기존 `TestNew`·성능 테스트는 모든 경로·디렉터리에 같은 서명을 주는 도우미 `same(...)`로 바뀐 시그니처를 쓰게만 고쳤다(판정 기대는 그대로; 성능 20만 경로 상한 1초 유지).
+- `internal/gitx`: `AddedPaths`(이름 변경은 삭제+추가, 이상한 바이트 그대로), `Literals`(`a[b]*.txt`가 glob이 아님, glob pathspec과 한 번에 섞임, 해시 텍스트에 들어감), `TreeSigs`(파일·디렉터리 서명).
+- `internal/gate`: `foldAliases` 표(별칭 11종, git이 이미 낸 것·`Straße.txt`·`docs/Überblick.md`·한글·`pytest.ini.bak`은 아님, 사용자 glob 없이는 `Conftest.py` 아님), 별칭 7종의 gate 실행(검사는 base·head 둘 다 실행 — 충돌이 아님, 해시 포함, 내용 바뀌면 해시 바뀜, 승인 후 `ok`, 다른 내용엔 승인 무효), 비보호 비ASCII 이름 `ok`, 기존 그룹 내용 변경 → `path_case_collision`(변경 없는 기존 그룹은 `ok`), 코드 포인트 표시(NFC/NFD, 섞인 그룹 `[ASCII]`, 순수 ASCII 그룹은 전과 같음, 제어 바이트·`\xff`·U+202E 원시 출력 없음), **해시 고정**: 별칭 없는 diff(보호 파일 수정·새 `conftest.py`·`Pytest.ini`·`Straße.txt` 등)의 해시를 cb35145에서 `8082594eac4a51b7`로 기록하고 수정 후에도 같음을 확인.
+- `cmd/aigate`: `approve`가 `go.worK`를 보여 주고 승인한 해시로 `run`이 `ok`(별칭 감지를 끈 상태에서는 첫 `run`이 종료 0이라 실패함을 확인).
+
+### 기대값 변경
+기존 e2e 기대는 하나도 고치지 않았고 기존 124개 기록 중 판정이 바뀐 것은 없다. 새 시나리오 8개(공격 5 + 대조군 3). 새 공격 시나리오 넷은 처음에 `WantDetail`로 별칭 경로를 위반 설명에서 찾게 썼는데, 경로는 설명이 아니라 위반의 `IDs`에 있어 첫 GREEN 실행에서 그 조건만 맞지 않았다(판정·규칙은 기대대로). 같은 강도의 `AfterRun` 검사(`protected_modified`의 `IDs`에 정확한 경로)로 바꿨다. builder에 `Scenario.BaseFiles`(base도 plumbing으로 만듦; 그때 head는 `HeadFiles`만으로 만듦)를 더했다. 새 스택 셋: `go-replace`(17 테스트), `py-noini`, `py-importlib`(각 9 테스트).
+
+### 지표 (최종 전체 실행, 2026-11-05)
+`gofmt -l` 비어 있음, `go vet ./...` 통과, `go test ./... -count=1`(e2e 포함) 통과(약 154초; e2e 154초). e2e 132개 기록(시나리오 실행 126 + `check`·자기 비교 기록 6), **132/132 기대와 일치**(7차의 124 + 새 8).
+
+| 지표 | 값 | 판정 |
+|---|---|---|
+| 불완전·무력화 시나리오(KnownGap 제외) 중 `ok` | **0 / 81** | 합격 |
+| (참고) ok가 아닌 모든 기대(KnownGap 제외, 시나리오 실행) 중 `ok` | 0 / 97 | 기록 |
+| (참고) 오경보율: 기대가 `ok`인 시나리오 중 ok가 아닌 것 | 0 / 15 = 0% | 기록 |
+| (참고) gate 실행 시간(base+head) | 평균 1.05초, 최대 5.43초(n=126). 스택별 평균 go 1.76 / go-replace 1.93 / go-vendor 1.17 / node 0.23 / py 0.74 / py-importlib 0.62 / py-noini 0.61 / ts 1.49초 | 기록 |
+| KnownGap | 14개(7차와 같음) | 기록 |
+
+### 남은 한계 (설계서 4장 v0.9)
+- 근본 해결은 대소문자를 구분하는 파일 시스템(리눅스 컨테이너·샌드박스, 서브프로젝트 ②)에서 검사를 실행하는 것이다. 접은 별칭 규칙은 guard glob(내장·`approval_on_add`)에 맞는 이름만 잡는다 — guard 밖 경로를 러너가 접어서 찾는 경우는 범위 밖이다.
+- Windows에만 있는 동등성은 처리하지 않는다. `protected`만 맞는 경로의 새 파일은 결정 [6]대로 허용한다.
+- glob 접기는 근사다(`?`·문자 클래스는 접은 키의 한 글자에만 맞음).
+- 기존 충돌 디렉터리 아래의 어떤 변경도 이제 `path_case_collision`이다(이름을 고치면 풀림).
