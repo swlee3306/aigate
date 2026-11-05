@@ -338,3 +338,35 @@ I4(검사 대상 코드에 전체 환경 전달)는 이번 범위가 아니며 �
 ### 비용
 - 기존 보호 파일(테스트 파일, `pytest.ini`, `.aigate.yml`, lock 파일 등)을 고치는 정상 변경은 이제 매번 `aigate approve`가 필요하다. 기존 테스트 파일에 테스트를 더하는 것도 마찬가지다. 실무 규칙: **새 테스트는 새 파일에**(승인 불필요).
 - `approve`는 CRLF 줄 끝(`\r`)이나 제어 문자를 담은 텍스트 보호 파일이 diff에 있으면 거부한다(fail-closed). NUL이 있는 바이너리 fixture는 요약 한 줄로 보인다.
+
+## 수정 라운드 3 (2026-11-05, 설계서 v0.4)
+
+2차 재리뷰가 남긴 항목과 측정 도구를 사용자가 승인했다(설계서 8장 [11]·[12], 3.10). 각 항목은 실패하는 테스트를 먼저 쓰고(RED) 고친 뒤 통과(GREEN)를 확인했다. RED/GREEN 기록과 커밋은 `.superpowers/sdd/03-PLAN-gate/final-fix3-report.md`.
+
+| 항목 | 변경 | RED (수정 전 관찰) | GREEN |
+|---|---|---|---|
+| 1. NUL 가리기 | `FileChange.Binary`를 `BaseBinary`·`HeadBinary`로 나눔(그 쪽 blob 어디든 NUL). `approve`는 텍스트→바이너리(M/T), 소스·설정·텍스트 이름의 바이너리(A/M/T)를 거부(64, 표준 출력 없음, 이스케이프한 경로·이유·head 첫 NUL 줄). 요약 한 줄은 진짜 바이너리에만, `head blob <id>` 포함 | TS 주석 속 NUL, `.dat`·`.json`·`Makefile`·`.npmrc`·`conftest` 등 7가지 모두 요약 한 줄로 보이고 `yes`로 승인됨(종료 0). 바이너리→텍스트도 요약으로 가려짐 | 7가지 모두 거부, 진짜 바이너리 fixture(추가·삭제·양쪽)는 요약 + blob id로 승인 가능, 바이너리→텍스트는 요약 없이 base NUL 때문에 거부 |
+| 2. 서브모듈(gitlink) | mode 160000 쪽은 blob을 읽지 않음. 일반 보호 변경으로 처리 | `vendor/sub` gitlink 추가·변경·삭제 모두 `git cat-file blob …: bad file` 게이트 오류(64), `run`·`approve` 둘 다 | `run` → `check_weakened`(`protected_modified`), `approve`는 `+Subproject commit <sha>` 줄을 보여 주고 승인, 다시 `run` → `ok` |
+| 3. CR | `\r\n`은 안전(그대로 출력), 단독 `\r`(끝, 다른 바이트 앞, `\r\r\n`의 첫 `\r`, 파일 마지막 바이트)은 거부 | CRLF 파일에 한 줄 추가 → 거부(`\x0d`) | CRLF 승인 가능, 표시 블록의 sha256 앞 16자 = 표시된 해시, 단독 `\r` 3가지는 계속 거부 |
+| 4. `aigate stats` | `run_result`에 `rules`(규칙 이름 목록) 추가, `approve`가 `approval_granted`·`approval_refused`(이유 코드) 기록, `aigate stats [--repo] [--days N] [--json]` | 명령 없음(`unknown subcommand`), 승인·거부 사건 없음, `run_result`에 `rules` 없음 | 3일치 합성 이력 표·JSON·`--days` 창·빈 이력·변조 이력(종료 1)·실제 run→approve→run 흐름 모두 기대대로 |
+
+### 기대값 변경
+없음. e2e 기대는 하나도 고치지 않았고, 수정 전후로 판정이 바뀐 시나리오도 없다(게이트 판정 로직은 그대로이고, 바뀐 것은 `approve` 화면·거부 규칙과 이력 기록뿐이다). 단위 테스트 중 바뀐 것: `TestApproveSummarisesBinaryFile`이 요약 줄 끝의 `head blob <id>`까지 확인하도록 강화(기존 접두어 검사는 그대로 통과).
+
+### 지표 (최종 전체 실행, 2026-11-05)
+`go test ./e2e -count=1`: 118개 기록(시나리오 실행 112 + `check`·자기 비교 기록 6), **118/118 기대와 일치**, 약 138초.
+
+| 지표 | 값 | 판정 |
+|---|---|---|
+| 불완전·무력화 시나리오(KnownGap 제외) 중 `ok` | **0 / 72** | 합격 |
+| (참고) 오경보율: 기대가 `ok`인 시나리오 중 ok가 아닌 것 | 0 / 10 = 0% | 기록 |
+| (참고) gate 실행 시간(base+head) | 평균 1.07초, 최대 5.42초(n=112, 최대는 5초 타임아웃 `incomplete/hang`). 스택별 평균 py 0.70 / go 1.81 / ts 1.49초 | 기록 |
+| KnownGap | 14개(2차와 같음, 모두 원리적 한계) | 기록 |
+
+`gofmt -l` 비어 있음, `go vet ./...` 통과, `go test ./... -count=1`(e2e 포함) 통과.
+
+### 남은 한계 (설계서 4장 v0.4)
+- 바이너리에서 텍스트로 바뀐 보호 파일은 base 쪽 NUL이 `-` 줄에 보여 거부된다(가리지는 않지만 승인할 수 없음).
+- ESC/ANSI·Latin-1 텍스트 fixture는 승인할 수 없다(우회 플래그 없음, 직접 `git diff --text`로 검토).
+- 폭 0 문자·닮은꼴 유니코드는 표시·거부하지 않는다.
+- 무인 사용은 여전히 안 된다: I4(환경·샌드박스 없음), 키 없는 ledger(`aigate stats` 숫자도 같은 사용자가 고칠 수 있음).
