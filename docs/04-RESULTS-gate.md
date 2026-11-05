@@ -451,3 +451,45 @@ e2e 기대는 하나도 고치지 않았다. 단위 테스트 fixture 중 규칙
 - **(정정 2026-11-05)** 위 문장은 약하게 쓰였다. 5차 재리뷰에서 `.gif`/`.ttf`/`.bmp`/`.mp3`/`.mp4`/`.tar` 폴리글랏 파일이 요약 승인 후 기본 Node `require()`로 실행되는 것이 재현됐다(설계서 4장 정정 참고). 이 표의 "(정상) 진짜 PNG 헤더" 행은 PNG에 대해서만 맞다.
 - 심볼릭 링크는 대상 경로만 보이고 대상 파일의 내용은 보호 diff 밖이다(표시만, 거부 없음).
 - `.pyc`는 로드 가능한 코드 목록에 없어 `binary_unknown_type`으로 거부된다(거부는 되지만 이유 코드가 덜 정확).
+
+## 수정 라운드 6 (2026-11-05, 설계서 v0.7)
+
+5차 재리뷰가 재현한 폴리글랏 우회(형식 매직과 JS가 동시에 성립하는 바이너리를 요약 한 줄로 승인 → 기본 Node `require()`가 실행)를 사용자 결정("수정 라운드 6(바이너리 요약 승인 구조적 금지) 진행 — 승인")에 따라 구조적으로 막았다(설계서 8장 [15], 3.4·3.9·4장 v0.7). 러너가 코드를 불러오는 디렉터리(`node_modules` `vendor` `site-packages` `dist-packages` `.venv` `venv` `__pypackages__` `bower_components` `third_party`, 디렉터리 성분 전체 일치·깊이 무관·대소문자 무시) 아래에서 추가·변경·형식 변경된 바이너리는 형식과 관계없이 `binary_in_loaded_dir`로 거부한다(종료 64, 승인 없음, 우회 플래그 없음). 삭제는 요약, 그 밖(`tests/**` fixture 등)은 v0.6 규칙 그대로. 실패하는 테스트를 먼저 쓰고(RED: 폴리글랏 12가지 모두 종료 0으로 승인) 고친 뒤 통과(GREEN)를 확인했다. 자세한 기록과 커밋은 `.superpowers/sdd/03-PLAN-gate/final-fix6-report.md`.
+
+### 재현한 공격 (실제 바이너리, 수정 전 4232921 → 수정 후 e96b892)
+`aigate approve`를 `script`로 만든 pty에서 실행하고 `yes`를 입력했다. `node_modules/helper/` 아래에는 `package.json`의 `"main"`이 그 파일을 가리키고, `node -e 'require("helper")()'`가 수정 전후 모두 `all tests passed <형식>`을 반환한다(파일 자체는 실행 가능한 JS이고, 이번 수정은 승인을 막는다).
+
+| 파일(내용 앞부분) | `node_modules/helper/` 수정 전 | 수정 후 | `vendor/helper/` 수정 전 | 수정 후 | `tests/fixtures/` 수정 전 → 후 |
+|---|---|---|---|---|---|
+| `logo.gif` (`GIF89a=0;module.exports=…//\x00`) | 요약 한 줄 + 승인 | 거부 `binary_in_loaded_dir` | 승인 | 거부 | 요약(승인 불필요) → 같음 |
+| `logo.ttf` (`true;module.exports=…//\x00`) | 승인 | 거부 | 승인 | 거부 | 같음 |
+| `logo.bmp` (`BM=0;module.exports=…//\x00`) | 승인 | 거부 | 승인 | 거부 | 같음 |
+| `logo.mp3` (`ID3=0;module.exports=…//\x00`) | 승인 | 거부 | 승인 | 거부 | 같음 |
+| `logo.mp4` (`//\x00\x18ftypmp42\n<JS>`) | 승인 | 거부 | 승인 | 거부 | 같음 |
+| `logo.tar` (`/*`…`ustar\x00`@257`*/<JS>`) | 승인 | 거부 | 승인 | 거부 | 같음 |
+
+수정 후 거부는 모두 종료 64, 표준 출력 없음, 내용(`module.exports`) 미출력, 이력 `approval_refused`(`reason: binary_in_loaded_dir`, `needed_approval: true`), 승인 없음. `tests/fixtures/`는 보호 경로의 새 파일이라 승인이 필요 없고(8장 [6]) 요약 한 줄로 보인다 — 설계상 범위 밖(fixture는 데이터, 그것을 코드로 불러오는 테스트는 보호하지 않음, 설계서 4장 v0.7).
+
+### 단위 테스트 (`cmd/aigate/approve_loaded_dir_test.go`)
+폴리글랏 6개 × `node_modules/helper/`·`vendor/helper/` 거부, 같은 파일의 `tests/fixtures/` 요약·승인, 대소문자 변형(`tests/Node_Modules/`, `tests/VENDOR/`, `tests/Third_Party/`)·깊은 경로(`a/b/node_modules/c/x.png`)·`site-packages`·`.venv` 거부(진짜 PNG), 부분 문자열(`my_node_modules_backup/`, `vendors/`, `vendored/`, 파일 이름 `node_modules.png`)은 요약, `node_modules` 아래 삭제 바이너리는 요약·승인, 기존 png 변경은 거부, 텍스트 파일은 텍스트로 표시, 판단 순서(`binary_became_text`·`text_became_binary`·`binary_executable` 유지, `.node`·`.cpython-*.so`·소스 이름·확장자 없음·매직 불일치·매직 없는 형식 변경은 `binary_in_loaded_dir`), 경로 이스케이프, 디렉터리 목록 고정.
+
+### 기대값 변경
+e2e 기대는 하나도 고치지 않았고 판정이 바뀐 시나리오도 없다(e2e의 승인은 `approve` 화면을 거치지 않는다). 단위 테스트: 형식 규칙을 시험하던 fixture 중 `node_modules/`·`vendor/` 아래 있던 것을 `tests/` 아래로 옮겼고(규칙은 그대로, 목록은 보고서), 로드 디렉터리 아래 매직 없는 형식 변경 두 경우(`TestMaglessBinaryRule`의 의존성 디렉터리 경로, `TestApproveMaglessBinaries`의 `node_modules/pkg/x.dat`·`tests/Vendor/x.db`)는 기대 이유 코드가 `binary_unknown_type` → `binary_in_loaded_dir`로 바뀌었다(거부는 그대로, 더 구체적인 이유).
+
+### 지표 (최종 전체 실행, 2026-11-05)
+`go test ./... -count=1`(e2e 포함) 통과(약 137초), 따로 한 번 더 돌린 `go test ./e2e -count=1`도 통과(약 157초). e2e 118개 기록(시나리오 실행 112 + `check`·자기 비교 기록 6), **118/118 기대와 일치**.
+
+| 지표 | 값 | 판정 |
+|---|---|---|
+| 불완전·무력화 시나리오(KnownGap 제외) 중 `ok` | **0 / 72** | 합격 |
+| (참고) ok가 아닌 모든 기대(KnownGap 제외, 시나리오 실행) 중 `ok` | 0 / 88 | 기록 |
+| (참고) 오경보율: 기대가 `ok`인 시나리오 중 ok가 아닌 것 | 0 / 10 = 0% | 기록 |
+| (참고) gate 실행 시간(base+head) | 평균 1.22초, 최대 6.56초(n=112). 스택별 평균 py 0.72 / go 1.89 / ts 2.12초(5차보다 느림: 같은 기계에서 다른 작업과 겹친 실행, 이번 변경은 `approve`만 건드림) | 기록 |
+| KnownGap | 14개(5차와 같음) | 기록 |
+
+`gofmt -l` 비어 있음, `go vet ./...` 통과.
+
+### 남은 한계 (설계서 4장 v0.7)
+- `tests/**` fixture와 목록에 없는 데이터 디렉터리는 범위 밖: 폴리글랏 파일도 거기서는 요약 승인된다. 그런 바이너리를 코드로 불러오는 테스트·설정(`require('./fixtures/logo.gif')`, `NODE_PATH`, 사용자 정의 로더 경로)이 diff에 보이면 사람이 그 바이너리를 검토하지 않은 코드로 취급해야 한다.
+- 디렉터리 목록을 늘리려면 코드(`loadedCodeDirs`)를 바꿔야 한다(설정 키 없음, 의도적).
+- 규칙은 보호 diff에 들어온 파일에만 적용된다. `site-packages`·`.venv` 등은 내장 guarded가 아니고, 내장 glob(`**/node_modules/**`·`vendor/**`)은 대소문자를 구분한다(확인함: 보호 경로 밖 새 `Node_Modules/h/index.js`는 `run` 종료 0인데, macOS에서 Node `require("h")`는 그것을 불러온다).
