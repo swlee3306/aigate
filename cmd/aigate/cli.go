@@ -36,8 +36,9 @@ const usage = `usage:
 exit codes: 0 ok, 1 behavior_failure, 2 verification_incomplete, 3 check_weakened,
   64 gate error (also: interrupted by SIGINT/SIGTERM — nothing is recorded)
 check: 0 fresh, 1 not fresh (problems printed), 64 gate error
-stats: per-UTC-day counts from the ledger for today and the N-1 days before;
-  0 ok (also "no events"), 1 ledger fails to verify, 64 gate error
+stats: per-UTC-day counts from the ledger for today and the N-1 days before,
+  plus a per-rule count of runs; 0 ok (also "no events"), 1 ledger fails to
+  verify, 64 gate error
 `
 
 // Main runs the CLI and returns the process exit code.
@@ -198,10 +199,11 @@ func cmdApprove(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	ledgerPath := gate.LedgerPath(home, p.RepoID)
-	// refuse records approval_refused FIRST (reason code only, never raw
-	// bytes or paths), then explains; a ledger failure is a gate error too.
+	// refuse records approval_refused FIRST (reason code and whether the
+	// diff needs approval at all, never raw bytes or paths), then explains; a
+	// ledger failure is a gate error too.
 	refuse := func(msg, reason, why string) int {
-		lerr := ledger.Append(ledgerPath, "approval_refused", p.RepoID, map[string]any{"base": p.Base, "reason": reason}, time.Now().UTC())
+		lerr := ledger.Append(ledgerPath, "approval_refused", p.RepoID, map[string]any{"base": p.Base, "reason": reason, "needed_approval": p.NeedsApproval()}, time.Now().UTC())
 		fmt.Fprintf(stderr, "aigate: approve 거부: %s (이유 코드 %s). %s\n", msg, reason, why)
 		if lerr != nil {
 			fmt.Fprintf(stderr, "aigate: gate error: 거부 사건을 이력(ledger)에 기록하지 못했습니다: %v\n", lerr)
