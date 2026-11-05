@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# agent-runner: the only thing the orchestrator's ssh key can run on agent-vm (authorized_keys command=).
+# Runs as user `agent`. The requested command arrives in $SSH_ORIGINAL_COMMAND and is validated strictly:
+#   prepare <task>            stdin: git bundle (size-capped) -> fresh workspace, branch task-<task> at the base commit
+#   run <task> <claude|codex> stdin: prompt (size-capped) -> agent in the workspace, bounded time and output
+#   collect-info <task>       fixed-format summary of the task branch (never file contents)
+#   upload-pack '/<task>'     git-upload-pack of exactly that task's workspace repo (read-only fetch by the orchestrator)
+# <task> is [0-9]{1,18}. Anything else exits 2 before any side effect. Nothing here connects to another machine
+# except the agent CLIs themselves (egress is limited by the VM firewall).
+# Settings live in a root-owned file (default /etc/agent-runner.conf, sourced); the caller cannot change them.
+# AGENT_RUNNER_CONF only exists for tests: sshd never sets it for a forced command.
+# Written for bash >= 3.2 (tests run on macOS) and GNU/BSD userland; no `timeout` binary is needed.
+set -f
+
+CONF=${AGENT_RUNNER_CONF:-/etc/agent-runner.conf}
+ROOT=/srv/aigate/work
+PREP_MAX=209715200      # bundle bytes
+PROMPT_MAX=65536        # prompt bytes
+TAIL_MAX=65536          # log bytes kept (the tail)
+RUN_TIMEOUT=3600        # seconds; the orchestrator cannot raise it
+INFO_PROBE_MAX=1000     # collect-info computes the size only up to this many commits
+CLAUDE_BIN=claude
+CODEX_BIN=codex
+# Tunable here only (the conf file), never by the caller:
+CLAUDE_ARGS=(-p --permission-mode acceptEdits --allowedTools "Bash,Edit,Write,Read,Glob,Grep")
+CODEX_ARGS=(exec --skip-git-repo-check --sandbox workspace-write -)
+GIT_NAME="agent-runner"
+GIT_EMAIL="agent-runner@localhost"
+if [ -r "$CONF" ]; then . "$CONF" || exit 5; fi
+
+reject() { echo "agent-runner: command not allowed" >&2; exit 2; }
+fail()   { echo "agent-runner: $1" >&2; exit "${2:-3}"; }
+
+# ---- parse and validate the requested command before touching anything ----
+cmd=${SSH_ORIGINAL_COMMAND-}
+case $cmd in *$'\n'* | *$'\r'* | *$'\t'* | '') reject ;; esac
+sub= task= agent=
+if   [[ $cmd =~ ^prepare\ ([0-9]{1,18})$ ]];                 then sub=prepare task=${BASH_REMATCH[1]}
+elif [[ $cmd =~ ^collect-info\ ([0-9]{1,18})$ ]];            then sub=collect-info task=${BASH_REMATCH[1]}
+elif [[ $cmd =~ ^run\ ([0-9]{1,18})\ (claude|codex)$ ]];     then sub=run task=${BASH_REMATCH[1]} agent=${BASH_REMATCH[2]}
+elif [[ $cmd =~ ^upload-pack\ \'/?([0-9]{1,18})\'$ ]];       then sub=upload-pack task=${BASH_REMATCH[1]}
+else reject; fi
+
+d=$ROOT/$task
+ws=$d/repo
+branch=task-$task
+umask 077
+
+# git with hooks and fsmonitor off and no global/system config
+g() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c protocol.version=2 -c gc.auto=0 \
+        -c user.name="$GIT_NAME" -c user.email="$GIT_EMAIL" -c commit.gpgsign=false "$@"; }
+export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 LC_ALL=C
+unset GIT_DIR GIT_WORK_TREE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_INDEX_FILE GIT_CONFIG_COUNT
+
+have_ws() { [ -d "$d" ] && [ ! -L "$d" ] && [ -d "$ws/.git" ] && [ ! -L "$ws" ] && [ ! -L "$ws/.git" ] && [ -f "$d/base" ]; }
+
+case $sub in
+upload-pack)
+	have_ws || fail "no workspace for task $task" 4
+	# Only the task branch is advertised and fetchable; everything else (other branches, tags, the agent's refs) is hidden.
+	exec git -c uploadpack.hideRefs=refs/ -c "uploadpack.hideRefs=!refs/heads/$branch" \
+		-c core.hooksPath=/dev/null -c uploadpack.allowAnySHA1InWant=false \
+		upload-pack --strict --timeout=60 "$ws/.git"
+	;;
+
+prepare)
+	mkdir -p "$ROOT" || fail "cannot create $ROOT" 5
+	[ ! -L "$d" ] || rm -f "$d"
+	rm -rf "$d" && mkdir "$d" || fail "cannot reset workspace" 5
+	head -c "$((PREP_MAX + 1))" > "$d/in.bundle"
+	size=$(wc -c < "$d/in.bundle" | tr -d ' ')
+	if [ "$size" -gt "$PREP_MAX" ] || [ "$size" -eq 0 ]; then rm -rf "$d"; fail "bundle empty or over $PREP_MAX bytes"; fi
+	heads=$(git bundle list-heads "$d/in.bundle" 2>/dev/null) || { rm -rf "$d"; fail "not a git bundle"; }
+	if ! [[ $heads =~ ^([0-9a-f]{40}|[0-9a-f]{64})\ refs/aigate/([0-9a-f]{40}|[0-9a-f]{64})$ ]] || [ "${BASH_REMATCH[1]}" != "${BASH_REMATCH[2]}" ]; then
+		rm -rf "$d"; fail "bundle must hold exactly one refs/aigate/<sha> ref"
+	fi
+	base=${BASH_REMATCH[1]}
+	mkdir "$ws" && g init -q "$ws" || fail "git init failed" 5
+	g -C "$ws" -c transfer.fsckObjects=true fetch -q --no-tags --no-recurse-submodules "$d/in.bundle" \
+		"refs/aigate/$base:refs/heads/$branch" >/dev/null 2>&1 || { rm -rf "$d"; fail "bundle did not unpack"; }
+	rm -f "$d/in.bundle"
+	git -C "$ws" config core.hooksPath /dev/null
+	g -C "$ws" symbolic-ref HEAD "refs/heads/$branch"
+	g -C "$ws" reset -q --hard "$branch" >/dev/null 2>&1 || { rm -rf "$d"; fail "checkout failed" 5; }
+	printf '%s\n' "$base" > "$d/base"
+	printf 'AGENT-RUNNER-PREPARE-OK\nbase=%s\n' "$base"
+	;;
+
+collect-info)
+	have_ws || fail "no workspace for task $task" 4
+	base=$(head -n1 "$d/base")
+	[[ $base =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || fail "bad base" 5
+	head=$(g -C "$ws" rev-parse --verify -q "refs/heads/$branch^{commit}") || fail "branch $branch is missing" 4
+	commits=$(g -C "$ws" rev-list --count "$base..$head" 2>/dev/null) || fail "cannot count commits" 4
+	bytes=-1
+	if [ "$commits" -le "$INFO_PROBE_MAX" ]; then
+		bytes=$(g -C "$ws" rev-list --objects "$base..$head" 2>/dev/null | cut -d' ' -f1 \
+			| g -C "$ws" cat-file --batch-check='%(objectsize:disk)' 2>/dev/null | awk '{s+=$1} END {print s+0}')
+	fi
+	printf 'AGENT-RUNNER-INFO1\nhead=%s\nbase=%s\ncommits=%s\nbytes=%s\nEND\n' "$head" "$base" "$commits" "$bytes"
+	;;
+
+run)
+	have_ws || fail "no workspace for task $task" 4
+	head -c "$((PROMPT_MAX + 1))" > "$d/prompt"
+	psize=$(wc -c < "$d/prompt" | tr -d ' ')
+	if [ "$psize" -eq 0 ] || [ "$psize" -gt "$PROMPT_MAX" ]; then rm -f "$d/prompt"; fail "prompt empty or over $PROMPT_MAX bytes"; fi
+	g -C "$ws" checkout -q "$branch" >/dev/null 2>&1 || fail "cannot check out $branch" 4
+	set -m   # job control: each background job is its own process group, so a timeout kills the whole tree
+	rm -f "$d/ot" "$d/tail" "$d/to"
+	mkfifo "$d/ot" || fail "mkfifo failed" 5
+	tail -c "$TAIL_MAX" < "$d/ot" > "$d/tail" &
+	rd=$!
+	cd "$ws" || fail "cannot enter workspace" 4
+	if [ "$agent" = claude ]; then
+		env -u SSH_ORIGINAL_COMMAND -u SSH_CONNECTION -u SSH_CLIENT -u SSH_AUTH_SOCK "$CLAUDE_BIN" "${CLAUDE_ARGS[@]}" < "$d/prompt" > "$d/ot" 2>&1 &
+	else
+		env -u SSH_ORIGINAL_COMMAND -u SSH_CONNECTION -u SSH_CLIENT -u SSH_AUTH_SOCK "$CODEX_BIN" "${CODEX_ARGS[@]}" < "$d/prompt" > "$d/ot" 2>&1 &
+	fi
+	pid=$!
+	( sleep "$RUN_TIMEOUT"; : > "$d/to"; kill -s KILL -- "-$pid" ) >/dev/null 2>&1 < /dev/null &
+	wd=$!
+	wait "$pid"; rc=$?
+	kill -s KILL -- "-$wd" >/dev/null 2>&1
+	kill -s KILL -- "-$pid" >/dev/null 2>&1    # stragglers of the agent's process group
+	( sleep 5; kill -s KILL -- "-$rd" ) >/dev/null 2>&1 < /dev/null &
+	gd=$!
+	wait "$rd"
+	kill -s KILL -- "-$gd" >/dev/null 2>&1
+	timedout=0
+	if [ -f "$d/to" ] && [ "$rc" -eq 137 ]; then timedout=1; rc=124; fi
+	committed=0
+	if [ "$timedout" = 0 ] && [ "$(git -C "$ws" symbolic-ref -q HEAD)" = "refs/heads/$branch" ] \
+	   && [ -n "$(g -C "$ws" status --porcelain 2>/dev/null | head -n1)" ]; then
+		if g -C "$ws" add -A >/dev/null 2>&1 && g -C "$ws" commit -q --no-verify -m "agent-runner: task $task" >/dev/null 2>&1; then committed=1; fi
+	fi
+	: >> "$d/tail"
+	printf 'AGENT-RUNNER-RUN1\nrc=%s\ntimedout=%s\ncommitted=%s\ntail=%s\n' "$rc" "$timedout" "$committed" "$(wc -c < "$d/tail" | tr -d ' ')"
+	cat "$d/tail"
+	printf '\nEND\n'
+	rm -f "$d/ot" "$d/prompt"
+	;;
+esac
+exit 0

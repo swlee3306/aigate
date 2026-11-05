@@ -132,11 +132,14 @@ func (e *SSH) jumpProxy() string {
 	}, " ")
 }
 
-// sshArgs is every ssh option, ending with the target host. Host keys are
+// sshArgs is every ssh option, ending with the target host.
+func (e *SSH) sshArgs() []string { return append(e.sshOpts(), e.cfg.Host) }
+
+// sshOpts is every ssh option except the target host. Host keys are
 // always verified against the configured known_hosts file; there is no option
 // that relaxes that. Only the configured key is offered; agent, X11 and port
 // forwarding are off and ~/.ssh/config is not read.
-func (e *SSH) sshArgs() []string {
+func (e *SSH) sshOpts() []string {
 	secs := int((e.cfg.ConnectTimeout + time.Second - 1) / time.Second)
 	var proxy []string
 	if e.cfg.JumpHost != "" {
@@ -161,7 +164,6 @@ func (e *SSH) sshArgs() []string {
 		"-o", "PermitLocalCommand=no",
 		"-o", "LogLevel=ERROR",
 		"-l", e.cfg.User,
-		e.cfg.Host,
 	)
 }
 

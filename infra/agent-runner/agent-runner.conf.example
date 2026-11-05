@@ -1,0 +1,10 @@
+# /etc/agent-runner.conf (root:root 0644), sourced by agent-runner. The orchestrator cannot change these.
+ROOT=/srv/aigate/work
+PREP_MAX=209715200
+PROMPT_MAX=65536
+TAIL_MAX=65536
+RUN_TIMEOUT=3600
+# Claude: non-interactive, edits allowed, Bash allowed. Tighten the tool list here if needed.
+CLAUDE_ARGS=(-p --permission-mode acceptEdits --allowedTools "Bash,Edit,Write,Read,Glob,Grep")
+# Codex: non-interactive, writes only inside the workspace; the prompt is read from stdin ("-").
+CODEX_ARGS=(exec --skip-git-repo-check --sandbox workspace-write -)

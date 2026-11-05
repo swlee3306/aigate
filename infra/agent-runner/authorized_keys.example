@@ -1,0 +1,3 @@
+# Installed by install.sh as /etc/ssh/aigate/agent_authorized_keys (root-owned, so the `agent` user cannot edit it;
+# sshd uses it for user agent only, see sshd-agent.conf). One line, the orchestrator's NEW dedicated public key:
+command="/usr/local/sbin/agent-runner",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty ssh-ed25519 AAAA...REPLACE_WITH_ORCHESTRATOR_PUBLIC_KEY aigate-orchestrator
