@@ -41,8 +41,8 @@ case $cmd in
     wait_ssh; t4=$(now)
     echo "restore: total $((t4-t0)) s = delete-server $((t1-t0)) + volume-from-snapshot $((t2-t1)) + create-server $((t3-t2)) + ssh-ready $((t4-t3))  [volume $newvol]" ;;
   prune)
-    echo "volumes of $vm that are not attached (candidates for manual deletion; golden volume is $vol):"
-    osw volume list --status available -f value -c ID -c Name | grep -E " $vm-root(-[0-9]+)?$" || true ;;
+    echo "volumes of $vm (candidates for manual deletion except the one the server boots from; golden volume is $vol, snapshot origin):"
+    osw volume list -f value -c ID -c Name | grep -E " $vm-root(-[0-9]+)?$" || true ;;
   time)
     for i in $(seq 1 "$n"); do
       sshvm "sudo touch /var/tmp/dirty-$i"
