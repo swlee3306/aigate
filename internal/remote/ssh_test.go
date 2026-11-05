@@ -528,3 +528,70 @@ func TestGoodRunThroughGateIsOK(t *testing.T) {
 		t.Fatalf("category %s: %+v", r.Category, r.Violations)
 	}
 }
+
+// A request without a timeout still gets a remote deadline.
+func TestNoTimeoutStillBounded(t *testing.T) {
+	f := newFixture(t, func(c *Config) { c.DefaultTimeout = time.Second })
+	sha := f.prepared(t)
+	r := req(sha, "exit-code", `sleep 60`)
+	r.Timeout = 0
+	start := time.Now()
+	out, err := f.ex.RunCheck(context.Background(), r)
+	if err != nil || !out.TimedOut || out.RC != 124 {
+		t.Fatalf("%+v %v", out, err)
+	}
+	if d := time.Since(start); d > 8*time.Second {
+		t.Fatalf("took %v", d)
+	}
+}
+
+// Git environment variables of the caller (say, aigate started from a hook)
+// must not redirect the bundle work into another repository.
+func TestPrepareIgnoresHostileGitEnv(t *testing.T) {
+	f := newFixture(t)
+	write(t, f.repo, "f", "1")
+	sha := commit(t, f.repo, "c1")
+	other := realpath(t, t.TempDir())
+	git(t, other, "init", "-q", "--bare")
+	t.Setenv("GIT_DIR", other)
+	t.Setenv("GIT_OBJECT_DIRECTORY", filepath.Join(other, "objects"))
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "core.bare")
+	t.Setenv("GIT_CONFIG_VALUE_0", "true")
+	err := f.ex.Prepare(context.Background(), f.repo, []string{sha})
+	os.Unsetenv("GIT_DIR")
+	os.Unsetenv("GIT_OBJECT_DIRECTORY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refs := git(t, other, "for-each-ref"); refs != "" {
+		t.Fatalf("refs landed in the wrong repo: %s", refs)
+	}
+	git(t, f.cfg.RepoDir, "cat-file", "-e", sha+"^{commit}")
+}
+
+// Successive Prepare calls for different commits keep all of them runnable.
+func TestSuccessivePreparesKeepEarlierCommits(t *testing.T) {
+	f := newFixture(t)
+	write(t, f.repo, "f", "1")
+	c1 := commit(t, f.repo, "c1")
+	if err := f.ex.Prepare(context.Background(), f.repo, []string{c1}); err != nil {
+		t.Fatal(err)
+	}
+	// c2 is a sibling, so c1 is not in its history
+	git(t, f.repo, "checkout", "-q", "-b", "other")
+	write(t, f.repo, "g", "2")
+	c2 := commit(t, f.repo, "c2")
+	if err := f.ex.Prepare(context.Background(), f.repo, []string{c2}); err != nil {
+		t.Fatal(err)
+	}
+	refs := git(t, f.cfg.RepoDir, "for-each-ref", "--format=%(refname)")
+	for _, sha := range []string{c1, c2} {
+		if !strings.Contains(refs, "refs/aigate/"+sha) {
+			t.Fatalf("no ref for %s: %s", sha, refs)
+		}
+		if out, err := f.ex.RunCheck(context.Background(), req(sha, "exit-code", "true")); err != nil || out.RC != 0 {
+			t.Fatalf("%s: %+v %v", sha, out, err)
+		}
+	}
+}

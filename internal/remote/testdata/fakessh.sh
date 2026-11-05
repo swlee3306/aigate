@@ -41,6 +41,8 @@ yes | ask)
 	fi
 	;;
 esac
+# a real ssh would not pass the caller's git environment on
+unset GIT_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_INDEX_FILE GIT_WORK_TREE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
 cmd="$*"
 case $AIGATE_FAKE_MODE in
 flood) exec yes AIGATE1 ;;

@@ -31,6 +31,9 @@ type Config struct {
 	// ConnectTimeout bounds the ssh handshake (default 10s). Grace is added to
 	// the check timeouts for the whole ssh call (default 60s).
 	ConnectTimeout, Grace time.Duration
+	// DefaultTimeout applies to a check with no timeout of its own (default
+	// 10m): the VM never runs a check unbounded.
+	DefaultTimeout time.Duration
 	// SSHBin overrides the ssh binary; empty means $AIGATE_SSH_BIN, then "ssh".
 	SSHBin string
 	Limits Limits
@@ -76,6 +79,9 @@ func NewSSH(cfg Config) (*SSH, error) {
 	if cfg.Grace <= 0 {
 		cfg.Grace = 60 * time.Second
 	}
+	if cfg.DefaultTimeout <= 0 {
+		cfg.DefaultTimeout = 10 * time.Minute
+	}
 	cfg.Limits = cfg.Limits.norm()
 	bin := cfg.SSHBin
 	if bin == "" {
@@ -119,10 +125,10 @@ func (e *SSH) sshArgs() []string {
 // shq is the only place arguments are escaped for the remote shell.
 func shq(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
-// remoteCmd is `bash -c <wrapper> aigate-remote <mode> <args...>`, every word
+// remoteCmd is `bash --noprofile --norc -c <wrapper> aigate-remote <mode> <args...>`, every word
 // escaped by shq. No argument is ever spliced into script text.
 func remoteCmd(mode string, args []string) (string, error) {
-	words := append([]string{"bash", "-c", wrapper, "aigate-remote", mode}, args...)
+	words := append([]string{"bash", "--noprofile", "--norc", "-c", wrapper, "aigate-remote", mode}, args...)
 	for i, w := range words {
 		if strings.ContainsRune(w, 0) {
 			return "", errors.New("remote: argument contains a NUL byte")
@@ -212,15 +218,15 @@ func (e *SSH) RunCheck(ctx context.Context, req gate.CheckRequest) (gate.CheckOu
 	case "gotest-json":
 		resultMax = lim.JSONBytes
 	}
-	tmo, budget := "0", e.cfg.Grace
-	if req.Timeout > 0 {
-		tmo = strconv.FormatFloat(req.Timeout.Seconds(), 'f', 3, 64)
-		n := 1
-		if len(req.Setup) > 0 {
-			n = 2
-		}
-		budget += time.Duration(n) * req.Timeout
+	if req.Timeout <= 0 {
+		req.Timeout = e.cfg.DefaultTimeout
 	}
+	n := 1
+	if len(req.Setup) > 0 {
+		n = 2
+	}
+	tmo := strconv.FormatFloat(req.Timeout.Seconds(), 'f', 3, 64)
+	budget := e.cfg.Grace + time.Duration(n)*req.Timeout
 	args := []string{e.cfg.RepoDir, e.cfg.WorkDir, rid, req.SHA, req.Adapter, tmo,
 		strconv.Itoa(resultMax), strconv.Itoa(lim.TailBytes),
 		strconv.Itoa(len(req.Setup)), strconv.Itoa(len(env)), strconv.Itoa(len(argv))}
@@ -418,7 +424,7 @@ prep)
 	tmp=$(mktemp -d "${TMPDIR:-/tmp}/aigate-prep.XXXXXX") || exit 3
 	trap 'rm -rf "$tmp"' EXIT
 	cat > "$tmp/b" || exit 3
-	git -C "$repo" fetch -q --no-tags "$tmp/b" '+refs/aigate/*:refs/aigate/*' >&2 || exit 4
+	git -C "$repo" fetch -q --no-tags "$tmp/b" 'refs/aigate/*:refs/aigate/*' >&2 || exit 4
 	for s in "$@"; do git -C "$repo" cat-file -e "$s^{commit}" || exit 5; done
 	echo AIGATE-PREP-OK
 	exit 0
@@ -461,12 +467,13 @@ phase() {
 	fi
 	local pid=$!
 	if [ "$tmo" != 0 ]; then
-		( sleep "$tmo"; : > "$d/to"; kill -s KILL -- "-$pid" ) >/dev/null 2>&1 < /dev/null &
+		( sleep "$tmo"; : > "$d/to"; kill -s KILL "$pid"; kill -s KILL -- "-$pid" ) >/dev/null 2>&1 < /dev/null &
 		wd=$!
 	fi
 	wait "$pid"
 	prc=$?
 	[ -n "$wd" ] && kill -s KILL -- "-$wd" >/dev/null 2>&1
+	kill -s KILL "$pid" >/dev/null 2>&1
 	kill -s KILL -- "-$pid" >/dev/null 2>&1
 	( sleep 5; kill -s KILL -- "-$r1" ${r2:+"-$r2"} ) >/dev/null 2>&1 < /dev/null &
 	g=$!
