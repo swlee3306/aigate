@@ -554,8 +554,9 @@ func TestApproveBinaryFixtureSummaries(t *testing.T) {
 }
 
 // Binary became text: no summary hides the head text. With -U0 the base's
-// binary lines are "-" lines, so the usual unsafe-byte scan refuses on the
-// base's NUL (finding, fail-closed): the head text is never hidden.
+// binary lines are "-" lines; since fix wave 4 (item B) a dedicated refusal
+// (binary_became_text) fires before the generic byte scan (details in
+// TestApproveBinaryBecameTextDedicatedRefusal).
 func TestApproveBinaryBecameTextNotSummarised(t *testing.T) {
 	repo, base := newRepo(t)
 	write(t, repo, "tests/data.bin", "a\x00b\n")
@@ -563,7 +564,7 @@ func TestApproveBinaryBecameTextNotSummarised(t *testing.T) {
 	write(t, repo, "tests/data.bin", "now text\n")
 	commit(t, repo, "b2t")
 	code, out, errOut := approveTTY(t, repo, base, "yes\n")
-	if code != 64 || out != "" || rawUnsafe(errOut) || strings.Contains(errOut, "binary file changed") || !strings.Contains(errOut, `\x00`) {
+	if code != 64 || out != "" || rawUnsafe(errOut) || strings.Contains(errOut, "binary file changed") || !strings.Contains(errOut, "binary_became_text") {
 		t.Fatalf("binary→text: %d %q %q", code, out, errOut)
 	}
 }

@@ -17,6 +17,7 @@ import (
 
 	"aigate/internal/approval"
 	"aigate/internal/gate"
+	"aigate/internal/gitx"
 	"aigate/internal/ledger"
 	"aigate/internal/textsafe"
 )
@@ -185,12 +186,13 @@ func cmdApprove(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	// Everything shown is checked BEFORE anything is printed. A file that
-	// became binary, or a source/config/text-named file that is binary at
-	// head, is refused: its summary line would let one NUL byte hide the
-	// content the human approves. Then a control sequence (ESC, lone CR, ...)
-	// or bidi override in a line or path could make the screen hide what the
-	// human approves. Genuine binary files are shown as a summary line; the
-	// hash stays over the raw bytes (HashedText).
+	// became binary or became text, or any file binary at head that is not an
+	// allowlisted genuine binary type (binaryRefusal), is refused: a summary
+	// line would let one NUL byte hide the content the human approves. Then a
+	// control sequence (ESC, lone CR, ...) or bidi override in a line or path
+	// could make the screen hide what the human approves. Allowlisted binary
+	// files and deleted binaries are shown as a summary line; the hash stays
+	// over the raw bytes (HashedText).
 	home, err := gate.Home("")
 	if err != nil {
 		return fail(stderr, err)
@@ -200,14 +202,21 @@ func cmdApprove(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	// bytes or paths), then explains; a ledger failure is a gate error too.
 	refuse := func(msg, reason, why string) int {
 		lerr := ledger.Append(ledgerPath, "approval_refused", p.RepoID, map[string]any{"base": p.Base, "reason": reason}, time.Now().UTC())
-		fmt.Fprintf(stderr, "aigate: approve 거부: %s. %s\n", msg, why)
+		fmt.Fprintf(stderr, "aigate: approve 거부: %s (이유 코드 %s). %s\n", msg, reason, why)
 		if lerr != nil {
 			fmt.Fprintf(stderr, "aigate: gate error: 거부 사건을 이력(ledger)에 기록하지 못했습니다: %v\n", lerr)
 		}
 		return exitGateError
 	}
 	if msg, reason := binaryRefusal(p); msg != "" {
-		return refuse(msg, reason, "바이너리 요약 한 줄로는 사람이 내용을 볼 수 없어 승인하지 않습니다(승인은 기록하지 않음). NUL 바이트를 없앤 커밋으로 다시 실행하세요.")
+		why := "바이너리 요약 한 줄로는 사람이 내용을 볼 수 없어 승인하지 않습니다(승인은 기록하지 않음). NUL 바이트를 없앤 커밋으로 다시 실행하세요."
+		switch reason {
+		case reasonBinaryBecameText:
+			why = "승인하지 않습니다(승인은 기록하지 않음). 변경을 '이 파일 삭제 + 텍스트를 새 이름의 파일로 추가'로 나눈 커밋으로 다시 실행하세요: 삭제된 바이너리는 요약 한 줄로, 추가한 텍스트는 그대로 보여 검토할 수 있습니다."
+		case reasonBinaryExecutable, reasonBinaryUnknown:
+			why = "바이너리 요약 한 줄은 허용 목록의 진짜 바이너리 형식(실행 권한·'#!' 시작·'.bin' 경로가 없는 파일)에만 쓰고, 그 밖의 바이너리는 사람이 내용을 볼 수 없어 승인하지 않습니다(승인은 기록하지 않음). 직접 `git diff --text`로 검토하고 텍스트 파일로 두거나 허용 목록 형식의 바이너리로 바꾼 커밋으로 다시 실행하세요."
+		}
+		return refuse(msg, reason, why)
 	}
 	display := p.Diff.DisplayText(textsafe.Escape)
 	if msg, reason := unsafeApproveText(p, display); msg != "" {
@@ -284,17 +293,30 @@ func binaryCount(p gate.Protected) int {
 const (
 	reasonUnsafeBytes      = "unsafe_bytes"
 	reasonTextBecameBinary = "text_became_binary"
+	reasonBinaryBecameText = "binary_became_text"
+	// A file binary at head that is not an allowlisted genuine binary type
+	// (binaryRefusal): executable (exec bit, "#!" start, ".bin" component),
+	// source/config/text-named (the pre-allowlist rule, kept so old ledger
+	// events keep their meaning), or any other type.
+	reasonBinaryExecutable = "binary_executable"
 	reasonBinarySource     = "binary_source_file"
+	reasonBinaryUnknown    = "binary_unknown_type"
 )
 
-// textLikeExt are extensions (lower case) of files that are source, config
-// or text: binary content in them is never a genuine fixture to summarise.
-var textLikeExt = map[string]bool{}
+// binaryAllowExt are the extensions (lower case, with the dot) of genuine
+// binary types that approve may show as a one-line summary. This is an
+// ALLOWLIST: everything else binary at head is refused.
+var binaryAllowExt = map[string]bool{}
 
-// textLikeName are extension-less file names (lower case) treated the same.
+// textLikeExt / textLikeName (lower case) only CLASSIFY a refusal as
+// binary_source_file; they decide nothing (none of them is allowlisted).
+var textLikeExt = map[string]bool{}
 var textLikeName = map[string]bool{}
 
 func init() {
+	for _, e := range strings.Fields("png jpg jpeg gif webp ico icns bmp tif tiff heic avif svgz pdf zip gz tgz bz2 xz zst 7z tar woff woff2 ttf otf eot wasm node so dylib dll exe bin dat db sqlite sqlite3 mp3 mp4 m4a mov wav ogg flac webm psd class jar pb npy npz parquet") {
+		binaryAllowExt["."+e] = true
+	}
 	for _, e := range strings.Fields(".ts .tsx .js .jsx .mjs .cjs .go .py .rb .java .kt .c .h .cc .cpp .cs .rs .php .sh .bash .zsh .ini .cfg .conf .toml .yml .yaml .json .xml .html .css .md .txt .lock .mod .sum .gradle .properties .env") {
 		textLikeExt[e] = true
 	}
@@ -310,13 +332,57 @@ func isTextLike(p string) bool {
 	return textLikeName[base] || textLikeExt[path.Ext(base)]
 }
 
+// hasBinDir reports whether a path component is ".bin" (node_modules/.bin,
+// any **/.bin/**); a file named x.bin is not.
+func hasBinDir(p string) bool {
+	for _, seg := range strings.Split(p, "/") {
+		if strings.EqualFold(seg, ".bin") {
+			return true
+		}
+	}
+	return false
+}
+
+// summaryRefusal returns "" when f (binary at head, not deleted) is an
+// allowlisted genuine binary that may be summarised, else the reason code and
+// a short Korean explanation of the rule it breaks.
+func summaryRefusal(f gitx.FileChange) (reason, why string) {
+	var exe []string
+	if f.HeadMode != "100644" {
+		exe = append(exe, "git 모드 "+f.HeadMode+"(일반 실행 불가 파일 100644 아님)")
+	}
+	if f.HeadShebang {
+		exe = append(exe, "내용이 '#!'로 시작")
+	}
+	if hasBinDir(f.Path) {
+		exe = append(exe, "'.bin' 경로 아래")
+	}
+	switch {
+	case len(exe) > 0:
+		return reasonBinaryExecutable, "실행될 수 있는 파일입니다(" + strings.Join(exe, ", ") + ")"
+	case isTextLike(f.Path):
+		return reasonBinarySource, "소스·설정·텍스트 파일 이름입니다"
+	case !binaryAllowExt[strings.ToLower(path.Ext(path.Base(f.Path)))]:
+		return reasonBinaryUnknown, "확장자가 요약을 허용하는 바이너리 형식 목록에 없습니다"
+	}
+	return "", ""
+}
+
 // binaryRefusal returns a description (escaped path, never raw bytes) and a
-// reason code when a protected file must not be shown as a binary summary:
-// a text file that became binary (M/T), or a file that is binary at head and
-// added or modified although its name says source/config/text.
+// reason code when a protected file must not be shown, checked before the
+// generic byte scan: a text file that became binary (M/T), a binary file
+// that became text (M/T: its NUL is on the base "-" side), or a file binary
+// at head (added, modified or type-changed) that is not an allowlisted
+// genuine binary (summaryRefusal). Deleted files are always a summary.
 func binaryRefusal(p gate.Protected) (msg, reason string) {
 	for _, f := range p.Diff.Files {
-		if !f.HeadBinary || f.Status == "D" {
+		if f.Status == "D" || f.Status == "A" && !f.HeadBinary {
+			continue
+		}
+		if f.Status != "A" && f.BaseBinary && !f.HeadBinary {
+			return fmt.Sprintf("보호 파일 '%s' 가 바이너리에서 텍스트로 바뀌었습니다(base는 바이너리, head는 텍스트). base의 NUL 바이트가 diff의 '-' 줄에 남아 이 diff는 화면에 그대로 보일 수 없습니다", textsafe.Escape(f.Path)), reasonBinaryBecameText
+		}
+		if !f.HeadBinary {
 			continue
 		}
 		where := "NUL 바이트"
@@ -326,8 +392,8 @@ func binaryRefusal(p gate.Protected) (msg, reason string) {
 		if f.Status != "A" && !f.BaseBinary {
 			return fmt.Sprintf("보호 파일 '%s' 가 텍스트에서 바이너리로 바뀌었습니다(base는 텍스트, %s)", textsafe.Escape(f.Path), where), reasonTextBecameBinary
 		}
-		if isTextLike(f.Path) {
-			return fmt.Sprintf("보호 파일 '%s' 는 소스·설정·텍스트 파일 이름인데 head에서 바이너리입니다(%s)", textsafe.Escape(f.Path), where), reasonBinarySource
+		if r, why := summaryRefusal(f); r != "" {
+			return fmt.Sprintf("보호 파일 '%s' 는 head에서 바이너리(%s)인데 %s", textsafe.Escape(f.Path), where, why), r
 		}
 	}
 	return "", ""

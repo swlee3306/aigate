@@ -815,3 +815,31 @@ func TestFileChangeBinaryPerSide(t *testing.T) {
 		t.Errorf("binary→text file must not be summarised:\n%s", disp)
 	}
 }
+
+// FIX WAVE 4: FileChange carries the head mode and whether the head blob
+// starts with "#!" (facts for approve's allowlist).
+func TestFileChangeHeadModeAndShebang(t *testing.T) {
+	r := newRepo(t)
+	write(t, r, "tests/keep.txt", "k\n")
+	base := commit(t, r, "base")
+	write(t, r, "tests/run", "#!/bin/sh\n\x00\n")
+	if err := os.Chmod(filepath.Join(r, "tests/run"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, r, "tests/pic.png", "\x89PNG\x00\n")
+	head := commit(t, r, "head")
+	d, err := ProtectedDiff(r, base, head, []string{"tests/**"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]FileChange{}
+	for _, f := range d.Files {
+		got[f.Path] = f
+	}
+	if f := got["tests/run"]; f.HeadMode != "100755" || !f.HeadShebang || !f.HeadBinary {
+		t.Errorf("tests/run: %+v", f)
+	}
+	if f := got["tests/pic.png"]; f.HeadMode != "100644" || f.HeadShebang {
+		t.Errorf("tests/pic.png: %+v", f)
+	}
+}

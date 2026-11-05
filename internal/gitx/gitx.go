@@ -222,13 +222,20 @@ type FileChange struct {
 	// HeadNULLine is the 1-based line of the first NUL in the head blob, 0
 	// when there is none.
 	HeadNULLine int
+	// HeadMode is the git mode at head ("100644", "100755", "120000",
+	// "160000"; "000000" when deleted). HeadShebang: the head blob starts
+	// with "#!". Facts only: the caller decides what may be summarised.
+	HeadMode    string
+	HeadShebang bool
 	pair        string // "oldsha..newsha" as on the diff "index" line
 }
 
 // Summarised reports whether DisplayText shows the file as one summary line:
-// only a genuine binary file, binary on every side that exists (added: head;
-// deleted: base; otherwise both). A file that became text is shown as text;
-// a file that became binary must be refused by the caller before display.
+// binary on every side that exists (added: head; deleted: base; otherwise
+// both). A file that became text is shown as text; a file that became binary
+// must be refused by the caller before display. Summarised is NOT a safety
+// rule: approve refuses, before display, every non-deleted summarised file
+// that is not an allowlisted genuine binary type (cmd/aigate binaryRefusal).
 func (f FileChange) Summarised() bool {
 	switch f.Status {
 	case "A":
@@ -390,19 +397,20 @@ const gitlinkMode = "160000"
 
 // blobInfo reports the 1-based line of the first NUL byte anywhere in a blob
 // (0: none, i.e. text; this covers git's own heuristic of a NUL in the first
-// 8000 bytes), without consulting attributes, and the blob's size.
-func blobInfo(repo, sha string) (nulLine int, size int64, err error) {
+// 8000 bytes), without consulting attributes, the blob's size, and whether it
+// starts with "#!".
+func blobInfo(repo, sha string) (nulLine int, size int64, shebang bool, err error) {
 	if isZero(sha) {
-		return 0, 0, nil
+		return 0, 0, false, nil
 	}
 	b, err := run(repo, "cat-file", "blob", sha)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, false, err
 	}
 	if i := bytes.IndexByte(b, 0); i >= 0 {
 		nulLine = bytes.Count(b[:i], []byte("\n")) + 1
 	}
-	return nulLine, int64(len(b)), nil
+	return nulLine, int64(len(b)), bytes.HasPrefix(b, []byte("#!")), nil
 }
 
 // ProtectedDiff diffs base..head restricted to the protected globs.
@@ -447,21 +455,21 @@ func ProtectedDiff(repo, base, head string, protected []string) (ProtDiff, error
 		if withRemovals[e.path] {
 			d.FilesWithRemovals = append(d.FilesWithRemovals, e.path)
 		}
-		fc := FileChange{Path: e.path, Status: e.status, BaseBlob: e.oldSHA, HeadBlob: e.newSHA, pair: e.oldSHA + ".." + e.newSHA}
+		fc := FileChange{Path: e.path, Status: e.status, BaseBlob: e.oldSHA, HeadBlob: e.newSHA, HeadMode: e.newMode, pair: e.oldSHA + ".." + e.newSHA}
 		for i, side := range [][2]string{{e.oldMode, e.oldSHA}, {e.newMode, e.newSHA}} {
 			if side[0] == gitlinkMode {
 				// a submodule commit, not a blob: nothing to read; the diff
 				// text shows it as a "Subproject commit <sha>" line
 				continue
 			}
-			nul, size, err := blobInfo(repo, side[1])
+			nul, size, shebang, err := blobInfo(repo, side[1])
 			if err != nil {
 				return d, err
 			}
 			if i == 0 {
 				fc.BaseBinary, fc.BaseSize = nul > 0, size
 			} else {
-				fc.HeadBinary, fc.HeadSize, fc.HeadNULLine = nul > 0, size, nul
+				fc.HeadBinary, fc.HeadSize, fc.HeadNULLine, fc.HeadShebang = nul > 0, size, nul, shebang
 			}
 		}
 		d.Files = append(d.Files, fc)
