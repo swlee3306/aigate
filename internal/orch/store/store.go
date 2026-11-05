@@ -220,6 +220,28 @@ func (s *Store) GetTask(ctx context.Context, id int64) (Task, error) {
 	return t, err
 }
 
+// ListTasks returns up to limit tasks, newest first (limit <= 0 means 100).
+func (s *Store) ListTasks(ctx context.Context, limit int) ([]Task, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+taskCols+` FROM tasks ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Task
+	for rows.Next() {
+		t, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
 // Transition moves a task from `from` to `to` only if it is currently in
 // `from`, and records the event in the same transaction. The rules about which
 // pairs are legal belong to the caller (machine.Allowed).

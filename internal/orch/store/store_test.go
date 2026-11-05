@@ -327,3 +327,16 @@ func TestErrorTextCapped(t *testing.T) {
 		t.Fatalf("len=%d attempts=%d retry=%s", len(got.ErrorText), got.Attempts, got.RetryState)
 	}
 }
+
+func TestListTasksNewestFirst(t *testing.T) {
+	s, _ := openTemp(t)
+	a, b := newTask(t, s), newTask(t, s)
+	got, err := s.ListTasks(context.Background(), 0)
+	if err != nil || len(got) != 2 || got[0].ID != b || got[1].ID != a {
+		t.Fatalf("got %v %v", got, err)
+	}
+	one, _ := s.ListTasks(context.Background(), 1)
+	if len(one) != 1 {
+		t.Fatalf("limit ignored: %d", len(one))
+	}
+}

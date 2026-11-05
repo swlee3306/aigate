@@ -1,0 +1,41 @@
+# Unit file for the orchestrator daemon. Not installed by any script here.
+# Copy to /etc/systemd/system/, create the user, then:
+#   systemctl daemon-reload && systemctl enable --now orchd
+# Add every repository root tasks may use with --allow-repo (repeatable).
+# The API has no authentication beyond the socket mode (0600, owner orch).
+[Unit]
+Description=aigate orchestrator daemon (orchd)
+After=network-online.target
+
+[Service]
+Type=simple
+User=orch
+Group=orch
+ExecStart=/usr/local/bin/orchd --db /var/lib/orchd/orchd.db --socket /run/orchd/orchd.sock --concurrency 1
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+RuntimeDirectory=orchd
+RuntimeDirectoryMode=0700
+StateDirectory=orchd
+StateDirectoryMode=0700
+UMask=0077
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/orchd /run/orchd
+# read-only so allowed repo roots under /home stay readable; add write paths when steps need them
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

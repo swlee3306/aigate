@@ -21,7 +21,7 @@ import (
 func run(repo string, args ...string) ([]byte, error) {
 	full := append([]string{"-C", repo}, args...)
 	cmd := exec.Command("git", full...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
+	cmd.Env = append(cleanEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -29,6 +29,26 @@ func run(repo string, args ...string) ([]byte, error) {
 		return stdout.Bytes(), &gitError{args: args, err: err, stderr: strings.TrimSpace(stderr.String())}
 	}
 	return stdout.Bytes(), nil
+}
+
+// repoEnv are variables that redirect git to another repository or index. A
+// caller that passes -C repo must not be redirected by the process environment.
+var repoEnv = map[string]bool{
+	"GIT_DIR": true, "GIT_WORK_TREE": true, "GIT_INDEX_FILE": true,
+	"GIT_OBJECT_DIRECTORY": true, "GIT_ALTERNATE_OBJECT_DIRECTORIES": true,
+	"GIT_COMMON_DIR": true, "GIT_NAMESPACE": true, "GIT_PREFIX": true,
+	"GIT_CEILING_DIRECTORIES": true, "GIT_DISCOVERY_ACROSS_FILESYSTEM": true,
+}
+
+func cleanEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		k, _, _ := strings.Cut(kv, "=")
+		if !repoEnv[k] {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 type gitError struct {
