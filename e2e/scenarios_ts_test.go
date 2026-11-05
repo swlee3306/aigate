@@ -99,6 +99,10 @@ func tsYAML(setup string) func(timeout string) string {
 // tsLinkSetup symlinks the shared node_modules into each worktree. The
 // absolute path is resolved lazily, after prepareTS has run.
 func tsLinkSetup() string {
+	if Backend() == "vm" {
+		// The shared node_modules lives on this machine; on the check VM install from the lockfile instead.
+		return "npm ci --no-audit --no-fund"
+	}
 	return "ln -s \"" + filepath.Join(tsCacheDir(), "node_modules") + "\" node_modules"
 }
 
