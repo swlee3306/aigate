@@ -2,7 +2,7 @@
 # Runs all infra checks. Usage: sh infra/test/run.sh
 d=$(cd "$(dirname "$0")" && pwd)
 rc=0
-for t in check-create-dryrun.sh check-cloudinit.sh check-keygen.sh; do
+for t in check-create-dryrun.sh check-cloudinit.sh check-keygen.sh check-agent-runner-install.sh; do
   echo "=== $t"
   bash "$d/$t" || rc=1
 done
