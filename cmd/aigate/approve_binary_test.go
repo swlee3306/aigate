@@ -203,14 +203,124 @@ func TestTextLikeDenylistCoveredByAllowlist(t *testing.T) {
 			t.Errorf("%s: reason %q", f.Path, r)
 		}
 	}
-	for _, ok := range []string{"a.png", "A.PNG", "x/y.tar", "golden.bin", "bin/tool.so"} {
+	for _, ok := range []string{"a.png", "A.PNG", "x/y.tar", "golden.bin", "bin/font.woff2"} {
 		if r, _ := summaryRefusal(gitx.FileChange{Path: ok, Status: "A", HeadBinary: true, HeadMode: "100644"}); r != "" {
 			t.Errorf("%s refused: %s", ok, r)
 		}
 	}
+	// fix wave 5 R1: loadable code is refused even when it is not executable
+	if r, _ := summaryRefusal(gitx.FileChange{Path: "bin/tool.so", Status: "A", HeadBinary: true, HeadMode: "100644"}); r != reasonBinaryLoadable {
+		t.Errorf("bin/tool.so: reason %q", r)
+	}
 	for p, mode := range map[string]string{"a.png": "100755", "b.png": "120000", "node_modules/.bin/c.png": "100644", ".bin": "100644"} {
 		if r, _ := summaryRefusal(gitx.FileChange{Path: p, Status: "A", HeadBinary: true, HeadMode: mode}); r != reasonBinaryExecutable {
 			t.Errorf("%s (%s): reason %q", p, mode, r)
+		}
+	}
+}
+
+// refusedApprove runs approve and checks a pre-display refusal with reason
+// (stderr names path and reason, no stdout, no raw bytes, ledger reason,
+// nothing granted); it returns stderr.
+func refusedApprove(t *testing.T, repo, base, p, reason string) string {
+	t.Helper()
+	code, out, errOut := approveTTY(t, repo, base, "yes\n")
+	if code != 64 || out != "" || rawUnsafe(errOut) || strings.Contains(errOut, "binary file changed") {
+		t.Fatalf("want refusal: %d stdout=%q stderr=%q", code, out, errOut)
+	}
+	if !strings.Contains(errOut, p) || !strings.Contains(errOut, reason) {
+		t.Fatalf("stderr should name %s and %s: %q", p, reason, errOut)
+	}
+	if lr := lastRefusal(t, repo); lr["reason"] != reason {
+		t.Fatalf("ledger reason %v, want %s", lr["reason"], reason)
+	}
+	noGrant(t)
+	return errOut
+}
+
+// FIX WAVE 5 R1: a binary the runner can load as code (native addon,
+// extension module, shared/static library, object file, executable, wasm,
+// class, jar) is never approvable from a one-line summary, added, modified
+// or type-changed, whatever its case; the human reviews it out-of-band and
+// commits it themselves. There is no override flag.
+func TestApproveRefusesLoadableCode(t *testing.T) {
+	elf := "\x7fELF\x02\x01\x01\x00payload\n"
+	cases := []struct{ path, base string }{
+		{"vendor/pkg/mod.cpython-312-darwin.so", ""},
+		{"vendor/pkg/mod.abi3.so", ""},
+		{"node_modules/addon/build/Release/addon.node", ""},
+		{"tests/lib/libx.so.1", ""},
+		{"tests/lib/libx.so.1.2.3", ""},
+		{"tests/lib/X.DLL", ""},
+		{"tests/lib/x.dylib", ""},
+		{"tests/lib/x.pyd", ""},
+		{"tests/lib/x.exe", ""},
+		{"tests/lib/x.wasm", ""},
+		{"tests/lib/x.class", ""},
+		{"tests/lib/x.jar", ""},
+		{"tests/lib/x.a", ""},
+		{"tests/lib/x.o", ""},
+		{"tests/lib/x.obj", ""},
+		{"tests/lib/x.lib", ""},
+		{"tests/lib/x.bundle", ""},
+		{"tests/lib/x.jnilib", ""},
+		{"tests/lib/x.SO", ""},
+		{"vendor/pkg/old.so", elf}, // modified, binary on both sides
+	}
+	for _, c := range cases {
+		t.Run(c.path, func(t *testing.T) {
+			repo, base := newRepo(t)
+			if c.base != "" {
+				write(t, repo, c.path, c.base)
+				base = commit(t, repo, "base2")
+			}
+			write(t, repo, c.path, elf+"v2\x00")
+			commit(t, repo, "loadable")
+			errOut := refusedApprove(t, repo, base, c.path, "binary_loadable_code")
+			for _, s := range []string{"코드로", "요약", "직접", "커밋", "base", "우회 플래그"} {
+				if !strings.Contains(errOut, s) {
+					t.Errorf("stderr lacks %q: %q", s, errOut)
+				}
+			}
+			if strings.Contains(errOut, "payload") {
+				t.Errorf("content printed: %q", errOut)
+			}
+		})
+	}
+}
+
+// Deleting a loadable binary is still a summary line and approvable.
+func TestApproveDeletedLoadableCodeSummarised(t *testing.T) {
+	repo, base := newRepo(t)
+	write(t, repo, "vendor/pkg/mod.cpython-312-darwin.so", "\x7fELF\x00\n")
+	write(t, repo, "tests/lib/libx.so.1", "\x7fELF\x00\n")
+	base = commit(t, repo, "base2")
+	for _, p := range []string{"vendor/pkg/mod.cpython-312-darwin.so", "tests/lib/libx.so.1"} {
+		if err := os.Remove(filepath.Join(repo, p)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commit(t, repo, "delete")
+	code, out, errOut := approveTTY(t, repo, base, "yes\n")
+	if code != 0 || !strings.Contains(out, "binary file changed: vendor/pkg/mod.cpython-312-darwin.so, 0 bytes") || !strings.Contains(out, "binary file changed: tests/lib/libx.so.1, 0 bytes") {
+		t.Fatalf("deleted loadable: %d %q %q", code, out, errOut)
+	}
+}
+
+func TestIsLoadableCode(t *testing.T) {
+	for _, p := range []string{"a.so", "a.So", "libx.so.1", "libx.so.10.2", "m.cpython-312-darwin.so", "a.node", "a.pyd", "a.dylib", "a.dll", "a.exe", "a.wasm", "a.class", "a.jar", "a.a", "a.o", "a.obj", "a.lib", "a.bundle", "a.jnilib"} {
+		if !isLoadableCode("x/" + p) {
+			t.Errorf("%s not loadable", p)
+		}
+	}
+	for _, p := range []string{"a.png", "so", "a.so.x", "a.so.1x", "a.1", "a.bin", "x.solib", "a.sol"} {
+		if isLoadableCode("x/" + p) {
+			t.Errorf("%s loadable", p)
+		}
+	}
+	for e := range binaryAllowExt {
+		if isLoadableCode("x/a" + e) {
+			t.Errorf("loadable %s is still allowlisted", e)
 		}
 	}
 }

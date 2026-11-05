@@ -188,8 +188,9 @@ func cmdApprove(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	// Everything shown is checked BEFORE anything is printed. A file that
 	// became binary or became text, or any file binary at head that is not an
-	// allowlisted genuine binary type (binaryRefusal), is refused: a summary
-	// line would let one NUL byte hide the content the human approves. Then a
+	// allowlisted genuine binary type (binaryRefusal: never loadable code, and
+	// the content must match the extension), is refused: a summary line would
+	// let one NUL byte hide the content the human approves. Then a
 	// control sequence (ESC, lone CR, ...) or bidi override in a line or path
 	// could make the screen hide what the human approves. Allowlisted binary
 	// files and deleted binaries are shown as a summary line; the hash stays
@@ -215,6 +216,8 @@ func cmdApprove(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		switch reason {
 		case reasonBinaryBecameText:
 			why = "승인하지 않습니다(승인은 기록하지 않음). 변경을 '이 파일 삭제 + 텍스트를 새 이름의 파일로 추가'로 나눈 커밋으로 다시 실행하세요: 삭제된 바이너리는 요약 한 줄로, 추가한 텍스트는 그대로 보여 검토할 수 있습니다."
+		case reasonBinaryLoadable:
+			why = "러너가 코드로 불러올 수 있는 바이너리는 요약 한 줄로 검토할 수 없어 승인하지 않습니다(승인은 기록하지 않음). 사람이 저장소 밖에서 직접 검토하세요: 산출물을 직접 확인한 뒤 사람이 직접 커밋해 다음 base에 들어가게 합니다. 우회 플래그는 의도적으로 없습니다."
 		case reasonBinaryExecutable, reasonBinaryUnknown:
 			why = "바이너리 요약 한 줄은 허용 목록의 진짜 바이너리 형식(실행 권한·'#!' 시작·'.bin' 경로가 없는 파일)에만 쓰고, 그 밖의 바이너리는 사람이 내용을 볼 수 없어 승인하지 않습니다(승인은 기록하지 않음). 직접 `git diff --text`로 검토하고 텍스트 파일로 두거나 허용 목록 형식의 바이너리로 바꾼 커밋으로 다시 실행하세요."
 		}
@@ -303,6 +306,9 @@ const (
 	reasonBinaryExecutable = "binary_executable"
 	reasonBinarySource     = "binary_source_file"
 	reasonBinaryUnknown    = "binary_unknown_type"
+	// A binary a runner can load as code (isLoadableCode): never summarised,
+	// reviewed out-of-band instead (fix wave 5 R1).
+	reasonBinaryLoadable = "binary_loadable_code"
 )
 
 // binaryAllowExt are the extensions (lower case, with the dot) of genuine
@@ -310,14 +316,22 @@ const (
 // ALLOWLIST: everything else binary at head is refused.
 var binaryAllowExt = map[string]bool{}
 
+// loadableExt (lower case, with the dot) are binaries a runner can load as
+// code: native addons, extension modules, shared/static libraries, object
+// files, executables, wasm, JVM classes and jars. None is allowlisted.
+var loadableExt = map[string]bool{}
+
 // textLikeExt / textLikeName (lower case) only CLASSIFY a refusal as
 // binary_source_file; they decide nothing (none of them is allowlisted).
 var textLikeExt = map[string]bool{}
 var textLikeName = map[string]bool{}
 
 func init() {
-	for _, e := range strings.Fields("png jpg jpeg gif webp ico icns bmp tif tiff heic avif svgz pdf zip gz tgz bz2 xz zst 7z tar woff woff2 ttf otf eot wasm node so dylib dll exe bin dat db sqlite sqlite3 mp3 mp4 m4a mov wav ogg flac webm psd class jar pb npy npz parquet") {
+	for _, e := range strings.Fields("png jpg jpeg gif webp ico icns bmp tif tiff heic avif svgz pdf zip gz tgz bz2 xz zst 7z tar woff woff2 ttf otf eot bin dat db sqlite sqlite3 mp3 mp4 m4a mov wav ogg flac webm psd pb npy npz parquet") {
 		binaryAllowExt["."+e] = true
+	}
+	for _, e := range strings.Fields("node so pyd dylib dll exe wasm class jar a o obj lib bundle jnilib") {
+		loadableExt["."+e] = true
 	}
 	for _, e := range strings.Fields(".ts .tsx .js .jsx .mjs .cjs .go .py .rb .java .kt .c .h .cc .cpp .cs .rs .php .sh .bash .zsh .ini .cfg .conf .toml .yml .yaml .json .xml .html .css .md .txt .lock .mod .sum .gradle .properties .env") {
 		textLikeExt[e] = true
@@ -332,6 +346,22 @@ func init() {
 func isTextLike(p string) bool {
 	base := strings.ToLower(path.Base(p))
 	return textLikeName[base] || textLikeExt[path.Ext(base)]
+}
+
+// isLoadableCode reports whether a path names a binary a runner can load as
+// code (case-insensitive): an extension in loadableExt, including CPython's
+// tagged ".cpython-312-darwin.so" / ".abi3.so", or a versioned shared library
+// ".so.<digits>[.<digits>...]" such as libx.so.1.
+func isLoadableCode(p string) bool {
+	base := strings.ToLower(path.Base(p))
+	stripped := base
+	for e := path.Ext(stripped); len(e) > 1 && e != stripped && strings.Trim(e[1:], "0123456789") == ""; e = path.Ext(stripped) {
+		stripped = strings.TrimSuffix(stripped, e)
+	}
+	if stripped != base {
+		return path.Ext(stripped) == ".so"
+	}
+	return loadableExt[path.Ext(base)]
 }
 
 // hasBinDir reports whether a path component is ".bin" (node_modules/.bin,
@@ -362,6 +392,8 @@ func summaryRefusal(f gitx.FileChange) (reason, why string) {
 	switch {
 	case len(exe) > 0:
 		return reasonBinaryExecutable, "실행될 수 있는 파일입니다(" + strings.Join(exe, ", ") + ")"
+	case isLoadableCode(f.Path):
+		return reasonBinaryLoadable, "러너가 코드로 불러올 수 있는 바이너리 형식입니다(네이티브 애드온·확장 모듈·라이브러리·목적 파일·실행 파일·wasm·class·jar)"
 	case isTextLike(f.Path):
 		return reasonBinarySource, "소스·설정·텍스트 파일 이름입니다"
 	case !binaryAllowExt[strings.ToLower(path.Ext(path.Base(f.Path)))]:

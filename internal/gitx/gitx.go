@@ -227,7 +227,13 @@ type FileChange struct {
 	// with "#!". Facts only: the caller decides what may be summarised.
 	HeadMode    string
 	HeadShebang bool
-	pair        string // "oldsha..newsha" as on the diff "index" line
+	// HeadPrefix is the first HeadPrefixLen bytes of the head blob (all of
+	// it when shorter; nil when absent or a gitlink): the caller checks magic
+	// numbers against it. HeadSymlinkTarget is the whole head blob when the
+	// head is a symlink (mode 120000), i.e. the link target; "" otherwise.
+	HeadPrefix        []byte
+	HeadSymlinkTarget string
+	pair              string // "oldsha..newsha" as on the diff "index" line
 }
 
 // Summarised reports whether DisplayText shows the file as one summary line:
@@ -392,25 +398,30 @@ func parseRaw(b []byte) ([]rawEntry, error) {
 
 func isZero(sha string) bool { return strings.Trim(sha, "0") == "" }
 
-// gitlinkMode is the raw-diff mode of a submodule entry (a commit id).
-const gitlinkMode = "160000"
+// gitlinkMode is the raw-diff mode of a submodule entry (a commit id);
+// symlinkMode is a symbolic link (the blob is the target path).
+const gitlinkMode, symlinkMode = "160000", "120000"
+
+// HeadPrefixLen is how many leading head-blob bytes FileChange.HeadPrefix
+// keeps (enough for tar's "ustar" at offset 257).
+const HeadPrefixLen = 512
 
 // blobInfo reports the 1-based line of the first NUL byte anywhere in a blob
 // (0: none, i.e. text; this covers git's own heuristic of a NUL in the first
 // 8000 bytes), without consulting attributes, the blob's size, and whether it
-// starts with "#!".
-func blobInfo(repo, sha string) (nulLine int, size int64, shebang bool, err error) {
+// starts with "#!", and the blob itself (nil when absent).
+func blobInfo(repo, sha string) (nulLine int, size int64, shebang bool, blob []byte, err error) {
 	if isZero(sha) {
-		return 0, 0, false, nil
+		return 0, 0, false, nil, nil
 	}
 	b, err := run(repo, "cat-file", "blob", sha)
 	if err != nil {
-		return 0, 0, false, err
+		return 0, 0, false, nil, err
 	}
 	if i := bytes.IndexByte(b, 0); i >= 0 {
 		nulLine = bytes.Count(b[:i], []byte("\n")) + 1
 	}
-	return nulLine, int64(len(b)), bytes.HasPrefix(b, []byte("#!")), nil
+	return nulLine, int64(len(b)), bytes.HasPrefix(b, []byte("#!")), b, nil
 }
 
 // ProtectedDiff diffs base..head restricted to the protected globs.
@@ -462,14 +473,20 @@ func ProtectedDiff(repo, base, head string, protected []string) (ProtDiff, error
 				// text shows it as a "Subproject commit <sha>" line
 				continue
 			}
-			nul, size, shebang, err := blobInfo(repo, side[1])
+			nul, size, shebang, blob, err := blobInfo(repo, side[1])
 			if err != nil {
 				return d, err
 			}
 			if i == 0 {
 				fc.BaseBinary, fc.BaseSize = nul > 0, size
-			} else {
-				fc.HeadBinary, fc.HeadSize, fc.HeadNULLine, fc.HeadShebang = nul > 0, size, nul, shebang
+				continue
+			}
+			fc.HeadBinary, fc.HeadSize, fc.HeadNULLine, fc.HeadShebang = nul > 0, size, nul, shebang
+			if blob != nil {
+				fc.HeadPrefix = append([]byte(nil), blob[:min(len(blob), HeadPrefixLen)]...)
+			}
+			if side[0] == symlinkMode {
+				fc.HeadSymlinkTarget = string(blob)
 			}
 		}
 		d.Files = append(d.Files, fc)

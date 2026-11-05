@@ -843,3 +843,40 @@ func TestFileChangeHeadModeAndShebang(t *testing.T) {
 		t.Errorf("tests/pic.png: %+v", f)
 	}
 }
+
+// FIX WAVE 5: FileChange carries the first bytes of the head blob (for
+// approve's magic-byte check; at least 512 so tar's "ustar" at offset 257 is
+// covered) and, for a head symlink (mode 120000), its full target.
+func TestFileChangeHeadPrefixAndSymlinkTarget(t *testing.T) {
+	r := newRepo(t)
+	write(t, r, "tests/keep.txt", "k\n")
+	base := commit(t, r, "base")
+	big := "\x89PNG\r\n\x1a\n" + strings.Repeat("\x00", 1000)
+	write(t, r, "tests/pic.png", big)
+	write(t, r, "tests/small.bin", "a\x00b")
+	long := strings.Repeat("d/", 400) + "target.js"
+	if err := os.Symlink(long, filepath.Join(r, "tests/link")); err != nil {
+		t.Fatal(err)
+	}
+	head := commit(t, r, "head")
+	d, err := ProtectedDiff(r, base, head, []string{"tests/**"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]FileChange{}
+	for _, f := range d.Files {
+		got[f.Path] = f
+	}
+	if p := got["tests/pic.png"].HeadPrefix; len(p) != HeadPrefixLen || string(p) != big[:HeadPrefixLen] || HeadPrefixLen < 512 {
+		t.Errorf("pic.png prefix len %d", len(p))
+	}
+	if f := got["tests/pic.png"]; f.HeadSymlinkTarget != "" {
+		t.Errorf("regular file has a symlink target: %q", f.HeadSymlinkTarget)
+	}
+	if p := got["tests/small.bin"].HeadPrefix; string(p) != "a\x00b" {
+		t.Errorf("small.bin prefix %q", p)
+	}
+	if f := got["tests/link"]; f.HeadMode != "120000" || f.HeadSymlinkTarget != long {
+		t.Errorf("link: mode %s target %q", f.HeadMode, f.HeadSymlinkTarget)
+	}
+}
