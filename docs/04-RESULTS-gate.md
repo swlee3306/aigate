@@ -403,3 +403,50 @@ I4(검사 대상 코드에 전체 환경 전달)는 이번 범위가 아니며 �
 - 허용목록 밖의 바이너리 보호 파일(확장자 없음, `.mts` 등, 실행 권한·shebang·`.bin`)은 `approve`로 승인할 수 없다(우회 플래그 없음).
 - 허용목록 안의 `.node .so .dylib .dll .exe .wasm .class .jar`는 불러와 실행될 수 있는 코드인데 요약 한 줄로만 보인다. 형식 판단은 확장자로만 한다(매직 바이트 검사 없음).
 - `aigate stats` 숫자는 참고용이다: 키 없는 이력, 사람의 `no`는 기록되지 않음, `runs`는 서로 다른 head 수가 아님.
+
+## 수정 라운드 5 (2026-11-05, 설계서 v0.6)
+
+4차 재리뷰가 남긴 위험 세 가지(로드 가능한 코드 바이너리의 요약 승인, 확장자만으로 형식 판단, 심볼릭 링크 대상)를 사용자 결정("남은 위험 고쳐주고")에 따라 고쳤다(설계서 8장 [14], 3.4·3.9·4장 v0.6). 모든 항목은 실패하는 테스트를 먼저 쓰고(RED) 고친 뒤 통과(GREEN)를 확인했다. 자세한 기록과 커밋은 `.superpowers/sdd/03-PLAN-gate/final-fix5-report.md`.
+
+| 항목 | 변경 | RED (수정 전 관찰) | GREEN |
+|---|---|---|---|
+| R1. 로드 가능한 코드 | `.node .so .pyd .dylib .dll .exe .wasm .class .jar .a .o .obj .lib .bundle .jnilib`(대소문자 무시, `.cpython-*.so`, `.so.<숫자>`)를 허용목록에서 빼고 추가·변경·형식 변경을 `binary_loadable_code`로 거부(우회 플래그 없음, "저장소 밖에서 검토 후 사람이 직접 커밋" 안내). 삭제는 요약 유지 | 20가지 중 11가지가 요약 한 줄 + `yes`로 승인됨(종료 0: `.cpython-312-darwin.so`, `.abi3.so`, `.node`, `.DLL`, `.dylib`, `.exe`, `.wasm`, `.class`, `.jar`, `.SO`, 양쪽 바이너리로 변경된 `.so`). 나머지 9가지(`libx.so.1`, `.pyd .a .o .obj .lib .bundle .jnilib`)는 거부되었지만 이유가 `binary_unknown_type` | 20가지 모두 `binary_loadable_code`(64, 표준 출력 없음, 내용 미출력, 이력 같은 이유, 승인 없음). 삭제된 `.so`·`libx.so.1`은 요약 + 승인 가능 |
+| R2. 확장자-매직 일치 | 매직이 있는 허용목록 형식은 head 앞부분이 매직과 맞을 때만 요약, 아니면 `binary_magic_mismatch`(확장자를 말하고 내용은 출력하지 않음). 매직 없는 `.bin .dat .db .pb`는 기존 파일 변경(M/T) + `node_modules`·`vendor` 경로 성분 없음일 때만, 아니면 `binary_unknown_type`. `FileChange.HeadPrefix`(앞 512바이트) | 공격 9가지 모두 승인됨(종료 0): `package.json` main → JS+NUL `logo.png`, JS인 `.pdf`·`.zip`, 기존 `.png`를 JS로 바꿈(양쪽 바이너리), 1바이트 `.png`, PNG 매직의 `.jpg`, 추가 `.bin`, `node_modules` 아래 변경 `.dat`, `Vendor` 아래 변경 `.db` | 9가지 모두 거부(맞는 이유 코드). 매직 표(41개 형식, 대문자 확장자 포함; 허용목록 45개 = 매직 41 + 매직 없음 4)의 진짜 헤더는 통과, 빈 내용·NUL·JS·한 바이트 틀린 PNG 헤더는 거부. 모든 허용목록 형식이 매직 검사나 매직 없음 규칙 중 하나에 속함을 단위 테스트로 확인 |
+| R3. 심볼릭 링크 표시 | `approve`의 `!`·`+` 목록과 `run` 보고서의 `protected_modified` 설명에 `<경로> (symlink → <대상>)`, 대상 내용은 검토한 diff 밖이라는 한 줄. 대상은 경로처럼 검사(줄바꿈·제어 문자 → `unsafe_bytes`), 보고서에서는 이스케이프. 바이너리→링크 메시지 "head는 심볼릭 링크/텍스트" | 표시 없음. 대상에 줄바꿈이 있는 링크(`a\n  + fake`)는 승인됨(종료 0; diff에서는 `+` 줄 두 개일 뿐이라 바이트 검사에 안 걸림). ESC·CR 대상은 이미 diff 검사로 거부. 바이너리→링크 메시지는 "head는 텍스트" | 두 목록·보고서에 표시, 안내 한 줄은 한 번만, 줄바꿈·ESC·CR 대상 모두 `unsafe_bytes` 거부, 보고서는 `a\x0ab\x1b`처럼 이스케이프, 바이너리→링크 메시지 수정(이유 코드는 그대로) |
+
+### 재현한 공격 (실제 바이너리, 수정 전 ef70526 → 수정 후)
+`aigate approve`를 `script`로 만든 pty에서 실행하고 `yes`를 입력했다. 저장소는 `vendor/**`·`node_modules/**`가 내장 guarded 경로인 장난감 저장소.
+
+| 공격 | 수정 전 | 수정 후 |
+|---|---|---|
+| `vendor/pkg/mod.cpython-314-darwin.so`(실제로 컴파일한 확장 모듈, 모드 100644)를 기존 `mod.py` 옆에 추가. Python이 `.so`를 먼저 불러와 `mod.add(2,2)`가 4 → 42(실행해서 확인) | 요약 한 줄로 승인 | 거부 `binary_loadable_code` |
+| `node_modules/helper/addon.node`(Mach-O 헤더 + NUL) 추가 | 승인 | 거부 `binary_loadable_code` |
+| `node_modules/helper/package.json`의 `"main":"logo.png"` + JS에 NUL을 넣은 `logo.png`. Node 26에서 `require('helper')()`가 `all tests passed`를 반환(실행해서 확인) | 승인 | 거부 `binary_magic_mismatch` |
+| `node_modules/helper/data.bin`(매직 없음) 추가 | 승인 | 거부 `binary_unknown_type` |
+| `node_modules/helper/index.js` → `../../src/evil.js` 심볼릭 링크 추가 | 승인, 목록에 경로만 | 승인, `(symlink → ../../src/evil.js)` 표시(안내 한 줄은 단위 테스트 `TestApproveMarksSymlinks`로 확인) |
+| 대상에 줄바꿈이 있는 링크(`a\n  + fake`, 목록에 가짜 줄을 만들 수 있음) | 승인 | 거부 `unsafe_bytes` |
+| (정상) 진짜 PNG 헤더의 `logo.png` 추가 | 승인 | 승인(같은 파일을 Node가 불러오면 구문 오류) |
+| (정상) `tests/golden.bin` 기존 바이너리 변경 | 승인 | 승인 |
+
+### 기대값 변경
+e2e 기대는 하나도 고치지 않았다. 단위 테스트 fixture 중 규칙에 맞게 바꾼 것(규칙은 그대로): `TestApproveAllowlistedBinarySummaries`(`.png`에 진짜 8바이트 PNG 매직, `node_modules/pkg/data.bin` 추가 → base에 있던 `tests/data.bin` 변경), `TestApproveBinaryFixtureSummaries`(`tests/new.png`에 진짜 PNG 매직, 기대 크기 7 → 11 bytes), `TestTextLikeDenylistCoveredByAllowlist`(허용 예시에 매직 앞부분 추가, `golden.bin`은 기존 파일 변경으로, `bin/tool.so`는 허용 예시에서 빼고 `binary_loadable_code` 확인으로 옮기고 그 자리에 `bin/font.woff2`).
+
+### 지표 (최종 전체 실행, 2026-11-05)
+`go test ./... -count=1`(e2e 포함) 통과, e2e 118개 기록(시나리오 실행 112 + `check`·자기 비교 기록 6), **118/118 기대와 일치**, 판정이 바뀐 시나리오 없음(e2e의 승인은 `approve` 화면을 거치지 않고, 보호 경로에 커밋된 심볼릭 링크도 없다). e2e 약 136초(따로 한 번 더 돌린 `go test ./e2e -count=1`도 통과, 약 134초).
+
+| 지표 | 값 | 판정 |
+|---|---|---|
+| 불완전·무력화 시나리오(KnownGap 제외) 중 `ok` | **0 / 72** | 합격 |
+| (참고) ok가 아닌 모든 기대(KnownGap 제외) 중 `ok` | 0 / 88 | 기록 |
+| (참고) 오경보율: 기대가 `ok`인 시나리오 중 ok가 아닌 것 | 0 / 10 = 0% | 기록 |
+| (참고) gate 실행 시간(base+head) | 평균 1.05초, 최대 5.41초(n=112, 최대는 5초 타임아웃 `incomplete/hang`). 스택별 평균 py 0.71 / go 1.74 / ts 1.42초 | 기록 |
+| KnownGap | 14개(4차와 같음, 모두 원리적 한계) | 기록 |
+
+`gofmt -l` 비어 있음, `go vet ./...` 통과.
+
+### 남은 한계 (설계서 4장 v0.6)
+- 로드 가능한 코드 바이너리(네이티브 애드온·확장 모듈·라이브러리·실행 파일·`.wasm .class .jar` 등)는 `approve`로 승인할 수 없다. 사람이 저장소 밖에서 검토하고 직접 커밋한다(우회 플래그 없음).
+- 매직 없는 `.bin .dat .db .pb`는 base에 있던 파일의 변경이면서 `node_modules/`·`vendor/` 밖일 때만 요약된다. 새 fixture는 매직이 있는 형식이어야 승인할 수 있다.
+- 확장자+매직 검사는 휴리스틱이다: 올바른 PNG 헤더 뒤에 JS를 붙인 파일도 통과하고, 그런 내용을 코드로 불러오도록 설정된 러너라면 실행될 수 있다.
+- 심볼릭 링크는 대상 경로만 보이고 대상 파일의 내용은 보호 diff 밖이다(표시만, 거부 없음).
+- `.pyc`는 로드 가능한 코드 목록에 없어 `binary_unknown_type`으로 거부된다(거부는 되지만 이유 코드가 덜 정확).
