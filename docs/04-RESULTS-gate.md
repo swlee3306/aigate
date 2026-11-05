@@ -495,3 +495,46 @@ e2e 기대는 하나도 고치지 않았고 판정이 바뀐 시나리오도 없
 - 규칙은 보호 diff에 들어온 파일에만 적용된다. `site-packages`·`.venv` 등은 내장 guarded가 아니고, 내장 glob(`**/node_modules/**`·`vendor/**`)은 대소문자를 구분한다(확인함: 보호 경로 밖 새 `Node_Modules/h/index.js`는 `run` 종료 0인데, macOS에서 Node `require("h")`는 그것을 불러온다).
 
 - **(정정 2026-11-05, 6차 재리뷰)** 위 "한계" 중 대소문자·유니코드 접기 충돌(`Node_Modules/`, `Vendor/`, `tests/Run.js` vs `tests/run.js`, `node_moduleſ/`)은 대소문자를 구분하지 않는 파일 시스템에서 **거짓 `ok`**로 재현됐다(설계서 4장 정정 참고). 수정 라운드 7 후보로 남겨 사용자 결정을 기다린다.
+
+## 수정 라운드 7 (2026-11-05, 설계서 v0.8)
+사용자 결정(2026-11-05, "1번 진행")으로 6차 재리뷰의 Critical(대소문자 무시 파일 시스템의 거짓 `ok`)을 두 가지로 고쳤다. (B) 근본 수정: `run`(비교·초기 모드)·`approve`가 공유하는 `Prepare`가 **checkout 전에** head·base 트리의 모든 경로를 `git ls-tree -r -z --name-only`로 읽고, 경로 성분마다 `NFD(Fold(NFD(c)))`(유니코드 완전 대소문자 접기 + 정준 분해) 키로 충돌 그룹을 찾는다(새 패키지 `internal/pathfold`). base에 똑같이 있던 그룹을 뺀 나머지가 있으면 규칙 `path_case_collision`(verification_incomplete) 하나만 담은 보고서를 쓰고 **검사는 하나도 실행하지 않는다**(보고서·ledger는 기록). `approve`는 같은 경우 종료 64(`approval_refused`, `reason: path_case_collision`)로 거부한다. (A) 내장 보호 glob(`BuiltinGuarded`)은 `:(glob,icase)`로 보호 diff·새 guarded 파일 양쪽에서 대소문자를 무시하고, 저장소 설정 glob은 그대로 대소문자를 구분한다(`gitx.Pathspec{Glob, ICase}`). 설계서 3.1·3.3·3.4·3.9·4장 v0.8, 8장 [16].
+
+### 재현한 공격 (수정 전 caee8cd → 수정 후)
+e2e `e2e/scenarios_casefold_test.go`, head는 git plumbing으로 만듦(작업 파일 시스템이 두 철자를 담을 수 없음). 수정 전 결과는 caee8cd의 임시 worktree에 같은 시나리오 파일·builder 훅만 복사해 실행한 것이다.
+
+| 공격 (head에 더한 경로) | 수정 전 | 수정 후 |
+|---|---|---|
+| `Node_Modules/tinyassert/{package.json → main lax.js, lax.js}` (base에 `node_modules/tinyassert/index.js`, `src/sum.js` 망가뜨림) | **`ok`(거짓)** | `verification_incomplete` `path_case_collision`, 검사 미실행 |
+| `tests/run.js`(약한 테스트, base의 보호 `tests/Run.js`를 checkout 때 덮음) | **`ok`(거짓)** | `verification_incomplete` `path_case_collision` |
+| `node_moduleſ/tinyassert/…`(U+017F) | **`ok`(거짓)** | `verification_incomplete` `path_case_collision` |
+| Go `Vendor/example.com/dep/zz.go`(init에서 `os.Exit(0)`, vendored 의존성이 있는 Go 장난감) | `verification_incomplete` `no_tests_ran`(이 스택에서는 이미 ok 아님: `go test -json`이 테스트 이벤트 없이 끝남) | `verification_incomplete` `path_case_collision`, 검사 미실행 |
+| 대조군: 충돌 없는 plumbing head(Node, `src/Helpers.js`·`docs/notes-extra.md`·`vendors/`) | `ok` | `ok` |
+| 대조군: vendored Go 스택, 충돌 없는 head | `ok` | `ok` |
+| `approve` (base `tests/t.txt`, head에 `tests/T.txt` 등) | diff 표시 후 "nothing needs approval." 종료 0 | 거부 종료 64, 표준 출력 없음, 경로 이스케이프, ledger `approval_refused` |
+| 새 `.NPMRC`·`Package-Lock.json`·`Pytest.ini`·`.Gitattributes`·`web/Yarn.lock`·`Go.Work`·`Requirements-Dev.txt`·`lib/SiteCustomize.py` (단위 테스트) | `ok` | `check_weakened` `protected_modified`, 승인 해시가 그 파일을 덮음 |
+
+### 단위 테스트
+- `internal/pathfold`: ASCII 파일·디렉터리 충돌, `ſ`·켈빈 `K`, NFC vs NFD(대소문자 섞임 포함), 파일 vs 디렉터리, 중첩, 거짓 양성 없음(`vendors`/`vendor`, `a_b`/`a-b`, `Readme`/`Readme.md`, 다른 디렉터리의 같은 파일 이름, 같은 디렉터리 안 서로 다른 파일), 공백·한글·제어 바이트, 키 멱등성, base에 똑같이 있던 그룹 무시·새 철자 합류는 보고·이미 합쳐진 디렉터리 아래 새 파일이 기존 파일을 가리는 경우 보고, 20만 경로 성능(head+base 약 0.4초, 상한 1초).
+- `internal/gitx`: `TreePaths`(두 철자·제어 바이트·NFD 그대로), icase `AddedMatching`·`ProtectedDiff`, 사용자 glob `tests/**`는 `Tests/x.py`에 안 맞음, 대소문자 변형이 없는 diff의 해시는 icase 전후 같음.
+- `internal/gate`: 위 공격 형태 + 켈빈·NFD·제어 바이트(이스케이프), 검사 미실행(호출 기록 파일이 비어 있음), 보고서·ledger(`rules: [path_case_collision]`), 5그룹 초과 시 "외 N건", 이미 있던 충돌 무시·새 철자 보고, 초기 모드, 비슷한 이름의 깨끗한 저장소는 그대로 `ok`, icase 내장 guard 8종, 사용자 glob 대소문자 구분 유지.
+- `cmd/aigate`: `approve` 거부(`path_case_collision`), 로드 디렉터리 집합과 내장 guard 집합이 ASCII 대소문자 변형에서 일치(`node_modules`·`vendor`만 내장 guard, 나머지 7개는 아님을 고정; 테스트를 대소문자 구분 glob으로 바꿔 돌리면 실패함을 확인).
+
+### 기대값 변경
+e2e 기대는 하나도 고치지 않았고 기존 시나리오 중 판정이 바뀐 것은 없다. e2e builder에 `Scenario.HeadFiles`(head 커밋 위에 plumbing으로 경로를 더하는 훅)와 테스트 도우미 패키지 `internal/gittest`를 더했다(기대값이 아닌 하네스 추가). 새 시나리오 6개(공격 4 + 대조군 2).
+
+### 지표 (최종 전체 실행, 2026-11-05)
+`gofmt -l` 비어 있음, `go vet ./...` 통과, `go test ./... -count=1`(e2e 포함) 통과(약 144초; e2e 143초). e2e 124개 기록(시나리오 실행 118 + `check`·자기 비교 기록 6), **124/124 기대와 일치**(6차의 118 + 새 6).
+
+| 지표 | 값 | 판정 |
+|---|---|---|
+| 불완전·무력화 시나리오(KnownGap 제외) 중 `ok` | **0 / 76** | 합격 |
+| (참고) ok가 아닌 모든 기대(KnownGap 제외, 시나리오 실행) 중 `ok` | 0 / 92 | 기록 |
+| (참고) 오경보율: 기대가 `ok`인 시나리오 중 ok가 아닌 것 | 0 / 12 = 0% | 기록 |
+| (참고) gate 실행 시간(base+head) | 평균 1.05초, 최대 5.43초(n=118). 스택별 평균 go 1.75 / go-vendor 1.02 / node 0.21 / py 0.72 / ts 1.53초(충돌 시나리오는 검사를 실행하지 않아 짧음) | 기록 |
+| KnownGap | 14개(6차와 같음) | 기록 |
+
+### 남은 한계 (설계서 4장 v0.8)
+- **(남은 거짓 `ok`, 재현함) 충돌 상대 없는 유니코드 접기 철자의 새 보호 파일.** base에 같은 이름이 없을 때 head에 새로 넣은 `pyteſt.ini`·`ſetup.cfg`·`go.worK`·`package-locK.json`은 `ok`(같은 내용의 새 `pytest.ini`·`package-lock.json`은 `check_weakened`). git `icase`는 ASCII만 접고, 철자가 하나뿐이라 충돌도 아니다. 이 기계의 APFS는 `pyteſt.ini`를 `pytest.ini`로, `Straße`를 `Strasse`로 열어 준다(`test -f`로 확인; pytest가 실제로 설정으로 읽는지는 시험하지 않음). 해결안(접은 경로로 내장 guard 매칭 + 리터럴 pathspec으로 해시에 포함)은 수정 라운드 8 후보로 사용자 결정 대기.
+- Windows에만 있는 동등성(예약 장치 이름, 끝의 점·공백, 8.3 짧은 이름, 대체 데이터 스트림)은 처리하지 않는다.
+- base에 똑같이 있던 충돌은 무시한다(그 base는 지금도 합쳐진 채 checkout됨). base 철자와 head 철자의 차이(이름만 바뀐 경우)는 따로 checkout되므로 대상이 아니다.
+- 메인 작업 트리 `dirty_tree` 규칙은 그대로다. 사용자 glob(`protected`·`approval_on_add`)은 대소문자를 구분한다(예: `**/conftest.py`는 새 `Conftest.py`에 안 맞음 — 기존 승인 해시를 바꾸지 않으려는 사용자 결정 범위).
