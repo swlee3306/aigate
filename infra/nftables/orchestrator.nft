@@ -1,0 +1,32 @@
+#!/usr/sbin/nft -f
+# orch-vm: ssh in from the user's LAN machines and tailscale0; ssh out to agent/test VMs only on the
+# aigate subnet; internet 80/443 + tailscale UDP; GitLab (a tailnet address) only through tailscale0.
+# Every other private/LAN destination is dropped, so a compromised orch-vm cannot scan the LAN.
+table inet aigate
+delete table inet aigate
+table inet aigate {
+  set private4 { type ipv4_addr; flags interval; elements = { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } }
+  chain input {
+    type filter hook input priority 0; policy drop;
+    ct state established,related accept
+    ct state invalid drop
+    iif "lo" accept
+    ip saddr 10.70.0.0/24 udp sport 67 udp dport 68 accept
+    ip saddr { 192.168.1.121, 192.168.1.124, 192.168.1.128 } tcp dport 22 accept
+    iifname "tailscale0" tcp dport 22 accept
+  }
+  chain forward { type filter hook forward priority 0; policy drop; }
+  chain output {
+    type filter hook output priority 0; policy drop;
+    ct state established,related accept
+    ct state invalid drop
+    oif "lo" accept
+    udp sport 68 udp dport 67 accept
+    ip daddr { 10.70.0.12, 10.70.0.13 } tcp dport 22 accept
+    ip daddr 8.8.8.8 udp dport 53 accept
+    ip daddr 8.8.8.8 tcp dport 53 accept
+    oifname "tailscale0" accept
+    udp dport { 3478, 41641 } ip daddr != @private4 accept
+    tcp dport { 80, 443 } ip daddr != @private4 accept
+  }
+}

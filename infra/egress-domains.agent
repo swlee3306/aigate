@@ -1,0 +1,12 @@
+# one domain per line; resolved by aigate-egress-refresh into nft set allow_web4
+api.anthropic.com
+console.anthropic.com
+platform.claude.com
+claude.ai
+statsig.anthropic.com
+api.openai.com
+auth.openai.com
+chatgpt.com
+archive.ubuntu.com
+security.ubuntu.com
+nova.clouds.archive.ubuntu.com

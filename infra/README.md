@@ -66,3 +66,10 @@ FIP가 어느 포트에도 안 붙은 채 남았다면 `floating ip list --netwo
   sudo rm -f /home/ubuntu/.ssh/authorized_keys
   ```
 - Tailscale은 설치하지 않았다. 인증 키는 사용자가 직접 만들어 입력하며 저장소·cloud-init에 넣지 않는다.
+
+## Task 2: firewall and snapshots
+- `nftables/{orchestrator,agent,test}.nft`: default drop on all chains; domain allow-lists in `egress-domains.{agent,test}` (dnsmasq `nftset`).
+- `apply-firewall.sh [--apply] <role>`: installs rules with a 180 s auto-rollback timer, then re-tests login. Previous rules: `/etc/nftables.conf.pre-task2` on the VM.
+- `verify-firewall.sh`: connection attempts from each VM vs expectation; writes `firewall-report.md`; exit 1 on any difference.
+- `snapshot.sh create|restore|time|prune <vm>`: Cinder snapshot and restore (new volume from snapshot + new server; see report for why not `volume revert`).
+- Rollback of the rules: `sudo cp /etc/nftables.conf.pre-task2 /etc/nftables.conf && sudo nft -f /etc/nftables.conf` (via the admin key through orch-vm).
