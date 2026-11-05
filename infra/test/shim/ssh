@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Fake ssh for tests: records the remote command, answers read queries from fixtures.
+: "${SHIM_LOG:?SHIM_LOG required}"
+: "${FIXTURE_DIR:?FIXTURE_DIR required}"
+cmd="${*: -1}"
+printf '%s\n' "$cmd" >> "$SHIM_LOG"
+prefix='openstack --os-cloud exporter-internal '
+case "$cmd" in "$prefix"*) ;; *) exit 0 ;; esac
+rest=${cmd#"$prefix"}
+# word split only (no eval); fixtures never need quoted args
+read -r -a words <<<"$rest"
+key=""; flags=()
+for w in "${words[@]}"; do
+  case "$w" in
+    --*) flags+=("${w#--}") ;;
+  esac
+done
+for w in "${words[@]}"; do
+  case "$w" in -*) break ;; esac
+  key="${key:+${key}_}$w"
+  case "$w" in list|show|create|add|set|delete|remove) break ;; esac
+done
+for f in ${flags[@]+"${flags[@]}"}; do
+  if [ -f "$FIXTURE_DIR/${key}__$f.txt" ]; then cat "$FIXTURE_DIR/${key}__$f.txt"; exit 0; fi
+done
+[ -f "$FIXTURE_DIR/$key.txt" ] && cat "$FIXTURE_DIR/$key.txt"
+exit 0

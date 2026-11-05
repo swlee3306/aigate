@@ -1,0 +1,4 @@
+[{'subnet_id': 'bbb', 'ip_address': '192.168.1.230'}]
+[{'subnet_id': 'bbb', 'ip_address': '192.168.1.253'}]
+[{'subnet_id': 'bbb', 'ip_address': '192.168.1.204'}]
+[{'subnet_id': 'bbb', 'ip_address': '192.168.1.251'}]

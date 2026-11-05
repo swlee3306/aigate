@@ -1,0 +1,3 @@
+k8s-cp-01
+vm-bastion
+orch-vm-old

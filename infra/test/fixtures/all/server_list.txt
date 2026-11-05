@@ -1,0 +1,5 @@
+k8s-cp-01
+vm-bastion
+orch-vm
+agent-vm
+test-vm

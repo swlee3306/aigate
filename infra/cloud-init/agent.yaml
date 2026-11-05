@@ -1,0 +1,66 @@
+#cloud-config
+# aigate agent VM (agent-vm). Rendered by infra/create-vms.sh: the public key placeholder below is
+# replaced at runtime from ~/.ssh/aigate_ed25519.pub. No secrets belong in this file.
+# The claude/codex CLIs are installed later (Task 10), not by this file.
+hostname: agent-vm
+manage_etc_hosts: true
+timezone: Asia/Seoul
+ssh_pwauth: false
+disable_root: true
+
+# Sudo policy: the cloud image's default user 'ubuntu' (key-only via the OpenStack keypair)
+# is the one-time admin/setup account. The role user below has NO sudo.
+users:
+  - default
+  - name: agent
+    gecos: aigate agent
+    shell: /bin/bash
+    lock_passwd: true
+    sudo: false
+    ssh_authorized_keys:
+      - "@@AIGATE_PUBKEY@@"
+
+package_update: true
+packages:
+  - git
+  - ca-certificates
+  - nftables
+  - curl
+  - jq
+  - nodejs
+  - npm
+
+write_files:
+  - path: /etc/nftables.conf
+    owner: root:root
+    permissions: "0644"
+    content: |
+      #!/usr/sbin/nft -f
+      # Minimal default-drop policy (installed by cloud-init).
+      # TODO(Task 2): the full rule set replaces this and tightens OUTBOUND too;
+      # until then outbound is allowed so package installs and updates work.
+      table inet aigate
+      delete table inet aigate
+      table inet aigate {
+        chain input {
+          type filter hook input priority 0; policy drop;
+          ct state established,related accept
+          ct state invalid drop
+          iif "lo" accept
+          # DHCP renewals from the Neutron DHCP agent on the local subnet
+          ip saddr 10.70.0.0/24 udp sport 67 udp dport 68 accept
+          # ssh only from orch-vm
+          ip saddr 10.70.0.11 tcp dport 22 accept
+        }
+        chain forward {
+          type filter hook forward priority 0; policy drop;
+        }
+        chain output {
+          type filter hook output priority 0; policy accept;
+        }
+      }
+
+runcmd:
+  - systemctl enable --now nftables
+  - install -d -o agent -g agent -m 0750 /srv/aigate
+  - install -d -o agent -g agent -m 0750 /srv/aigate/work
