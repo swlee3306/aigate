@@ -70,3 +70,9 @@
 - 인프라 장애로 끝난 작업을 재시도하는 명령과 알림(FR13)이 없다.
 - 반복 사용 통계가 없다(승격 제안은 이력이 쌓여야 의미가 있다).
 무인으로 허용해도 되는 범위(제안): L0~L1, 작업 종류 `새 테스트 추가`/`문서`, 게시는 로컬/작업 브랜치 push까지.
+
+## 마지막 전체 리뷰 반영 후 실제 VM 재확인 (2026-11-06)
+- 수정 라운드(커밋 `88067a9`..`f3cf960`) 뒤 재빌드한 `orchd`/`orch`를 orch-vm에 배포. 기존 DB(작업 1~6, 승인 대기 1건)는 새 스키마로 올라왔고 데이터 유지.
+- 시작 로그에 실효 설정이 모두 찍힌다(복원 여부, 허용 목록과 출처, 정책 해시, 원격, VM 주소). 복원 없이 게시하는 구성은 `--allow-publish-without-restore` 없이는 시작 거부.
+- 같은 DB로 두 번째 `orchd`를 띄우면 `another orchd already runs ... refusing to start a second one`으로 거부(exit 1).
+- 새 작업 7: 정상 `done`. 원장에 `task_transition` 9건, `publish_action`(push 전), `publish_result`, 순서대로 기록.
