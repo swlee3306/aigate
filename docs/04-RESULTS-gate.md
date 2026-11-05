@@ -493,3 +493,5 @@ e2e 기대는 하나도 고치지 않았고 판정이 바뀐 시나리오도 없
 - `tests/**` fixture와 목록에 없는 데이터 디렉터리는 범위 밖: 폴리글랏 파일도 거기서는 요약 승인된다. 그런 바이너리를 코드로 불러오는 테스트·설정(`require('./fixtures/logo.gif')`, `NODE_PATH`, 사용자 정의 로더 경로)이 diff에 보이면 사람이 그 바이너리를 검토하지 않은 코드로 취급해야 한다.
 - 디렉터리 목록을 늘리려면 코드(`loadedCodeDirs`)를 바꿔야 한다(설정 키 없음, 의도적).
 - 규칙은 보호 diff에 들어온 파일에만 적용된다. `site-packages`·`.venv` 등은 내장 guarded가 아니고, 내장 glob(`**/node_modules/**`·`vendor/**`)은 대소문자를 구분한다(확인함: 보호 경로 밖 새 `Node_Modules/h/index.js`는 `run` 종료 0인데, macOS에서 Node `require("h")`는 그것을 불러온다).
+
+- **(정정 2026-11-05, 6차 재리뷰)** 위 "한계" 중 대소문자·유니코드 접기 충돌(`Node_Modules/`, `Vendor/`, `tests/Run.js` vs `tests/run.js`, `node_moduleſ/`)은 대소문자를 구분하지 않는 파일 시스템에서 **거짓 `ok`**로 재현됐다(설계서 4장 정정 참고). 수정 라운드 7 후보로 남겨 사용자 결정을 기다린다.
