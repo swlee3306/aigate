@@ -125,11 +125,13 @@ func union(a, b []string) []string {
 // sitecustomize/usercustomize run at interpreter start. Like every
 // approval_on_add path they are also part of the protected diff, so any
 // change to an existing one needs approval too. They are matched
-// case-insensitively (git ":(glob,icase)", ASCII; fix wave 7 (A)), so
+// case-insensitively (git ":(glob,icase)", ASCII only; fix wave 7 (A)), so
 // `Node_Modules/`, `Vendor/` or `.NPMRC` cannot slip past them on a
 // case-insensitive file system; repo-config globs stay case-sensitive so the
 // approval hashes of existing user globs do not change. Unicode folding
-// (ſ, K) is caught by the path collision check instead (pathfold).
+// (ſ, K) is caught by the path collision check only when the tree also
+// holds the other spelling; a lone folded spelling of a NEW guarded name
+// (pyteſt.ini) is not caught (design section 4, v0.8 (6)).
 var BuiltinGuarded = []string{
 	"**/node_modules/**",
 	".gitattributes", "**/.gitattributes", ".gitmodules",

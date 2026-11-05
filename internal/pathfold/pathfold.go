@@ -7,8 +7,9 @@
 // Folding is per path component: Key(c) = NFD(Fold(NFD(c))) with Unicode
 // full case folding (golang.org/x/text/cases: ſ→s, K (Kelvin) →k, ß→ss) and
 // canonical decomposition, so composed and decomposed spellings compare
-// equal. Full folding is a superset of what any real file system folds
-// (APFS does not equate ß and ss): extra matches fail closed.
+// equal. APFS folds the same way (checked on macOS: a file "pyteſt.ini"
+// opens as "pytest.ini", "Straße" as "Strasse"); where a file system folds
+// less, an extra match fails closed.
 // Windows-only equivalences (reserved device names, trailing dots/spaces, 8.3
 // short names, alternate data streams) are NOT handled.
 package pathfold

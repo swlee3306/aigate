@@ -16,6 +16,7 @@ import (
 
 	"aigate/internal/approval"
 	"aigate/internal/gate"
+	"aigate/internal/gittest"
 	"aigate/internal/report"
 	"aigate/internal/rules"
 )
@@ -276,6 +277,12 @@ type Scenario struct {
 	// AfterRun, when set, runs after the final gate run (e.g. a `check` of
 	// the saved report); a non-nil error is a scenario mismatch.
 	AfterRun func(w *Workspace, r report.Report) error
+	// HeadFiles (path → content), when set, are added on top of the head
+	// commit with git plumbing (gittest.Plumb): the scenario's head becomes
+	// that child commit, the main working tree stays at the plain head
+	// (clean). Needed for trees a case-insensitive file system cannot hold
+	// (tests/Run.js and tests/run.js).
+	HeadFiles map[string]string
 }
 
 func (w *Workspace) run() (report.Report, float64) {
@@ -330,6 +337,9 @@ func RunScenario(t *testing.T, s Scenario) {
 	w := NewStackWorkspace(t, st, s.Timeout, s.Config)
 	s.Mutate(w)
 	w.Head = w.Commit("head")
+	if len(s.HeadFiles) > 0 {
+		w.Head = gittest.Plumb(t, w.Dir, w.Head, s.HeadFiles)
+	}
 	if s.Post != nil {
 		s.Post(w)
 	}
