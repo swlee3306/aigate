@@ -213,6 +213,13 @@ func cmdApprove(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		return exitGateError
 	}
+	// A head whose tree has a case/Unicode-folding collision is not checked
+	// out as committed (fix wave 7 (B)): run never executes its checks
+	// (path_case_collision), so no diff shown for it could be approved.
+	if len(p.Collisions) > 0 {
+		return refuse(fmt.Sprintf("head 트리에 대소문자·유니코드 정규화를 구분하지 않는 파일 시스템에서 같은 경로가 되는 이름이 있습니다(충돌 %d건): %s", len(p.Collisions), gate.CollisionList(p.Collisions)),
+			reasonPathCaseCollision, "그런 파일 시스템에서는 이 경로들이 서로 덮어쓰거나 가려 checkout 결과가 커밋된 트리와 같지 않으므로 승인하지 않습니다(승인은 기록하지 않음). 충돌하는 이름을 고친 커밋으로 다시 실행하세요.")
+	}
 	if msg, reason := binaryRefusal(p); msg != "" {
 		why := "바이너리 요약 한 줄로는 사람이 내용을 볼 수 없어 승인하지 않습니다(승인은 기록하지 않음). NUL 바이트를 없앤 커밋으로 다시 실행하세요."
 		switch reason {
@@ -332,6 +339,9 @@ const (
 	// A binary (added, modified or type-changed) under a loaded-code
 	// directory (inLoadedDir): never summarised whatever its type (fix wave 6).
 	reasonBinaryInLoadedDir = "binary_in_loaded_dir"
+	// The head tree has paths a case-/normalization-insensitive file system
+	// maps onto one entry (gate.Protected.Collisions, fix wave 7).
+	reasonPathCaseCollision = "path_case_collision"
 )
 
 // at reports whether b holds m at offset off.
