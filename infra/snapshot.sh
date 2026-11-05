@@ -24,7 +24,7 @@ case $cmd in
   create)
     osw volume snapshot show "$snap" -f value -c id >/dev/null 2>&1 && die "snapshot $snap exists; delete it first"
     t0=$(now); stop_vm
-    # snapshot the volume the server really boots from (after a restore it is "<vm>-root-HHMMSS", not "<vm>-root")
+    # snapshot the volume the server really boots from (after a restore it is "<vm>-root-YYYYMMDD-HHMMSS-xxxx", not "<vm>-root")
     cur=$(osw server show "$vm" -f json -c volumes_attached | python3 -c 'import sys,json; print(json.load(sys.stdin)["volumes_attached"][0]["id"])')
     osw volume snapshot create --force --volume "$cur" "$snap" >/dev/null; wait_status volume\ snapshot "$snap" available
     start_vm; wait_ssh; echo "create: $(( $(now)-t0 )) s (stop+snapshot+start+ssh)" ;;
@@ -36,7 +36,7 @@ case $cmd in
     # rules and config (cloud-init would otherwise rewrite /etc/nftables.conf with the boot-time version).
     case $vm in orch-vm) flavor=aigate.orch ;; agent-vm) flavor=aigate.agent ;; test-vm) flavor=aigate.test ;; esac
     t0=$(now); osw server show "$vm" -f value -c id >/dev/null 2>&1 && osw server delete --wait "$vm"; t1=$(now)
-    size=$(osw volume snapshot show "$snap" -f value -c size); newvol="$vm-root-$(date +%H%M%S)"
+    size=$(osw volume snapshot show "$snap" -f value -c size); newvol="$vm-root-$(date +%Y%m%d-%H%M%S)-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
     osw volume create --snapshot "$snap" --size "$size" "$newvol" >/dev/null; wait_status volume "$newvol" available; t2=$(now)
     net=$(osw network show aigate-net -f value -c id)
     osw server create --flavor "$flavor" --volume "$newvol" --nic "net-id=$net,v4-fixed-ip=$ip_inner" --key-name aigate-key --wait "$vm" -f value -c status >/dev/null; t3=$(now)
@@ -44,7 +44,7 @@ case $cmd in
     echo "restore: total $((t4-t0)) s = delete-server $((t1-t0)) + volume-from-snapshot $((t2-t1)) + create-server $((t3-t2)) + ssh-ready $((t4-t3))  [volume $newvol]" ;;
   prune)
     echo "volumes of $vm (candidates for manual deletion except the one the server boots from; golden volume is $vol, snapshot origin):"
-    osw volume list -f value -c ID -c Name | grep -E " $vm-root(-[0-9]+)?$" || true ;;
+    osw volume list -f value -c ID -c Name | grep -E " $vm-root(-[0-9]+)*(-[0-9a-f]{4})?$" || true ;;
   time)
     for i in $(seq 1 "$n"); do
       sshvm "sudo touch /var/tmp/dirty-$i"

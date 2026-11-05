@@ -2,6 +2,8 @@ package vm
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -47,6 +49,9 @@ type TestVM struct {
 	RestoreTimeout, SlowAfter time.Duration
 	// Now is the clock (default time.Now); tests replace it.
 	Now func() time.Time
+	// Suffix returns the random part of a restore volume name (default: 4 hex
+	// digits from crypto/rand); tests replace it.
+	Suffix func() string
 
 	mu       sync.Mutex
 	broken   error // set by a failed restore, cleared by a successful one
@@ -61,6 +66,17 @@ func (t *TestVM) name() string {
 		return "test-vm"
 	}
 	return t.Name
+}
+
+func (t *TestVM) suffix() string {
+	if t.Suffix != nil {
+		return t.Suffix()
+	}
+	var b [2]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("%04x", time.Now().UnixNano()&0xffff)
+	}
+	return hex.EncodeToString(b[:])
 }
 
 func (t *TestVM) now() time.Time {
@@ -96,7 +112,10 @@ func (t *TestVM) Restore(ctx context.Context) error {
 	start := t.now()
 	t.broken = errors.New("restore in progress")
 	t.restores++
-	volume := fmt.Sprintf("%s-root-%s", t.name(), start.Format("150405"))
+	// date + time + random suffix: restore volumes are never deleted, and a
+	// name that repeats (every 24 h, or twice in one second) would make later
+	// `volume show <name>` calls ambiguous.
+	volume := fmt.Sprintf("%s-root-%s-%s", t.name(), start.Format("20060102-150405"), t.suffix())
 	rctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	err := t.restore(rctx, snap, volume)

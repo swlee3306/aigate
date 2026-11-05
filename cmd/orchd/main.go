@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -94,6 +95,12 @@ func run(args []string) int {
 		return 2
 	}
 	if vf.enabled() {
+		if err := vf.checkRestoreMode(); err != nil {
+			fmt.Fprintln(os.Stderr, "orchd:", err)
+			return 2
+		}
+	}
+	if vf.enabled() {
 		if err := vf.checkLocations(cfg.DB, cfg.AllowedRepos); err != nil {
 			fmt.Fprintln(os.Stderr, "orchd:", err)
 			return 2
@@ -118,6 +125,9 @@ func run(args []string) int {
 			fmt.Fprintln(os.Stderr, "orchd:", err)
 			return 2
 		}
+	}
+	for _, l := range vf.describe(cfg.DB, cfg.Concurrency) {
+		log.Print("orchd: config: ", l)
 	}
 	d, err := api.NewDaemon(cfg, st, provider)
 	if err != nil {

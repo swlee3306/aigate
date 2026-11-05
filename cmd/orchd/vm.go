@@ -28,7 +28,7 @@ type vmFlags struct {
 	TestWorkDir, TestJump                                      string
 	CloudCmd, TestSnapshot                                     string
 	AgentTimeout                                               time.Duration
-	RestoreEachJob                                             bool
+	RestoreEachJob, AllowPublishWithoutRestore                 bool
 	ReportDir, GateHome                                        string
 	// Publishing (all optional; none given = local-only, nothing is pushed).
 	// live is the policy in force (nil without --policy); limits come from it.
@@ -40,6 +40,9 @@ func (v *vmFlags) register(fs *flag.FlagSet) {
 	s := func(p *string, name, def, usage string) {
 		fs.StringVar(p, name, envOr("ORCHD_"+strings.ToUpper(strings.ReplaceAll(name, "-", "_")), def), usage)
 	}
+	// Publishing settings come from flags only: an environment variable in the
+	// service unit must not silently widen what orchd may publish.
+	sf := func(p *string, name, def, usage string) { fs.StringVar(p, name, def, usage) }
 	s(&v.AgentHost, "agent-host", "", "agent VM host (enables the real steps)")
 	s(&v.AgentUser, "agent-user", "", "agent VM ssh user (default: the driver's \"agent\")")
 	s(&v.AgentKey, "agent-key", "", "path of the agent VM's forced-command ssh key")
@@ -56,14 +59,16 @@ func (v *vmFlags) register(fs *flag.FlagSet) {
 	s(&v.TestSnapshot, "test-snapshot", "", "Cinder snapshot the test VM is restored from (default <test VM name>-clean)")
 	s(&v.ReportDir, "report-dir", "", "directory for verification reports (default <db dir>/reports)")
 	s(&v.GateHome, "gate-home", "", "gate home for approvals and ledger (default <db dir>/gate-home)")
-	s(&v.PublishAllow, "publish-allow", "", "comma separated publish actions that may run without a human (push_branch,draft_pr,notify); empty = every action waits for approval")
-	s(&v.GitRemote, "git-remote", "", "where push_branch pushes refs/heads/orch/<task>: absolute path or https URL without credentials")
-	s(&v.GitLabURL, "gitlab-url", "", "GitLab base URL for draft merge requests")
-	s(&v.GitLabProject, "gitlab-project", "", "GitLab project id or path")
-	s(&v.GitLabTarget, "gitlab-target", "main", "target branch of the draft merge request")
-	s(&v.TokenFile, "gitlab-token-file", "", "0600 file holding the GitLab write token (never printed)")
+	sf(&v.PublishAllow, "publish-allow", "", "comma separated publish actions that may run without a human (push_branch,draft_pr,notify); empty = every action waits for approval")
+	sf(&v.GitRemote, "git-remote", "", "where push_branch pushes refs/heads/orch/<task>: absolute path or https URL without credentials")
+	sf(&v.GitLabURL, "gitlab-url", "", "GitLab base URL for draft merge requests")
+	sf(&v.GitLabProject, "gitlab-project", "", "GitLab project id or path")
+	sf(&v.GitLabTarget, "gitlab-target", "main", "target branch of the draft merge request")
+	sf(&v.TokenFile, "gitlab-token-file", "", "0600 file holding the GitLab write token (never printed)")
 	fs.DurationVar(&v.AgentTimeout, "agent-timeout", steps.DefaultAgentTimeout, "limit of one agent run")
 	fs.BoolVar(&v.RestoreEachJob, "restore-each-job", true, "restore the test VM before every verification")
+	fs.BoolVar(&v.AllowPublishWithoutRestore, "allow-publish-without-restore", false,
+		"allow --restore-each-job=false together with publishing (a check can then leave a process that forges the next task's results)")
 }
 
 // enabled reports whether any VM flag that selects the real drivers is set.
@@ -211,4 +216,63 @@ func splitList(s string) []string {
 		}
 	}
 	return out
+}
+
+// checkRestoreMode refuses --restore-each-job=false together with any
+// publishing configuration (flags, or an allowlist in the policy) unless
+// --allow-publish-without-restore is given: without a restore, test code of one
+// job can persist into the next verification.
+func (v *vmFlags) checkRestoreMode() error {
+	if v.RestoreEachJob || v.AllowPublishWithoutRestore {
+		return nil
+	}
+	if v.publishConfigured() || v.live != nil && len(v.live.Current().Allowlist) > 0 {
+		return errors.New("--restore-each-job=false with publishing configured (allowlist, git remote or GitLab) is refused; " +
+			"restore the test VM per job or pass --allow-publish-without-restore explicitly")
+	}
+	return nil
+}
+
+// describe lists the effective configuration for the startup log. It names
+// hosts, remotes and the source of the allowlist, never key files' contents,
+// token values or paths of secrets.
+func (v *vmFlags) describe(db string, concurrency int) []string {
+	allow, source := "none (every action waits for approval)", "none"
+	switch {
+	case v.live != nil:
+		pol := v.live.Current()
+		allow, source = strings.Join(pol.Allowlist, ","), "policy file"
+		if allow == "" {
+			allow = "empty (every action waits for approval)"
+		}
+	case v.PublishAllow != "":
+		allow, source = v.PublishAllow, "--publish-allow flag"
+	}
+	l := []string{
+		"database " + db,
+		fmt.Sprintf("concurrency %d, agent timeout %s", concurrency, v.AgentTimeout),
+		fmt.Sprintf("restore test VM before each job: %t", v.RestoreEachJob),
+		"publish allowlist: " + allow + " (source: " + source + ")",
+	}
+	if v.live != nil {
+		l = append(l, "policy hash "+v.live.Current().Hash())
+	} else {
+		l = append(l, "policy: none")
+	}
+	if v.GitRemote != "" {
+		l = append(l, "git remote (push_branch): "+v.GitRemote)
+	}
+	if v.GitLabURL != "" {
+		l = append(l, fmt.Sprintf("GitLab draft MR: %s project %s target %s (token file set: %t)",
+			v.GitLabURL, v.GitLabProject, v.GitLabTarget, v.TokenFile != ""))
+	}
+	if v.AllowPublishWithoutRestore && !v.RestoreEachJob && v.publishConfigured() {
+		l = append(l, "WARNING: publishing without a test VM restore per job (--allow-publish-without-restore)")
+	}
+	if v.enabled() {
+		l = append(l, "agent VM "+v.AgentHost+", test VM "+v.TestHost)
+	} else {
+		l = append(l, "no VM flags: placeholder steps (tasks end failed)")
+	}
+	return l
 }

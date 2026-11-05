@@ -33,10 +33,12 @@ type OpenStackCLI struct {
 }
 
 var (
-	argRE     = regexp.MustCompile(`^[A-Za-z0-9_-][A-Za-z0-9_.,=:-]*$`)
-	sizeRE    = regexp.MustCompile(`^[0-9]{1,4}$`)
+	argRE  = regexp.MustCompile(`^[A-Za-z0-9_-][A-Za-z0-9_.,=:-]*$`)
+	sizeRE = regexp.MustCompile(`^[0-9]{1,4}$`)
+	// restoreRE matches test-vm-root-YYYYMMDD-HHMMSS-xxxx (the legacy
+	// test-vm-root-HHMMSS is still recognised for listing and pruning).
 	restoreRE = func(vm string) *regexp.Regexp {
-		return regexp.MustCompile(`^` + regexp.QuoteMeta(vm) + `-root-[0-9]{6}$`)
+		return regexp.MustCompile(`^` + regexp.QuoteMeta(vm) + `-root-([0-9]{8}-)?[0-9]{6}(-[0-9a-f]{4})?$`)
 	}
 )
 

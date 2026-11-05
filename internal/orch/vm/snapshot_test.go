@@ -39,7 +39,7 @@ func (c *fakeCloud) CreateServer(ctx context.Context, s, v string) error {
 func (c *fakeCloud) WaitSSH(ctx context.Context, s string) error { return c.step("WaitSSH") }
 
 func newTestVM(c Cloud, clock *time.Time) *TestVM {
-	return &TestVM{Cloud: c, Now: func() time.Time { return *clock },
+	return &TestVM{Cloud: c, Now: func() time.Time { return *clock }, Suffix: func() string { return "ab12" },
 		SSH: remote.Config{Host: "test-vm", User: "runner", KeyPath: "/k", KnownHosts: "/kh", RepoDir: "/r"}}
 }
 
@@ -50,7 +50,7 @@ func TestRestoreOrderAndExecutor(t *testing.T) {
 	if err := v.Restore(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(c.calls, ","); got != "DeleteServer,vol:test-vm-clean:test-vm-root-100000,CreateVolumeFromSnapshot,CreateServer,WaitSSH" {
+	if got := strings.Join(c.calls, ","); got != "DeleteServer,vol:test-vm-clean:test-vm-root-20261106-100000-ab12,CreateVolumeFromSnapshot,CreateServer,WaitSSH" {
 		t.Fatalf("calls: %s", got)
 	}
 	ex, err := v.Executor()
@@ -147,7 +147,7 @@ func TestPruneCandidatesListOldVolumesOnly(t *testing.T) {
 		}
 	}
 	got := v.PruneCandidates()
-	if strings.Join(got, ",") != "test-vm-root-100100,test-vm-root-100200" {
+	if strings.Join(got, ",") != "test-vm-root-20261106-100100-ab12,test-vm-root-20261106-100200-ab12" {
 		t.Fatalf("candidates %v (active volume must not be listed)", got)
 	}
 }
@@ -189,8 +189,8 @@ func TestOpenStackCLIFullRestoreUsesOnlyAllowedVerbs(t *testing.T) {
 		all = append(all, strings.Join(a[7:], " "))
 	}
 	joined := strings.Join(all, "\n")
-	for _, want := range []string{"server delete --wait test-vm", "volume create --snapshot test-vm-clean --size 30 test-vm-root-100000",
-		"server create --flavor aigate.test --volume test-vm-root-100000 --nic net-id=11111111-2222-3333-4444-555555555555,v4-fixed-ip=10.70.0.13 --key-name aigate-key --wait test-vm -f value -c status"} {
+	for _, want := range []string{"server delete --wait test-vm", "volume create --snapshot test-vm-clean --size 30 test-vm-root-20261106-100000-ab12",
+		"server create --flavor aigate.test --volume test-vm-root-20261106-100000-ab12 --nic net-id=11111111-2222-3333-4444-555555555555,v4-fixed-ip=10.70.0.13 --key-name aigate-key --wait test-vm -f value -c status"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("missing %q in:\n%s", want, joined)
 		}
@@ -254,5 +254,35 @@ func TestOpenStackCLIListsPruneCandidatesReadOnly(t *testing.T) {
 	}
 	if strings.Join(got, ",") != "test-vm-root id1,test-vm-root-180814 id2,test-vm-root-181005 id4" {
 		t.Fatalf("%v", got)
+	}
+}
+
+// Two restores in the same second (and the same time on another day) must not
+// share a volume name; every name is accepted by the restore allowlist.
+func TestRestoreVolumeNamesAreUnique(t *testing.T) {
+	now := time.Date(2026, 11, 6, 10, 0, 0, 0, time.UTC)
+	c := &fakeCloud{}
+	v := &TestVM{Cloud: c, Now: func() time.Time { return now },
+		SSH: remote.Config{Host: "test-vm", User: "runner", KeyPath: "/k", KnownHosts: "/kh", RepoDir: "/r"}}
+	seen := map[string]bool{}
+	for i := 0; i < 20; i++ {
+		if err := v.Restore(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if i == 10 {
+			now = now.AddDate(0, 0, 1) // the next day, same time of day
+		}
+	}
+	for _, h := range v.History() {
+		if seen[h.Volume] {
+			t.Fatalf("volume name %s repeated", h.Volume)
+		}
+		seen[h.Volume] = true
+		if !restoreRE("test-vm").MatchString(h.Volume) {
+			t.Fatalf("name %q not accepted by the restore allowlist", h.Volume)
+		}
+	}
+	if !restoreRE("test-vm").MatchString("test-vm-root-153012") {
+		t.Fatal("legacy names must stay listable")
 	}
 }
