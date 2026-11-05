@@ -54,6 +54,13 @@
 1. 호스트키: 스냅샷에 보존해야 한다(위). 2. 단계 연결 코드(Task 9b)가 계획에 없었다. 3. 승인은 데몬이 아니라 TTY에서 쓰는 승인 파일이 권한이다(Task 11).
 4. Codex는 agent-vm에서 아직 동작하지 않는다(AppArmor 사용자 네임스페이스 제한, 샌드박스 해제는 권한 분류기가 거부).
 
+### Known limits (최종 검토에서 나왔고 고치지 않은 것)
+- **"게시 후 회귀" 강등 트리거는 운영에서 도달할 수 없다.** `done`은 종료 상태라 한 번 `done`이 된 작업은 다시 `verifying`에 들어가지 않는다. `wasPublished`는 실제 경로에서 항상 거짓이다. 단위 테스트(`TestVerifyDirectlyOnDoneTaskDemotes`)는 `done` 작업에 `verify`를 직접 호출하므로 강등 로직만 확인하며 상태 머신 경로를 검증하지 않는다. 진짜 트리거는 내구성 있는 게시 기록이 필요하다(예: 같은 클래스·저장소의 이후 작업이 자동 게시된 작업 뒤에 실패). 이제 원장의 `publish_action`/`publish_result` 이벤트가 그 기록이 된다.
+- **DB를 교체하면 작업 ID가 1부터 다시 시작한다.** `refs/orch/<id>`, 원격 `orch/<id>` 브랜치, `PublishHash`(작업 ID 기반)가 이전 것과 충돌할 수 있다(non-fast-forward push 실패, 오래된 MR을 "이미 있음"으로 취급, 이전 승인 재사용). 운영 규칙: **`refs/orch/*`와 원격의 `orch/*` 브랜치를 지우지 않고 DB를 교체하지 않는다.**
+- **orchd가 죽으면 실행 중이던 에이전트가 재시도와 나란히 계속 돌 수 있다.** 래퍼의 `run`은 프로세스 그룹을 따로 두지만 감시 타이머만 죽이고, `Recover`는 `prepare` 없이 `agent_running`을 다시 실행한다. 운영 규칙: **orchd가 비정상 종료한 뒤에는 다시 제출하기 전에 agent-vm에 남은 에이전트 프로세스가 있는지 확인한다.** 값싼 완화책(래퍼가 `run`/`prepare`에서 pidfile에 적힌 작업의 프로세스 그룹을 먼저 죽인다)이 다음 단계다. Task 4의 보류 항목은 테스트 VM 실행기만 다룬다.
+- 검토자가 평가하지 못한 것: 실제 OpenSSH/OpenStack 동작(`OpenStackCLI` 복원 end to end, 같은 이름 볼륨의 동작, 새 `test-vm-clean2` 스냅샷 복원 후 호스트키), `internal/remote/ssh.go` 정밀 검토(훑어만 봄), 에이전트 VM 하나를 공유하는 동시성 > 1(같은 `agent` uid라 한 작업의 에이전트가 다른 작업 작업공간을 건드릴 수 있음; 게이트는 모든 head를 판정), `aigate` 쪽 승인 유효성(`approval.Store.Valid`)이 `approvals.Grants.Granted`와 정확히 일치한다는 가정, 실제 v1 이전/부분 마이그레이션된 운영 DB, e2e 시험과 `infra/test/*.sh`.
+- 원장 기록의 내구성: `task_transition`은 SQLite 커밋 *뒤에* 기록하는 최선 노력이라 그 사이 크래시로 하나가 빠질 수 있다(SQLite 이벤트 표에는 남는다). 외부 행동은 `publish_action`을 행동 *앞에* 기록하므로 기록 없는 행동은 없다.
+
 ## 무인 적합성 판정 (솔직하게)
 **아직 사람 없이 쓰기에는 부족하다.** 근거:
 - 시험은 toy 저장소에서 한 것이다. 실제 저장소(sample-collector)와 GitLab(Tailscale 필요)에서는 아직 돌려 보지 않았다.
