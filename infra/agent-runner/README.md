@@ -75,3 +75,18 @@ agent-vm에서(관리자 키로): `sudo rm /etc/ssh/sshd_config.d/aigate-agent.c
 - 호스트 키: 래퍼 경로는 `StrictHostKeyChecking=yes`로 고정된 known_hosts를 쓴다. agent-vm은 복원 대상이 아니므로 키가 바뀌지 않지만, VM을 다시 만들면 known_hosts를 다시 고정해야 한다.
 - 타임아웃은 에이전트의 프로세스 그룹만 죽인다. `setsid`로 빠져나간 자손은 남을 수 있다(VM 단위 격리가 최종 방어).
 - `agent` 사용자와 에이전트가 같은 계정이므로 에이전트는 작업 폴더·`.git`을 자유롭게 바꾼다. 그래서 오케스트레이터는 가져온 객체를 격리 저장소에서 fsck·재계산한 뒤에만 받아들인다.
+
+## 실제 VM 검증 결과 (2026-11-06)
+- 설치: `install.sh --apply <orch 전용 공개키>` 적용됨. `sshd -T -C user=agent` 에서 `authorizedkeysfile /etc/ssh/aigate/agent_authorized_keys`.
+  (첫 적용은 `Match` 안에 `PermitUserEnvironment`가 있어 `sshd -t`가 거부했고 스크립트가 drop-in을 지우고 중단했다. 지시어를 빼고 재적용.)
+- orch-vm(`orch` 계정, 전용 키 `~/.ssh/id_aigate`, 호스트키 고정 `~/.ssh/known_hosts_aigate`)에서:
+  - 허용되지 않은 명령(`ls /`, `collect-info 1; id`, `upload-pack /etc`)은 `command not allowed`(rc 2).
+  - `prepare 5001`(번들) → `run 5001 claude`(8 s) → 에이전트가 커밋 → `collect-info`가 commits=1 보고.
+  - 오케스트레이터 쪽 `git fetch --upload-pack=upload-pack ssh://agent@10.70.0.12/<task>`가 작업 브랜치만 가져옴(fsck 켬). 다른 ref·경로 밖 요청은 거부.
+  - 호스트키 미등록이면 `StrictHostKeyChecking=yes`로 연결 거부.
+- **Codex는 아직 동작하지 않는다.** `codex exec --sandbox workspace-write`가 `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`로 실패한다.
+  원인: Ubuntu 24.04의 `kernel.apparmor_restrict_unprivileged_userns=1`(agent 계정이 `unshare -Urn`도 못 함).
+  선택지(사용자 결정 필요, 임의로 적용하지 않음):
+  A) agent-vm에서만 `sysctl kernel.apparmor_restrict_unprivileged_userns=0`(샌드박스 유지, VM 커널 공격면 증가),
+  B) `CODEX_ARGS`에 `--dangerously-bypass-approvals-and-sandbox`(VM이 샌드박스. 권한 분류기가 이 플래그를 막았으므로 사용자 규칙 추가 필요),
+  C) 당분간 Claude만 에이전트로 사용. 지금은 C.
