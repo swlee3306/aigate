@@ -9,14 +9,14 @@ ssh_pwauth: false
 disable_root: true
 
 # Sudo policy: the cloud image's default user 'ubuntu' (key-only via the OpenStack keypair)
-# is the one-time admin/setup account. The role user below has NO sudo.
+# is the one-time admin/setup account (its key comes ONLY from the OpenStack keypair = the
+# admin public key). The role user below has no sudo key (no sudo) and gets the ROLE public key.
 users:
   - default
   - name: agent
     gecos: aigate agent
     shell: /bin/bash
     lock_passwd: true
-    sudo: false
     ssh_authorized_keys:
       - "@@AIGATE_PUBKEY@@"
 
@@ -32,6 +32,7 @@ packages:
 
 write_files:
   - path: /etc/nftables.conf
+    defer: true
     owner: root:root
     permissions: "0644"
     content: |
@@ -60,7 +61,18 @@ write_files:
         }
       }
 
+  - path: /etc/ssh/sshd_config.d/10-aigate.conf
+    owner: root:root
+    permissions: "0644"
+    content: |
+      AllowAgentForwarding no
+      AllowTcpForwarding no
+      X11Forwarding no
+      PermitRootLogin no
+      PasswordAuthentication no
+
 runcmd:
   - systemctl enable --now nftables
   - install -d -o agent -g agent -m 0750 /srv/aigate
   - install -d -o agent -g agent -m 0750 /srv/aigate/work
+  - systemctl reload ssh

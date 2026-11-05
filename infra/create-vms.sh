@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 # Create the aigate orchestrator VMs on the homeserver OpenStack. DRY-RUN by default.
 #   create-vms.sh [--apply] [--only keypair|flavors|network|orchestrator|agent|test|fip]
+#   create-vms.sh --render orchestrator|agent|test   (print rendered user-data, no ssh)
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=lib.sh
 . "$HERE/lib.sh"
 
 AIGATE_KEY=${AIGATE_KEY:-$HOME/.ssh/aigate_ed25519}
-PUBFILE="$AIGATE_KEY.pub"
+PUBFILE="$AIGATE_KEY.pub"                         # ROLE public key -> role users in cloud-init
+AIGATE_ADMIN_KEY=${AIGATE_ADMIN_KEY:-$HOME/.ssh/aigate_admin_ed25519}
+ADMIN_PUB="$AIGATE_ADMIN_KEY.pub"                 # ADMIN public key -> OpenStack keypair (ubuntu user)
+WAIT_TRIES=${AIGATE_WAIT_TRIES:-60}; WAIT_SLEEP=${AIGATE_WAIT_SLEEP:-5}
 IMAGE="Ubuntu 24.04"; NET=aigate-net; SUBNET=aigate-subnet; CIDR=10.70.0.0/24; GW=10.70.0.1; DNS=8.8.8.8
 ROUTER=router-main; KEYPAIR=aigate-key; EXTNET=external-net
 FIP_POOL_PREFIX=192.168.1; FIP_FIRST=200; FIP_LAST=254
@@ -22,11 +26,12 @@ role_ram()    { case $1 in orchestrator) echo 2048 ;; agent) echo 4096 ;; test) 
 
 usage() { sed -n '2,3p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
-DO_APPLY=0; ONLY=""
+DO_APPLY=0; ONLY=""; RENDER=""
 while [ $# -gt 0 ]; do
   case $1 in
     --apply) DO_APPLY=1 ;;
     --only) [ $# -ge 2 ] || usage 2; ONLY=$2; shift ;;
+    --render) [ $# -ge 2 ] || usage 2; RENDER=$2; shift ;;
     -h|--help) usage 0 ;;
     *) echo "unknown argument: $1" >&2; usage 2 ;;
   esac
@@ -44,7 +49,7 @@ render_userdata() { # role -> path of rendered file (public key substituted)
   local src="$HERE/cloud-init/$1.yaml" dst="$TMPD/$1.yaml" pub content
   [ -f "$src" ] || die "missing $src"
   if [ -f "$PUBFILE" ]; then pub=$(cat "$PUBFILE"); else
-    [ "${APPLY}" = 1 ] && die "public key $PUBFILE missing; run infra/keygen.sh first"
+    [ "${APPLY}" = 1 ] || [ -n "$RENDER" ] && die "public key $PUBFILE missing; run infra/keygen.sh first"
     pub="<public key from $PUBFILE>"
   fi
   content=$(cat "$src")
@@ -53,9 +58,21 @@ render_userdata() { # role -> path of rendered file (public key substituted)
 }
 
 stage_keypair() {
-  if has_name keypair list -f value -c Name -- "$KEYPAIR"; then skip "keypair $KEYPAIR"; return; fi
+  if has_name keypair list -f value -c Name -- "$KEYPAIR"; then
+    if [ -f "$ADMIN_PUB" ]; then
+      local lfp rfp
+      lfp=$(ssh-keygen -E md5 -lf "$ADMIN_PUB" | awk '{print $2}' | sed 's/^MD5://')
+      rfp=$(os_read keypair show "$KEYPAIR" -f value -c fingerprint) || die "read query failed: keypair show"
+      [ "$lfp" = "$rfp" ] || die "keypair $KEYPAIR exists but its fingerprint ($rfp) differs from the local admin key ($lfp); see README rollback"
+      skip "keypair $KEYPAIR (fingerprint matches admin key)"
+    else
+      echo "WARN: $ADMIN_PUB missing, cannot compare keypair fingerprint" >&2
+      skip "keypair $KEYPAIR"
+    fi
+    return
+  fi
   step "CREATE keypair $KEYPAIR"
-  OS_STDIN_FILE=$PUBFILE os keypair create --public-key /dev/stdin "$KEYPAIR"
+  OS_STDIN_FILE=$ADMIN_PUB os keypair create --public-key /dev/stdin "$KEYPAIR"
 }
 
 stage_flavors() {
@@ -85,13 +102,13 @@ stage_network() {
 wait_volume() { # apply only: wait until the volume is available
   [ "$APPLY" = 1 ] || return 0
   local i s
-  for i in $(seq 1 60); do
+  for i in $(seq 1 "$WAIT_TRIES"); do
     s=$(os_read volume show "$1" -f value -c status) || die "volume show failed"
     [ "$s" = available ] && return 0
     [ "$s" = error ] && die "volume $1 is in error state"
-    sleep 5
+    sleep "$WAIT_SLEEP"
   done
-  die "volume $1 not available after 300s"
+  die "volume $1 not available after $((WAIT_TRIES * WAIT_SLEEP))s"
 }
 
 stage_volume() {
@@ -104,18 +121,34 @@ stage_volume() {
 net_id() {
   local id
   id=$(os_read network show "$NET" -f value -c id 2>/dev/null) || id=""
-  printf %s "${id:-<id of $NET>}"
+  if [ -z "$id" ]; then
+    [ "$APPLY" = 1 ] && die "network $NET not found; create it first (--only network)"
+    id="<id of $NET>"
+  fi
+  printf %s "$id"
+}
+
+# server_state <vm>: die unless an existing server is ACTIVE (never treat ERROR etc. as done)
+require_active() {
+  local st
+  st=$(os_read server show "$1" -f value -c status) || die "read query failed: server show $1"
+  [ "$st" = ACTIVE ] || die "server $1 exists in state $st - see README rollback"
 }
 
 stage_server() {
   local r=$1 vm; vm=$(role_vm "$r")
-  if has_name server list -f value -c Name -- "$vm"; then skip "server $vm"; return; fi
+  if has_name server list -f value -c Name -- "$vm"; then require_active "$vm"; skip "server $vm (ACTIVE)"; return; fi
   step "CREATE server $vm"
-  local ud; ud=$(render_userdata "$r")
+  local ud nid
+  ud=$(render_userdata "$r") || die "cannot render user-data for $r"
+  [ -s "$ud" ] || die "rendered user-data for $r is empty"
+  nid=$(net_id) || die "cannot resolve network id"
   wait_volume "$vm-root"
   OS_STDIN_FILE=$ud os server create --flavor "$(role_flavor "$r")" --volume "$vm-root" \
-    --nic "net-id=$(net_id),v4-fixed-ip=$(role_ip "$r")" --key-name "$KEYPAIR" \
-    --user-data /dev/stdin --wait "$vm"
+    --nic "net-id=$nid,v4-fixed-ip=$(role_ip "$r")" --key-name "$KEYPAIR" \
+    --user-data /dev/stdin --wait -f value -c id -c status "$vm"
+  [ "$APPLY" = 1 ] && require_active "$vm"
+  return 0
 }
 
 pick_fip() { # first unused address in the pool; never a documented-used one
@@ -132,18 +165,25 @@ pick_fip() { # first unused address in the pool; never a documented-used one
 }
 
 stage_fip() {
-  local attached ip
-  attached=$(os_read floating ip list --fixed-ip-address "$(role_ip orchestrator)" -f value -c 'Floating IP Address') \
-    || die "read query failed: floating ip list"
-  if [ -n "$attached" ]; then skip "floating-ip for orch-vm ($(printf %s "$attached" | head -1))"; return; fi
-  if [ "$APPLY" = 1 ] && ! has_name server list -f value -c Name -- orch-vm; then
+  local portid="<port id of orch-vm>" attached unatt ip
+  if has_name server list -f value -c Name -- orch-vm; then
+    require_active orch-vm
+    portid=$(os_read port list --server orch-vm -f value -c ID | head -1) || die "read query failed: port list"
+    [ -n "$portid" ] || die "orch-vm has no port"
+    attached=$(os_read floating ip list --port "$portid" -f value -c 'Floating IP Address') \
+      || die "read query failed: floating ip list"
+    if [ -n "$attached" ]; then skip "floating-ip for orch-vm ($(printf %s "$attached" | head -1))"; return; fi
+    unatt=$(os_read floating ip list --network "$EXTNET" --status DOWN -f value -c ID -c 'Floating IP Address') \
+      || die "read query failed: floating ip list"
+    if [ -n "$unatt" ]; then
+      die "unattached floating IP(s) exist on $EXTNET (possible leftover): $(printf %s "$unatt" | tr '\n' ';'). If it is ours, remove with: openstack --os-cloud $OS_CLOUD floating ip delete <ID>"
+    fi
+  elif [ "$APPLY" = 1 ]; then
     die "orch-vm does not exist yet; create it before the floating ip"
   fi
   ip=$(pick_fip) || exit 1
-  step "CREATE floating-ip $ip"
-  os floating ip create --floating-ip-address "$ip" "$EXTNET"
-  step "ATTACH floating-ip $ip orch-vm"
-  os server add floating ip orch-vm "$ip"
+  step "CREATE floating-ip $ip orch-vm"
+  os floating ip create --port "$portid" --floating-ip-address "$ip" "$EXTNET"
 }
 
 run_all() {
@@ -163,7 +203,14 @@ run_all() {
 
 count_steps() { grep -cE '^\[[0-9]+\] ' <<<"$1" || true; }
 
-[ "$DO_APPLY" = 1 ] && [ ! -f "$PUBFILE" ] && die "public key $PUBFILE missing; run infra/keygen.sh first"
+if [ -n "$RENDER" ]; then
+  case "$RENDER" in orchestrator|agent|test) ;; *) die "invalid --render value: $RENDER" ;; esac
+  cat "$(render_userdata "$RENDER")"; exit 0
+fi
+if [ "$DO_APPLY" = 1 ]; then
+  [ -f "$PUBFILE" ] || die "role public key $PUBFILE missing; run infra/keygen.sh first"
+  [ -f "$ADMIN_PUB" ] || die "admin public key $ADMIN_PUB missing; run infra/keygen.sh first"
+fi
 echo "aigate create-vms (host: $OS_HOST, cloud: $OS_CLOUD, only: ${ONLY:-all})"
 plan=$(APPLY=0 run_all) || exit 1
 printf '%s\n' "$plan"

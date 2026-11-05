@@ -27,7 +27,7 @@ remote_cmd() {
 # Planned write verbs (allow-list). Everything else is refused, even with APPLY=1.
 _allowed_write() {
   case "${1:-} ${2:-} ${3:-}" in
-    "router add subnet"|"floating ip create"|"server add floating") return 0 ;;
+    "router add subnet"|"floating ip create") return 0 ;;
   esac
   case "${1:-} ${2:-}" in
     "server create"|"volume create"|"flavor create"|"network create"|"subnet create"|"keypair create") return 0 ;;

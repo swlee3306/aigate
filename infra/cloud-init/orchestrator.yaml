@@ -10,14 +10,14 @@ ssh_pwauth: false
 disable_root: true
 
 # Sudo policy: the cloud image's default user 'ubuntu' (key-only via the OpenStack keypair)
-# is the one-time admin/setup account. The role user below has NO sudo.
+# is the one-time admin/setup account (its key comes ONLY from the OpenStack keypair = the
+# admin public key). The role user below has no sudo key (no sudo) and gets the ROLE public key.
 users:
   - default
   - name: orch
     gecos: aigate orchestrator
     shell: /bin/bash
     lock_passwd: true
-    sudo: false
     ssh_authorized_keys:
       - "@@AIGATE_PUBKEY@@"
 
@@ -33,6 +33,7 @@ packages:
 
 write_files:
   - path: /etc/nftables.conf
+    defer: true
     owner: root:root
     permissions: "0644"
     content: |
@@ -50,8 +51,8 @@ write_files:
           iif "lo" accept
           # DHCP renewals from the Neutron DHCP agent on the local subnet
           ip saddr 10.70.0.0/24 udp sport 67 udp dport 68 accept
-          # ssh only from the MacBook and the Mac mini (LAN) and over Tailscale (if tailscale0 exists)
-          ip saddr { 192.168.1.124, 192.168.1.128 } tcp dport 22 accept
+          # ssh only from the homeserver (recovery path), the MacBook, the Mac mini (LAN) and over Tailscale (if tailscale0 exists)
+          ip saddr { 192.168.1.121, 192.168.1.124, 192.168.1.128 } tcp dport 22 accept
           iifname "tailscale0" tcp dport 22 accept
         }
         chain forward {

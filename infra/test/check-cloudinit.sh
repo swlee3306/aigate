@@ -31,7 +31,17 @@ for role in orchestrator agent test; do
   assert "no tailscale key text" "! grep -qiE 'authkey|tskey' '$f'"
   assert "placeholder exactly once" "[ \$(grep -o '@@AIGATE_PUBKEY@@' '$f' | wc -l) -eq 1 ]"
   assert "login user $(role_user $role) defined" "grep -q 'name: $(role_user $role)\$' '$f'"
-  assert "no NOPASSWD sudo grant" "! grep -q 'NOPASSWD' '$f'"
+  assert "no NOPASSWD in user-data" "! grep -q 'NOPASSWD' '$f'"
+  assert "role user has no sudo key" "! grep -qE '^ +sudo:' '$f'"
+  assert "single ssh_authorized_keys (role user only; ubuntu key comes from the OpenStack keypair)" "[ \$(grep -c 'ssh_authorized_keys' '$f') -eq 1 ]"
+  assert "default user listed without keys" "grep -qE '^  - default\$' '$f'"
+  assert "nftables.conf is deferred" "grep -A1 'path: /etc/nftables.conf' '$f' | grep -q 'defer: true'"
+  case $role in agent|test)
+    assert "sshd drop-in present" "grep -q 'path: /etc/ssh/sshd_config.d/10-aigate.conf' '$f'"
+    for k in 'AllowAgentForwarding no' 'AllowTcpForwarding no' 'X11Forwarding no' 'PermitRootLogin no' 'PasswordAuthentication no'; do
+      assert "sshd drop-in: $k" "grep -qE '^      $k\$' '$f'"
+    done ;;
+  esac
   assert "nft default drop on input" "grep -qE 'hook input .*policy drop;' '$f'"
   assert "nft default drop on forward" "grep -qE 'hook forward .*policy drop;' '$f'"
   assert "nftables enabled" "grep -q 'systemctl enable --now nftables' '$f'"
@@ -41,7 +51,7 @@ for role in orchestrator agent test; do
   rules=$(grep -E 'dport 22' "$f" | sed -E 's/^ +//')
   case $role in
     orchestrator)
-      expected=$'ip saddr { 192.168.1.124, 192.168.1.128 } tcp dport 22 accept\niifname "tailscale0" tcp dport 22 accept'
+      expected=$'ip saddr { 192.168.1.121, 192.168.1.124, 192.168.1.128 } tcp dport 22 accept\niifname "tailscale0" tcp dport 22 accept'
       for p in sqlite3 openssh-client; do assert "package $p" "grep -qE '^  - $p\$' '$f'"; done ;;
     agent)
       expected='ip saddr 10.70.0.11 tcp dport 22 accept'
@@ -57,7 +67,7 @@ done
 echo "[nft syntax]"
 if command -v nft >/dev/null 2>&1; then
   for role in orchestrator agent test; do
-    awk '/^      table inet aigate \{/,/^      \}$/' "$CI/$role.yaml" | sed -E 's/^      //' > "${TMPDIR:-/tmp}/aigate-$role.nft"
+    awk '/^      #!\/usr\/sbin\/nft/,/^      \}$/' "$CI/$role.yaml" | sed -E 's/^      //' > "${TMPDIR:-/tmp}/aigate-$role.nft"
     assert "nft -c -f $role" "nft -c -f '${TMPDIR:-/tmp}/aigate-$role.nft'"
   done
 else
