@@ -73,13 +73,24 @@ type Publisher interface {
 type Planner interface {
 	Plan() []string
 	Granted(t store.Task, kind string) bool
+	// Permit reports whether kind passes the floor and the allowlist the
+	// publisher itself enforces (nil = it would run without a human).
+	Permit(kind string) error
 }
+
+// PolicyChangeKind is the pseudo action a human approves when the policy
+// changed after the task started (see decidePublish). Planner.Granted is
+// asked about it like about a real action kind.
+func PolicyChangeKind(hash string) string { return "policy_changed:" + hash }
 
 // Plan returns no actions.
 func (LocalOnlyPublisher) Plan() []string { return nil }
 
 // Granted is always false.
 func (LocalOnlyPublisher) Granted(store.Task, string) bool { return false }
+
+// Permit is always nil: there is nothing to run.
+func (LocalOnlyPublisher) Permit(string) error { return nil }
 
 // LocalOnlyPublisher publishes nothing; it only lets the task finish locally.
 type LocalOnlyPublisher struct{}
@@ -389,10 +400,15 @@ func (p *Provider) saveReport(t store.Task, r report.Report) (string, error) {
 }
 
 func (p *Provider) publish(ctx context.Context, t store.Task) (machine.Outcome, error) {
+	var d pubDecision
 	if p.cfg.Policy != nil {
-		if out, handled, err := p.decidePublish(ctx, t); handled {
-			return out, err
+		d = p.decidePublish(ctx, t)
+		if d.handled {
+			return d.out, d.err
 		}
+		// What the publisher (and its ledger records) see is the policy that
+		// actually decided, not the one recorded when the task started.
+		t.PolicyHash = d.hash
 	}
 	err := p.cfg.Publisher.Publish(ctx, t)
 	var na *publish.NeedsApprovalError
@@ -401,6 +417,9 @@ func (p *Provider) publish(ctx context.Context, t store.Task) (machine.Outcome, 
 		reason := fmt.Sprintf("%s: %s", na.Action.Kind, na.Reason)
 		if qerr := approvals.New(p.st).Enqueue(ctx, t.ID, store.KindPublishOutsideAllowlist, t.Base, t.HeadSHA, na.Hash, reason); qerr != nil {
 			return machine.Outcome{}, qerr
+		}
+		if p.cfg.Policy != nil && autonomy.NotifyOnPark(d.level) {
+			p.notify(ctx, t, "task is waiting for approval: "+reason)
 		}
 		return machine.Outcome{Next: machine.StateNeedsApproval, Note: "publish_outside_allowlist: " + na.Action.Kind + " needs approval"}, nil
 	case errors.Is(err, policy.ErrFloor):
@@ -412,62 +431,122 @@ func (p *Provider) publish(ctx context.Context, t store.Task) (machine.Outcome, 
 	case err != nil:
 		return machine.Outcome{}, fmt.Errorf("publish: %w", err)
 	}
-	if p.cfg.Policy != nil && autonomy.NotifyAfterPublish(p.level(t)) {
+	if p.cfg.Policy != nil && autonomy.NotifyAfterPublish(d.level) {
 		p.notify(ctx, t, fmt.Sprintf("task %d was published automatically", t.ID))
 	}
 	note := "published"
 	if n, ok := p.cfg.Publisher.(interface{ PublishNote() string }); ok {
 		note = n.PublishNote()
 	}
+	if p.cfg.Policy != nil {
+		note += " [policy " + short12(d.hash) + "]"
+	}
 	return machine.Outcome{Next: machine.StateDone, Note: note}, nil
 }
 
-// level is the effective autonomy level of the task's class. A state file
-// that cannot be read yields L0 (the most restrictive).
+func short12(s string) string {
+	if len(s) > 12 {
+		return s[:12]
+	}
+	return s
+}
+
+// level is the effective autonomy level of the task's class under the policy
+// currently loaded. A state file that cannot be read yields L0 (the most
+// restrictive).
 func (p *Provider) level(t store.Task) autonomy.Level {
 	lvl, _ := autonomy.Effective(p.cfg.Policy.Current(), t.Class)
 	return lvl
 }
 
-// decidePublish asks autonomy.Decide about every action the publisher will
-// run before it runs any. handled is true when the step is decided here
-// (failed, or parked for a human); false means every action may run.
-func (p *Provider) decidePublish(ctx context.Context, t store.Task) (out machine.Outcome, handled bool, err error) {
+// pubDecision is the result of decidePublish. handled means the step is
+// decided here (failed, parked, or an infrastructure error in err); otherwise
+// every planned action may run, under the policy with hash `hash` at `level`.
+type pubDecision struct {
+	out     machine.Outcome
+	err     error
+	handled bool
+	hash    string
+	level   autonomy.Level
+}
+
+// decidePublish re-reads the policy (an unloadable file is an infrastructure
+// error: never a fallback to the previously loaded, possibly looser policy)
+// and decides EVERY planned action before any runs: floor, autonomy level and
+// the publisher's allowlist. If any action would be refused or parked, the
+// whole task is decided here and nothing is published (no partial
+// publication). A policy that differs from the one recorded when the task
+// started parks the task for a human; the approval binds the new policy hash.
+func (p *Provider) decidePublish(ctx context.Context, t store.Task) pubDecision {
+	pol, err := p.cfg.Policy.Reload()
+	if err != nil {
+		return pubDecision{handled: true, err: fmt.Errorf("policy: %w", err)}
+	}
+	d := pubDecision{hash: pol.Hash()}
+	d.level, _ = autonomy.Effective(pol, t.Class)
 	verdict := rules.Category(t.Verdict)
 	if verdict != rules.CategoryOK {
-		out, err = failed(fmt.Sprintf("publishing refused: verdict is %q, not ok", t.Verdict))
-		return out, true, err
+		d.handled = true
+		d.out, d.err = failed(fmt.Sprintf("publishing refused: verdict is %q, not ok", t.Verdict))
+		return d
 	}
-	level := p.level(t)
 	pl := p.cfg.Publisher.(Planner)
-	for _, kind := range pl.Plan() {
-		switch autonomy.Decide(level, verdict, autonomy.Action(kind)) {
-		case autonomy.Allow:
-		case autonomy.Park:
-			if pl.Granted(t, kind) {
-				continue // a human approved exactly this action for this head
+	plan := pl.Plan()
+	// Pass 1: anything that must fail the task outright.
+	for _, kind := range plan {
+		ferr := policy.Floor(kind)
+		if ferr == nil && autonomy.Decide(d.level, verdict, autonomy.Action(kind)) != autonomy.Deny {
+			continue
+		}
+		if ferr != nil {
+			sum := approvals.PublishHash(t.ID, t.HeadSHA, "floor")
+			_ = approvals.New(p.st).Enqueue(ctx, t.ID, store.KindDestructiveBlocked, t.Base, t.HeadSHA, sum, ferr.Error())
+			p.incident(ctx, t, "floor denial: "+ferr.Error())
+		}
+		d.handled = true
+		d.out, d.err = failed(fmt.Sprintf("publishing denied: %s at level %s", kind, d.level))
+		return d
+	}
+	// Pass 2: anything that needs a human first.
+	park := func(hash, reason, note string) pubDecision {
+		d.handled = true
+		if qerr := approvals.New(p.st).Enqueue(ctx, t.ID, store.KindPublishOutsideAllowlist, t.Base, t.HeadSHA, hash, reason); qerr != nil {
+			d.err = qerr
+			return d
+		}
+		if autonomy.NotifyOnPark(d.level) {
+			p.notify(ctx, t, "task is waiting for approval: "+reason)
+		}
+		d.out = machine.Outcome{Next: machine.StateNeedsApproval, Note: note}
+		return d
+	}
+	if len(plan) > 0 && t.PolicyHash != d.hash {
+		pk := PolicyChangeKind(d.hash)
+		if !pl.Granted(t, pk) {
+			old := "none"
+			if t.PolicyHash != "" {
+				old = short12(t.PolicyHash)
 			}
-			hash := approvals.PublishHash(t.ID, t.HeadSHA, kind)
-			reason := fmt.Sprintf("%s: autonomy level %s needs a human approval", kind, level)
-			if qerr := approvals.New(p.st).Enqueue(ctx, t.ID, store.KindPublishOutsideAllowlist, t.Base, t.HeadSHA, hash, reason); qerr != nil {
-				return machine.Outcome{}, true, qerr
-			}
-			if autonomy.NotifyOnPark(level) {
-				p.notify(ctx, t, "task is waiting for approval: "+reason)
-			}
-			return machine.Outcome{Next: machine.StateNeedsApproval,
-				Note: fmt.Sprintf("publish_outside_allowlist: %s needs approval (level %s)", kind, level)}, true, nil
-		default: // Deny
-			if ferr := policy.Floor(kind); ferr != nil {
-				sum := approvals.PublishHash(t.ID, t.HeadSHA, "floor")
-				_ = approvals.New(p.st).Enqueue(ctx, t.ID, store.KindDestructiveBlocked, t.Base, t.HeadSHA, sum, ferr.Error())
-				p.incident(ctx, t, "floor denial: "+ferr.Error())
-			}
-			out, err = failed(fmt.Sprintf("publishing denied: %s at level %s", kind, level))
-			return out, true, err
+			reason := fmt.Sprintf("policy changed since the task started: %s -> %s", old, short12(d.hash))
+			return park(approvals.PublishHash(t.ID, t.HeadSHA, pk), reason, "publish_outside_allowlist: "+reason)
 		}
 	}
-	return machine.Outcome{}, false, nil
+	for _, kind := range plan {
+		if pl.Granted(t, kind) {
+			continue // a human approved exactly this action for this head
+		}
+		if autonomy.Decide(d.level, verdict, autonomy.Action(kind)) == autonomy.Park {
+			reason := fmt.Sprintf("%s: autonomy level %s needs a human approval", kind, d.level)
+			return park(approvals.PublishHash(t.ID, t.HeadSHA, kind), reason,
+				fmt.Sprintf("publish_outside_allowlist: %s needs approval (level %s)", kind, d.level))
+		}
+		if perr := pl.Permit(kind); perr != nil {
+			reason := fmt.Sprintf("%s: %s is not in the allowlist", kind, kind)
+			return park(approvals.PublishHash(t.ID, t.HeadSHA, kind), reason,
+				fmt.Sprintf("publish_outside_allowlist: %s needs approval (not in the allowlist)", kind))
+		}
+	}
+	return d
 }
 
 func (p *Provider) notify(ctx context.Context, t store.Task, msg string) {

@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,6 +24,7 @@ type planPub struct {
 	mu      sync.Mutex
 	kinds   []string
 	granted map[string]bool
+	deny    map[string]bool // kinds the "publisher" would not run unattended
 	err     error
 	calls   int
 }
@@ -35,6 +37,12 @@ func (p *planPub) Publish(context.Context, store.Task) error {
 }
 func (p *planPub) Plan() []string                      { return p.kinds }
 func (p *planPub) Granted(_ store.Task, k string) bool { return p.granted[k] }
+func (p *planPub) Permit(k string) error {
+	if p.deny[k] {
+		return errors.New("not in the allowlist")
+	}
+	return nil
+}
 
 type fakeNotifier struct{ msgs []string }
 

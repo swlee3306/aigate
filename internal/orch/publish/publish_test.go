@@ -175,13 +175,14 @@ func TestUnlistedActionGoesToApproval(t *testing.T) {
 	if len(gl.paths) != 0 {
 		t.Fatalf("GitLab was called: %v", gl.paths)
 	}
-	// Through Publish: push (listed) runs, then it parks at draft_pr.
+	// Through Publish: the plan parks at draft_pr BEFORE the listed push runs
+	// (no partial publication).
 	err = p.Publish(context.Background(), store.Task{ID: 7, Repo: fx.repo, Base: fx.base, HeadSHA: fx.head})
 	if !errors.Is(err, ErrNeedsApproval) {
 		t.Fatalf("Publish: %v", err)
 	}
-	if got := refs(t, fx.bare); !strings.Contains(got, "refs/heads/orch/7") {
-		t.Fatalf("push did not run: %q", got)
+	if got := refs(t, fx.bare); got != "" {
+		t.Fatalf("push ran although the plan cannot complete: %q", got)
 	}
 	if len(gl.paths) != 0 {
 		t.Fatal("GitLab was called")

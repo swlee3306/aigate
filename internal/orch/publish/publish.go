@@ -31,6 +31,7 @@ import (
 
 	"aigate/internal/approval"
 	"aigate/internal/gate"
+	"aigate/internal/ledger"
 	"aigate/internal/orch/approvals"
 	"aigate/internal/orch/policy"
 	"aigate/internal/orch/store"
@@ -71,6 +72,17 @@ type Action struct {
 	Base string // base commit of the task (binds a publish grant)
 	Head string // commit to publish (40 or 64 hex)
 	Ref  string // optional; if set it must equal refs/heads/orch/<task>
+	// PolicyHash is the hash of the policy that decided this action (recorded
+	// in the ledger; it does not influence what runs).
+	PolicyHash string
+}
+
+// Recorder appends events to the tamper-evident ledger. Publisher writes a
+// "publish_action" event BEFORE every action runs (an error stops the action,
+// so no action is ever unrecorded) and a "publish_result" event after it
+// (best effort: a failure there is ignored, the action already happened).
+type Recorder interface {
+	Record(typ string, payload map[string]any) error
 }
 
 // Notifier delivers a notification. It is a stub interface: Task 12 or later
@@ -103,6 +115,8 @@ type Config struct {
 	// Grants, when set, lets a human-approved action (publish_outside_allowlist)
 	// run once for the exact head it was approved for.
 	Grants approvals.Grants
+	// Ledger, when set, records every action (see Recorder).
+	Ledger Recorder
 	// HTTP is the client for the GitLab API (default: 30 s timeout, no redirects).
 	HTTP *http.Client
 	// Git is the git binary (default "git").
@@ -177,13 +191,67 @@ func (p *Publisher) Granted(t store.Task, kind string) bool {
 
 // Publish runs the configured actions for a passed task (steps.Publisher). It
 // returns a *NeedsApprovalError for the first action that may not run alone.
+// It refuses to start unless EVERY planned action passes the floor and the
+// allowlist (or is human-granted), so a plan is never published in part.
 func (p *Publisher) Publish(ctx context.Context, t store.Task) error {
-	for _, k := range p.plan {
-		if err := p.Do(ctx, Action{Kind: k, Task: t.ID, Repo: t.Repo, Base: t.Base, Head: t.HeadSHA}); err != nil {
+	acts := make([]Action, len(p.plan))
+	for i, k := range p.plan {
+		acts[i] = Action{Kind: k, Task: t.ID, Repo: t.Repo, Base: t.Base, Head: t.HeadSHA, PolicyHash: t.PolicyHash}
+		if err := p.check(acts[i]); err != nil {
+			return err
+		}
+	}
+	for _, a := range acts {
+		if err := p.Do(ctx, a); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (p *Publisher) allowlist() policy.Allowlist {
+	if p.cfg.AllowSource != nil {
+		return p.cfg.AllowSource()
+	}
+	return p.cfg.Allow
+}
+
+// Permit reports whether kind passes the floor and the allowlist as the
+// publisher enforces them (nil: it would run without a human).
+func (p *Publisher) Permit(kind string) error {
+	if err := policy.Floor(kind); err != nil {
+		return err
+	}
+	return p.allowlist().Permit(kind)
+}
+
+// check is the gate in front of every action: floor, then allowlist unless a
+// human granted exactly this action for this head.
+func (p *Publisher) check(a Action) error {
+	if err := policy.Floor(a.Kind); err != nil {
+		return err
+	}
+	if a.Task <= 0 {
+		return errors.New("publish: action needs a task id")
+	}
+	if err := p.allowlist().Permit(a.Kind); err != nil {
+		if !p.humanApproved(a) {
+			return &NeedsApprovalError{Action: a, Hash: approvals.PublishHash(a.Task, a.Head, a.Kind),
+				Reason: fmt.Sprintf("%s is not in the allowlist", a.Kind)}
+		}
+	}
+	return nil
+}
+
+func (p *Publisher) target(kind string) string {
+	switch kind {
+	case KindPushBranch:
+		return p.cfg.Remote
+	case KindDraftPR:
+		g := p.cfg.GitLab
+		return strings.TrimRight(g.BaseURL, "/") + " project=" + g.Project + " target=" + g.TargetBranch
+	}
+	return ""
 }
 
 // Do runs a if and only if the floor allows its kind and the allowlist lists it
@@ -191,22 +259,32 @@ func (p *Publisher) Publish(ctx context.Context, t store.Task) error {
 // returns an error wrapping policy.ErrFloor; an unlisted action returns a
 // *NeedsApprovalError.
 func (p *Publisher) Do(ctx context.Context, a Action) error {
-	if err := policy.Floor(a.Kind); err != nil {
+	if err := p.check(a); err != nil {
 		return err
 	}
-	if a.Task <= 0 {
-		return errors.New("publish: action needs a task id")
-	}
-	allow := p.cfg.Allow
-	if p.cfg.AllowSource != nil {
-		allow = p.cfg.AllowSource()
-	}
-	if err := allow.Permit(a.Kind); err != nil {
-		if !p.humanApproved(a) {
-			return &NeedsApprovalError{Action: a, Hash: approvals.PublishHash(a.Task, a.Head, a.Kind),
-				Reason: fmt.Sprintf("%s is not in the allowlist", a.Kind)}
+	if p.cfg.Ledger != nil {
+		err := p.cfg.Ledger.Record("publish_action", map[string]any{"kind": a.Kind, "task": int(a.Task),
+			"head": a.Head, "target": p.target(a.Kind), "policy_hash": a.PolicyHash})
+		if err != nil {
+			return fmt.Errorf("publish: cannot record the action in the ledger, not running it: %w", err)
 		}
 	}
+	err := p.run(ctx, a)
+	if p.cfg.Ledger != nil {
+		res := map[string]any{"kind": a.Kind, "task": int(a.Task), "head": a.Head, "ok": err == nil}
+		if err != nil {
+			e := err.Error()
+			if len(e) > 300 {
+				e = e[:300]
+			}
+			res["error"] = strings.ToValidUTF8(e, "")
+		}
+		_ = p.cfg.Ledger.Record("publish_result", res)
+	}
+	return err
+}
+
+func (p *Publisher) run(ctx context.Context, a Action) error {
 	switch a.Kind {
 	case KindPushBranch:
 		return p.push(ctx, a)
@@ -427,4 +505,14 @@ func (p *Publisher) draftPR(ctx context.Context, a Action) error {
 		return nil
 	}
 	return fmt.Errorf("publish: GitLab answered HTTP %d", resp.StatusCode)
+}
+
+// LedgerRecorder appends events to the ledger file at path for repo
+// policy.OrchRepo (the orchestrator's own ledger).
+func LedgerRecorder(path string) Recorder { return fileRecorder(path) }
+
+type fileRecorder string
+
+func (f fileRecorder) Record(typ string, payload map[string]any) error {
+	return ledger.Append(string(f), typ, policy.OrchRepo, payload, time.Now().UTC())
 }
