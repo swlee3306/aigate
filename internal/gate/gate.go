@@ -305,10 +305,26 @@ func Run(ctx context.Context, o Options) (report.Report, error) {
 		"report": short(head), "category": string(r.Category), "base": r.Base, "head": head,
 		"task_class": tc, "initial": r.Initial, "checks": counts,
 		"config_hash": r.ConfigHash, "report_sha256": hex.EncodeToString(sum[:]),
+		"rules": ruleNames(r.Violations),
 	}, time.Now().UTC()); err != nil {
 		return report.Report{}, fmt.Errorf("ledger (report %s was saved but is not bound; `aigate check` will reject it): %w", path, err)
 	}
 	return r, nil
+}
+
+// ruleNames returns the sorted unique rule names of vs (never nil: an ok
+// run records an empty list). Details and paths are left out on purpose.
+func ruleNames(vs []rules.Violation) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, v := range vs {
+		if !seen[v.Rule] {
+			seen[v.Rule] = true
+			out = append(out, v.Rule)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func runInitial(ctx context.Context, top, head string, dirty bool, r *report.Report, counts map[string]any) error {

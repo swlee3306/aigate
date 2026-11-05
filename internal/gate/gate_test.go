@@ -1121,3 +1121,43 @@ func TestNoSilentInitialMode(t *testing.T) {
 		t.Fatal("ledger written")
 	}
 }
+
+// ITEM 4 (fix wave 3): run_result lists the sorted unique violation rule
+// names (no details, no paths) so `aigate stats` can count runs that needed
+// approval; an ok run lists none.
+func TestLedgerRunResultRules(t *testing.T) {
+	e := setup(t)
+	write(t, e.repo, ".aigate.yml", checkYAML(e.log, "", "unit"))
+	write(t, e.repo, "unit.flag", "")
+	write(t, e.repo, "tests/t.txt", "a\n")
+	base := commit(t, e.repo, "base")
+	commit(t, e.repo, "head ok")
+	if _, err := Run(context.Background(), e.opts(base)); err != nil {
+		t.Fatal(err)
+	}
+	write(t, e.repo, "tests/t.txt", "b\n")
+	if err := os.Remove(filepath.Join(e.repo, "unit.flag")); err != nil {
+		t.Fatal(err)
+	}
+	commit(t, e.repo, "head bad")
+	if _, err := Run(context.Background(), e.opts(base)); err != nil {
+		t.Fatal(err)
+	}
+	id, _, _ := RepoID(e.repo)
+	evs, err := ledger.Events(LedgerPath(e.home, id))
+	if err != nil || len(evs) != 2 {
+		t.Fatalf("events %v %v", evs, err)
+	}
+	if got, ok := evs[0].Payload["rules"].([]any); !ok || len(got) != 0 {
+		t.Fatalf("ok run rules = %#v", evs[0].Payload["rules"])
+	}
+	got := fmt.Sprint(evs[1].Payload["rules"])
+	if got != "[protected_modified regression]" {
+		t.Fatalf("rules = %s (payload %+v)", got, evs[1].Payload)
+	}
+	for _, k := range []string{"report", "category", "base", "head", "task_class", "initial", "checks", "config_hash", "report_sha256"} {
+		if _, ok := evs[1].Payload[k]; !ok {
+			t.Errorf("payload lost %q", k)
+		}
+	}
+}
