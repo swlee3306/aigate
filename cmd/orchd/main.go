@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"aigate/internal/orch/api"
@@ -76,6 +77,9 @@ func run(args []string) int {
 			return 2
 		}
 		vf.live = live
+		if err := checkStateDirWritable(live.Current().StatePath()); err != nil {
+			fmt.Fprintln(os.Stderr, "orchd: warning:", err)
+		}
 	}
 	if vf.enabled() {
 		// Refuse before touching the database or the socket.
@@ -188,4 +192,17 @@ func sameSet(a, b []string) bool {
 		}
 	}
 	return len(a) == len(b)
+}
+
+// checkStateDirWritable warns about a policy directory orchd cannot write to:
+// automatic demotions are saved next to the policy file (policy.state.json), so
+// there they would fail (the task then stops with an infrastructure error).
+func checkStateDirWritable(statePath string) error {
+	dir := filepath.Dir(statePath)
+	f, err := os.CreateTemp(dir, ".orchd-write-check-*")
+	if err != nil {
+		return fmt.Errorf("the policy state directory %s is not writable (%v): an automatic demotion could not be saved", dir, err)
+	}
+	f.Close()
+	return os.Remove(f.Name())
 }

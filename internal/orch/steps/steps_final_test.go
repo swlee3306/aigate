@@ -13,6 +13,7 @@ import (
 	"aigate/internal/orch/approvals"
 	"aigate/internal/orch/machine"
 	"aigate/internal/orch/policy"
+	"aigate/internal/orch/policy/autonomy"
 	"aigate/internal/orch/publish"
 	"aigate/internal/orch/store"
 )
@@ -220,5 +221,42 @@ func TestLedgerHasTransitionsAndPublishActions(t *testing.T) {
 	}
 	if _, err := ledger.Verify(lp); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A demotion that cannot be saved (policy dir read-only) is never dropped: the
+// step reports an infrastructure error and an autonomy_demote_failed event is
+// written to the orchestrator ledger.
+func TestFailedDemotionIsNotDropped(t *testing.T) {
+	pub := &planPub{kinds: []string{"delete_branch"}}
+	e, live, path := polEnv(t, "L3", pub, nil)
+	a := passTask(t, e)
+	dir := filepath.Dir(path)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0o700)
+	if f, err := os.CreateTemp(dir, "probe"); err == nil { // running as root: cannot make it read-only
+		f.Close()
+		os.Remove(f.Name())
+		t.Skip("directory is writable despite chmod 0500")
+	}
+	out, err := e.p.publish(context.Background(), a)
+	if err == nil || !strings.Contains(err.Error(), "cannot persist the demotion") || out.Next == machine.StateDone {
+		t.Fatalf("out=%+v err=%v", out, err)
+	}
+	if l, _ := autonomy.Effective(live.Current(), "docs"); l != autonomy.L3 {
+		t.Fatalf("level %s", l)
+	}
+	evs, lerr := ledger.Events(policy.OrchLedgerPath(e.p.cfg.GateHome))
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	found := false
+	for _, ev := range evs {
+		found = found || ev.Type == "autonomy_demote_failed" && ev.Payload["class"] == "docs" && ev.Payload["error"] != ""
+	}
+	if !found {
+		t.Fatalf("no autonomy_demote_failed event: %+v", evs)
 	}
 }

@@ -223,7 +223,11 @@ func TestPublisherFloorErrorAlsoDemotes(t *testing.T) {
 	}
 }
 
-func TestRegressionAfterPublishDemotes(t *testing.T) {
+// This calls verify directly on a task that already reached done. The state
+// machine never does that (done is terminal), so it checks the demotion logic of
+// verify only, not a path reachable in production. See "Known limits" in
+// docs/09-RESULTS-orchestrator.md.
+func TestVerifyDirectlyOnDoneTaskDemotes(t *testing.T) {
 	pub := &planPub{kinds: []string{"push_branch"}}
 	e, live, _ := polEnv(t, "L2", pub, nil)
 	tk := e.drain()

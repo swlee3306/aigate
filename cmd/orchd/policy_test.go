@@ -4,6 +4,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -142,5 +143,23 @@ func TestProviderBuildsWithPolicyAndPublisher(t *testing.T) {
 	vf2.live = live
 	if _, err := vf2.provider(st, cfg.DB); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStateDirWritableCheck(t *testing.T) {
+	dir := t.TempDir()
+	if err := checkStateDirWritable(filepath.Join(dir, "policy.state.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0o700)
+	if f, err := os.CreateTemp(dir, "x"); err == nil {
+		f.Close()
+		t.Skip("running as root")
+	}
+	if err := checkStateDirWritable(filepath.Join(dir, "policy.state.json")); err == nil || !strings.Contains(err.Error(), "not writable") {
+		t.Fatalf("err %v", err)
 	}
 }

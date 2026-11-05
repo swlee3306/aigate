@@ -336,7 +336,9 @@ func (p *Provider) verify(ctx context.Context, t store.Task) (machine.Outcome, e
 		return machine.Outcome{}, err
 	}
 	if r.Category != rules.CategoryOK && p.wasPublished(ctx, t) {
-		p.incident(ctx, t, fmt.Sprintf("verdict %s after the task had been published", r.Category))
+		if err := p.incident(ctx, t, fmt.Sprintf("verdict %s after the task had been published", r.Category)); err != nil {
+			return machine.Outcome{}, err
+		}
 	}
 	switch r.Category {
 	case rules.CategoryOK:
@@ -470,7 +472,9 @@ func (p *Provider) publish(ctx context.Context, t store.Task) (machine.Outcome, 
 		// Record only: nothing can approve it. The task fails.
 		sum := approvals.PublishHash(t.ID, t.HeadSHA, "floor")
 		_ = approvals.New(p.st).Enqueue(ctx, t.ID, store.KindDestructiveBlocked, t.Base, t.HeadSHA, sum, err.Error())
-		p.incident(ctx, t, "floor denial: "+err.Error())
+		if ierr := p.incident(ctx, t, "floor denial: "+err.Error()); ierr != nil {
+			return machine.Outcome{}, ierr
+		}
 		return failed("publishing blocked by the hard floor: " + err.Error())
 	case err != nil:
 		return machine.Outcome{}, fmt.Errorf("publish: %w", err)
@@ -545,7 +549,10 @@ func (p *Provider) decidePublish(ctx context.Context, t store.Task) pubDecision 
 		if ferr != nil {
 			sum := approvals.PublishHash(t.ID, t.HeadSHA, "floor")
 			_ = approvals.New(p.st).Enqueue(ctx, t.ID, store.KindDestructiveBlocked, t.Base, t.HeadSHA, sum, ferr.Error())
-			p.incident(ctx, t, "floor denial: "+ferr.Error())
+			if ierr := p.incident(ctx, t, "floor denial: "+ferr.Error()); ierr != nil {
+				d.handled, d.err = true, ierr
+				return d
+			}
 		}
 		d.handled = true
 		d.out, d.err = failed(fmt.Sprintf("publishing denied: %s at level %s", kind, d.level))
@@ -614,21 +621,42 @@ func (p *Provider) wasPublished(ctx context.Context, t store.Task) bool {
 }
 
 // incident lowers the task class by one level (see autonomy.Demote) and
-// writes the ledger event into the task repository's ledger. It never fails
-// the step; the state file is the authority for what was demoted.
-func (p *Provider) incident(ctx context.Context, t store.Task, reason string) {
+// writes the ledger event into the task repository's ledger. A demotion that
+// cannot be persisted is never dropped: an autonomy_demote_failed event goes to
+// the orchestrator ledger (best effort) and the error is returned, which the
+// step reports as an infrastructure error (retry, then failed). If the state
+// was saved but only the ledger append failed, the class IS demoted (a retry
+// would demote again), so that case is logged and not returned.
+func (p *Provider) incident(ctx context.Context, t store.Task, reason string) error {
 	if p.cfg.Policy == nil {
-		return
+		return nil
 	}
 	home, err := gate.Home(p.cfg.GateHome)
 	if err != nil {
-		return
+		return fmt.Errorf("demotion of class %q not possible: %w", t.Class, err)
 	}
 	repoID := policy.OrchRepo
 	ledgerPath := policy.OrchLedgerPath(home)
 	if id, _, err := gate.RepoID(t.Repo); err == nil {
 		repoID, ledgerPath = id, gate.LedgerPath(home, id)
 	}
-	_, _, _ = autonomy.Demote(p.cfg.Policy.Current(), autonomy.Incident{Class: t.Class, Task: t.ID, Reason: reason},
+	from, to, err := autonomy.Demote(p.cfg.Policy.Current(), autonomy.Incident{Class: t.Class, Task: t.ID, Reason: reason},
 		ledgerPath, repoID, time.Now())
+	if err == nil {
+		return nil
+	}
+	text := strings.ToValidUTF8(err.Error(), "")
+	if len(text) > 300 {
+		text = text[:300]
+	}
+	if lerr := ledger.Append(policy.OrchLedgerPath(home), "autonomy_demote_failed", policy.OrchRepo, map[string]any{
+		"class": t.Class, "task": int(t.ID), "reason": reason, "error": text,
+	}, time.Now().UTC()); lerr != nil {
+		log.Printf("orchd: autonomy_demote_failed for class %q not recorded: %v", t.Class, lerr)
+	}
+	if from != to { // saved, only the ledger append failed
+		log.Printf("orchd: class %q demoted but the ledger event failed: %v", t.Class, err)
+		return nil
+	}
+	return fmt.Errorf("cannot persist the demotion of class %q (%s): %w", t.Class, reason, err)
 }
