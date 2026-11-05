@@ -96,7 +96,7 @@ func reviewAdversarial() []Scenario {
 func TestReviewSelfCompareIsGateError(t *testing.T) {
 	w := NewWorkspace(t, "", "")
 	w.Head = w.Base
-	_, err := gate.Run(context.Background(), gate.Options{Repo: w.Dir, Base: "HEAD", HomeDir: w.Home})
+	_, err := gate.Run(context.Background(), gate.Options{Repo: w.Dir, Base: "HEAD", HomeDir: w.Home, Executor: w.Executor()})
 	got := "gate_error"
 	if err == nil {
 		got = "no error"
@@ -151,7 +151,7 @@ func TestReviewCheckRejects(t *testing.T) {
 		{"adv/check_initial_report", func(t *testing.T) []string {
 			w := NewWorkspace(t, "", "")
 			w.Head = w.Base
-			r, err := gate.Run(context.Background(), gate.Options{Repo: w.Dir, Initial: true, HomeDir: w.Home})
+			r, err := gate.Run(context.Background(), gate.Options{Repo: w.Dir, Initial: true, HomeDir: w.Home, Executor: w.Executor()})
 			if err != nil || !r.Initial || r.Category != rules.CategoryOK {
 				t.Fatalf("initial run: %v %+v", err, r)
 			}

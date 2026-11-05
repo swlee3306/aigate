@@ -36,7 +36,11 @@ type Config struct {
 	DefaultTimeout time.Duration
 	// SSHBin overrides the ssh binary; empty means $AIGATE_SSH_BIN, then "ssh".
 	SSHBin string
-	Limits Limits
+	// JumpHost (user@host, optional) reaches Host through that machine, for a
+	// caller that cannot connect directly. It is only ever turned into the
+	// hardened ProxyCommand of jumpProxy; there is no other proxy option.
+	JumpHost string
+	Limits   Limits
 }
 
 // SSH implements gate.Executor by running checks on a VM over ssh.
@@ -48,6 +52,7 @@ type SSH struct {
 var (
 	hostRE   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]*$`)
 	userRE   = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*$`)
+	jumpRE   = regexp.MustCompile(`^([A-Za-z0-9_][A-Za-z0-9._-]*)@([A-Za-z0-9][A-Za-z0-9._:-]*)$`)
 	envRE    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
 	junitRef = regexp.MustCompile(`\$\{AIGATE_JUNIT\}|\$AIGATE_JUNIT\b`)
 )
@@ -64,6 +69,9 @@ func NewSSH(cfg Config) (*SSH, error) {
 		if p == "" || strings.ContainsAny(p, " \t\n\"'\\%") || strings.HasPrefix(p, "-") {
 			return nil, fmt.Errorf("remote: invalid %s path %q", name, p)
 		}
+	}
+	if cfg.JumpHost != "" && !jumpRE.MatchString(cfg.JumpHost) {
+		return nil, fmt.Errorf("remote: invalid jump host %q (want user@host)", cfg.JumpHost)
 	}
 	if cfg.WorkDir == "" {
 		cfg.WorkDir = "/tmp"
@@ -90,7 +98,38 @@ func NewSSH(cfg Config) (*SSH, error) {
 	if bin == "" {
 		bin = "ssh"
 	}
+	if cfg.JumpHost != "" && strings.ContainsAny(bin, " \t\n\"'\\%") {
+		return nil, fmt.Errorf("remote: ssh binary %q cannot be used in a ProxyCommand", bin)
+	}
 	return &SSH{cfg: cfg, bin: bin}, nil
+}
+
+// jumpProxy is the ProxyCommand reaching the VM through cfg.JumpHost: the same
+// ssh binary with the same hardening as the main connection, forwarding stdio
+// to the VM with -W. It is built from fixed words and values NewSSH validated
+// (no whitespace, quotes or %), so ssh's shell splitting of it is safe.
+func (e *SSH) jumpProxy() string {
+	secs := int((e.cfg.ConnectTimeout + time.Second - 1) / time.Second)
+	m := jumpRE.FindStringSubmatch(e.cfg.JumpHost)
+	return strings.Join([]string{e.bin,
+		"-F", "/dev/null", "-T",
+		"-o", "BatchMode=yes",
+		"-o", "StrictHostKeyChecking=yes",
+		"-o", "UserKnownHostsFile=" + e.cfg.KnownHosts,
+		"-o", "GlobalKnownHostsFile=/dev/null",
+		"-o", "UpdateHostKeys=no",
+		"-o", "ConnectTimeout=" + strconv.Itoa(secs),
+		"-o", "IdentitiesOnly=yes",
+		"-o", "IdentityAgent=none",
+		"-i", e.cfg.KeyPath,
+		"-o", "ForwardAgent=no",
+		"-o", "ForwardX11=no",
+		"-o", "PermitLocalCommand=no",
+		"-o", "LogLevel=ERROR",
+		"-l", m[1],
+		"-W", "%h:%p",
+		m[2],
+	}, " ")
 }
 
 // sshArgs is every ssh option, ending with the target host. Host keys are
@@ -99,14 +138,18 @@ func NewSSH(cfg Config) (*SSH, error) {
 // forwarding are off and ~/.ssh/config is not read.
 func (e *SSH) sshArgs() []string {
 	secs := int((e.cfg.ConnectTimeout + time.Second - 1) / time.Second)
-	return []string{
+	var proxy []string
+	if e.cfg.JumpHost != "" {
+		proxy = []string{"-o", "ProxyCommand=" + e.jumpProxy()}
+	}
+	return append(proxy,
 		"-F", "/dev/null", "-T",
 		"-o", "BatchMode=yes",
 		"-o", "StrictHostKeyChecking=yes",
-		"-o", "UserKnownHostsFile=" + e.cfg.KnownHosts,
+		"-o", "UserKnownHostsFile="+e.cfg.KnownHosts,
 		"-o", "GlobalKnownHostsFile=/dev/null",
 		"-o", "UpdateHostKeys=no",
-		"-o", "ConnectTimeout=" + strconv.Itoa(secs),
+		"-o", "ConnectTimeout="+strconv.Itoa(secs),
 		"-o", "ServerAliveInterval=15",
 		"-o", "ServerAliveCountMax=3",
 		"-o", "IdentitiesOnly=yes",
@@ -119,7 +162,7 @@ func (e *SSH) sshArgs() []string {
 		"-o", "LogLevel=ERROR",
 		"-l", e.cfg.User,
 		e.cfg.Host,
-	}
+	)
 }
 
 // shq is the only place arguments are escaped for the remote shell.

@@ -595,3 +595,75 @@ func TestSuccessivePreparesKeepEarlierCommits(t *testing.T) {
 		}
 	}
 }
+
+func TestJumpHostBuildsHardenedProxy(t *testing.T) {
+	f := newFixture(t, func(c *Config) { c.JumpHost = "jump@orch1" })
+	args := f.ex.sshArgs()
+	var proxy string
+	for i, a := range args {
+		if v, ok := strings.CutPrefix(a, "ProxyCommand="); ok && args[i-1] == "-o" {
+			if proxy != "" {
+				t.Fatalf("two ProxyCommand options: %v", args)
+			}
+			proxy = v
+		}
+	}
+	if proxy == "" {
+		t.Fatalf("no ProxyCommand in %v", args)
+	}
+	words := strings.Fields(proxy)
+	if words[0] != f.ex.bin {
+		t.Fatalf("proxy runs %q, want the ssh binary %q", words[0], f.ex.bin)
+	}
+	have := strings.Join(words[1:], " ")
+	for _, want := range []string{
+		"-F /dev/null", "-o BatchMode=yes", "-o StrictHostKeyChecking=yes",
+		"-o UserKnownHostsFile=" + f.cfg.KnownHosts, "-o GlobalKnownHostsFile=/dev/null",
+		"-o IdentitiesOnly=yes", "-o IdentityAgent=none", "-i " + f.cfg.KeyPath,
+		"-o ForwardAgent=no", "-l jump", "-W %h:%p",
+	} {
+		if !strings.Contains(have, want) {
+			t.Errorf("proxy lacks %q: %s", want, proxy)
+		}
+	}
+	if !strings.HasSuffix(proxy, " -W %h:%p orch1") {
+		t.Errorf("proxy must end with -W %%h:%%p and the jump host: %s", proxy)
+	}
+	if strings.Contains(have, "StrictHostKeyChecking=no") || strings.Contains(have, "ProxyCommand") {
+		t.Errorf("proxy relaxes or nests: %s", proxy)
+	}
+	// without a jump host there is no proxy at all
+	for _, a := range newFixture(t).ex.sshArgs() {
+		if strings.HasPrefix(a, "Proxy") {
+			t.Errorf("unexpected proxy option %q", a)
+		}
+	}
+	// the target still comes last, after the user
+	if n := len(args); args[n-1] != "vm1" || args[n-2] != "ci" {
+		t.Errorf("target not last: %v", args)
+	}
+}
+
+func TestJumpHostRejectsOptionInjection(t *testing.T) {
+	good := newFixture(t).cfg
+	for _, j := range []string{
+		"-oProxyCommand=x@y", "a b@c", "a@b c", "@host", "user@", "user", "user@-oProxyCommand=x",
+		"a@b;touch x", "a@b$(id)", "a@b'c", "a@b\"c", "a@b%h", "a\n@b", "a@b\nc", "-u@host", "u@host:22 -v",
+	} {
+		c := good
+		c.JumpHost = j
+		if _, err := NewSSH(c); err == nil {
+			t.Errorf("jump host %q accepted", j)
+		}
+	}
+	c := good
+	c.JumpHost = "ops@10.0.0.5"
+	if _, err := NewSSH(c); err != nil {
+		t.Errorf("valid jump host rejected: %v", err)
+	}
+	// a binary path that ssh's shell would split cannot carry a proxy
+	c.SSHBin = "/tmp/my ssh"
+	if _, err := NewSSH(c); err == nil {
+		t.Error("ssh binary with a space accepted with a jump host")
+	}
+}

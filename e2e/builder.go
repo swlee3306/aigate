@@ -96,6 +96,8 @@ type Workspace struct {
 	T          *testing.T
 	Dir, Home  string
 	Base, Head string
+	ex         gate.Executor
+	exInit     bool
 }
 
 // NewWorkspace creates the repo and commits the base layout (all 9 tests pass).
@@ -295,7 +297,7 @@ type Scenario struct {
 func (w *Workspace) run() (report.Report, float64) {
 	w.T.Helper()
 	t0 := time.Now()
-	r, err := gate.Run(context.Background(), gate.Options{Repo: w.Dir, Base: w.Base, Head: w.Head, HomeDir: w.Home})
+	r, err := gate.Run(context.Background(), gate.Options{Repo: w.Dir, Base: w.Base, Head: w.Head, HomeDir: w.Home, Executor: w.Executor()})
 	sec := time.Since(t0).Seconds()
 	if err != nil {
 		w.T.Fatalf("gate.Run error: %v", err)
