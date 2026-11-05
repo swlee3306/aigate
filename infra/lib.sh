@@ -6,7 +6,6 @@
 APPLY=${APPLY:-0}
 OS_HOST=${AIGATE_OS_HOST:-openstack-host}
 OS_CLOUD=exporter-internal
-OS_STDIN_FILE=${OS_STDIN_FILE:-}
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -41,16 +40,20 @@ _is_read() {
   return 1
 }
 
-# os: planned write. Prints the command; executes it only when APPLY=1.
-# Optional OS_STDIN_FILE is piped to the remote command's stdin (user-data, public key).
-os() {
+# os: planned write. Prints the command; executes it only when APPLY=1. stdin is /dev/null.
+# os_in FILE args...: same, but pipes FILE to the remote command's stdin (public key, user-data).
+# stdin is a per-call argument (never a global/env), so it cannot leak into other commands.
+os() { _os "" "$@"; }
+os_in() { local f=$1; shift; _os "$f" "$@"; }
+_os() {
+  local stdin_file=$1; shift
   _allowed_write "$@" || die "refused: 'openstack $*' is not in the allow-list"
   local cmd; cmd=$(remote_cmd "$@")
   local redir=""
-  [ -n "$OS_STDIN_FILE" ] && redir=" < $OS_STDIN_FILE"
+  [ -n "$stdin_file" ] && redir=" < $stdin_file"
   if [ "$APPLY" = 1 ]; then
     echo "    + ssh $OS_HOST $cmd$redir"
-    ssh -o BatchMode=yes "$OS_HOST" "$cmd" < "${OS_STDIN_FILE:-/dev/null}" || die "command failed: openstack $1 $2 ..."
+    ssh -o BatchMode=yes "$OS_HOST" "$cmd" < "${stdin_file:-/dev/null}" || die "command failed: openstack $1 $2 ..."
   else
     echo "    \$ ssh $OS_HOST $cmd$redir   # dry-run, not executed"
   fi

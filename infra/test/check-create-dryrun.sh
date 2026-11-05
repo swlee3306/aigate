@@ -13,7 +13,7 @@ ROLEKEY=$(awk '{print $2}' "$AIGATE_KEY.pub"); ADMINKEY=$(awk '{print $2}' "$AIG
 MD5=$(ssh-keygen -E md5 -lf "$AIGATE_ADMIN_KEY.pub" | awk '{print $2}' | sed 's/^MD5://')
 run() { # name fixturedir [args...]  -> $T/out_name, $T/log_name, rc in $rc  (stdin from caller)
   local n=$1 fx=$2; shift 2
-  FIXTURE_DIR="$fx" SHIM_LOG="$T/log_$n" bash "$INFRA/create-vms.sh" "$@" > "$T/out_$n" 2>&1; rc=$?
+  FIXTURE_DIR="$fx" SHIM_LOG="$T/log_$n" ${RUNSH:-bash} "$INFRA/create-vms.sh" "$@" > "$T/out_$n" 2>&1; rc=$?
 }
 mkfx() { rm -rf "$T/fx_$1"; cp -R "$2" "$T/fx_$1"; }
 cp -R "$D/fixtures/all" "$T/fx_all"; printf '%s\n' "$MD5" > "$T/fx_all/keypair_show.txt"
@@ -175,5 +175,25 @@ for role in orchestrator agent test; do
     assert "$role: rendered YAML valid, key under role user" "ruby -ryaml -e 'd=YAML.safe_load(File.read(ARGV[0])); u=d[\"users\"][1]; abort unless d[\"users\"][0]==\"default\" && u[\"ssh_authorized_keys\"].size==1 && u[\"ssh_authorized_keys\"][0].include?(ARGV[1])' '$T/ud_$role' '$ROLEKEY'"
   else echo "  skip - ruby yaml unavailable"; fi
 done
+
+echo "[stdin must reach only keypair create and server create]"
+assert "dry-run: only keypair/server create carry a redirect" "! grep -F ' < ' '$T/out1' | grep -vE 'keypair create|server create' | grep -q ."
+assert "dry-run: exactly 4 redirects (1 keypair + 3 servers)" "[ \$(grep -cF ' < ' '$T/out1') -eq 4 ]"
+SH_OUT="$T/out_sh"; FIXTURE_DIR="$D/fixtures/empty" SHIM_LOG="$T/log_sh" sh "$INFRA/create-vms.sh" > "$SH_OUT" 2>&1
+assert "same under 'sh' (posix mode): FIP line has no redirect" "grep 'floating ip create' '$SH_OUT' | grep -qvF ' < '"
+RUNSH=sh
+mkfx st1 "$D/fixtures/empty"; mkfx st2 "$D/fixtures/empty"
+printf 'apply aigate\n' | run st1 "$T/fx_st1" --apply --only flavors
+printf 'apply aigate\n' | run st2 "$T/fx_st1" --apply --only network
+printf 'apply aigate\n' | run st3 "$T/fx_st1" --apply --only keypair
+printf 'apply aigate\n' | run st4 "$T/fx_st1" --apply --only orchestrator
+mkfx st5 "$T/fx_fip"
+printf 'apply aigate\n' | run st5 "$T/fx_st5" --apply --only fip
+bytes() { cat "$T"/log_st[1-5].stdin | grep -F "$1" | awk '{print $1}' | sort -u | tr '\n' ' '; }
+for k in 'flavor create' 'network create' 'subnet create' 'router add' 'volume create' 'floating ip create'; do
+  assert "apply: '$k' got empty stdin" "[ \"\$(bytes '$k')\" = '0 ' ]"
+done
+assert "apply: keypair create got the key on stdin" "[ \"\$(bytes 'keypair create' | tr -d ' ')\" -gt 0 ]"
+assert "apply: server create got user-data on stdin" "[ \"\$(bytes 'server create' | tr -d ' ')\" -gt 0 ]"
 
 [ $fails -eq 0 ] && echo "check-create-dryrun: PASS" || { echo "check-create-dryrun: $fails FAILED"; exit 1; }

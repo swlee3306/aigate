@@ -3,6 +3,7 @@
 : "${SHIM_LOG:?SHIM_LOG required}"
 : "${FIXTURE_DIR:?FIXTURE_DIR required}"
 cmd="${*: -1}"
+printf '%s %s\n' "$(cat | wc -c | tr -d ' ')" "$cmd" >> "$SHIM_LOG.stdin"
 printf '%s\n' "$cmd" >> "$SHIM_LOG"
 prefix='openstack --os-cloud exporter-internal '
 case "$cmd" in "$prefix"*) ;; *) exit 0 ;; esac

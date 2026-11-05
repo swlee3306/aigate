@@ -72,7 +72,7 @@ stage_keypair() {
     return
   fi
   step "CREATE keypair $KEYPAIR"
-  OS_STDIN_FILE=$ADMIN_PUB os keypair create --public-key /dev/stdin "$KEYPAIR"
+  os_in "$ADMIN_PUB" keypair create --public-key /dev/stdin "$KEYPAIR"
 }
 
 stage_flavors() {
@@ -144,7 +144,7 @@ stage_server() {
   [ -s "$ud" ] || die "rendered user-data for $r is empty"
   nid=$(net_id) || die "cannot resolve network id"
   wait_volume "$vm-root"
-  OS_STDIN_FILE=$ud os server create --flavor "$(role_flavor "$r")" --volume "$vm-root" \
+  os_in "$ud" server create --flavor "$(role_flavor "$r")" --volume "$vm-root" \
     --nic "net-id=$nid,v4-fixed-ip=$(role_ip "$r")" --key-name "$KEYPAIR" \
     --user-data /dev/stdin --wait -f value -c id -c status "$vm"
   [ "$APPLY" = 1 ] && require_active "$vm"
