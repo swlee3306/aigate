@@ -26,8 +26,12 @@ const usage = `사용법: orch [--socket PATH] [--json] <명령>
   list                                                              작업 목록
   show ID                                                           작업 상세
   cancel ID                                                         작업 취소
+  approvals                                                         승인 대기 목록
+  approve ID                                                        승인(사람이 터미널에서 직접, TTY 필요)
+  reverify ID                                                       이미 승인한 항목의 재검증 요청(승인 기록이 있어야 함)
 
-소켓: --socket 또는 ORCHD_SOCKET (기본 ` + defaultSocket + `)`
+소켓: --socket 또는 ORCHD_SOCKET (기본 ` + defaultSocket + `)
+승인 기록 위치: --gate-home 또는 ORCH_GATE_HOME (orchd의 --gate-home과 같아야 함)`
 
 type client struct {
 	hc *http.Client
@@ -85,6 +89,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(io.Discard)
 	sock := fs.String("socket", envOr("ORCHD_SOCKET", defaultSocket), "")
 	asJSON := fs.Bool("json", false, "")
+	gateHomeFlag := fs.String("gate-home", "", "")
 	if err := fs.Parse(args); err != nil || fs.NArg() == 0 {
 		fmt.Fprintln(stderr, usage)
 		return 2
@@ -190,6 +195,36 @@ func run(args []string, stdout, stderr io.Writer) int {
 			}
 			fmt.Fprintf(stdout, "  프롬프트:\n%s\n", indent(v.Prompt))
 		})
+	case "approvals":
+		raw, err := c.call("GET", "/approvals", nil)
+		if err != nil {
+			return fail(err)
+		}
+		return out(raw, func() {
+			var vs []api.ApprovalView
+			json.Unmarshal(raw, &vs)
+			if len(vs) == 0 {
+				fmt.Fprintln(stdout, "승인 대기 항목이 없습니다.")
+				return
+			}
+			fmt.Fprintf(stdout, "%-5s %-5s %-26s %-19s %-12s %s\n", "ID", "작업", "종류", "생성", "해시", "이유")
+			for _, v := range vs {
+				fmt.Fprintf(stdout, "%-5d %-5d %-26s %-19s %-12s %s\n", v.ID, v.TaskID, v.Kind,
+					v.CreatedAt.Local().Format(time.DateTime), short(v.Hash), safeLine(v.Reason))
+			}
+		})
+	case "approve":
+		id, err := idArg()
+		if err != nil {
+			return fail(err)
+		}
+		return cmdApprove(c, id, *gateHomeFlag, stdout, stderr)
+	case "reverify":
+		id, err := idArg()
+		if err != nil {
+			return fail(err)
+		}
+		return reverify(c, id, stdout, stderr)
 	case "cancel":
 		id, err := idArg()
 		if err != nil {

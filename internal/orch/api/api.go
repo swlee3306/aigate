@@ -2,6 +2,14 @@
 // over a unix socket. There is no authentication beyond the socket file mode
 // (0600, owned by the orchd user) and the 0700 directory around it; anyone who
 // can open the socket can submit and cancel tasks. Do not expose it elsewhere.
+//
+// Approvals: the socket can never GRANT one. The authority is the grant a human
+// writes into the approvals file (the one the gate reads) from a real terminal
+// with `orch approve`. POST /approvals/{id}/reverify only asks the daemon to
+// re-judge: the daemon itself checks that the approvals file holds a grant for
+// exactly that entry's (repo, base, hash) and, if it does not, changes nothing.
+// So anything with socket access can trigger a re-judge, never a grant.
+// destructive_blocked and superseded entries can never be reverified.
 package api
 
 import (
@@ -20,6 +28,7 @@ import (
 	"unicode/utf8"
 
 	"aigate/internal/gitx"
+	"aigate/internal/orch/approvals"
 	"aigate/internal/orch/machine"
 	"aigate/internal/orch/store"
 )
@@ -101,10 +110,12 @@ type handler struct {
 	m     *machine.Machine
 	roots []string
 	mux   *http.ServeMux
+	// grants reads the approvals file the gate reads (reverify only).
+	grants approvals.Grants
 }
 
-func newHandler(st *store.Store, m *machine.Machine, allowed []string) (*handler, error) {
-	h := &handler{st: st, m: m}
+func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome string) (*handler, error) {
+	h := &handler{st: st, m: m, grants: approvals.Grants{Home: gateHome}}
 	for _, r := range allowed {
 		if !filepath.IsAbs(r) || filepath.Clean(r) != r {
 			return nil, fmt.Errorf("allowed repo root %q must be an absolute clean path", r)
@@ -120,6 +131,8 @@ func newHandler(st *store.Store, m *machine.Machine, allowed []string) (*handler
 	mux.HandleFunc("GET /tasks/{id}", h.get)
 	mux.HandleFunc("POST /tasks/{id}/cancel", h.cancel)
 	mux.HandleFunc("GET /approvals", h.approvals)
+	mux.HandleFunc("GET /approvals/{id}", h.approvalGet)
+	mux.HandleFunc("POST /approvals/{id}/reverify", h.reverify)
 	h.mux = mux
 	return h, nil
 }
@@ -356,8 +369,99 @@ func (h *handler) approvals(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]ApprovalView, 0, len(as))
 	for _, a := range as {
-		out = append(out, ApprovalView{ID: a.ID, TaskID: a.TaskID, Kind: a.Kind, Hash: a.Hash,
-			Base: a.Base, Head: a.Head, Reason: a.Reason, Status: a.Status, CreatedAt: a.CreatedAt})
+		out = append(out, approvalView(a))
 	}
 	writeJSON(w, 200, out)
+}
+
+// ApprovalDetail is an approval entry with what `orch approve` needs to show it.
+type ApprovalDetail struct {
+	ApprovalView
+	Repo      string `json:"repo"`
+	TaskState string `json:"task_state"`
+}
+
+func (h *handler) approvalGet(w http.ResponseWriter, r *http.Request) {
+	id, err := taskID(r)
+	if err != nil {
+		writeErr(w, bad("승인 항목 ID가 올바르지 않습니다"))
+		return
+	}
+	a, err := h.st.GetApproval(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, &httpError{404, "승인 항목을 찾을 수 없습니다"})
+		return
+	}
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	t, err := h.st.GetTask(r.Context(), a.TaskID)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, 200, ApprovalDetail{ApprovalView: approvalView(a), Repo: t.Repo, TaskState: string(t.State)})
+}
+
+func approvalView(a store.Approval) ApprovalView {
+	return ApprovalView{ID: a.ID, TaskID: a.TaskID, Kind: a.Kind, Hash: a.Hash,
+		Base: a.Base, Head: a.Head, Reason: a.Reason, Status: a.Status, CreatedAt: a.CreatedAt}
+}
+
+// reverify marks the entry approved ONLY IF the grant file holds a grant for
+// it (the daemon reads the file; the caller is not trusted) and then lets the
+// task be re-judged. Without a grant nothing changes.
+func (h *handler) reverify(w http.ResponseWriter, r *http.Request) {
+	id, err := taskID(r)
+	if err != nil {
+		writeErr(w, bad("승인 항목 ID가 올바르지 않습니다"))
+		return
+	}
+	a, err := h.st.GetApproval(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, &httpError{404, "승인 항목을 찾을 수 없습니다"})
+		return
+	}
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	switch {
+	case a.Kind == store.KindDestructiveBlocked:
+		writeErr(w, &httpError{403, "destructive_blocked 항목은 승인할 수 없습니다"})
+		return
+	case a.Status != store.ApprovalPending:
+		writeErr(w, &httpError{409, "대기 중인 항목이 아닙니다(상태: " + a.Status + ")"})
+		return
+	}
+	t, err := h.st.GetTask(r.Context(), a.TaskID)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	// The entry must still describe the task as it is now.
+	if t.State != store.StateNeedsApproval || t.Base != a.Base || t.HeadSHA != a.Head {
+		writeErr(w, &httpError{409, "작업의 현재 상태·base·head와 이 항목이 맞지 않습니다. 변경 없음"})
+		return
+	}
+	ok, err := h.grants.Granted(t.Repo, a)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if !ok {
+		writeErr(w, &httpError{409, "승인 기록(grant)이 없습니다. 사람이 터미널에서 `orch approve`로 승인해야 합니다. 변경 없음"})
+		return
+	}
+	if err := h.m.Approve(r.Context(), id); err != nil {
+		writeErr(w, err)
+		return
+	}
+	t, err = h.st.GetTask(r.Context(), a.TaskID)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, 200, viewOf(t))
 }

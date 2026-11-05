@@ -177,13 +177,20 @@ func TestIdempotentApprovalPerTaskHash(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	// Different hash or kind is a different entry.
+	// A repeat refreshes the reason of the pending entry and nothing else.
+	if ap, _ := s.PendingApprovals(ctx); len(ap) != 1 || ap[0].Reason != "second" {
+		t.Fatalf("pending after repeats: %+v", ap)
+	}
+	// A different hash is a new entry and supersedes the old one.
 	if idN, _ := s.AddApproval(ctx, Approval{TaskID: id, Kind: KindProtectedModified, Hash: "h2"}); idN == id1 {
 		t.Fatal("different hash must create a new entry")
 	}
 	ap, _ := s.PendingApprovals(ctx)
-	if len(ap) != 2 || ap[0].Reason != "first" {
+	if len(ap) != 1 || ap[0].Hash != "h2" {
 		t.Fatalf("pending: %+v", ap)
+	}
+	if old, _ := s.GetApproval(ctx, id1); old.Status != ApprovalSuperseded {
+		t.Fatalf("old entry: %+v", old)
 	}
 }
 
@@ -375,7 +382,7 @@ func TestMigrateV1ToV2KeepsTasks(t *testing.T) {
 	}
 	var v int
 	s.db.QueryRow(`SELECT version FROM schema_version`).Scan(&v)
-	if v != 2 {
+	if v != 3 {
 		t.Fatalf("version %d", v)
 	}
 	if err := s.SetHeadSHA(context.Background(), 1, "deadbeef"); err != nil {
@@ -390,5 +397,48 @@ func TestMigrateV1ToV2KeepsTasks(t *testing.T) {
 	}
 	if err := s.SetHeadSHA(context.Background(), 99, "x"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+}
+
+// A version-2 database keeps its approval rows (ids included) through the v3
+// rebuild and then accepts the superseded status.
+func TestMigrateV2ToV3KeepsApprovals(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v2.db")
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{schemaV1, schemaV2,
+		`CREATE TABLE schema_version (version INTEGER NOT NULL)`,
+		`INSERT INTO schema_version(version) VALUES (2)`,
+		`INSERT INTO tasks(repo, base, prompt, class, agent, state, created_at, updated_at)
+		 VALUES ('/r','abc','p','docs','claude','needs_approval',1,2)`,
+		`INSERT INTO approvals_pending(id, task_id, kind, hash, base, head, reason, created_at, status)
+		 VALUES (7, 1, 'protected_modified', 'old', 'b', 'h', 'why', 5, 'pending')`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	got, err := s.GetApproval(ctx, 7)
+	if err != nil || got.Hash != "old" || got.Status != ApprovalPending || got.Reason != "why" {
+		t.Fatalf("%+v %v", got, err)
+	}
+	id, err := s.AddApproval(ctx, Approval{TaskID: 1, Kind: KindProtectedModified, Hash: "new", Head: "h2"})
+	if err != nil || id <= 7 {
+		t.Fatalf("id %d err %v", id, err)
+	}
+	if old, _ := s.GetApproval(ctx, 7); old.Status != ApprovalSuperseded {
+		t.Fatalf("old %+v", old)
+	}
+	if err := s.ApproveApproval(ctx, 7); !errors.Is(err, ErrNotPending) {
+		t.Fatalf("superseded must not be approvable: %v", err)
 	}
 }

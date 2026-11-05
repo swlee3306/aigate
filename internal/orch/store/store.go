@@ -24,6 +24,9 @@ var schemaV1 string
 //go:embed schema_v2.sql
 var schemaV2 string
 
+//go:embed schema_v3.sql
+var schemaV3 string
+
 // MaxErrorText caps Task.ErrorText so a noisy failure cannot bloat the DB.
 const MaxErrorText = 4096
 
@@ -91,6 +94,7 @@ type Store struct {
 var migrations = []func(tx *sql.Tx) error{
 	func(tx *sql.Tx) error { _, err := tx.Exec(schemaV1); return err },
 	func(tx *sql.Tx) error { _, err := tx.Exec(schemaV2); return err },
+	func(tx *sql.Tx) error { _, err := tx.Exec(schemaV3); return err },
 }
 
 // Open creates or opens the database at path with mode 0600.
@@ -425,8 +429,15 @@ func (s *Store) ReleaseClaims(ctx context.Context) ([]Task, error) {
 	return out, tx.Commit()
 }
 
-// AddApproval records a pending approval. It is idempotent per
-// (task_id, kind, hash): a repeat returns the existing entry's id unchanged.
+// AddApproval records a pending approval.
+//   - Same (task_id, kind, hash): idempotent; the existing entry's id is
+//     returned and, while it is pending, only its reason is refreshed. An
+//     approved or rejected entry is left alone; a superseded one (the task
+//     came back to this hash) becomes pending again.
+//   - A new hash: the task's pending entries that this one replaces are marked
+//     superseded (same kind with another hash, or any kind for another head).
+//     A superseded entry can never be approved.
+//
 // Status and CreatedAt of the argument are ignored.
 func (s *Store) AddApproval(ctx context.Context, a Approval) (int64, error) {
 	switch a.Kind {
@@ -434,21 +445,48 @@ func (s *Store) AddApproval(ctx context.Context, a Approval) (int64, error) {
 	default:
 		return 0, fmt.Errorf("store: unknown approval kind %q", a.Kind)
 	}
+	if a.Hash == "" {
+		return 0, errors.New("store: approval needs a hash")
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO approvals_pending(task_id, kind, hash, base, head, reason, created_at, status)
-		 VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(task_id, kind, hash) DO NOTHING`,
-		a.TaskID, a.Kind, a.Hash, a.Base, a.Head, a.Reason, now(), ApprovalPending); err != nil {
-		return 0, err
-	}
 	var id int64
-	if err := tx.QueryRowContext(ctx,
-		`SELECT id FROM approvals_pending WHERE task_id=? AND kind=? AND hash=?`,
-		a.TaskID, a.Kind, a.Hash).Scan(&id); err != nil {
+	var cur string
+	err = tx.QueryRowContext(ctx,
+		`SELECT id, status FROM approvals_pending WHERE task_id=? AND kind=? AND hash=?`,
+		a.TaskID, a.Kind, a.Hash).Scan(&id, &cur)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		res, err := tx.ExecContext(ctx,
+			`INSERT INTO approvals_pending(task_id, kind, hash, base, head, reason, created_at, status)
+			 VALUES (?,?,?,?,?,?,?,?)`,
+			a.TaskID, a.Kind, a.Hash, a.Base, a.Head, a.Reason, now(), ApprovalPending)
+		if err != nil {
+			return 0, err
+		}
+		id, _ = res.LastInsertId()
+	case err != nil:
+		return 0, err
+	case cur == ApprovalPending:
+		if _, err := tx.ExecContext(ctx, `UPDATE approvals_pending SET reason=? WHERE id=?`, a.Reason, id); err != nil {
+			return 0, err
+		}
+	case cur == ApprovalSuperseded:
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE approvals_pending SET status=?, reason=?, base=?, head=? WHERE id=?`,
+			ApprovalPending, a.Reason, a.Base, a.Head, id); err != nil {
+			return 0, err
+		}
+	default:
+		return id, tx.Commit() // approved or rejected: history, not touched
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE approvals_pending SET status=? WHERE task_id=? AND status=? AND id<>?
+		   AND ((kind=? AND hash<>?) OR head<>?)`,
+		ApprovalSuperseded, a.TaskID, ApprovalPending, id, a.Kind, a.Hash, a.Head); err != nil {
 		return 0, err
 	}
 	return id, tx.Commit()

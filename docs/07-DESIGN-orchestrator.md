@@ -79,6 +79,9 @@ queued ─▶ preparing ─▶ agent_running ─▶ collecting ─▶ verifying 
 - 승인은 사람이 오케스트레이터 VM에서 `orch approve <id>`를 실행해 **터미널에서 직접** 한다(Tailscale ssh의 pty로 TTY 요건 충족). 내부적으로 `aigate approve`의 화면·안전 검사를 그대로 쓰고 승인 기록은 오케스트레이터의 `~/.aigate/`에 쌓인다.
 - 승인 화면 가독성 개선(한국어 요약, `show`)은 보류 중이던 설계 B안을 이 단계에서 같이 구현한다(FR15의 JSON 보기 모델).
 - 에이전트·검사 VM은 승인 기록을 읽거나 쓸 수 없다.
+- 승인의 **권위는 TTY 경로가 쓰는 grant 파일**(`<gate-home>/.aigate/approvals.json`, 0600, 0700 디렉터리)이다. `orch approve`가 항목의 해시를 현재 base·head의 diff와 대조하고 grant를 쓴 **다음에만** 데몬의 `POST /approvals/{id}/reverify`를 부른다. 데몬은 호출자를 믿지 않고 grant 파일에 그 항목과 정확히 맞는 grant가 있을 때만 승인 처리하고 `verifying`으로 되돌린다. 그래서 소켓에 닿는 프로세스는 재판정을 유발할 수 있어도 승인을 줄 수는 없다. `destructive_blocked`·`superseded` 항목은 어떤 경로로도 승인되지 않는다.
+- 같은 작업·같은 해시의 항목은 한 번만 쌓이고(이유만 갱신), 새 해시·새 head가 오면 이전 대기 항목은 `superseded`가 된다.
+- 게시(push_branch, draft_pr, notify)는 하한선(`policy.Floor`)을 통과하고 허용 목록에 있을 때만 실행된다. 목록 밖이면 `publish_outside_allowlist` 항목으로 대기하며, 사람이 승인하면 **그 head·그 행위에 한해** 실행된다. push는 `refs/heads/orch/<task>`만, 쓰기 토큰은 0600 파일에서만 읽는다.
 
 ## 7. 정책과 자율 단계
 

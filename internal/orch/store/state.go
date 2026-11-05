@@ -43,4 +43,6 @@ const (
 	ApprovalPending  = "pending"
 	ApprovalApproved = "approved"
 	ApprovalRejected = "rejected"
+	// ApprovalSuperseded: the task got a newer hash or head; never approvable.
+	ApprovalSuperseded = "superseded"
 )

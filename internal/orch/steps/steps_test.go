@@ -14,6 +14,8 @@ import (
 
 	"aigate/internal/gate"
 	"aigate/internal/orch/machine"
+	"aigate/internal/orch/policy"
+	"aigate/internal/orch/publish"
 	"aigate/internal/orch/store"
 	"aigate/internal/orch/vm"
 	"aigate/internal/report"
@@ -599,4 +601,36 @@ func TestRealGateBehaviorFailure(t *testing.T) {
 		t.Fatalf("state %s verdict %q", tk.State, tk.Verdict)
 	}
 	e.neverPassed()
+}
+
+// A publisher that hits the hard floor fails the task and leaves only a
+// destructive_blocked record, which nothing can approve.
+func TestPublishFloorFailsTaskWithBlockedRecord(t *testing.T) {
+	pub := &fakePub{err: fmt.Errorf("publish: %w: merge", policy.ErrFloor)}
+	e := newEnv(t, func(c *Config, _ *env) { c.Publisher = pub })
+	tk := e.drain()
+	if tk.State != machine.StateFailed {
+		t.Fatalf("state %s", tk.State)
+	}
+	all, _ := e.st.PendingApprovals(context.Background())
+	if len(all) != 1 || all[0].Kind != store.KindDestructiveBlocked {
+		t.Fatalf("approvals %+v", all)
+	}
+	if err := e.st.ApproveApproval(context.Background(), all[0].ID); !errors.Is(err, store.ErrNotApprovable) {
+		t.Fatalf("approve: %v", err)
+	}
+}
+
+// A publisher that wants a human parks the task with a publish_outside_allowlist entry.
+func TestPublishNeedsApprovalParksTask(t *testing.T) {
+	pub := &fakePub{err: &publish.NeedsApprovalError{Action: publish.Action{Kind: "draft_pr", Task: 1}, Hash: "ph", Reason: "draft_pr is not in the allowlist"}}
+	e := newEnv(t, func(c *Config, _ *env) { c.Publisher = pub })
+	tk := e.drain()
+	if tk.State != machine.StateNeedsApproval {
+		t.Fatalf("state %s", tk.State)
+	}
+	all, _ := e.st.PendingApprovals(context.Background())
+	if len(all) != 1 || all[0].Kind != store.KindPublishOutsideAllowlist || all[0].Hash != "ph" || all[0].Head != fakeHead {
+		t.Fatalf("approvals %+v", all)
+	}
 }

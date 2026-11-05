@@ -11,6 +11,9 @@ import (
 	"time"
 
 	"aigate/internal/orch/api"
+	"aigate/internal/orch/approvals"
+	"aigate/internal/orch/policy"
+	"aigate/internal/orch/publish"
 	"aigate/internal/orch/steps"
 	"aigate/internal/orch/store"
 	"aigate/internal/orch/vm"
@@ -27,6 +30,8 @@ type vmFlags struct {
 	AgentTimeout                                               time.Duration
 	RestoreEachJob                                             bool
 	ReportDir, GateHome                                        string
+	// Publishing (all optional; none given = local-only, nothing is pushed).
+	PublishAllow, GitRemote, GitLabURL, GitLabProject, GitLabTarget, TokenFile string
 }
 
 func (v *vmFlags) register(fs *flag.FlagSet) {
@@ -48,6 +53,12 @@ func (v *vmFlags) register(fs *flag.FlagSet) {
 	s(&v.CloudCmd, "cloud-cmd", "", "command prefix for the openstack CLI used by TestVM.Restore, whitespace separated (default: the driver's)")
 	s(&v.ReportDir, "report-dir", "", "directory for verification reports (default <db dir>/reports)")
 	s(&v.GateHome, "gate-home", "", "gate home for approvals and ledger (default <db dir>/gate-home)")
+	s(&v.PublishAllow, "publish-allow", "", "comma separated publish actions that may run without a human (push_branch,draft_pr,notify); empty = every action waits for approval")
+	s(&v.GitRemote, "git-remote", "", "where push_branch pushes refs/heads/orch/<task>: absolute path or https URL without credentials")
+	s(&v.GitLabURL, "gitlab-url", "", "GitLab base URL for draft merge requests")
+	s(&v.GitLabProject, "gitlab-project", "", "GitLab project id or path")
+	s(&v.GitLabTarget, "gitlab-target", "main", "target branch of the draft merge request")
+	s(&v.TokenFile, "gitlab-token-file", "", "0600 file holding the GitLab write token (never printed)")
 	fs.DurationVar(&v.AgentTimeout, "agent-timeout", steps.DefaultAgentTimeout, "limit of one agent run")
 	fs.BoolVar(&v.RestoreEachJob, "restore-each-job", true, "restore the test VM before every verification")
 }
@@ -84,18 +95,48 @@ func (v *vmFlags) validate() error {
 	return nil
 }
 
+// publishConfigured reports whether any publishing flag is set.
+func (v *vmFlags) publishConfigured() bool {
+	for _, x := range []string{v.GitRemote, v.GitLabURL, v.TokenFile, v.PublishAllow} {
+		if x != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// gateHome is the gate home orchd and the steps use (and `orch approve` must).
+func (v *vmFlags) gateHome(dbPath string) string {
+	if v.GateHome != "" {
+		return v.GateHome
+	}
+	return filepath.Join(filepath.Dir(dbPath), "gate-home")
+}
+
+// checkLocations refuses a database, gate home or token file that the agent or
+// test VM can see (they live outside every allowed repository root) and a
+// token file that is not private.
+func (v *vmFlags) checkLocations(dbPath string, exposed []string) error {
+	for name, p := range map[string]string{"database": dbPath, "gate home": v.gateHome(dbPath), "token file": v.TokenFile} {
+		if p == "" {
+			continue
+		}
+		if err := approvals.CheckOutside(p, exposed); err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+	}
+	return nil
+}
+
 // provider builds the real step provider. Nothing connects to a VM here.
 func (v *vmFlags) provider(st *store.Store, dbPath string) (api.StepProvider, error) {
 	if err := v.validate(); err != nil {
 		return nil, err
 	}
 	dir := filepath.Dir(dbPath)
-	reportDir, gateHome := v.ReportDir, v.GateHome
+	reportDir, gateHome := v.ReportDir, v.gateHome(dbPath)
 	if reportDir == "" {
 		reportDir = filepath.Join(dir, "reports")
-	}
-	if gateHome == "" {
-		gateHome = filepath.Join(dir, "gate-home")
 	}
 	agent := &vm.AgentVM{Host: v.AgentHost, User: v.AgentUser, KeyPath: v.AgentKey,
 		KnownHosts: v.AgentKnownHosts, JumpHost: v.AgentJump}
@@ -110,6 +151,17 @@ func (v *vmFlags) provider(st *store.Store, dbPath string) (api.StepProvider, er
 	cfg.Agent, cfg.Test = agent, test
 	cfg.AgentTimeout, cfg.RestoreEachJob = v.AgentTimeout, v.RestoreEachJob
 	cfg.ReportDir, cfg.GateHome = reportDir, gateHome
+	if v.publishConfigured() {
+		pcfg := publish.Config{Remote: v.GitRemote, TokenFile: v.TokenFile,
+			Allow:  policy.NewAllowlist(splitList(v.PublishAllow)...),
+			GitLab: publish.GitLab{BaseURL: v.GitLabURL, Project: v.GitLabProject, TargetBranch: v.GitLabTarget},
+			Grants: approvals.Grants{Home: gateHome}}
+		pub, err := publish.New(pcfg)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Publisher = pub
+	}
 	p, err := steps.NewProvider(st, cfg)
 	if err != nil {
 		return nil, err
@@ -131,4 +183,14 @@ func tcpProbe(host string) func(ctx context.Context) error {
 		}
 		return c.Close()
 	}
+}
+
+func splitList(s string) []string {
+	var out []string
+	for _, f := range strings.Split(s, ",") {
+		if f = strings.TrimSpace(f); f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
 }

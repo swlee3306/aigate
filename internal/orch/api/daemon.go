@@ -25,6 +25,9 @@ type Config struct {
 	Concurrency  int      // parallel Tick workers; < 1 means 1
 	AllowedRepos []string // absolute roots a task's repo must live under; empty refuses all
 	PollInterval time.Duration
+	// GateHome is the gate's home whose .aigate/approvals.json holds the
+	// human grants (empty: the gate's default, AIGATE_HOME or the user home).
+	GateHome string
 }
 
 // StepProvider supplies the steps the machine runs.
@@ -53,7 +56,7 @@ func NewDaemon(cfg Config, st *store.Store, p StepProvider) (*Daemon, error) {
 		cfg.PollInterval = 250 * time.Millisecond
 	}
 	m := machine.New(st, p.Steps())
-	h, err := newHandler(st, m, cfg.AllowedRepos)
+	h, err := newHandler(st, m, cfg.AllowedRepos, cfg.GateHome)
 	if err != nil {
 		return nil, err
 	}

@@ -6,8 +6,9 @@
 // verdict and never leads to passed. Verdict-like results (agent timeout, no
 // commit, limits exceeded, gate verdict) are returned as an Outcome.
 //
-// Nothing here pushes anything. Publishing goes through Config.Publisher, which
-// defaults to LocalOnlyPublisher (Task 11 supplies the real, allowlisted one).
+// Nothing here pushes anything itself. Publishing goes through Config.Publisher,
+// which defaults to LocalOnlyPublisher; publish.Publisher is the real,
+// allowlisted one. Approvals are queued through the approvals package.
 package steps
 
 import (
@@ -25,7 +26,10 @@ import (
 
 	"aigate/internal/gate"
 	"aigate/internal/gitx"
+	"aigate/internal/orch/approvals"
 	"aigate/internal/orch/machine"
+	"aigate/internal/orch/policy"
+	"aigate/internal/orch/publish"
 	"aigate/internal/orch/store"
 	"aigate/internal/orch/vm"
 	"aigate/internal/report"
@@ -53,7 +57,10 @@ var (
 	_ TestDriver  = (*vm.TestVM)(nil)
 )
 
-// Publisher publishes a passed task. Task 11 supplies the real one.
+// Publisher publishes a passed task. publish.Publisher is the real one: it may
+// return a *publish.NeedsApprovalError (the task parks in needs_approval) or an
+// error wrapping policy.ErrFloor (the task fails and a destructive_blocked
+// record is kept).
 type Publisher interface {
 	Publish(ctx context.Context, task store.Task) error
 }
@@ -304,8 +311,7 @@ func (p *Provider) needApproval(ctx context.Context, t store.Task, r report.Repo
 		}
 		text += "…"
 	}
-	if _, err := p.st.AddApproval(ctx, store.Approval{TaskID: t.ID, Kind: store.KindProtectedModified,
-		Hash: hash, Base: r.Base, Head: r.Head, Reason: text}); err != nil {
+	if err := approvals.New(p.st).Enqueue(ctx, t.ID, store.KindProtectedModified, r.Base, r.Head, hash, text); err != nil {
 		return machine.Outcome{}, err
 	}
 	return machine.Outcome{Next: machine.StateNeedsApproval, Note: "check_weakened: protected files changed, approval " + short(hash)}, nil
@@ -338,7 +344,21 @@ func (p *Provider) saveReport(t store.Task, r report.Report) (string, error) {
 }
 
 func (p *Provider) publish(ctx context.Context, t store.Task) (machine.Outcome, error) {
-	if err := p.cfg.Publisher.Publish(ctx, t); err != nil {
+	err := p.cfg.Publisher.Publish(ctx, t)
+	var na *publish.NeedsApprovalError
+	switch {
+	case errors.As(err, &na):
+		reason := fmt.Sprintf("%s: %s", na.Action.Kind, na.Reason)
+		if qerr := approvals.New(p.st).Enqueue(ctx, t.ID, store.KindPublishOutsideAllowlist, t.Base, t.HeadSHA, na.Hash, reason); qerr != nil {
+			return machine.Outcome{}, qerr
+		}
+		return machine.Outcome{Next: machine.StateNeedsApproval, Note: "publish_outside_allowlist: " + na.Action.Kind + " needs approval"}, nil
+	case errors.Is(err, policy.ErrFloor):
+		// Record only: nothing can approve it. The task fails.
+		sum := approvals.PublishHash(t.ID, t.HeadSHA, "floor")
+		_ = approvals.New(p.st).Enqueue(ctx, t.ID, store.KindDestructiveBlocked, t.Base, t.HeadSHA, sum, err.Error())
+		return failed("publishing blocked by the hard floor: " + err.Error())
+	case err != nil:
 		return machine.Outcome{}, fmt.Errorf("publish: %w", err)
 	}
 	note := "published"

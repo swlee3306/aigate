@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"aigate/internal/orch/api"
+	"aigate/internal/orch/approvals"
 	"aigate/internal/orch/machine"
 	"aigate/internal/orch/store"
 )
@@ -74,12 +75,29 @@ func run(args []string) int {
 		}
 	}
 
+	if !vf.enabled() && vf.publishConfigured() {
+		fmt.Fprintln(os.Stderr, "orchd: publishing flags need the VM flags too")
+		return 2
+	}
+	if vf.enabled() {
+		if err := vf.checkLocations(cfg.DB, cfg.AllowedRepos); err != nil {
+			fmt.Fprintln(os.Stderr, "orchd:", err)
+			return 2
+		}
+		cfg.GateHome = vf.gateHome(cfg.DB)
+	}
 	st, err := store.Open(cfg.DB)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "orchd: open db:", err)
 		return 1
 	}
 	defer st.Close()
+	if vf.enabled() {
+		if err := approvals.CheckPrivate(cfg.DB); err != nil {
+			fmt.Fprintln(os.Stderr, "orchd:", err)
+			return 2
+		}
+	}
 	var provider api.StepProvider = placeholderSteps{}
 	if vf.enabled() {
 		if provider, err = vf.provider(st, cfg.DB); err != nil {

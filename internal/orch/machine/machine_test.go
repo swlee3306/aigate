@@ -420,7 +420,7 @@ func TestApprovalFlow(t *testing.T) {
 	}
 	blocked, _ := s.AddApproval(ctx, store.Approval{TaskID: id, Kind: store.KindDestructiveBlocked, Hash: "d"})
 	a1, _ := s.AddApproval(ctx, store.Approval{TaskID: id, Kind: store.KindProtectedModified, Hash: "h1"})
-	a2, _ := s.AddApproval(ctx, store.Approval{TaskID: id, Kind: store.KindProtectedModified, Hash: "h2"})
+	a2, _ := s.AddApproval(ctx, store.Approval{TaskID: id, Kind: store.KindPublishOutsideAllowlist, Hash: "h2"}) // another kind: both stay pending
 	if err := m.Approve(ctx, blocked); !errors.Is(err, store.ErrNotApprovable) {
 		t.Fatalf("approve destructive: %v", err)
 	}
