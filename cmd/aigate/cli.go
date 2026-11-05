@@ -31,9 +31,12 @@ const usage = `usage:
   aigate check REPORT.json --repo DIR --base REF
   aigate approve --repo DIR --base REF [--head HEAD]
   aigate ledger verify [--repo DIR]
+  aigate stats [--repo DIR] [--days N (default 14)] [--json]
 exit codes: 0 ok, 1 behavior_failure, 2 verification_incomplete, 3 check_weakened,
   64 gate error (also: interrupted by SIGINT/SIGTERM — nothing is recorded)
 check: 0 fresh, 1 not fresh (problems printed), 64 gate error
+stats: per-UTC-day counts from the ledger for today and the N-1 days before;
+  0 ok (also "no events"), 1 ledger fails to verify, 64 gate error
 `
 
 // Main runs the CLI and returns the process exit code.
@@ -51,6 +54,8 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return cmdApprove(args[1:], stdin, stdout, stderr)
 	case "ledger":
 		return cmdLedger(args[1:], stdout, stderr)
+	case "stats":
+		return cmdStats(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, usage)
 		return 0
@@ -186,14 +191,27 @@ func cmdApprove(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	// or bidi override in a line or path could make the screen hide what the
 	// human approves. Genuine binary files are shown as a summary line; the
 	// hash stays over the raw bytes (HashedText).
-	if msg, _ := binaryRefusal(p); msg != "" {
-		fmt.Fprintf(stderr, "aigate: approve 거부: %s. 바이너리 요약 한 줄로는 사람이 내용을 볼 수 없어 승인하지 않습니다(승인은 기록하지 않음). NUL 바이트를 없앤 커밋으로 다시 실행하세요.\n", msg)
+	home, err := gate.Home("")
+	if err != nil {
+		return fail(stderr, err)
+	}
+	ledgerPath := gate.LedgerPath(home, p.RepoID)
+	// refuse records approval_refused FIRST (reason code only, never raw
+	// bytes or paths), then explains; a ledger failure is a gate error too.
+	refuse := func(msg, reason, why string) int {
+		lerr := ledger.Append(ledgerPath, "approval_refused", p.RepoID, map[string]any{"base": p.Base, "reason": reason}, time.Now().UTC())
+		fmt.Fprintf(stderr, "aigate: approve 거부: %s. %s\n", msg, why)
+		if lerr != nil {
+			fmt.Fprintf(stderr, "aigate: gate error: 거부 사건을 이력(ledger)에 기록하지 못했습니다: %v\n", lerr)
+		}
 		return exitGateError
 	}
+	if msg, reason := binaryRefusal(p); msg != "" {
+		return refuse(msg, reason, "바이너리 요약 한 줄로는 사람이 내용을 볼 수 없어 승인하지 않습니다(승인은 기록하지 않음). NUL 바이트를 없앤 커밋으로 다시 실행하세요.")
+	}
 	display := p.Diff.DisplayText(textsafe.Escape)
-	if msg, _ := unsafeApproveText(p, display); msg != "" {
-		fmt.Fprintf(stderr, "aigate: approve 거부: %s. 터미널 제어·비정상 문자가 있는 diff는 화면에서 내용을 숨길 수 있어 승인하지 않습니다(승인은 기록하지 않음). 해당 문자를 없앤 커밋으로 다시 실행하세요.\n", msg)
-		return exitGateError
+	if msg, reason := unsafeApproveText(p, display); msg != "" {
+		return refuse(msg, reason, "터미널 제어·비정상 문자가 있는 diff는 화면에서 내용을 숨길 수 있어 승인하지 않습니다(승인은 기록하지 않음). 해당 문자를 없앤 커밋으로 다시 실행하세요.")
 	}
 	fmt.Fprintf(stdout, "base: %s\nhead: %s\n", p.Base, p.Head)
 	fmt.Fprintf(stdout, "files touched (%d):\n", len(p.Diff.TouchedFiles))
@@ -236,15 +254,19 @@ func cmdApprove(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "aigate: not approved")
 		return exitGateError
 	}
-	home, err := gate.Home("")
-	if err != nil {
-		return fail(stderr, err)
-	}
 	st := approval.Store{Path: gate.ApprovalsPath(home)}
 	if err := st.Grant(p.RepoID, p.Base, p.Diff.Hash, time.Now().UTC()); err != nil {
 		return fail(stderr, err)
 	}
 	fmt.Fprintln(stdout, "approved.")
+	// The grant is done; the ledger event comes after it. If the append
+	// fails, say plainly that the approval itself WAS recorded.
+	if err := ledger.Append(ledgerPath, "approval_granted", p.RepoID, map[string]any{
+		"base": p.Base, "hash": p.Diff.Hash, "files_changed": len(p.Diff.TouchedFiles),
+	}, time.Now().UTC()); err != nil {
+		fmt.Fprintf(stderr, "aigate: gate error: 승인은 %s 에 기록되었습니다(유효함). 그러나 이력(ledger)에 approval_granted 사건을 기록하지 못했습니다: %v\n", gate.ApprovalsPath(home), err)
+		return exitGateError
+	}
 	return 0
 }
 
