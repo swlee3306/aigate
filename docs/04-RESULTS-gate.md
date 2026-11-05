@@ -370,3 +370,36 @@ I4(검사 대상 코드에 전체 환경 전달)는 이번 범위가 아니며 �
 - ESC/ANSI·Latin-1 텍스트 fixture는 승인할 수 없다(우회 플래그 없음, 직접 `git diff --text`로 검토).
 - 폭 0 문자·닮은꼴 유니코드는 표시·거부하지 않는다.
 - 무인 사용은 여전히 안 된다: I4(환경·샌드박스 없음), 키 없는 ledger(`aigate stats` 숫자도 같은 사용자가 고칠 수 있음).
+
+## 수정 라운드 4 (2026-11-05, 설계서 v0.5)
+
+3차 재리뷰의 Critical(새 guarded 바이너리의 요약 우회)과 지적 사항, 사용자가 승인한 후속 2개(규칙별 횟수, 문서 템플릿·가정/실험할 것)를 한 번에 고쳤다(설계서 8장 [13], 3.4·3.9·3.10 v0.5, 9·10장). 코드 항목은 실패하는 테스트를 먼저 쓰고(RED) 고친 뒤 통과(GREEN)를 확인했다. 자세한 기록과 커밋은 `.superpowers/sdd/03-PLAN-gate/final-fix4-report.md`.
+
+| 항목 | 변경 | RED (수정 전 관찰) | GREEN |
+|---|---|---|---|
+| A. 바이너리 요약 허용목록 | 요약 한 줄은 삭제 파일, 또는 허용목록 확장자 + 모드 100644 + `#!` 시작 아님 + `.bin` 경로 성분 없음인 파일에만. 나머지 head 바이너리는 거부(`binary_executable`·`binary_source_file`·`binary_unknown_type`), 이력에 같은 이유 코드. `FileChange`에 `HeadMode`·`HeadShebang` | 17가지 중 15가지가 요약 한 줄 + `yes`로 승인됨(종료 0): `node_modules/.bin/vitest`(shebang+NUL, 100755), 추가 `.mts`, 100755 `vendor/sub/run`, 확장자 없는 파일, `.dat2 .cts .vue .svelte .snap .sql`, 변경된 양쪽 바이너리 `.mts`, 실행 권한 `.bin`·`.png`, `#!`로 시작하는 `.png`, `.bin/` 아래 `.png`. 나머지 2가지(`.TS`, `Makefile`)는 거부되었지만 이유 코드가 메시지에 없었다 | 17가지 모두 거부(64, 표준 출력 없음, 파일 내용 미출력, 맞는 이유 코드, 승인 없음). 추가·변경 `.png`, 추가 `.bin`, 삭제된 바이너리(shebang 파일 포함)는 요약 + 승인 가능, `node_modules/**` 아래에서 승인 후 `run` → `ok`. 텍스트 확장자·이름 목록의 어느 것도 허용목록에 없음을 단위 테스트로 확인(분류용으로만 남김) |
+| B. 바이너리→텍스트 | 일반 바이트 검사 전에 `binary_became_text`로 거부, "base는 바이너리, head는 텍스트", "삭제 + 새 이름으로 추가"로 나누라는 안내 | 일반 제어 문자 메시지(head 탓, "문자를 없앤 커밋"), 이력 이유 `unsafe_bytes` | 전용 메시지, 이력 이유 `binary_became_text`, 승인 없음 |
+| C. stats 측정 보정 | `approval_refused`에 `needed_approval`, `needed_approval`이 true(또는 없는 예전 사건)인 거부만 셈, `필요율`(`approval_needed_ratio`), 열 이름 `안전검사 거부`, 해석 주의 한 줄, 실제 실행 테스트의 시계를 마지막 사건 시각으로 고정 | 새 필드 없음, 승인 불필요 diff의 거부도 셈, 비율·열 이름·주의 문구 없음. 실제 실행 테스트는 벽시계 날짜 줄을 확인해 UTC 자정을 넘기면 실패할 수 있었다(분석으로 확인, 재현은 시계를 속여야 해서 하지 않음) | 합성 이력 표·JSON·`--days`·빈 이력·변조 이력·실제 run→approve→run 모두 기대대로 |
+| D. 규칙별 횟수 | 텍스트 두 번째 표 `규칙별 횟수`(횟수 내림차순, 이름순), JSON `rules` | 표·필드 없음 | 합성 이력에서 `protected_modified 2, dirty_tree 1, regression 1, test_missing 1`(창 밖·다른 저장소 제외), `--days 2` JSON 4개 규칙 각 1 |
+| E. 문서 규칙 | `docs/00-TEMPLATE.md`(확정·가정·미결정·실험할 것), 요구사항 8장·설계서 9·10장에 실제 가정·실험 | — | — |
+
+### 기대값 변경
+없음. e2e 기대는 하나도 고치지 않았고 판정이 바뀐 시나리오도 없다(e2e의 승인은 `approve` 화면을 거치지 않고 해시를 직접 기록하므로 이번 변경의 영향을 받지 않는다). 단위 테스트 중 바뀐 것: `TestApproveBinaryBecameTextNotSummarised`가 `\x00` 대신 `binary_became_text`를 확인(B의 의도된 변경), `TestStatsTable`·`TestStatsJSONAndDays`·`TestStatsEmptyAndTampered`·`TestApproveWritesLedgerEvents`·`TestStatsFromRealRuns`가 새 열 이름·필드·표를 확인하도록 바뀜.
+
+### 지표 (최종 전체 실행, 2026-11-05)
+`go test ./... -count=1`(e2e 포함) 통과, e2e 118개 기록(시나리오 실행 112 + `check`·자기 비교 기록 6), **118/118 기대와 일치**, e2e 약 138초(따로 한 번 더 돌린 `go test ./e2e -count=1`도 통과, 약 134초).
+
+| 지표 | 값 | 판정 |
+|---|---|---|
+| 불완전·무력화 시나리오(KnownGap 제외) 중 `ok` | **0 / 72** | 합격 |
+| (참고) ok가 아닌 모든 기대(KnownGap 제외) 중 `ok` | 0 / 88 | 기록 |
+| (참고) 오경보율: 기대가 `ok`인 시나리오 중 ok가 아닌 것 | 0 / 10 = 0% | 기록 |
+| (참고) gate 실행 시간(base+head) | 평균 1.07초, 최대 5.41초(n=112, 최대는 5초 타임아웃 `incomplete/hang`). 스택별 평균 py 0.71 / go 1.82 / ts 1.43초 | 기록 |
+| KnownGap | 14개(3차와 같음, 모두 원리적 한계) | 기록 |
+
+`gofmt -l` 비어 있음, `go vet ./...` 통과.
+
+### 남은 한계 (설계서 4장 v0.5)
+- 허용목록 밖의 바이너리 보호 파일(확장자 없음, `.mts` 등, 실행 권한·shebang·`.bin`)은 `approve`로 승인할 수 없다(우회 플래그 없음).
+- 허용목록 안의 `.node .so .dylib .dll .exe .wasm .class .jar`는 불러와 실행될 수 있는 코드인데 요약 한 줄로만 보인다. 형식 판단은 확장자로만 한다(매직 바이트 검사 없음).
+- `aigate stats` 숫자는 참고용이다: 키 없는 이력, 사람의 `no`는 기록되지 않음, `runs`는 서로 다른 head 수가 아님.
