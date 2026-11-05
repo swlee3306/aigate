@@ -202,49 +202,36 @@ func (m *Machine) Cancel(ctx context.Context, id int64) error {
 }
 
 // Approve approves one pending entry. When the task has no approvable entries
-// left, it goes back to verifying so the verdict is re-judged.
+// left, it goes back to verifying so the verdict is re-judged. The status
+// change and the task transition are ONE transaction.
 // destructive_blocked entries are refused.
 func (m *Machine) Approve(ctx context.Context, approvalID int64) error {
-	a, err := m.st.GetApproval(ctx, approvalID)
+	before, moved, err := m.st.ResolveAndAdvance(ctx, approvalID, store.ApprovalApproved,
+		StateVerifying, StateFailed, "approved", store.TransitionOpts{})
 	if err != nil {
 		return err
 	}
-	if err := m.st.ApproveApproval(ctx, approvalID); err != nil {
-		return err
+	if moved && m.onTransition != nil {
+		m.onTransition(before, before.State, StateVerifying, "approved")
 	}
-	left, err := m.st.PendingApprovableCount(ctx, a.TaskID)
-	if err != nil || left > 0 {
-		return err
-	}
-	t, err := m.st.GetTask(ctx, a.TaskID)
-	if err != nil {
-		return err
-	}
-	if t.State != StateNeedsApproval {
-		return nil
-	}
-	return ignoreLost(m.transition(ctx, t, StateVerifying, "approved", store.TransitionOpts{}))
+	return nil
 }
 
-// Reject rejects one pending entry; for an approvable kind the task fails.
+// Reject rejects one pending entry; for an approvable kind the task fails (in
+// the same transaction).
 func (m *Machine) Reject(ctx context.Context, approvalID int64) error {
 	a, err := m.st.GetApproval(ctx, approvalID)
 	if err != nil {
 		return err
 	}
-	if err := m.st.RejectApproval(ctx, approvalID); err != nil {
-		return err
-	}
-	if a.Kind == store.KindDestructiveBlocked {
-		return nil
-	}
-	t, err := m.st.GetTask(ctx, a.TaskID)
+	before, moved, err := m.st.ResolveAndAdvance(ctx, approvalID, store.ApprovalRejected,
+		StateVerifying, StateFailed, "approval rejected",
+		store.TransitionOpts{ErrorText: "approval rejected: " + a.Reason})
 	if err != nil {
 		return err
 	}
-	if t.State != StateNeedsApproval {
-		return nil
+	if moved && m.onTransition != nil {
+		m.onTransition(before, before.State, StateFailed, "approval rejected")
 	}
-	return ignoreLost(m.transition(ctx, t, StateFailed, "approval rejected",
-		store.TransitionOpts{ErrorText: "approval rejected: " + a.Reason}))
+	return nil
 }

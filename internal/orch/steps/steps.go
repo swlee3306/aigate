@@ -44,7 +44,7 @@ const DefaultAgentTimeout = 30 * time.Minute
 type AgentDriver interface {
 	Prepare(ctx context.Context, task, repo, baseSHA string) error
 	Run(ctx context.Context, task, agent, prompt string, limit time.Duration) (vm.RunResult, error)
-	Collect(ctx context.Context, task, localRepo string) (headSHA string, commits int, err error)
+	Collect(ctx context.Context, task, localRepo, baseSHA string) (headSHA string, commits int, err error)
 }
 
 // TestDriver is what the steps need from the test VM (*vm.TestVM).
@@ -241,7 +241,11 @@ func (p *Provider) runAgent(ctx context.Context, t store.Task) (machine.Outcome,
 var shaRE = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
 
 func (p *Provider) collect(ctx context.Context, t store.Task) (machine.Outcome, error) {
-	head, commits, err := p.cfg.Agent.Collect(ctx, taskID(t), t.Repo)
+	base, err := gitx.Resolve(t.Repo, t.Base)
+	if err != nil {
+		return machine.Outcome{}, fmt.Errorf("resolve base: %w", err)
+	}
+	head, commits, err := p.cfg.Agent.Collect(ctx, taskID(t), t.Repo, base)
 	switch {
 	case errors.Is(err, vm.ErrNoCommit):
 		return failed("agent made no commit")

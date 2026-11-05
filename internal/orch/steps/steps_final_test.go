@@ -159,3 +159,12 @@ func TestNoPartialPublicationRealPublisher(t *testing.T) {
 		t.Fatalf("state %s, remote ref %q", tk.State, ref)
 	}
 }
+
+// collect hands the task's own base sha to the agent driver.
+func TestCollectPassesTaskBase(t *testing.T) {
+	e := newEnv(t, nil)
+	e.drain()
+	if e.agent.collectBase != e.base {
+		t.Fatalf("collect got base %q, want %q", e.agent.collectBase, e.base)
+	}
+}

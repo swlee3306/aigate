@@ -75,7 +75,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// Recover only after we own the socket: it assumes a single orchd.
+	// Recover assumes a single orchd per database: it releases every claim.
+	// Owning the socket is not enough (a second orchd may use another socket),
+	// so also hold an exclusive lock on <db>.lock for the whole run.
+	unlock, err := lockDB(d.st.Path())
+	if err != nil {
+		ln.Close()
+		return err
+	}
+	defer unlock()
 	if err := d.m.Recover(ctx); err != nil {
 		ln.Close()
 		return fmt.Errorf("recover: %w", err)
@@ -125,6 +133,24 @@ func (d *Daemon) work(ctx context.Context) {
 		case <-time.After(wait):
 		}
 	}
+}
+
+// lockDB takes an exclusive, non-blocking flock on <db>.lock. The lock is
+// released when the returned func runs or the process exits (also on a crash).
+func lockDB(dbPath string) (func(), error) {
+	path := dbPath + ".lock"
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("cannot open the database lock %s: %w", path, err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, fmt.Errorf("another orchd already runs on database %s (lock %s is held); refusing to start a second one", dbPath, path)
+		}
+		return nil, fmt.Errorf("cannot lock %s: %w", path, err)
+	}
+	return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }, nil
 }
 
 var umaskMu sync.Mutex

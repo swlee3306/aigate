@@ -158,6 +158,9 @@ func Open(path string) (*Store, error) {
 	return s, nil
 }
 
+// Path is the database file.
+func (s *Store) Path() string { return s.path }
+
 // Close closes the database.
 func (s *Store) Close() error { return s.db.Close() }
 
@@ -326,6 +329,14 @@ func (s *Store) TransitionWith(ctx context.Context, id int64, from, to State, no
 		return err
 	}
 	defer tx.Rollback()
+	if err := transitionTx(ctx, tx, id, from, to, note, o); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// transitionTx is the compare-and-set plus the event row, inside tx.
+func transitionTx(ctx context.Context, tx *sql.Tx, id int64, from, to State, note string, o TransitionOpts) error {
 	n := now()
 	var q string
 	var args []any
@@ -363,7 +374,7 @@ func (s *Store) TransitionWith(ctx context.Context, id int64, from, to State, no
 		id, from, to, note, n); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return nil
 }
 
 // Events lists a task's transitions oldest first.
@@ -467,6 +478,11 @@ func (s *Store) ReleaseClaims(ctx context.Context) ([]Task, error) {
 	return out, tx.Commit()
 }
 
+// ErrApprovalResolved is returned by AddApproval when the same (task, kind,
+// hash) entry was already approved or rejected: parking the task again would
+// be a dead end because nobody can answer a resolved entry.
+var ErrApprovalResolved = errors.New("store: approval already resolved")
+
 // AddApproval records a pending approval.
 //   - Same (task_id, kind, hash): idempotent; the existing entry's id is
 //     returned and, while it is pending, only its reason is refreshed. An
@@ -519,7 +535,9 @@ func (s *Store) AddApproval(ctx context.Context, a Approval) (int64, error) {
 			return 0, err
 		}
 	default:
-		return id, tx.Commit() // approved or rejected: history, not touched
+		// approved or rejected: history, not touched. The task asks for the
+		// same approval again, which nothing can answer any more.
+		return id, fmt.Errorf("%w: entry %d (task %d, %s) is already %s", ErrApprovalResolved, id, a.TaskID, a.Kind, cur)
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE approvals_pending SET status=? WHERE task_id=? AND status=? AND id<>?
@@ -594,22 +612,86 @@ func (s *Store) resolve(ctx context.Context, id int64, status string) error {
 		return err
 	}
 	defer tx.Rollback()
-	var kind, cur string
-	err = tx.QueryRowContext(ctx, `SELECT kind, status FROM approvals_pending WHERE id=?`, id).Scan(&kind, &cur)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ErrNotFound
-	}
-	if err != nil {
-		return err
-	}
-	if status == ApprovalApproved && kind == KindDestructiveBlocked {
-		return ErrNotApprovable
-	}
-	if cur != ApprovalPending {
-		return ErrNotPending
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE approvals_pending SET status=? WHERE id=?`, status, id); err != nil {
+	if _, err := resolveTx(ctx, tx, id, status); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// ResolveAndAdvance changes the status of one pending entry (approved or
+// rejected) AND, when that leaves the task's approval to be settled, moves the
+// task out of needs_approval, all in ONE transaction: a failure between the two
+// can never leave an entry resolved with the task still waiting.
+//   - approved: when no approvable pending entry is left, needs_approval -> approveTo.
+//   - rejected: unless the entry is destructive_blocked, needs_approval -> rejectTo.
+//
+// moved is the task as it was before the move (valid when moved is true).
+func (s *Store) ResolveAndAdvance(ctx context.Context, id int64, status string,
+	approveTo, rejectTo State, note string, o TransitionOpts) (before Task, moved bool, err error) {
+	if err := s.alive(); err != nil {
+		return Task{}, false, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Task{}, false, err
+	}
+	defer tx.Rollback()
+	a, err := resolveTx(ctx, tx, id, status)
+	if err != nil {
+		return Task{}, false, err
+	}
+	to := rejectTo
+	if status == ApprovalApproved {
+		var left int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM approvals_pending WHERE task_id=? AND status='pending' AND kind<>?`,
+			a.taskID, KindDestructiveBlocked).Scan(&left); err != nil {
+			return Task{}, false, err
+		}
+		if left > 0 {
+			return Task{}, false, tx.Commit()
+		}
+		to = approveTo
+	} else if a.kind == KindDestructiveBlocked {
+		return Task{}, false, tx.Commit()
+	}
+	t, err := scanTask(tx.QueryRowContext(ctx, `SELECT `+taskCols+` FROM tasks WHERE id=?`, a.taskID))
+	if err != nil {
+		return Task{}, false, err
+	}
+	if t.State != StateNeedsApproval {
+		return Task{}, false, tx.Commit()
+	}
+	if err := transitionTx(ctx, tx, t.ID, t.State, to, note, o); err != nil {
+		return Task{}, false, err
+	}
+	return t, true, tx.Commit()
+}
+
+type resolved struct {
+	taskID int64
+	kind   string
+}
+
+func resolveTx(ctx context.Context, tx *sql.Tx, id int64, status string) (resolved, error) {
+	var kind, cur string
+	var taskID int64
+	var err error
+	err = tx.QueryRowContext(ctx, `SELECT task_id, kind, status FROM approvals_pending WHERE id=?`, id).Scan(&taskID, &kind, &cur)
+	if errors.Is(err, sql.ErrNoRows) {
+		return resolved{}, ErrNotFound
+	}
+	if err != nil {
+		return resolved{}, err
+	}
+	if status == ApprovalApproved && kind == KindDestructiveBlocked {
+		return resolved{}, ErrNotApprovable
+	}
+	if cur != ApprovalPending {
+		return resolved{}, ErrNotPending
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE approvals_pending SET status=? WHERE id=?`, status, id); err != nil {
+		return resolved{}, err
+	}
+	return resolved{taskID, kind}, nil
 }

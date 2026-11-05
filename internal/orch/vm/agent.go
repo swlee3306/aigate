@@ -293,7 +293,9 @@ func parseInfo(b []byte) (info, error) {
 	return in, nil
 }
 
-// Collect brings the agent's commits home. It asks collect-info first and
+// Collect brings the agent's commits home. baseSHA is the task's own base
+// (never the VM's idea of it): commits and size are counted locally over
+// baseSHA..fetched head. It asks collect-info first and
 // rejects before fetching when the commit count or size is over the limit or
 // there is no commit. The fetch then goes over ssh to the wrapper's
 // upload-pack subcommand (read-only, advertises only refs/heads/task-<task>)
@@ -301,9 +303,12 @@ func parseInfo(b []byte) (info, error) {
 // allowed, no tags, and the scratch directory's growth capped. Only after the
 // result is re-checked locally are the objects copied into localRepo, and the
 // only ref written there is refs/orch/<task>/head.
-func (a *AgentVM) Collect(ctx context.Context, task, localRepo string) (headSHA string, commits int, err error) {
+func (a *AgentVM) Collect(ctx context.Context, task, localRepo, baseSHA string) (headSHA string, commits int, err error) {
 	if err := checkTask(task); err != nil {
 		return "", 0, err
+	}
+	if !remote.ValidSHA(baseSHA) {
+		return "", 0, fmt.Errorf("vm: collect needs the task's base commit sha, got %q", baseSHA)
 	}
 	maxCommits, maxBytes := a.MaxCommits, a.MaxBytes
 	if maxCommits <= 0 {
@@ -326,6 +331,12 @@ func (a *AgentVM) Collect(ctx context.Context, task, localRepo string) (headSHA 
 	in, err := parseInfo(raw)
 	if err != nil {
 		return "", 0, err
+	}
+	// The base file lives in the agent's workspace and the agent can rewrite
+	// it: only the task's own base counts. A different one is a tampered
+	// reply, not a result.
+	if in.base != baseSHA {
+		return "", 0, fmt.Errorf("agent collect-info reports base %s, not the task's base %s", in.base, baseSHA)
 	}
 	if in.commits == 0 || in.head == in.base {
 		return "", 0, ErrNoCommit

@@ -51,7 +51,7 @@ func (fakeAgent) Prepare(context.Context, string, string, string) error { return
 func (fakeAgent) Run(context.Context, string, string, string, time.Duration) (vm.RunResult, error) {
 	return vm.RunResult{}, nil
 }
-func (f fakeAgent) Collect(context.Context, string, string) (string, int, error) {
+func (f fakeAgent) Collect(context.Context, string, string, string) (string, int, error) {
 	return f.head, 1, nil
 }
 

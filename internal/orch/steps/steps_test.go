@@ -91,6 +91,7 @@ type fakeAgent struct {
 	prepares, runs, collects   int
 	lastLimit                  time.Duration
 	lastAgent, lastBase, lastT string
+	collectBase                string
 }
 
 func (f *fakeAgent) Prepare(_ context.Context, task, repo, base string) error {
@@ -107,10 +108,11 @@ func (f *fakeAgent) Run(_ context.Context, task, agent, prompt string, limit tim
 	f.lastLimit, f.lastAgent = limit, agent
 	return f.run, f.runErr
 }
-func (f *fakeAgent) Collect(_ context.Context, task, repo string) (string, int, error) {
+func (f *fakeAgent) Collect(_ context.Context, task, repo, base string) (string, int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.collects++
+	f.collectBase = base
 	if f.collectErr != nil {
 		return "", 0, f.collectErr
 	}
@@ -438,8 +440,11 @@ func TestProtectedModifiedNeedsApprovalOnce(t *testing.T) {
 	if tk = e.task(); tk.State != machine.StateVerifying {
 		t.Fatalf("after approve: %s", tk.State)
 	}
-	if tk = e.drain(); tk.State != machine.StateNeedsApproval {
-		t.Fatalf("re-judged: %s", tk.State)
+	// The gate still sees the same protected hash although it was approved:
+	// parking again would be a dead end, so the task fails with a clear error
+	// instead of waiting for an approval nobody can give.
+	if tk = e.drain(); tk.State != machine.StateFailed || !strings.Contains(tk.ErrorText, "already approved") {
+		t.Fatalf("re-judged: %s %q", tk.State, tk.ErrorText)
 	}
 	all, _ := e.st.PendingApprovals(context.Background())
 	if len(all) != 0 {
@@ -515,7 +520,7 @@ func TestCrashMidCollectRerunsCollect(t *testing.T) {
 	if err != nil || !ok || claimed.State != machine.StateCollecting {
 		t.Fatalf("claim: %+v %v %v", claimed, ok, err)
 	}
-	if _, _, err := e.agent.Collect(ctx, "1", e.repo); err != nil {
+	if _, _, err := e.agent.Collect(ctx, "1", e.repo, e.base); err != nil {
 		t.Fatal(err)
 	}
 	e2 := machine.New(e.st, e.p.Steps()) // a restarted process

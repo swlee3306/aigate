@@ -459,3 +459,45 @@ func TestGitEnvNotInherited(t *testing.T) {
 		t.Fatalf("%d %s", code, b)
 	}
 }
+
+// Two orchd on one database (different sockets): the second refuses to start,
+// and a restart works once the first has stopped (lock released on exit).
+func TestSecondDaemonOnSameDBRefused(t *testing.T) {
+	dir := shortDir(t)
+	st, err := store.Open(filepath.Join(dir, "db", "o.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	d1, _ := NewDaemon(Config{Socket: filepath.Join(dir, "a.sock")}, st, noSteps{})
+	done := make(chan error, 1)
+	go func() { done <- d1.Run(ctx) }()
+	<-d1.Ready()
+
+	st2, err := store.Open(filepath.Join(dir, "db", "o.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st2.Close()
+	d2, _ := NewDaemon(Config{Socket: filepath.Join(dir, "b.sock")}, st2, noSteps{})
+	err = d2.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "another orchd already runs") {
+		t.Fatalf("second daemon: %v", err)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	ctx3, cancel3 := context.WithCancel(context.Background())
+	d3, _ := NewDaemon(Config{Socket: filepath.Join(dir, "c.sock")}, st2, noSteps{})
+	done3 := make(chan error, 1)
+	go func() { done3 <- d3.Run(ctx3) }()
+	select {
+	case <-d3.Ready():
+	case err := <-done3:
+		t.Fatalf("restart after the first stopped: %v", err)
+	}
+	cancel3()
+	<-done3
+}

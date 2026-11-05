@@ -41,12 +41,13 @@ func TestDuplicateEnqueueIsIdempotent(t *testing.T) {
 	if len(got) != 1 || got[0].Reason != "third" || got[0].Hash != "hash1" {
 		t.Fatalf("pending: %+v", got)
 	}
-	// An approved entry is history: a repeat does not reopen it.
+	// An approved entry is history: a repeat does not reopen it and says so
+	// (the task would otherwise park with nothing left to approve).
 	if err := st.ApproveApproval(ctx, got[0].ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.Enqueue(ctx, id, store.KindProtectedModified, "b", "h", "hash1", "again"); err != nil {
-		t.Fatal(err)
+	if err := q.Enqueue(ctx, id, store.KindProtectedModified, "b", "h", "hash1", "again"); !errors.Is(err, store.ErrApprovalResolved) {
+		t.Fatalf("err %v", err)
 	}
 	if got, _ = q.Pending(ctx); len(got) != 0 {
 		t.Fatalf("approved entry re-opened: %+v", got)

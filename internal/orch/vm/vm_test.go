@@ -320,7 +320,7 @@ func TestCollectBringsOnlyTheTaskBranch(t *testing.T) {
 	f.prepared(t)
 	res := f.run(t)
 	_ = res
-	head, n, err := f.vm.Collect(context.Background(), task, f.repo)
+	head, n, err := f.vm.Collect(context.Background(), task, f.repo, f.base)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +346,7 @@ func TestCollectRejectsNoCommit(t *testing.T) {
 	f.prepared(t)
 	f.mode(t, "none")
 	f.run(t)
-	if _, _, err := f.vm.Collect(context.Background(), task, f.repo); !errors.Is(err, ErrNoCommit) {
+	if _, _, err := f.vm.Collect(context.Background(), task, f.repo, f.base); !errors.Is(err, ErrNoCommit) {
 		t.Fatalf("err = %v, want ErrNoCommit", err)
 	}
 	if strings.Contains(f.logText(t), "upload-pack") {
@@ -360,7 +360,7 @@ func TestCollectRejectsHugeHistory(t *testing.T) {
 	f.prepared(t)
 	f.mode(t, "commit5")
 	f.run(t)
-	_, _, err := f.vm.Collect(context.Background(), task, f.repo)
+	_, _, err := f.vm.Collect(context.Background(), task, f.repo, f.base)
 	if !errors.Is(err, ErrOverLimit) || !strings.Contains(err.Error(), "commits") {
 		t.Fatalf("err = %v, want ErrOverLimit (commits)", err)
 	}
@@ -378,7 +378,7 @@ func TestCollectRejectsHugeObjects(t *testing.T) {
 	f.prepared(t)
 	f.mode(t, "big")
 	f.run(t)
-	_, _, err := f.vm.Collect(context.Background(), task, f.repo)
+	_, _, err := f.vm.Collect(context.Background(), task, f.repo, f.base)
 	if !errors.Is(err, ErrOverLimit) || !strings.Contains(err.Error(), "bytes") {
 		t.Fatalf("err = %v, want ErrOverLimit (bytes)", err)
 	}
@@ -404,7 +404,7 @@ func TestCollectRejectsExtraRefs(t *testing.T) {
 	if out, err := c.CombinedOutput(); err != nil {
 		t.Fatalf("%v %s", err, out)
 	}
-	head, _, err := f.vm.Collect(context.Background(), task, f.repo)
+	head, _, err := f.vm.Collect(context.Background(), task, f.repo, f.base)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -451,7 +451,7 @@ func TestCollectNeedsPinnedHostKey(t *testing.T) {
 	f.prepared(t)
 	f.run(t)
 	f.vm.Host = "other-vm"
-	if _, _, err := f.vm.Collect(context.Background(), task, f.repo); err == nil {
+	if _, _, err := f.vm.Collect(context.Background(), task, f.repo, f.base); err == nil {
 		t.Fatal("collected from a host that is not in known_hosts")
 	}
 	if out := git(t, f.repo, "for-each-ref", "refs/orch"); out != "" {
@@ -479,5 +479,30 @@ func TestParseFramesAreStrict(t *testing.T) {
 		if _, err := parseInfo([]byte(b)); err == nil {
 			t.Errorf("accepted %q", b)
 		}
+	}
+}
+
+// Collect counts commits over the TASK's base: a base rewritten by the agent
+// (a file it owns) must not shrink the count (reviewer probe).
+func TestCollectIgnoresVMChosenBase(t *testing.T) {
+	f := newFixture(t, "")
+	f.vm.MaxCommits = 3
+	f.prepared(t)
+	f.mode(t, "commit5")
+	f.run(t)
+	third := git(t, f.ws(), "rev-parse", "HEAD~2")
+	git(t, f.repo, "fetch", "-q", f.ws(), "+"+third+":refs/orch/6/head")
+	if err := os.WriteFile(filepath.Join(f.root, task, "base"), []byte(third+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if head, n, err := f.vm.Collect(context.Background(), task, f.repo, f.base); err == nil {
+		t.Fatalf("accepted head %s with %d commits (5 over the task base, limit 3)", head, n)
+	}
+	// an honest base with too many commits is over the limit
+	if err := os.WriteFile(filepath.Join(f.root, task, "base"), []byte(f.base+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.vm.Collect(context.Background(), task, f.repo, f.base); !errors.Is(err, ErrOverLimit) {
+		t.Fatalf("err %v", err)
 	}
 }

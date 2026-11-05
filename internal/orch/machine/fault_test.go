@@ -66,7 +66,7 @@ func (f *fAgent) Run(context.Context, string, string, string, time.Duration) (vm
 	return vm.RunResult{}, nil
 }
 
-func (f *fAgent) Collect(context.Context, string, string) (string, int, error) {
+func (f *fAgent) Collect(context.Context, string, string, string) (string, int, error) {
 	f.mu.Lock()
 	f.collects++
 	n, hook, head := f.collects, f.onCollect, f.head

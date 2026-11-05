@@ -510,3 +510,19 @@ func TestDeletedOrReplacedDBFileIsReported(t *testing.T) {
 		s.Close()
 	}
 }
+
+func TestAddApprovalResolvedIsADeadEnd(t *testing.T) {
+	s, _ := openTemp(t)
+	ctx := context.Background()
+	id, _ := s.CreateTask(ctx, Task{Repo: "/r", Base: "b", Prompt: "p"})
+	aid, err := s.AddApproval(ctx, Approval{TaskID: id, Kind: KindProtectedModified, Hash: "h"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ApproveApproval(ctx, aid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddApproval(ctx, Approval{TaskID: id, Kind: KindProtectedModified, Hash: "h"}); !errors.Is(err, ErrApprovalResolved) {
+		t.Fatalf("err %v", err)
+	}
+}
