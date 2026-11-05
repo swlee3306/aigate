@@ -432,7 +432,7 @@ func TestApproveSummarisesBinaryFile(t *testing.T) {
 	write(t, repo, "tests/golden.bin", "a\x00b\x1b[2K\n")
 	base = commit(t, repo, "base bin")
 	write(t, repo, "tests/golden.bin", "a\x00b\x1b[2K\nc\x00\r\x1b[1A\n")
-	commit(t, repo, "change bin")
+	head := commit(t, repo, "change bin")
 	code, out, errOut := approveTTY(t, repo, base, "yes\n")
 	if code != 0 {
 		t.Fatalf("approve: %d %q %q", code, out, errOut)
@@ -440,7 +440,7 @@ func TestApproveSummarisesBinaryFile(t *testing.T) {
 	if rawUnsafe(out) {
 		t.Fatalf("raw binary bytes printed: %q", out)
 	}
-	if !strings.Contains(out, "binary file changed: tests/golden.bin, 16 bytes (base 8 bytes)") {
+	if !strings.Contains(out, "binary file changed: tests/golden.bin, 16 bytes (base 8 bytes), head blob "+git(t, repo, "rev-parse", head+":tests/golden.bin")+"\n") {
 		t.Fatalf("no binary summary: %q", out)
 	}
 	if c, _, e := run("run", "--repo", repo, "--base", base); c != 0 {
@@ -482,5 +482,88 @@ func TestGitlinkUnderVendorIsApprovable(t *testing.T) {
 	}
 	if c, out, e := run("run", "--repo", repo, "--base", base); c != 0 {
 		t.Fatalf("after approval: %d %s %s", c, out, e)
+	}
+}
+
+// ITEM 1 (fix wave 3): one NUL byte must not turn a protected text or source
+// file into an uninformative "binary file changed" line the human approves
+// blind. approve refuses (64, nothing on stdout, nothing granted) and names
+// the path (escaped) and the reason.
+func TestApproveRefusesNULMasking(t *testing.T) {
+	cases := []struct {
+		name, path, baseContent, headContent, wantReason string
+	}{
+		{"text became binary (ts comment)", "tests/a.test.ts", "it('x', () => {})\n", "it('x', () => {})\n// \x00\n", "텍스트에서 바이너리"},
+		{"text became binary (no source ext)", "tests/golden.dat", "row 1\n", "row 1\n\x00\n", "텍스트에서 바이너리"},
+		{"added binary source file", "tests/b.test.TS", "", "\x00it('y')\n", "바이너리"},
+		{"binary on both sides with source ext", "tests/fixture.json", "{\x00}\n", "{\x00 }\n", "바이너리"},
+		{"added binary Makefile", "tests/Makefile", "", "all:\x00\n", "바이너리"},
+		{"added binary dotfile", "tests/.npmrc", "", "x\x00\n", "바이너리"},
+		{"added binary conftest", "tests/conftest", "", "x\x00\n", "바이너리"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			repo, base := newRepo(t)
+			if c.baseContent != "" {
+				write(t, repo, c.path, c.baseContent)
+				base = commit(t, repo, "base2")
+			}
+			write(t, repo, c.path, c.headContent)
+			commit(t, repo, "nul")
+			code, out, errOut := approveTTY(t, repo, base, "yes\n")
+			if code != 64 || out != "" || rawUnsafe(errOut) {
+				t.Fatalf("want refusal: %d stdout=%q stderr=%q", code, out, errOut)
+			}
+			if !strings.Contains(errOut, c.path) || !strings.Contains(errOut, c.wantReason) || strings.Contains(errOut, "binary file changed") {
+				t.Fatalf("stderr should name %s and %q: %q", c.path, c.wantReason, errOut)
+			}
+			if c.baseContent != "" {
+				if rc, _, _ := run("run", "--repo", repo, "--base", base); rc != 3 {
+					t.Fatalf("refused approve must grant nothing: run exit %d", rc)
+				}
+			}
+		})
+	}
+}
+
+// Genuine binary fixtures (binary on every side that exists, no source
+// extension) keep the summary line, now with the head blob id; an added one
+// and a deleted one too.
+func TestApproveBinaryFixtureSummaries(t *testing.T) {
+	repo, base := newRepo(t)
+	write(t, repo, "tests/old.bin", "o\x00\n")
+	base = commit(t, repo, "base2")
+	write(t, repo, "tests/new.png", "\x89PNG\x00\x1b\n")
+	if err := os.Remove(filepath.Join(repo, "tests/old.bin")); err != nil {
+		t.Fatal(err)
+	}
+	head := commit(t, repo, "fixtures")
+	code, out, errOut := approveTTY(t, repo, base, "yes\n")
+	if code != 0 || rawUnsafe(out) {
+		t.Fatalf("approve: %d %q %q", code, out, errOut)
+	}
+	for _, s := range []string{
+		"binary file changed: tests/new.png, 7 bytes (base 0 bytes), head blob " + git(t, repo, "rev-parse", head+":tests/new.png") + "\n",
+		"binary file changed: tests/old.bin, 0 bytes (base 3 bytes), head blob " + strings.Repeat("0", 40) + "\n",
+		"(2 binary file(s)",
+	} {
+		if !strings.Contains(out, s) {
+			t.Fatalf("missing %q in %q", s, out)
+		}
+	}
+}
+
+// Binary became text: no summary hides the head text. With -U0 the base's
+// binary lines are "-" lines, so the usual unsafe-byte scan refuses on the
+// base's NUL (finding, fail-closed): the head text is never hidden.
+func TestApproveBinaryBecameTextNotSummarised(t *testing.T) {
+	repo, base := newRepo(t)
+	write(t, repo, "tests/data.bin", "a\x00b\n")
+	base = commit(t, repo, "base2")
+	write(t, repo, "tests/data.bin", "now text\n")
+	commit(t, repo, "b2t")
+	code, out, errOut := approveTTY(t, repo, base, "yes\n")
+	if code != 64 || out != "" || rawUnsafe(errOut) || strings.Contains(errOut, "binary file changed") || !strings.Contains(errOut, `\x00`) {
+		t.Fatalf("binary→text: %d %q %q", code, out, errOut)
 	}
 }

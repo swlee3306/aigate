@@ -742,16 +742,76 @@ func TestProtectedDiffGitlink(t *testing.T) {
 				t.Fatalf("gitlink %s: %v", c.name, err)
 			}
 			if len(d.Files) != 1 || d.Files[0].Path != "vendor/sub" || d.Files[0].Status != c.status ||
-				d.Files[0].Binary {
+				d.Files[0].BaseBinary || d.Files[0].HeadBinary {
 				t.Fatalf("files=%+v", d.Files)
 			}
 			if !strings.Contains(d.Text, "Subproject commit") {
 				t.Fatalf("no Subproject line:\n%s", d.Text)
 			}
-			disp := d.DisplayText()
+			disp := d.DisplayText(nil)
 			if strings.Contains(disp, "binary file changed") || !strings.Contains(disp, "Subproject commit") {
 				t.Fatalf("display:\n%s", disp)
 			}
 		})
+	}
+}
+
+// ITEM 1 (fix wave 3): binary-ness is recorded per side; a NUL anywhere in a
+// blob (also past git's 8000-byte window) makes that side binary.
+func TestFileChangeBinaryPerSide(t *testing.T) {
+	r := newRepo(t)
+	pad := strings.Repeat("x", 8100) + "\n"
+	write(t, r, "tests/t2b.ts", "a\n")
+	write(t, r, "tests/b2t.dat", "a\x00b\n")
+	write(t, r, "tests/both.bin", "a\x00\n")
+	write(t, r, "tests/late.txt", "a\n")
+	write(t, r, "tests/gone.bin", "g\x00\n")
+	base := commit(t, r, "base")
+	write(t, r, "tests/t2b.ts", "a\n// \x00\n")
+	write(t, r, "tests/b2t.dat", "plain\n")
+	write(t, r, "tests/both.bin", "a\x00\nb\x00\n")
+	write(t, r, "tests/late.txt", "a\n"+pad+"x\x00\n")
+	write(t, r, "tests/new.png", "\x89PNG\x00\x00")
+	if err := os.Remove(filepath.Join(r, "tests/gone.bin")); err != nil {
+		t.Fatal(err)
+	}
+	head := commit(t, r, "head")
+	d, err := ProtectedDiff(r, base, head, []string{"tests/**"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][2]bool{
+		"tests/t2b.ts": {false, true}, "tests/b2t.dat": {true, false}, "tests/both.bin": {true, true},
+		"tests/late.txt": {false, true}, "tests/new.png": {false, true}, "tests/gone.bin": {true, false},
+	}
+	if len(d.Files) != len(want) {
+		t.Fatalf("files=%+v", d.Files)
+	}
+	for _, f := range d.Files {
+		w := want[f.Path]
+		if f.BaseBinary != w[0] || f.HeadBinary != w[1] {
+			t.Errorf("%s: base/head binary = %v/%v, want %v/%v", f.Path, f.BaseBinary, f.HeadBinary, w[0], w[1])
+		}
+		if f.Path == "tests/late.txt" && f.HeadNULLine != 3 {
+			t.Errorf("late.txt HeadNULLine=%d want 3", f.HeadNULLine)
+		}
+		if len(f.HeadBlob) != 40 {
+			t.Errorf("%s: HeadBlob=%q", f.Path, f.HeadBlob)
+		}
+	}
+	disp := d.DisplayText(nil)
+	headBoth := git(t, r, "rev-parse", head+":tests/both.bin")
+	for _, s := range []string{
+		"binary file changed: tests/both.bin, 6 bytes (base 3 bytes), head blob " + headBoth + "\n",
+		"binary file changed: tests/new.png, 6 bytes (base 0 bytes), head blob ",
+		"binary file changed: tests/gone.bin, 0 bytes (base 3 bytes), head blob " + strings.Repeat("0", 40) + "\n",
+		"+plain\n", // binary became text: the head text is shown, no summary
+	} {
+		if !strings.Contains(disp, s) {
+			t.Errorf("display lacks %q:\n%s", s, disp)
+		}
+	}
+	if strings.Contains(disp, "binary file changed: tests/b2t.dat") {
+		t.Errorf("binary→text file must not be summarised:\n%s", disp)
 	}
 }

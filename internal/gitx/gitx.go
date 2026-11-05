@@ -211,11 +211,32 @@ type ProtDiff struct {
 type FileChange struct {
 	Path   string
 	Status string // git --raw status letter: A, D, M, T, ...
-	// Binary: a NUL in the first 8000 bytes of the base or head blob (git's
-	// heuristic, independent of attributes).
-	Binary             bool
-	BaseSize, HeadSize int64
-	pair               string // "oldsha..newsha" as on the diff "index" line
+	// BaseBinary / HeadBinary: that side's blob contains a NUL byte anywhere
+	// (a superset of git's heuristic, a NUL in the first 8000 bytes;
+	// attributes are never consulted). False for a side that does not exist
+	// (added / deleted file) and for a gitlink (submodule commit) side.
+	BaseBinary, HeadBinary bool
+	BaseSize, HeadSize     int64
+	// BaseBlob / HeadBlob are the full blob ids (all zeros when absent).
+	BaseBlob, HeadBlob string
+	// HeadNULLine is the 1-based line of the first NUL in the head blob, 0
+	// when there is none.
+	HeadNULLine int
+	pair        string // "oldsha..newsha" as on the diff "index" line
+}
+
+// Summarised reports whether DisplayText shows the file as one summary line:
+// only a genuine binary file, binary on every side that exists (added: head;
+// deleted: base; otherwise both). A file that became text is shown as text;
+// a file that became binary must be refused by the caller before display.
+func (f FileChange) Summarised() bool {
+	switch f.Status {
+	case "A":
+		return f.HeadBinary
+	case "D":
+		return f.BaseBinary
+	}
+	return f.BaseBinary && f.HeadBinary
 }
 
 // Changed returns the sorted protected files that existed at base and were
@@ -236,11 +257,15 @@ func (d ProtDiff) Changed() []string {
 	return out
 }
 
-// DisplayText is HashedText with the file section of every binary protected
-// file replaced by one summary line ("binary file changed: <path>, ..."), so
-// the raw bytes of a binary file are never printed. The hash is still over
-// HashedText.
-func (d ProtDiff) DisplayText() string {
+// DisplayText is HashedText with the file section of every summarised
+// (genuine binary) protected file replaced by one summary line
+// ("binary file changed: <path>, <head> bytes (base <base> bytes), head blob
+// <id>"), so the raw bytes of a binary file are never printed. escapePath
+// (nil: identity) renders the path. The hash is still over HashedText.
+func (d ProtDiff) DisplayText(escapePath func(string) string) string {
+	if escapePath == nil {
+		escapePath = func(s string) string { return s }
+	}
 	byPair := map[string][]FileChange{}
 	for _, f := range d.Files {
 		byPair[f.pair] = append(byPair[f.pair], f)
@@ -251,8 +276,8 @@ func (d ProtDiff) DisplayText() string {
 		if q := byPair[pair]; pair != "" && len(q) > 0 {
 			f := q[0]
 			byPair[pair] = q[1:]
-			if f.Binary {
-				fmt.Fprintf(&b, "binary file changed: %s, %d bytes (base %d bytes)\n", f.Path, f.HeadSize, f.BaseSize)
+			if f.Summarised() {
+				fmt.Fprintf(&b, "binary file changed: %s, %d bytes (base %d bytes), head blob %s\n", escapePath(f.Path), f.HeadSize, f.BaseSize, f.HeadBlob)
 				continue
 			}
 		}
@@ -363,21 +388,21 @@ func isZero(sha string) bool { return strings.Trim(sha, "0") == "" }
 // gitlinkMode is the raw-diff mode of a submodule entry (a commit id).
 const gitlinkMode = "160000"
 
-// blobInfo applies git's binary heuristic (a NUL in the first 8000 bytes)
-// to a blob, without consulting attributes, and returns its size.
-func blobInfo(repo, sha string) (bin bool, size int64, err error) {
+// blobInfo reports the 1-based line of the first NUL byte anywhere in a blob
+// (0: none, i.e. text; this covers git's own heuristic of a NUL in the first
+// 8000 bytes), without consulting attributes, and the blob's size.
+func blobInfo(repo, sha string) (nulLine int, size int64, err error) {
 	if isZero(sha) {
-		return false, 0, nil
+		return 0, 0, nil
 	}
 	b, err := run(repo, "cat-file", "blob", sha)
 	if err != nil {
-		return false, 0, err
+		return 0, 0, err
 	}
-	size = int64(len(b))
-	if len(b) > 8000 {
-		b = b[:8000]
+	if i := bytes.IndexByte(b, 0); i >= 0 {
+		nulLine = bytes.Count(b[:i], []byte("\n")) + 1
 	}
-	return bytes.IndexByte(b, 0) >= 0, size, nil
+	return nulLine, int64(len(b)), nil
 }
 
 // ProtectedDiff diffs base..head restricted to the protected globs.
@@ -422,22 +447,21 @@ func ProtectedDiff(repo, base, head string, protected []string) (ProtDiff, error
 		if withRemovals[e.path] {
 			d.FilesWithRemovals = append(d.FilesWithRemovals, e.path)
 		}
-		fc := FileChange{Path: e.path, Status: e.status, pair: e.oldSHA + ".." + e.newSHA}
+		fc := FileChange{Path: e.path, Status: e.status, BaseBlob: e.oldSHA, HeadBlob: e.newSHA, pair: e.oldSHA + ".." + e.newSHA}
 		for i, side := range [][2]string{{e.oldMode, e.oldSHA}, {e.newMode, e.newSHA}} {
 			if side[0] == gitlinkMode {
 				// a submodule commit, not a blob: nothing to read; the diff
 				// text shows it as a "Subproject commit <sha>" line
 				continue
 			}
-			bin, size, err := blobInfo(repo, side[1])
+			nul, size, err := blobInfo(repo, side[1])
 			if err != nil {
 				return d, err
 			}
-			fc.Binary = fc.Binary || bin
 			if i == 0 {
-				fc.BaseSize = size
+				fc.BaseBinary, fc.BaseSize = nul > 0, size
 			} else {
-				fc.HeadSize = size
+				fc.HeadBinary, fc.HeadSize, fc.HeadNULLine = nul > 0, size, nul
 			}
 		}
 		d.Files = append(d.Files, fc)

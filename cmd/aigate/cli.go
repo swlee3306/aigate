@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -178,13 +179,20 @@ func cmdApprove(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	// Everything shown is checked BEFORE anything is printed: a control
-	// sequence (ESC, CR, ...) or bidi override in a line or path could make
-	// the screen hide what the human approves. Binary files are shown as a
-	// summary line; the hash stays over the raw bytes (HashedText).
-	display := p.Diff.DisplayText()
-	if msg := unsafeApproveText(p, display); msg != "" {
-		fmt.Fprintf(stderr, "aigate: approve 거부: %s. 터미널 제어·비정상 문자가 있는 diff는 화면에서 내용을 숨길 수 있어 승인하지 않습니다(아무것도 기록하지 않음). 해당 문자를 없앤 커밋으로 다시 실행하세요.\n", msg)
+	// Everything shown is checked BEFORE anything is printed. A file that
+	// became binary, or a source/config/text-named file that is binary at
+	// head, is refused: its summary line would let one NUL byte hide the
+	// content the human approves. Then a control sequence (ESC, lone CR, ...)
+	// or bidi override in a line or path could make the screen hide what the
+	// human approves. Genuine binary files are shown as a summary line; the
+	// hash stays over the raw bytes (HashedText).
+	if msg, _ := binaryRefusal(p); msg != "" {
+		fmt.Fprintf(stderr, "aigate: approve 거부: %s. 바이너리 요약 한 줄로는 사람이 내용을 볼 수 없어 승인하지 않습니다(승인은 기록하지 않음). NUL 바이트를 없앤 커밋으로 다시 실행하세요.\n", msg)
+		return exitGateError
+	}
+	display := p.Diff.DisplayText(textsafe.Escape)
+	if msg, _ := unsafeApproveText(p, display); msg != "" {
+		fmt.Fprintf(stderr, "aigate: approve 거부: %s. 터미널 제어·비정상 문자가 있는 diff는 화면에서 내용을 숨길 수 있어 승인하지 않습니다(승인은 기록하지 않음). 해당 문자를 없앤 커밋으로 다시 실행하세요.\n", msg)
 		return exitGateError
 	}
 	fmt.Fprintf(stdout, "base: %s\nhead: %s\n", p.Base, p.Head)
@@ -243,17 +251,70 @@ func cmdApprove(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 func binaryCount(p gate.Protected) int {
 	n := 0
 	for _, f := range p.Diff.Files {
-		if f.Binary {
+		if f.Summarised() {
 			n++
 		}
 	}
 	return n
 }
 
+// Refusal reason codes (also the ledger's approval_refused "reason").
+const (
+	reasonUnsafeBytes      = "unsafe_bytes"
+	reasonTextBecameBinary = "text_became_binary"
+	reasonBinarySource     = "binary_source_file"
+)
+
+// textLikeExt are extensions (lower case) of files that are source, config
+// or text: binary content in them is never a genuine fixture to summarise.
+var textLikeExt = map[string]bool{}
+
+// textLikeName are extension-less file names (lower case) treated the same.
+var textLikeName = map[string]bool{}
+
+func init() {
+	for _, e := range strings.Fields(".ts .tsx .js .jsx .mjs .cjs .go .py .rb .java .kt .c .h .cc .cpp .cs .rs .php .sh .bash .zsh .ini .cfg .conf .toml .yml .yaml .json .xml .html .css .md .txt .lock .mod .sum .gradle .properties .env") {
+		textLikeExt[e] = true
+	}
+	for _, n := range strings.Fields("Makefile Dockerfile Jenkinsfile Rakefile .gitattributes .gitmodules .npmrc conftest") {
+		textLikeName[strings.ToLower(n)] = true
+	}
+}
+
+// isTextLike reports whether a path names a source, config or text file
+// (case-insensitive extension, or one of the known extension-less names).
+func isTextLike(p string) bool {
+	base := strings.ToLower(path.Base(p))
+	return textLikeName[base] || textLikeExt[path.Ext(base)]
+}
+
+// binaryRefusal returns a description (escaped path, never raw bytes) and a
+// reason code when a protected file must not be shown as a binary summary:
+// a text file that became binary (M/T), or a file that is binary at head and
+// added or modified although its name says source/config/text.
+func binaryRefusal(p gate.Protected) (msg, reason string) {
+	for _, f := range p.Diff.Files {
+		if !f.HeadBinary || f.Status == "D" {
+			continue
+		}
+		where := "NUL 바이트"
+		if f.HeadNULLine > 0 {
+			where = fmt.Sprintf("head %d번째 줄에 \\x00(NUL) 바이트", f.HeadNULLine)
+		}
+		if f.Status != "A" && !f.BaseBinary {
+			return fmt.Sprintf("보호 파일 '%s' 가 텍스트에서 바이너리로 바뀌었습니다(base는 텍스트, %s)", textsafe.Escape(f.Path), where), reasonTextBecameBinary
+		}
+		if isTextLike(f.Path) {
+			return fmt.Sprintf("보호 파일 '%s' 는 소스·설정·텍스트 파일 이름인데 head에서 바이너리입니다(%s)", textsafe.Escape(f.Path), where), reasonBinarySource
+		}
+	}
+	return "", ""
+}
+
 // unsafeApproveText returns a description (with escapes only, never the raw
-// bytes) of the first unsafe byte in a path or line approve would print, or
-// "" when everything is safe to show.
-func unsafeApproveText(p gate.Protected, display string) string {
+// bytes) of the first unsafe byte in a path or line approve would print, and
+// the reason code, or "" when everything is safe to show.
+func unsafeApproveText(p gate.Protected, display string) (string, string) {
 	lists := []struct {
 		what  string
 		paths []string
@@ -262,9 +323,9 @@ func unsafeApproveText(p gate.Protected, display string) string {
 		for i, f := range l.paths {
 			// a path is printed on one line: a newline in it is unsafe too
 			if fd, bad := textsafe.FirstUnsafe(f); bad {
-				return fmt.Sprintf("%s 목록 %d번째 경로 '%s' 의 %d번째 바이트에 %s", l.what, i+1, textsafe.Escape(f), fd.Offset+1, fd.Desc)
+				return fmt.Sprintf("%s 목록 %d번째 경로 '%s' 의 %d번째 바이트에 %s", l.what, i+1, textsafe.Escape(f), fd.Offset+1, fd.Desc), reasonUnsafeBytes
 			} else if j := strings.IndexByte(f, '\n'); j >= 0 {
-				return fmt.Sprintf("%s 목록 %d번째 경로 '%s' 의 %d번째 바이트에 \\x0a(줄바꿈)", l.what, i+1, textsafe.Escape(f), j+1)
+				return fmt.Sprintf("%s 목록 %d번째 경로 '%s' 의 %d번째 바이트에 \\x0a(줄바꿈)", l.what, i+1, textsafe.Escape(f), j+1), reasonUnsafeBytes
 			}
 		}
 	}
@@ -277,9 +338,9 @@ func unsafeApproveText(p gate.Protected, display string) string {
 				break
 			}
 		}
-		return fmt.Sprintf("승인할 diff 텍스트 %d번째 줄(%s)에 %s", fd.Line, file, fd.Desc)
+		return fmt.Sprintf("승인할 diff 텍스트 %d번째 줄(%s)에 %s", fd.Line, file, fd.Desc), reasonUnsafeBytes
 	}
-	return ""
+	return "", ""
 }
 
 func cmdLedger(args []string, stdout, stderr io.Writer) int {
