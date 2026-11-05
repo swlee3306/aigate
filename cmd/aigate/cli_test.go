@@ -533,7 +533,7 @@ func TestApproveBinaryFixtureSummaries(t *testing.T) {
 	repo, base := newRepo(t)
 	write(t, repo, "tests/old.bin", "o\x00\n")
 	base = commit(t, repo, "base2")
-	write(t, repo, "tests/new.png", "\x89PNG\x00\x1b\n")
+	write(t, repo, "tests/new.png", "\x89PNG\r\n\x1a\n\x00\x1b\n") // fix wave 5: real PNG magic
 	if err := os.Remove(filepath.Join(repo, "tests/old.bin")); err != nil {
 		t.Fatal(err)
 	}
@@ -543,7 +543,7 @@ func TestApproveBinaryFixtureSummaries(t *testing.T) {
 		t.Fatalf("approve: %d %q %q", code, out, errOut)
 	}
 	for _, s := range []string{
-		"binary file changed: tests/new.png, 7 bytes (base 0 bytes), head blob " + git(t, repo, "rev-parse", head+":tests/new.png") + "\n",
+		"binary file changed: tests/new.png, 11 bytes (base 0 bytes), head blob " + git(t, repo, "rev-parse", head+":tests/new.png") + "\n",
 		"binary file changed: tests/old.bin, 0 bytes (base 3 bytes), head blob " + strings.Repeat("0", 40) + "\n",
 		"(2 binary file(s)",
 	} {

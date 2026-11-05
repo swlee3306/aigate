@@ -216,6 +216,8 @@ func cmdApprove(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		switch reason {
 		case reasonBinaryBecameText:
 			why = "승인하지 않습니다(승인은 기록하지 않음). 변경을 '이 파일 삭제 + 텍스트를 새 이름의 파일로 추가'로 나눈 커밋으로 다시 실행하세요: 삭제된 바이너리는 요약 한 줄로, 추가한 텍스트는 그대로 보여 검토할 수 있습니다."
+		case reasonBinaryMagicMismatch:
+			why = "확장자와 내용의 형식이 맞지 않는 바이너리는 러너가 다른 방법(예: Node require()는 모르는 확장자를 JS로 실행)으로 코드로 불러올 수 있어 요약 한 줄로 승인하지 않습니다(승인은 기록하지 않음). 진짜 그 형식의 파일로 바꾸거나, 직접 `git diff --text`로 검토하고 맞는 이름의 텍스트 파일로 둔 커밋으로 다시 실행하세요."
 		case reasonBinaryLoadable:
 			why = "러너가 코드로 불러올 수 있는 바이너리는 요약 한 줄로 검토할 수 없어 승인하지 않습니다(승인은 기록하지 않음). 사람이 저장소 밖에서 직접 검토하세요: 산출물을 직접 확인한 뒤 사람이 직접 커밋해 다음 base에 들어가게 합니다. 우회 플래그는 의도적으로 없습니다."
 		case reasonBinaryExecutable, reasonBinaryUnknown:
@@ -309,7 +311,73 @@ const (
 	// A binary a runner can load as code (isLoadableCode): never summarised,
 	// reviewed out-of-band instead (fix wave 5 R1).
 	reasonBinaryLoadable = "binary_loadable_code"
+	// An allowlisted type with a magic number whose head blob does not start
+	// with it (fix wave 5 R2): the extension says image, the content may be
+	// anything a runner loads by other means (Node require() runs it as JS).
+	reasonBinaryMagicMismatch = "binary_magic_mismatch"
 )
+
+// at reports whether b holds m at offset off.
+func at(b []byte, off int, m string) bool {
+	return len(b) >= off+len(m) && string(b[off:off+len(m)]) == m
+}
+
+func anyPrefix(ms ...string) func([]byte) bool {
+	return func(b []byte) bool {
+		for _, m := range ms {
+			if at(b, 0, m) {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+func riff(form string) func([]byte) bool {
+	return func(b []byte) bool { return at(b, 0, "RIFF") && at(b, 8, form) }
+}
+
+func ftyp(b []byte) bool { return at(b, 4, "ftyp") }
+
+// binaryMagic maps each allowlisted extension that has a magic number to a
+// check of the head blob's first bytes (gitx.HeadPrefixLen of them). This is
+// a heuristic: a valid header followed by anything else still passes.
+var binaryMagic = map[string]func([]byte) bool{
+	".png": anyPrefix("\x89PNG\r\n\x1a\n"), ".jpg": anyPrefix("\xff\xd8\xff"), ".jpeg": anyPrefix("\xff\xd8\xff"),
+	".gif": anyPrefix("GIF87a", "GIF89a"), ".webp": riff("WEBP"), ".bmp": anyPrefix("BM"),
+	".ico": anyPrefix("\x00\x00\x01\x00"), ".icns": anyPrefix("icns"), ".tif": anyPrefix("II*\x00", "MM\x00*"),
+	".tiff": anyPrefix("II*\x00", "MM\x00*"), ".pdf": anyPrefix("%PDF-"), ".zip": anyPrefix("PK\x03\x04", "PK\x05\x06"),
+	".gz": anyPrefix("\x1f\x8b"), ".tgz": anyPrefix("\x1f\x8b"), ".svgz": anyPrefix("\x1f\x8b"), ".bz2": anyPrefix("BZh"),
+	".xz": anyPrefix("\xfd7zXZ\x00"), ".zst": anyPrefix("\x28\xb5\x2f\xfd"), ".7z": anyPrefix("7z\xbc\xaf\x27\x1c"),
+	".woff": anyPrefix("wOFF"), ".woff2": anyPrefix("wOF2"), ".ttf": anyPrefix("\x00\x01\x00\x00", "true"), ".otf": anyPrefix("OTTO"),
+	// EOT: EOTSize, FontDataSize, Version, Flags, PANOSE[10], Charset,
+	// Italic, Weight (4+4+4+4+10+1+1+4 = 32 bytes), fsType (2), then the
+	// magic number 0x504C ("LP") at offset 34.
+	".eot":    func(b []byte) bool { return at(b, 34, "LP") },
+	".sqlite": anyPrefix("SQLite format 3\x00"), ".sqlite3": anyPrefix("SQLite format 3\x00"),
+	// ID3 tag, or an MPEG audio frame sync (11 set bits: FF Ex / FF Fx)
+	".mp3": func(b []byte) bool { return at(b, 0, "ID3") || len(b) >= 2 && b[0] == 0xff && b[1]&0xe0 == 0xe0 },
+	".mp4": ftyp, ".m4a": ftyp, ".mov": ftyp, ".heic": ftyp, ".avif": ftyp,
+	".wav": riff("WAVE"), ".ogg": anyPrefix("OggS"), ".flac": anyPrefix("fLaC"), ".webm": anyPrefix("\x1a\x45\xdf\xa3"),
+	".psd": anyPrefix("8BPS"), ".tar": func(b []byte) bool { return at(b, 257, "ustar") }, ".npy": anyPrefix("\x93NUMPY"),
+	".npz": anyPrefix("PK"), ".parquet": anyPrefix("PAR1"),
+}
+
+// magiclessExt are the allowlisted types without a reliable magic number
+// (".db" may be SQLite or anything else): a summary only for a file that
+// already existed at base, outside node_modules/ and vendor/.
+var magiclessExt = map[string]bool{".bin": true, ".dat": true, ".db": true, ".pb": true}
+
+// hasDepDir reports whether a path component is node_modules or vendor
+// (case-insensitive).
+func hasDepDir(p string) bool {
+	for _, seg := range strings.Split(p, "/") {
+		if strings.EqualFold(seg, "node_modules") || strings.EqualFold(seg, "vendor") {
+			return true
+		}
+	}
+	return false
+}
 
 // binaryAllowExt are the extensions (lower case, with the dot) of genuine
 // binary types that approve may show as a one-line summary. This is an
@@ -377,7 +445,10 @@ func hasBinDir(p string) bool {
 
 // summaryRefusal returns "" when f (binary at head, not deleted) is an
 // allowlisted genuine binary that may be summarised, else the reason code and
-// a short Korean explanation of the rule it breaks.
+// a short Korean explanation of the rule it breaks. Order: executable,
+// loadable code, source/text name, not allowlisted, then the content rule:
+// a magic-less type only as a modified existing file outside node_modules/
+// and vendor/, any other type only when the head starts with its magic.
 func summaryRefusal(f gitx.FileChange) (reason, why string) {
 	var exe []string
 	if f.HeadMode != "100644" {
@@ -396,8 +467,17 @@ func summaryRefusal(f gitx.FileChange) (reason, why string) {
 		return reasonBinaryLoadable, "러너가 코드로 불러올 수 있는 바이너리 형식입니다(네이티브 애드온·확장 모듈·라이브러리·목적 파일·실행 파일·wasm·class·jar)"
 	case isTextLike(f.Path):
 		return reasonBinarySource, "소스·설정·텍스트 파일 이름입니다"
-	case !binaryAllowExt[strings.ToLower(path.Ext(path.Base(f.Path)))]:
+	}
+	ext := strings.ToLower(path.Ext(path.Base(f.Path)))
+	switch {
+	case !binaryAllowExt[ext]:
 		return reasonBinaryUnknown, "확장자가 요약을 허용하는 바이너리 형식 목록에 없습니다"
+	case magiclessExt[ext]:
+		if f.Status == "A" || !f.BaseBinary || hasDepDir(f.Path) {
+			return reasonBinaryUnknown, "'" + ext + "' 처럼 형식 표시(매직 바이트)가 없는 바이너리는 base에 이미 있던 바이너리 파일을 바꾼 경우에만, node_modules/·vendor/ 밖에서만 요약을 허용합니다"
+		}
+	case !binaryMagic[ext](f.HeadPrefix):
+		return reasonBinaryMagicMismatch, "확장자는 '" + ext + "' 인데 내용이 그 형식이 아닙니다(파일 앞부분의 형식 표시(매직 바이트)가 맞지 않음)"
 	}
 	return "", ""
 }
