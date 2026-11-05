@@ -9,7 +9,7 @@ here=$(cd "$(dirname "$0")" && pwd); . "$here/lib.sh"
 cmd=${1:-}; vm=${2:-}; n=${3:-3}
 case $vm in orch-vm) ip=192.168.1.200 ;; agent-vm) ip=10.70.0.12 ;; test-vm) ip=10.70.0.13 ;; *) die "vm must be orch-vm|agent-vm|test-vm" ;; esac
 case $vm in orch-vm) ip_inner=10.70.0.11 ;; agent-vm) ip_inner=10.70.0.12 ;; test-vm) ip_inner=10.70.0.13 ;; esac
-snap="$vm-clean"; vol="${vm}-root"; K=$HOME/.ssh/aigate_admin_ed25519
+snap="${AIGATE_SNAPSHOT:-$vm-clean}"; vol="${vm}-root"; K=$HOME/.ssh/aigate_admin_ed25519
 J="ssh -i $K -o IdentitiesOnly=yes -o BatchMode=yes -W %h:%p ubuntu@192.168.1.200"
 sshvm() { if [ "$vm" = orch-vm ]; then ssh -i "$K" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=3 "ubuntu@$ip" "$@"
           else ssh -i "$K" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ProxyCommand="$J" "ubuntu@$ip" "$@"; fi; }  # inner VMs: host keys change on re-create
@@ -24,7 +24,9 @@ case $cmd in
   create)
     osw volume snapshot show "$snap" -f value -c id >/dev/null 2>&1 && die "snapshot $snap exists; delete it first"
     t0=$(now); stop_vm
-    osw volume snapshot create --force --volume "$vol" "$snap" >/dev/null; wait_status volume\ snapshot "$snap" available
+    # snapshot the volume the server really boots from (after a restore it is "<vm>-root-HHMMSS", not "<vm>-root")
+    cur=$(osw server show "$vm" -f json -c volumes_attached | python3 -c 'import sys,json; print(json.load(sys.stdin)["volumes_attached"][0]["id"])')
+    osw volume snapshot create --force --volume "$cur" "$snap" >/dev/null; wait_status volume\ snapshot "$snap" available
     start_vm; wait_ssh; echo "create: $(( $(now)-t0 )) s (stop+snapshot+start+ssh)" ;;
   restore)
     # `volume revert` fails on the homeserver (Cinder has no oslo_concurrency lock_path) and needs an

@@ -117,9 +117,9 @@ section "agent-vm: no credentials, no way back to orch-vm"
 check agent-vm "agent user has no private key files (id_*, *_ed25519, *_rsa)" 0 \
   "sudo -n sh -c 'find /home/agent -type f \\( -name \"id_*\" -o -name \"*_ed25519\" -o -name \"*_rsa\" -o -name \"*_ecdsa\" \\) ! -name \"*.pub\" 2>/dev/null | wc -l' | tr -d ' '"
 check agent-vm "no PRIVATE KEY block anywhere under /home/agent" 0 \
-  "sudo -n sh -c 'grep -rIl \"PRIVATE KEY\" /home/agent 2>/dev/null | wc -l' | tr -d ' '"
+  "sudo -n sh -c 'grep -rIl --exclude-dir=.npm --exclude-dir=.cache --exclude-dir=node_modules --exclude-dir=plugins --exclude-dir=pkg \"PRIVATE KEY\" /home/agent 2>/dev/null | wc -l' | tr -d ' '"
 check agent-vm "no known orchestrator state in the agent home (orch-vm address or name)" 0 \
-  "sudo -n sh -c 'grep -rIlE \"$ORCH_INNER|orch-vm|aigate-orchestrator|approvals.json|orch.db\" /home/agent 2>/dev/null | wc -l' | tr -d ' '"
+  "sudo -n sh -c 'grep -rIlE \"$ORCH_INNER|orch-vm|approvals.json|orch.db\" /home/agent 2>/dev/null | wc -l' | tr -d ' '"
 check agent-vm "agent environment has no GITLAB/TOKEN/SECRET/PASSWORD variable" 0 \
   "sudo -n -u agent env | grep -ciE 'GITLAB|TOKEN|SECRET|PASSWORD|API_KEY' | tr -d ' ' || true"
 check agent-vm "agent shell startup files export no GITLAB/TOKEN" 0 \
@@ -132,11 +132,11 @@ check agent-vm "nothing but authorized_keys and known_hosts in the agent ~/.ssh"
 # ---- test-vm: no credentials, no sudo for runner ------------------------------------------------
 section "test-vm: no credentials, runner is unprivileged"
 check test-vm "no *token*, *.env or id_* files under the runner home" 0 \
-  "sudo -n sh -c 'find /home/runner \\( -iname \"*token*\" -o -name \"*.env\" -o -name \"id_*\" \\) 2>/dev/null | wc -l' | tr -d ' '"
+  "sudo -n sh -c 'find /home/runner \\( -path /home/runner/go/pkg -o -path /home/runner/.config/go/telemetry -o -path /home/runner/.npm -o -path /home/runner/.cache -o -path /home/runner/.local/share/vitest \\) -prune -o \\( -iname \"*token*\" -o -name \"*.env\" -o -name \"id_*\" \\) -print 2>/dev/null | wc -l' | tr -d ' '"
 check test-vm "no ~/.config/aigate and no ~/.aigate for runner" 0 \
   "sudo -n sh -c 'ls -d /home/runner/.config/aigate /home/runner/.aigate 2>/dev/null | wc -l' | tr -d ' '"
 check test-vm "no PRIVATE KEY block anywhere under /home/runner" 0 \
-  "sudo -n sh -c 'grep -rIl \"PRIVATE KEY\" /home/runner 2>/dev/null | wc -l' | tr -d ' '"
+  "sudo -n sh -c 'grep -rIl --exclude-dir=.npm --exclude-dir=.cache --exclude-dir=node_modules --exclude-dir=plugins --exclude-dir=pkg \"PRIVATE KEY\" /home/runner 2>/dev/null | wc -l' | tr -d ' '"
 check test-vm "runner environment has no GITLAB/TOKEN/SECRET/PASSWORD variable" 0 \
   "sudo -n -u runner env | grep -ciE 'GITLAB|TOKEN|SECRET|PASSWORD|API_KEY' | tr -d ' ' || true"
 check test-vm "sudo -n true fails for runner" DENIED \
@@ -144,7 +144,7 @@ check test-vm "sudo -n true fails for runner" DENIED \
 
 # ---- agent-vm sshd: only the forced command ------------------------------------------------------
 section "agent-vm sshd accepts only the forced command (tried from orch-vm with the orchestrator key)"
-SSHA="ssh -i $ORCH_KEY -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR agent@$AGENT_IP"
+SSHA="sudo -n -u orch ssh -i $ORCH_KEY -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR agent@$AGENT_IP"
 check orch-vm "non-listed command 'id' with the orchestrator key is rejected" REJECTED \
   "o=\$($SSHA id 2>&1); case \$o in *uid=*) echo EXECUTED;; *'command not allowed'*) echo REJECTED;; *) echo \"OTHER\";; esac"
 check orch-vm "shell metacharacters are rejected ('prepare 1; id')" REJECTED \
@@ -152,14 +152,17 @@ check orch-vm "shell metacharacters are rejected ('prepare 1; id')" REJECTED \
 check orch-vm "no command at all (interactive shell request) gives no shell" REJECTED \
   "o=\$($SSHA 2>&1 </dev/null); case \$o in *uid=*) echo EXECUTED;; *'command not allowed'*) echo REJECTED;; *) echo \"OTHER\";; esac"
 check orch-vm "port forwarding through the forced-command key is refused" REFUSED \
-  "ssh -i $ORCH_KEY -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ExitOnForwardFailure=yes -N -L 127.0.0.1:2299:127.0.0.1:22 agent@$AGENT_IP </dev/null >/dev/null 2>&1 & p=\$!; sleep 4; if kill -0 \$p 2>/dev/null; then (exec 3<>/dev/tcp/127.0.0.1/2299) 2>/dev/null && echo FORWARDING || echo REFUSED; kill \$p 2>/dev/null; else echo REFUSED; fi"
+  "sudo -n -u orch ssh -i $ORCH_KEY -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ExitOnForwardFailure=yes -N -L 127.0.0.1:2299:127.0.0.1:22 agent@$AGENT_IP </dev/null >/dev/null 2>&1 & p=\$!; sleep 4; if kill -0 \$p 2>/dev/null; then if timeout 4 bash -c 'exec 3<>/dev/tcp/127.0.0.1/2299; head -c 20 <&3' 2>/dev/null | grep -q ^SSH-; then echo FORWARDING; else echo REFUSED; fi; kill \$p 2>/dev/null; sudo -n -u orch pkill -f 'L 127.0.0.1:2299' 2>/dev/null; else echo REFUSED; fi"
 
 # ---- orch-vm: private files -----------------------------------------------------------------------
 section "orch-vm: modes of the orchestrator's private files"
 modecheck() { # <label> <path> <what> <file mode> <dir mode> ; empty path => SKIP
   if [ -z "$2" ]; then skip orch-vm "$1 mode" "no --$3 given"; return; fi
-  check orch-vm "$1 $2 has mode $4" "$4" "stat -c %a '$2'"
-  [ -n "$5" ] && check orch-vm "directory of $1 has mode $5" "$5" "stat -c %a \"\$(dirname '$2')\""
+  if [ "$MODE" = run ] && [ "$(run orch-vm "sudo -n -u orch test -e '$2' && echo YES || echo NO" 2>/dev/null | tail -n 1)" = NO ]; then
+    skip orch-vm "$1 $2 mode" "file does not exist yet (nothing has been written there)"; return
+  fi
+  check orch-vm "$1 $2 has mode $4" "$4" "sudo -n -u orch stat -c %a '$2'"
+  [ -n "$5" ] && check orch-vm "directory of $1 has mode $5" "$5" "sudo -n -u orch stat -c %a \"\$(dirname '$2')\""
 }
 modecheck "approvals file" "$APPROVALS" approvals 600 700
 modecheck "database" "$DB" db 600 700

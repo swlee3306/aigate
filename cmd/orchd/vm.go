@@ -26,7 +26,7 @@ type vmFlags struct {
 	AgentHost, AgentUser, AgentKey, AgentKnownHosts, AgentJump string
 	TestHost, TestUser, TestKey, TestKnownHosts, TestRepoDir   string
 	TestWorkDir, TestJump                                      string
-	CloudCmd                                                   string
+	CloudCmd, TestSnapshot                                     string
 	AgentTimeout                                               time.Duration
 	RestoreEachJob                                             bool
 	ReportDir, GateHome                                        string
@@ -53,6 +53,7 @@ func (v *vmFlags) register(fs *flag.FlagSet) {
 	s(&v.TestWorkDir, "test-work-dir", "", "absolute work directory on the test VM (default /tmp)")
 	s(&v.TestJump, "test-jump", "", "optional user@host jump host for the test VM")
 	s(&v.CloudCmd, "cloud-cmd", "", "command prefix for the openstack CLI used by TestVM.Restore, whitespace separated (default: the driver's)")
+	s(&v.TestSnapshot, "test-snapshot", "", "Cinder snapshot the test VM is restored from (default <test VM name>-clean)")
 	s(&v.ReportDir, "report-dir", "", "directory for verification reports (default <db dir>/reports)")
 	s(&v.GateHome, "gate-home", "", "gate home for approvals and ledger (default <db dir>/gate-home)")
 	s(&v.PublishAllow, "publish-allow", "", "comma separated publish actions that may run without a human (push_branch,draft_pr,notify); empty = every action waits for approval")
@@ -152,8 +153,8 @@ func (v *vmFlags) provider(st *store.Store, dbPath string) (api.StepProvider, er
 	if _, err := remote.NewSSH(sshCfg); err != nil { // validates host, user, paths early
 		return nil, fmt.Errorf("test VM: %w", err)
 	}
-	cloud := &vm.OpenStackCLI{Prefix: strings.Fields(v.CloudCmd), Probe: tcpProbe(v.TestHost)}
-	test := &vm.TestVM{Cloud: cloud, SSH: sshCfg}
+	cloud := &vm.OpenStackCLI{Prefix: strings.Fields(v.CloudCmd), Probe: tcpProbe(v.TestHost), Snapshot: v.TestSnapshot}
+	test := &vm.TestVM{Cloud: cloud, SSH: sshCfg, Snapshot: v.TestSnapshot}
 	cfg := steps.DefaultConfig()
 	cfg.Agent, cfg.Test = agent, test
 	cfg.AgentTimeout, cfg.RestoreEachJob = v.AgentTimeout, v.RestoreEachJob
