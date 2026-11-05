@@ -1,6 +1,6 @@
 // Package textsafe finds and escapes bytes that a terminal or a markdown
-// viewer could interpret instead of showing: C0 controls other than "\n" and
-// "\t" (ESC, CR, NUL, ...), DEL, invalid UTF-8, C1 controls (U+0080–U+009F)
+// viewer could interpret instead of showing: C0 controls other than "\n",
+// "\t" and a "\r" immediately followed by "\n" (ESC, lone CR, NUL, ...), DEL, invalid UTF-8, C1 controls (U+0080–U+009F)
 // and the bidi embedding/override/isolate characters (U+202A–U+202E,
 // U+2066–U+2069). It is a leaf package.
 package textsafe
@@ -18,7 +18,12 @@ type Finding struct {
 	Desc   string // `\xNN` for a byte, `U+XXXX` for a rune; never the raw text
 }
 
+// crlf reports whether s[i] is a "\r" immediately followed by "\n" (a CRLF
+// line ending: the CR returns to a column the LF then leaves, hiding nothing).
+func crlf(s string, i int) bool { return s[i] == '\r' && i+1 < len(s) && s[i+1] == '\n' }
+
 // unsafeRune reports whether r (decoded with width size) is unsafe to show.
+// A "\r" is reported unsafe here; callers exempt CRLF with crlf.
 func unsafeRune(r rune, size int) bool {
 	switch {
 	case r == utf8.RuneError && size <= 1:
@@ -43,12 +48,12 @@ func describe(s string, i int, r rune, size int) string {
 }
 
 // FirstUnsafe returns the first unsafe byte or rune of s; ok is false when s
-// is entirely safe.
+// is entirely safe. "\r\n" is safe; a lone "\r" is not.
 func FirstUnsafe(s string) (f Finding, found bool) {
 	line := 1
 	for i := 0; i < len(s); {
 		r, size := utf8.DecodeRuneInString(s[i:])
-		if unsafeRune(r, size) {
+		if unsafeRune(r, size) && !crlf(s, i) {
 			return Finding{Offset: i, Line: line, Desc: describe(s, i, r, size)}, true
 		}
 		if r == '\n' {
@@ -69,6 +74,8 @@ func escape(s string, keepNewline bool) string {
 		switch {
 		case r == '\n' && !keepNewline:
 			b.WriteString(`\x0a`)
+		case keepNewline && crlf(s, i):
+			b.WriteByte('\r')
 		case unsafeRune(r, size) && (r < 0x80 || size <= 1):
 			fmt.Fprintf(&b, `\x%02x`, s[i])
 		case unsafeRune(r, size):
@@ -85,5 +92,5 @@ func escape(s string, keepNewline bool) string {
 // written as a visible escape (`\x1b`, `\x0a`, `\xff`, `‮`).
 func Escape(s string) string { return escape(s, false) }
 
-// EscapeText is Escape but keeps "\n" (and "\t") as they are.
+// EscapeText is Escape but keeps "\n", "\t" and CRLF ("\r\n") as they are.
 func EscapeText(s string) string { return escape(s, true) }

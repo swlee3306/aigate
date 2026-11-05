@@ -567,3 +567,54 @@ func TestApproveBinaryBecameTextNotSummarised(t *testing.T) {
 		t.Fatalf("binary→text: %d %q %q", code, out, errOut)
 	}
 }
+
+// ITEM 3 (fix wave 3): a protected file with CRLF line endings can be
+// approved; the CRLF bytes are printed as-is and the shown block hashes to
+// the shown hash (hash over the raw bytes).
+func TestApproveCRLFFile(t *testing.T) {
+	repo, base := newRepo(t)
+	write(t, repo, "tests/win.txt", "one\r\ntwo\r\n")
+	base = commit(t, repo, "crlf base")
+	write(t, repo, "tests/win.txt", "one\r\ntwo\r\nthree\r\n")
+	commit(t, repo, "crlf append")
+	code, out, errOut := approveTTY(t, repo, base, "yes\n")
+	if code != 0 || !strings.Contains(out, "approved.") {
+		t.Fatalf("crlf approve: %d %q %q", code, out, errOut)
+	}
+	i, j := strings.Index(out, beginMark), strings.Index(out, endMark)
+	if i < 0 || j < i {
+		t.Fatalf("no hashed block:\n%q", out)
+	}
+	block := out[i+len(beginMark) : j]
+	if !strings.Contains(block, "+three\r\n") {
+		t.Fatalf("CRLF not printed as-is: %q", block)
+	}
+	sum := sha256.Sum256([]byte(block))
+	if !strings.Contains(out, "hash: "+hex.EncodeToString(sum[:])[:16]+"\n") {
+		t.Fatalf("block does not hash to the shown hash: %q", out)
+	}
+	if c, _, e := run("run", "--repo", repo, "--base", base); c != 0 {
+		t.Fatalf("after approval: %d %s", c, e)
+	}
+}
+
+// A lone CR is still refused: "\r\r\n" (first CR lone), "\n\r" (CR before
+// another byte) and a CR as the very last byte of the file (git prints it
+// before "\ No newline at end of file").
+func TestApproveRefusesLoneCR(t *testing.T) {
+	for name, content := range map[string]string{
+		"cr cr lf":       "one\ntwo\nx\r\r\n",
+		"lf cr":          "one\ntwo\nx\n\rhidden\n",
+		"cr at file end": "one\ntwo\nend\r",
+	} {
+		t.Run(name, func(t *testing.T) {
+			repo, base := newRepo(t)
+			write(t, repo, "tests/t.txt", content)
+			commit(t, repo, "lone cr")
+			code, out, errOut := approveTTY(t, repo, base, "yes\n")
+			if code != 64 || out != "" || rawUnsafe(errOut) || !strings.Contains(errOut, `\x0d`) || !strings.Contains(errOut, "tests/t.txt") {
+				t.Fatalf("want refusal naming \\x0d: %d %q %q", code, out, errOut)
+			}
+		})
+	}
+}

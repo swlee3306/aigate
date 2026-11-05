@@ -63,3 +63,40 @@ func TestEscapeKeepsNewlineWhenAsked(t *testing.T) {
 		t.Errorf("EscapeText = %q", got)
 	}
 }
+
+// ITEM 3 (fix wave 3): "\r" immediately followed by "\n" (CRLF) is safe; a
+// lone "\r" (end of text, before another byte, the first of "\r\r\n") is not.
+func TestFirstUnsafeCRLF(t *testing.T) {
+	cases := []struct {
+		name, in string
+		ok       bool
+		off      int
+		line     int
+	}{
+		{"crlf lines", "+a\r\n+b\r\n", true, 0, 0},
+		{"crlf korean", "+합계\r\n", true, 0, 0},
+		{"lone cr at end", "+a\r\n+b\r", false, 6, 2},
+		{"cr cr lf", "+a\r\r\n", false, 2, 1},
+		{"lf cr", "+a\n\rb\n", false, 3, 2},
+		{"cr then other", "+a\r\nx\ry\r\n", false, 5, 2},
+		{"only cr", "\r", false, 0, 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f, bad := FirstUnsafe(c.in)
+			if bad == c.ok {
+				t.Fatalf("FirstUnsafe(%q) bad=%v want ok=%v", c.in, bad, c.ok)
+			}
+			if bad && (f.Offset != c.off || f.Line != c.line || f.Desc != `\x0d`) {
+				t.Fatalf("FirstUnsafe(%q) = %+v, want offset %d line %d \\x0d", c.in, f, c.off, c.line)
+			}
+		})
+	}
+	// one-line Escape still writes every CR visibly; EscapeText keeps CRLF
+	if got := Escape("a\r\nb"); got != `a\x0d\x0ab` {
+		t.Errorf("Escape = %q", got)
+	}
+	if got := EscapeText("a\r\nb\rc"); got != "a\r\nb"+`\x0d`+"c" {
+		t.Errorf("EscapeText = %q", got)
+	}
+}

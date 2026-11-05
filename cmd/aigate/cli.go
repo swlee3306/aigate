@@ -329,7 +329,13 @@ func unsafeApproveText(p gate.Protected, display string) (string, string) {
 			}
 		}
 	}
-	if fd, bad := textsafe.FirstUnsafe(display); bad {
+	fd, bad := textsafe.FirstUnsafe(display)
+	// A file whose last byte is a lone CR shows as "+x\r" + "\n\ No newline
+	// at end of file": the "\n" is git's, so that CR is lone in the file.
+	if k := strings.Index(display, "\r\n\\ "); k >= 0 && (!bad || k < fd.Offset) {
+		fd, bad = textsafe.Finding{Offset: k, Line: strings.Count(display[:k], "\n") + 1, Desc: `\x0d`}, true
+	}
+	if bad {
 		file := "(파일 머리 앞)"
 		lines := strings.Split(display[:fd.Offset], "\n")
 		for k := len(lines) - 1; k >= 0; k-- {
