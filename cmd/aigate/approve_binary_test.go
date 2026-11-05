@@ -72,7 +72,7 @@ func TestApproveAllowlistRefusesGuardedBinaries(t *testing.T) {
 		{"node_modules/.bin runner with shebang", "node_modules/.bin/vitest", "", "#!/usr/bin/env node\n\x00console.log('all tests passed')\n", true, "binary_executable"},
 		{"added .mts", "tests/helper.mts", "", "export const x = 1\x00\n", false, "binary_unknown_type"},
 		{"executable vendor script", "vendor/sub/run", "", "#!/bin/sh\n\x00echo ok\n", true, "binary_executable"},
-		{"extensionless, not executable, no shebang", "vendor/sub/tool", "", "data\x00\n", false, "binary_unknown_type"},
+		{"extensionless, not executable, no shebang", "tests/sub/tool", "", "data\x00\n", false, "binary_unknown_type"},
 		// rule edges
 		{"non-allowlisted extension", "tests/data.dat2", "", "d\x00\n", false, "binary_unknown_type"},
 		{"allowlisted .bin but executable", "tests/tool.bin", "", "\x7fELF\x00\x01\n", true, "binary_executable"},
@@ -124,19 +124,19 @@ func TestApproveAllowlistRefusesGuardedBinaries(t *testing.T) {
 
 // Allowlisted genuine binaries keep the summary line and stay approvable: an
 // added and a modified (binary on both sides) .png with the real PNG magic, a
-// modified existing .bin outside node_modules/vendor (fix wave 5 R2: an added
-// magic-less .bin, or one under node_modules, is refused), and a deleted
-// binary of any type. Under the guarded node_modules/** the approval really
-// takes effect.
+// modified existing .bin (fix wave 5 R2: an added magic-less .bin is
+// refused), and a deleted binary of any type, even under node_modules (fix
+// wave 6: added/modified binaries there are refused, so the png fixtures live
+// under tests/fixtures/). The approval really takes effect.
 func TestApproveAllowlistedBinarySummaries(t *testing.T) {
 	const png = "\x89PNG\r\n\x1a\n"
 	repo, base := newRepo(t)
-	write(t, repo, "node_modules/pkg/old.png", png+"\x00old\n")
+	write(t, repo, "tests/fixtures/old.png", png+"\x00old\n")
 	write(t, repo, "node_modules/pkg/gone", "#!/bin/sh\n\x00gone\n") // deleted: always a summary
 	write(t, repo, "tests/data.bin", "\x00\x01\n")
 	base = commit(t, repo, "base2")
-	write(t, repo, "node_modules/pkg/old.png", png+"\x00new\n")
-	write(t, repo, "node_modules/pkg/new.png", png+"\x00\x1b\n")
+	write(t, repo, "tests/fixtures/old.png", png+"\x00new\n")
+	write(t, repo, "tests/fixtures/new.png", png+"\x00\x1b\n")
 	write(t, repo, "tests/data.bin", "\x00\x01\x02\n")
 	if err := os.Remove(filepath.Join(repo, "node_modules/pkg/gone")); err != nil {
 		t.Fatal(err)
@@ -149,7 +149,7 @@ func TestApproveAllowlistedBinarySummaries(t *testing.T) {
 	if code != 0 || rawUnsafe(out) || !strings.Contains(out, "approved.") {
 		t.Fatalf("approve: %d %q %q", code, out, errOut)
 	}
-	for _, p := range []string{"node_modules/pkg/old.png", "node_modules/pkg/new.png", "tests/data.bin", "node_modules/pkg/gone"} {
+	for _, p := range []string{"tests/fixtures/old.png", "tests/fixtures/new.png", "tests/data.bin", "node_modules/pkg/gone"} {
 		if !strings.Contains(out, "binary file changed: "+p+", ") {
 			t.Errorf("no summary for %s in %q", p, out)
 		}
@@ -256,9 +256,12 @@ func refusedApprove(t *testing.T, repo, base, p, reason string) string {
 func TestApproveRefusesLoadableCode(t *testing.T) {
 	elf := "\x7fELF\x02\x01\x01\x00payload\n"
 	cases := []struct{ path, base string }{
-		{"vendor/pkg/mod.cpython-312-darwin.so", ""},
-		{"vendor/pkg/mod.abi3.so", ""},
-		{"node_modules/addon/build/Release/addon.node", ""},
+		// fix wave 6: under vendor/ or node_modules/ these are refused as
+		// binary_in_loaded_dir (TestApproveLoadedDirPrecedence); here they sit
+		// outside a loaded-code directory so the type rule itself is tested
+		{"tests/pkg/mod.cpython-312-darwin.so", ""},
+		{"tests/pkg/mod.abi3.so", ""},
+		{"tests/addon/build/Release/addon.node", ""},
 		{"tests/lib/libx.so.1", ""},
 		{"tests/lib/libx.so.1.2.3", ""},
 		{"tests/lib/X.DLL", ""},
@@ -275,7 +278,7 @@ func TestApproveRefusesLoadableCode(t *testing.T) {
 		{"tests/lib/x.bundle", ""},
 		{"tests/lib/x.jnilib", ""},
 		{"tests/lib/x.SO", ""},
-		{"vendor/pkg/old.so", elf}, // modified, binary on both sides
+		{"tests/pkg/old.so", elf}, // modified, binary on both sides
 	}
 	for _, c := range cases {
 		t.Run(c.path, func(t *testing.T) {
@@ -406,8 +409,9 @@ func hasString(l []string, s string) bool {
 }
 
 // Magic-less binaries (.bin .dat .db .pb): a summary only for a file that
-// already existed at base (M/T, binary on both sides) outside any
-// node_modules/ or vendor/ component (case-insensitive).
+// already existed at base (M/T, binary on both sides). Under a node_modules/
+// or vendor/ component (case-insensitive) it is refused; since fix wave 6 the
+// reason is the more general binary_in_loaded_dir (it was binary_unknown_type).
 func TestMaglessBinaryRule(t *testing.T) {
 	mod := func(p string) gitx.FileChange {
 		return gitx.FileChange{Path: p, Status: "M", BaseBinary: true, HeadBinary: true, HeadMode: "100644", HeadPrefix: []byte("\x00")}
@@ -424,7 +428,7 @@ func TestMaglessBinaryRule(t *testing.T) {
 			}
 		}
 		for _, p := range []string{"node_modules/pkg/x" + e, "a/Node_Modules/x" + e, "vendor/x" + e, "src/VENDOR/sub/x" + e} {
-			if r, _ := summaryRefusal(mod(p)); r != reasonBinaryUnknown {
+			if r, _ := summaryRefusal(mod(p)); r != reasonBinaryInLoadedDir {
 				t.Errorf("modified %s under a dependency dir: %q", p, r)
 			}
 		}
@@ -442,10 +446,12 @@ func TestMaglessBinaryRule(t *testing.T) {
 func TestApproveMagicMismatchRefused(t *testing.T) {
 	js := "module.exports = () => 'all tests passed'\n//\x00\n"
 	cases := []struct{ name, path, base, head string }{
-		{"node main → logo.png with JS", "node_modules/helper/logo.png", "", js},
+		// fix wave 6: under node_modules/ or vendor/ these are refused as
+		// binary_in_loaded_dir first; tests/ keeps the magic rule observable
+		{"node main → logo.png with JS", "tests/helper/logo.png", "", js},
 		{"pdf that is JS", "tests/fixtures/doc.pdf", "", js},
-		{"zip that is JS", "vendor/pkg/a.zip", "", js},
-		{"existing png turned into JS (both sides binary)", "node_modules/helper/icon.png", "\x89PNG\r\n\x1a\n\x00", js},
+		{"zip that is JS", "tests/pkg/a.zip", "", js},
+		{"existing png turned into JS (both sides binary)", "tests/helper/icon.png", "\x89PNG\r\n\x1a\n\x00", js},
 		{"tiny png", "tests/a.png", "", "\x00"},
 		{"jpg with png magic", "tests/a.jpg", "", "\x89PNG\r\n\x1a\n\x00"},
 	}
@@ -457,7 +463,7 @@ func TestApproveMagicMismatchRefused(t *testing.T) {
 				base = commit(t, repo, "base2")
 			}
 			if c.name == "node main → logo.png with JS" {
-				write(t, repo, "node_modules/helper/package.json", `{"main":"logo.png"}`+"\n")
+				write(t, repo, "tests/helper/package.json", `{"main":"logo.png"}`+"\n")
 			}
 			write(t, repo, c.path, c.head)
 			commit(t, repo, "mismatch")
@@ -474,7 +480,8 @@ func TestApproveMagicMismatchRefused(t *testing.T) {
 }
 
 // Magic-less binaries through the CLI: an added .bin is refused, a modified
-// one under node_modules is refused, a modified one under tests/ is a summary.
+// one under node_modules (or tests/Vendor) is refused — since fix wave 6 as
+// binary_in_loaded_dir —, a modified one under tests/ is a summary.
 func TestApproveMaglessBinaries(t *testing.T) {
 	t.Run("added .bin", func(t *testing.T) {
 		repo, base := newRepo(t)
@@ -488,7 +495,7 @@ func TestApproveMaglessBinaries(t *testing.T) {
 		base = commit(t, repo, "base2")
 		write(t, repo, "node_modules/pkg/x.dat", "b\x00\n")
 		commit(t, repo, "mod")
-		refusedApprove(t, repo, base, "node_modules/pkg/x.dat", "binary_unknown_type")
+		refusedApprove(t, repo, base, "node_modules/pkg/x.dat", "binary_in_loaded_dir")
 	})
 	t.Run("modified .db under Vendor", func(t *testing.T) {
 		repo, base := newRepo(t)
@@ -496,7 +503,7 @@ func TestApproveMaglessBinaries(t *testing.T) {
 		base = commit(t, repo, "base2")
 		write(t, repo, "tests/Vendor/x.db", "b\x00\n")
 		commit(t, repo, "mod")
-		refusedApprove(t, repo, base, "tests/Vendor/x.db", "binary_unknown_type")
+		refusedApprove(t, repo, base, "tests/Vendor/x.db", "binary_in_loaded_dir")
 	})
 	t.Run("modified .pb under tests", func(t *testing.T) {
 		repo, base := newRepo(t)

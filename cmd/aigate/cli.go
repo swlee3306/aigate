@@ -189,7 +189,9 @@ func cmdApprove(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	// Everything shown is checked BEFORE anything is printed. A file that
 	// became binary or became text, or any file binary at head that is not an
 	// allowlisted genuine binary type (binaryRefusal: never loadable code, and
-	// the content must match the extension), is refused: a summary line would
+	// the content must match the extension), and any added/modified/
+	// type-changed binary under a loaded-code directory (loadedCodeDirs,
+	// binary_in_loaded_dir), is refused: a summary line would
 	// let one NUL byte hide the content the human approves. Then a
 	// control sequence (ESC, lone CR, ...) or bidi override in a line or path
 	// could make the screen hide what the human approves. Allowlisted binary
@@ -220,6 +222,8 @@ func cmdApprove(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			why = "확장자와 내용의 형식이 맞지 않는 바이너리는 러너가 다른 방법(예: Node require()는 모르는 확장자를 JS로 실행)으로 코드로 불러올 수 있어 요약 한 줄로 승인하지 않습니다(승인은 기록하지 않음). 진짜 그 형식의 파일로 바꾸거나, 직접 `git diff --text`로 검토하고 맞는 이름의 텍스트 파일로 둔 커밋으로 다시 실행하세요."
 		case reasonBinaryLoadable:
 			why = "러너가 코드로 불러올 수 있는 바이너리는 요약 한 줄로 검토할 수 없어 승인하지 않습니다(승인은 기록하지 않음). 사람이 저장소 밖에서 직접 검토하세요: 산출물을 직접 확인한 뒤 사람이 직접 커밋해 다음 base에 들어가게 합니다. 우회 플래그는 의도적으로 없습니다."
+		case reasonBinaryInLoadedDir:
+			why = "러너가 코드를 불러오는 디렉터리(" + strings.Join(loadedCodeDirs, "·") + ") 아래의 바이너리는 형식에 맞는 파일이 동시에 올바른 코드일 수 있어(예: GIF89a로 시작하는 JS) 요약 한 줄로 검토할 수 없으므로 승인하지 않습니다(승인은 기록하지 않음). 사람이 저장소 밖에서 산출물을 직접 검토한 뒤 사람이 직접 커밋해 다음 base에 들어가게 하세요. 우회 플래그는 의도적으로 없습니다. (삭제는 요약 한 줄로 승인할 수 있습니다.)"
 		case reasonBinaryExecutable, reasonBinaryUnknown:
 			why = "바이너리 요약 한 줄은 허용 목록의 진짜 바이너리 형식(실행 권한·'#!' 시작·'.bin' 경로가 없는 파일)에만 쓰고, 그 밖의 바이너리는 사람이 내용을 볼 수 없어 승인하지 않습니다(승인은 기록하지 않음). 직접 `git diff --text`로 검토하고 텍스트 파일로 두거나 허용 목록 형식의 바이너리로 바꾼 커밋으로 다시 실행하세요."
 		}
@@ -325,6 +329,9 @@ const (
 	// with it (fix wave 5 R2): the extension says image, the content may be
 	// anything a runner loads by other means (Node require() runs it as JS).
 	reasonBinaryMagicMismatch = "binary_magic_mismatch"
+	// A binary (added, modified or type-changed) under a loaded-code
+	// directory (inLoadedDir): never summarised whatever its type (fix wave 6).
+	reasonBinaryInLoadedDir = "binary_in_loaded_dir"
 )
 
 // at reports whether b holds m at offset off.
@@ -378,12 +385,27 @@ var binaryMagic = map[string]func([]byte) bool{
 // already existed at base, outside node_modules/ and vendor/.
 var magiclessExt = map[string]bool{".bin": true, ".dat": true, ".db": true, ".pb": true}
 
-// hasDepDir reports whether a path component is node_modules or vendor
-// (case-insensitive).
-func hasDepDir(p string) bool {
-	for _, seg := range strings.Split(p, "/") {
-		if strings.EqualFold(seg, "node_modules") || strings.EqualFold(seg, "vendor") {
-			return true
+// loadedCodeDirs are the directory names a runner loads code from (Node
+// require(), Go vendoring, Python site-packages / virtualenvs / PEP 582,
+// bower, vendored third-party trees). It is the ONE place that defines the
+// set (fix wave 6, user decision 2026-11-05); extending it is a code change.
+// Under such a directory approve never summarises an added, modified or
+// type-changed binary (binary_in_loaded_dir): a format-valid file (GIF89a…,
+// true…, BM…, ID3…, ftyp@4, ustar@257) can also be valid JS that require()
+// runs, so extension + magic bytes cannot tell data from code there.
+var loadedCodeDirs = []string{"node_modules", "vendor", "site-packages", "dist-packages", ".venv", "venv", "__pypackages__", "bower_components", "third_party"}
+
+// inLoadedDir reports whether a DIRECTORY component of p (any depth, whole
+// component, case-insensitive) is one of loadedCodeDirs. The file name itself
+// does not count, and a component that only contains a name
+// (my_node_modules_backup, vendors) does not match.
+func inLoadedDir(p string) bool {
+	segs := strings.Split(p, "/")
+	for _, seg := range segs[:len(segs)-1] {
+		for _, d := range loadedCodeDirs {
+			if strings.EqualFold(seg, d) {
+				return true
+			}
 		}
 	}
 	return false
@@ -455,10 +477,13 @@ func hasBinDir(p string) bool {
 
 // summaryRefusal returns "" when f (binary at head, not deleted) is an
 // allowlisted genuine binary that may be summarised, else the reason code and
-// a short Korean explanation of the rule it breaks. Order: executable,
-// loadable code, source/text name, not allowlisted, then the content rule:
-// a magic-less type only as a modified existing file outside node_modules/
-// and vendor/, any other type only when the head starts with its magic.
+// a short Korean explanation of the rule it breaks. Order: executable (the
+// concrete evidence that it runs: exec bit, "#!", ".bin" component), then
+// binary_in_loaded_dir (under a loaded-code directory nothing binary is
+// summarised, so the remaining type reasons would only give advice that
+// cannot succeed there), then loadable code, source/text name, not
+// allowlisted, then the content rule: a magic-less type only as a modified
+// existing file, any other type only when the head starts with its magic.
 func summaryRefusal(f gitx.FileChange) (reason, why string) {
 	var exe []string
 	if f.HeadMode != "100644" {
@@ -472,7 +497,13 @@ func summaryRefusal(f gitx.FileChange) (reason, why string) {
 	}
 	switch {
 	case len(exe) > 0:
-		return reasonBinaryExecutable, "실행될 수 있는 파일입니다(" + strings.Join(exe, ", ") + ")"
+		why := "실행될 수 있는 파일입니다(" + strings.Join(exe, ", ") + ")"
+		if inLoadedDir(f.Path) {
+			why += ". 또 로드되는 코드 디렉터리 아래라 형식을 바꿔도 요약 승인하지 않습니다(저장소 밖에서 검토한 뒤 사람이 직접 커밋)"
+		}
+		return reasonBinaryExecutable, why
+	case inLoadedDir(f.Path):
+		return reasonBinaryInLoadedDir, "로드되는 코드 디렉터리(" + strings.Join(loadedCodeDirs, "·") + ") 아래 있습니다"
 	case isLoadableCode(f.Path):
 		return reasonBinaryLoadable, "러너가 코드로 불러올 수 있는 바이너리 형식입니다(네이티브 애드온·확장 모듈·라이브러리·목적 파일·실행 파일·wasm·class·jar)"
 	case isTextLike(f.Path):
@@ -483,8 +514,8 @@ func summaryRefusal(f gitx.FileChange) (reason, why string) {
 	case !binaryAllowExt[ext]:
 		return reasonBinaryUnknown, "확장자가 요약을 허용하는 바이너리 형식 목록에 없습니다"
 	case magiclessExt[ext]:
-		if f.Status == "A" || !f.BaseBinary || hasDepDir(f.Path) {
-			return reasonBinaryUnknown, "'" + ext + "' 처럼 형식 표시(매직 바이트)가 없는 바이너리는 base에 이미 있던 바이너리 파일을 바꾼 경우에만, node_modules/·vendor/ 밖에서만 요약을 허용합니다"
+		if f.Status == "A" || !f.BaseBinary {
+			return reasonBinaryUnknown, "'" + ext + "' 처럼 형식 표시(매직 바이트)가 없는 바이너리는 base에 이미 있던 바이너리 파일을 바꾼 경우에만 요약을 허용합니다"
 		}
 	case !binaryMagic[ext](f.HeadPrefix):
 		return reasonBinaryMagicMismatch, "확장자는 '" + ext + "' 인데 내용이 그 형식이 아닙니다(파일 앞부분의 형식 표시(매직 바이트)가 맞지 않음)"
@@ -498,6 +529,13 @@ func summaryRefusal(f gitx.FileChange) (reason, why string) {
 // that became text (M/T: its NUL is on the base "-" side), or a file binary
 // at head (added, modified or type-changed) that is not an allowlisted
 // genuine binary (summaryRefusal). Deleted files are always a summary.
+//
+// Precedence (first offending file in diff order wins; per file):
+// binary_became_text → text_became_binary → binary_executable →
+// binary_in_loaded_dir → binary_loadable_code → binary_source_file →
+// binary_unknown_type → binary_magic_mismatch. cmdApprove runs this BEFORE
+// the unsafe_bytes scan (unsafeApproveText), so a binary refusal of any file
+// is reported before an unsafe byte in a path or line.
 func binaryRefusal(p gate.Protected) (msg, reason string) {
 	for _, f := range p.Diff.Files {
 		if f.Status == "D" || f.Status == "A" && !f.HeadBinary {
