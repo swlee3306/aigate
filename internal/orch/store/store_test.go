@@ -479,3 +479,34 @@ func TestMigrateV3ToV4KeepsTasks(t *testing.T) {
 		t.Fatalf("%+v", got)
 	}
 }
+
+// Regression (fault injection): deleting the database file while the store is
+// open must not leave a worker running tasks on the unlinked inode.
+func TestDeletedOrReplacedDBFileIsReported(t *testing.T) {
+	for _, replace := range []bool{false, true} {
+		path := filepath.Join(t.TempDir(), "o.db")
+		s, err := Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, err := s.CreateTask(context.Background(), Task{Repo: "r", Base: "b", Prompt: "p"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, suf := range []string{"", "-wal", "-shm"} {
+			os.Remove(path + suf)
+		}
+		if replace {
+			if err := os.WriteFile(path, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, _, err := s.NextRunnable(context.Background()); !errors.Is(err, ErrDBGone) {
+			t.Fatalf("replace=%v NextRunnable: %v", replace, err)
+		}
+		if err := s.Transition(context.Background(), id, StateQueued, StatePreparing, "x"); !errors.Is(err, ErrDBGone) {
+			t.Fatalf("replace=%v Transition: %v", replace, err)
+		}
+		s.Close()
+	}
+}

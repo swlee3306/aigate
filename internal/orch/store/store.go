@@ -92,7 +92,23 @@ type TransitionOpts struct {
 
 // Store is safe for concurrent use.
 type Store struct {
-	db *sql.DB
+	db   *sql.DB
+	path string
+	id   os.FileInfo // identity of the database file at Open
+}
+
+// ErrDBGone is returned when the database file was deleted or replaced while
+// the store is open. Working on the unlinked file would keep running tasks
+// whose state no restarted orchd could ever see.
+var ErrDBGone = errors.New("store: the database file was deleted or replaced while open")
+
+// alive reports ErrDBGone when path no longer names the file opened.
+func (s *Store) alive() error {
+	fi, err := os.Stat(s.path)
+	if err != nil || (s.id != nil && !os.SameFile(fi, s.id)) {
+		return fmt.Errorf("%w: %s", ErrDBGone, s.path)
+	}
+	return nil
 }
 
 // migrations[i] upgrades schema version i to i+1.
@@ -125,7 +141,7 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{db: db}
+	s := &Store{db: db, path: path}
 	if err := s.migrate(); err != nil {
 		db.Close()
 		return nil, err
@@ -134,6 +150,10 @@ func Open(path string) (*Store, error) {
 		if _, err := os.Stat(path + suffix); err == nil {
 			_ = os.Chmod(path+suffix, 0o600)
 		}
+	}
+	if s.id, err = os.Stat(path); err != nil {
+		db.Close()
+		return nil, err
 	}
 	return s, nil
 }
@@ -298,6 +318,9 @@ func (s *Store) Transition(ctx context.Context, id int64, from, to State, note s
 // failed attempt; leaving StateError keeps the count; any other move resets it.
 // Every transition releases the worker claim.
 func (s *Store) TransitionWith(ctx context.Context, id int64, from, to State, note string, o TransitionOpts) error {
+	if err := s.alive(); err != nil {
+		return err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -368,6 +391,9 @@ func (s *Store) Events(ctx context.Context, taskID int64) ([]Event, error) {
 // atomically, so concurrent workers never get the same task. The claim is
 // released by any transition, or by ReleaseClaims after a crash.
 func (s *Store) NextRunnable(ctx context.Context) (Task, bool, error) {
+	if err := s.alive(); err != nil {
+		return Task{}, false, err
+	}
 	ph := strings.TrimSuffix(strings.Repeat("?,", len(runnable)), ",")
 	args := make([]any, len(runnable))
 	for i, st := range runnable {
