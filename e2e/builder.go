@@ -283,6 +283,13 @@ type Scenario struct {
 	// (clean). Needed for trees a case-insensitive file system cannot hold
 	// (tests/Run.js and tests/run.js).
 	HeadFiles map[string]string
+	// BaseFiles (fix wave 8), when set, are added on top of the seed commit
+	// with git plumbing and that child becomes the scenario's base (a base
+	// tree a case-insensitive file system cannot hold, e.g. src/sum.js and
+	// src/Sum.js). Mutate is then optional and the head is built from the
+	// plumbed base with HeadFiles only (the working tree's own commit would
+	// not descend from it); the main tree stays at the seed (clean).
+	BaseFiles map[string]string
 }
 
 func (w *Workspace) run() (report.Report, float64) {
@@ -335,10 +342,18 @@ func RunScenario(t *testing.T, s Scenario) {
 		}
 	}
 	w := NewStackWorkspace(t, st, s.Timeout, s.Config)
-	s.Mutate(w)
-	w.Head = w.Commit("head")
-	if len(s.HeadFiles) > 0 {
-		w.Head = gittest.Plumb(t, w.Dir, w.Head, s.HeadFiles)
+	if len(s.BaseFiles) > 0 {
+		if s.Mutate != nil {
+			t.Fatalf("BaseFiles scenarios build head from HeadFiles only; Mutate must be nil")
+		}
+		w.Base = gittest.Plumb(t, w.Dir, w.Base, s.BaseFiles)
+		w.Head = gittest.Plumb(t, w.Dir, w.Base, s.HeadFiles)
+	} else {
+		s.Mutate(w)
+		w.Head = w.Commit("head")
+		if len(s.HeadFiles) > 0 {
+			w.Head = gittest.Plumb(t, w.Dir, w.Head, s.HeadFiles)
+		}
 	}
 	if s.Post != nil {
 		s.Post(w)
