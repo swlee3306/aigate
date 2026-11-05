@@ -1,7 +1,10 @@
 package gitx
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"aigate/internal/gittest"
@@ -88,5 +91,69 @@ func TestICaseKeepsHashWithoutVariants(t *testing.T) {
 	}
 	if a.Hash != b.Hash || a.HashedText() != b.HashedText() {
 		t.Fatalf("icase changed the hash of a diff without case variants: %s vs %s", a.Hash, b.Hash)
+	}
+}
+
+// FIX WAVE 8: every added path (no pathspec), git's own A status with
+// --no-renames, sorted; odd names included.
+func TestAddedPaths(t *testing.T) {
+	r := newRepo(t)
+	write(t, r, "old.txt", "same content\n")
+	write(t, r, "keep.txt", "k\n")
+	base := commit(t, r, "base")
+	if err := os.Remove(filepath.Join(r, "old.txt")); err != nil {
+		t.Fatal(err)
+	}
+	write(t, r, "new.txt", "same content\n") // a rename to git with renames on
+	write(t, r, "keep.txt", "changed\n")
+	mid := commit(t, r, "mid")
+	head := plumbCommit(t, r, mid, map[string]string{"go.worK": "x\n", "x/\x1b[31mZ": "c\n"})
+	got, err := AddedPaths(r, base, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"go.worK", "new.txt", "x/\x1b[31mZ"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("AddedPaths: got %q want %q", got, want)
+	}
+}
+
+// A literal pathspec matches exactly its path (glob characters are not
+// syntax) and mixes with glob pathspecs in one ProtectedDiff.
+func TestLiteralPathspec(t *testing.T) {
+	r := newRepo(t)
+	write(t, r, "README", "r\n")
+	base := commit(t, r, "base")
+	head := plumbCommit(t, r, base, map[string]string{"a[b]*.txt": "1\n", "ab.txt": "2\n", "tests/t.py": "3\n", "go.worK": "4\n"})
+	d, err := ProtectedDiff(r, base, head, append(Globs("tests/**"), Literals("a[b]*.txt", "go.worK")...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"a[b]*.txt", "go.worK", "tests/t.py"}; !reflect.DeepEqual(d.AddedFiles, want) {
+		t.Fatalf("literal pathspecs: added %q want %q", d.AddedFiles, want)
+	}
+	if !strings.Contains(d.HashedText(), "A go.worK\n") {
+		t.Fatalf("hash text lacks the literal path: %q", d.HashedText())
+	}
+}
+
+// TreeSigs lists files and trees with "mode object" signatures.
+func TestTreeSigs(t *testing.T) {
+	r := newRepo(t)
+	write(t, r, "src/a.js", "a\n")
+	write(t, r, "src/b.js", "a\n")
+	base := commit(t, r, "base")
+	paths, sigs, err := TreeSigs(r, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"src/a.js", "src/b.js"}; !reflect.DeepEqual(paths, want) {
+		t.Fatalf("paths %q want %q", paths, want)
+	}
+	if len(sigs) != 3 || sigs["src/a.js"] != sigs["src/b.js"] || !strings.HasPrefix(sigs["src/a.js"], "100644 ") || !strings.HasPrefix(sigs["src"], "040000 ") {
+		t.Fatalf("sigs: %q", sigs)
+	}
+	if _, _, err := TreeSigs(r, "nosuchref"); err == nil {
+		t.Fatal("unknown sha must error")
 	}
 }

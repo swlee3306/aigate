@@ -449,9 +449,15 @@ func blobInfo(repo, sha string) (nulLine int, size int64, shebang bool, blob []b
 // ICase adds git's "icase" magic (ASCII case-insensitive matching, used for
 // the built-in guards so `Node_Modules/` or `.NPMRC` cannot slip past them on
 // a case-insensitive file system). Repo-config globs stay case-sensitive.
+//
+// Literal (fix wave 8) makes it a ":(literal)" pathspec instead: Glob is then
+// one exact path, its "*", "?", "[" and "\\" are plain characters. Used for
+// the folded aliases of guard globs (gate), whose odd bytes must never
+// become glob syntax.
 type Pathspec struct {
-	Glob  string
-	ICase bool
+	Glob    string
+	ICase   bool
+	Literal bool
 }
 
 // Globs returns case-sensitive pathspecs for gs.
@@ -459,6 +465,23 @@ func Globs(gs ...string) []Pathspec { return specsOf(gs, false) }
 
 // ICaseGlobs returns case-insensitive pathspecs for gs.
 func ICaseGlobs(gs ...string) []Pathspec { return specsOf(gs, true) }
+
+// Literals returns exact-path pathspecs for ps, in sorted order (the order of
+// pathspecs never changes git's output; sorting keeps the arguments
+// deterministic).
+func Literals(ps ...string) []Pathspec {
+	out := make([]Pathspec, 0, len(ps))
+	for _, p := range sortedStrings(ps) {
+		out = append(out, Pathspec{Glob: p, Literal: true})
+	}
+	return out
+}
+
+func sortedStrings(s []string) []string {
+	c := append([]string{}, s...)
+	sort.Strings(c)
+	return c
+}
 
 func specsOf(gs []string, icase bool) []Pathspec {
 	out := make([]Pathspec, 0, len(gs))
@@ -470,6 +493,9 @@ func specsOf(gs []string, icase bool) []Pathspec {
 
 // arg renders the pathspec as a git argument.
 func (p Pathspec) arg() string {
+	if p.Literal {
+		return ":(literal)" + p.Glob
+	}
 	if p.ICase {
 		return ":(glob,icase)" + p.Glob
 	}
@@ -485,6 +511,32 @@ func TreePaths(repo, sha string) ([]string, error) {
 		return nil, fmt.Errorf("ls-tree %s: %w", sha, err)
 	}
 	return splitZ(out), nil
+}
+
+// TreeSigs returns the paths of the tree of commit sha exactly as TreePaths
+// does (files, symlinks, gitlinks; git's order) and the signature
+// "<mode> <object id>" of every entry, directories included (`git ls-tree -r
+// -t -z --full-tree`): a tree id changes when anything beneath it changes.
+func TreeSigs(repo, sha string) ([]string, map[string]string, error) {
+	out, err := run(repo, "ls-tree", "-r", "-t", "-z", "--full-tree", sha)
+	if err != nil {
+		return nil, nil, fmt.Errorf("ls-tree %s: %w", sha, err)
+	}
+	var paths []string
+	sigs := map[string]string{}
+	for _, rec := range splitZ(out) {
+		// "<mode> SP <type> SP <object> TAB <path>"
+		meta, p, ok := strings.Cut(rec, "\t")
+		f := strings.Fields(meta)
+		if !ok || len(f) != 3 {
+			return nil, nil, fmt.Errorf("ls-tree %s: unexpected record %q", sha, rec)
+		}
+		sigs[p] = f[0] + " " + f[2]
+		if f[1] != "tree" {
+			paths = append(paths, p)
+		}
+	}
+	return paths, sigs, nil
 }
 
 // ProtectedDiff diffs base..head restricted to the protected pathspecs.
@@ -637,11 +689,20 @@ func AddedMatching(repo, base, head string, globs []Pathspec) ([]string, error) 
 	if len(globs) == 0 {
 		return nil, nil
 	}
-	args := append(append([]string{}, diffConfig...), "diff", "--name-status", "-z", "--no-renames", "--diff-filter=A", base, head, "--")
+	specs := make([]string, 0, len(globs))
 	for _, g := range globs {
-		args = append(args, g.arg())
+		specs = append(specs, g.arg())
 	}
-	out, err := run(repo, args...)
+	return added(repo, base, head, specs)
+}
+
+// AddedPaths returns every path added between base and head (git status A
+// with --no-renames: the set AddedMatching filters), sorted.
+func AddedPaths(repo, base, head string) ([]string, error) { return added(repo, base, head, nil) }
+
+func added(repo, base, head string, specs []string) ([]string, error) {
+	args := append(append([]string{}, diffConfig...), "diff", "--name-status", "-z", "--no-renames", "--diff-filter=A", base, head, "--")
+	out, err := run(repo, append(args, specs...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -656,10 +717,14 @@ func AddedMatching(repo, base, head string, globs []Pathspec) ([]string, error) 
 	return res, nil
 }
 
-// MatchGlob is a pure-Go approximation of glob matching. It is NOT used for
-// guard decisions (use ProtectedDiff/AddedMatching, which rely on git's own
-// pathspec semantics); it differs from git for bare directory patterns,
-// "[!x]" classes and malformed patterns.
+// MatchGlob is a pure-Go approximation of glob matching. Guard decisions
+// rely on git's own pathspec semantics (ProtectedDiff/AddedMatching); the
+// only guard use of MatchGlob is the folded-alias check of fix wave 8 (gate
+// foldAliases), which matches Unicode-folded paths against folded guard
+// globs. That check only ever ADDS paths to the guarded set (and compares
+// against MatchGlob on the unfolded path, so a structural difference from
+// git cannot by itself create an alias). It differs from git for bare
+// directory patterns, "[!x]" classes and malformed patterns.
 //
 // MatchGlob matches a slash-separated path against a glob where "**" matches
 // any number of segments (a trailing "/**" needs at least one), "*" and "?"

@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"aigate/internal/approval"
 	"aigate/internal/config"
@@ -129,9 +130,10 @@ func union(a, b []string) []string {
 // `Node_Modules/`, `Vendor/` or `.NPMRC` cannot slip past them on a
 // case-insensitive file system; repo-config globs stay case-sensitive so the
 // approval hashes of existing user globs do not change. Unicode folding
-// (ſ, K) is caught by the path collision check only when the tree also
-// holds the other spelling; a lone folded spelling of a NEW guarded name
-// (pyteſt.ini) is not caught (design section 4, v0.8 (6)).
+// (ſ, K) of an existing spelling is caught by the path collision check; a
+// lone folded spelling of a NEW guarded name (pyteſt.ini, go.worK) or a
+// case variant of a user approval_on_add glob (Conftest.py) is caught by
+// the folded-alias rule (foldAliases, fix wave 8).
 var BuiltinGuarded = []string{
 	"**/node_modules/**",
 	".gitattributes", "**/.gitattributes", ".gitmodules",
@@ -199,34 +201,106 @@ func Prepare(o Options) (Protected, error) {
 	// the pathspecs, so a user glob equal to a built-in one is harmless)
 	builtin := gitx.ICaseGlobs(BuiltinGuarded...)
 	guarded := append(gitx.Globs(cfg.ApprovalOnAdd...), builtin...)
-	p.Diff, err = gitx.ProtectedDiff(top, base, head, append(gitx.Globs(union(cfg.Protected, cfg.ApprovalOnAdd)...), builtin...))
+	listed, err := gitx.AddedMatching(top, base, head, guarded)
 	if err != nil {
 		return Protected{}, err
 	}
-	p.AddedGuarded, err = gitx.AddedMatching(top, base, head, guarded)
+	// Fix wave 8: a new path whose folded name matches a guard glob that
+	// git's ASCII-only / case-sensitive matching missed (go.worK with the
+	// Kelvin sign, pyteſt.ini, Conftest.py for **/conftest.py) is guarded
+	// too; its exact path joins the protected diff as a literal pathspec, so
+	// the approval hash covers it. No alias: the pathspecs (and hashes) are
+	// exactly what they were before.
+	added, err := gitx.AddedPaths(top, base, head)
 	if err != nil {
 		return Protected{}, err
 	}
+	aliases := foldAliases(added, listed, BuiltinGuarded, cfg.ApprovalOnAdd)
+	specs := append(gitx.Globs(union(cfg.Protected, cfg.ApprovalOnAdd)...), builtin...)
+	p.Diff, err = gitx.ProtectedDiff(top, base, head, append(specs, gitx.Literals(aliases...)...))
+	if err != nil {
+		return Protected{}, err
+	}
+	p.AddedGuarded = sortedCopy(union(listed, aliases))
 	return p, nil
 }
 
+// foldAliases returns the added paths (sorted) that are FOLDED ALIASES of a
+// guard glob (fix wave 8, R1 and R3): the path's fold key (pathfold.KeyPath:
+// Unicode full case folding + NFD per component, what APFS opens) matches
+// the folded glob (pathfold.FoldGlob) of a built-in guard or of a user
+// approval_on_add glob, while git's own matching did not list the path
+// (listed: ":(glob,icase)" for built-ins, case-sensitive for user globs).
+// To keep MatchGlob's structural differences from git out of the decision,
+// a path also counts only when MatchGlob does NOT match it unfolded
+// (ASCII-lowered for built-ins, as git's icase): the alias must come from
+// the folding itself. Names that merely fold to ASCII (Straße.txt) are not
+// aliases: the rule keys on a guard-glob match, not on non-ASCII bytes.
+func foldAliases(added, listed, builtin, user []string) []string {
+	type glob struct{ folded, plain string }
+	var gs []glob
+	for _, g := range builtin {
+		gs = append(gs, glob{pathfold.FoldGlob(g), asciiLower(g)})
+	}
+	for _, g := range user {
+		gs = append(gs, glob{pathfold.FoldGlob(g), g})
+	}
+	known := map[string]bool{}
+	for _, l := range listed {
+		known[l] = true
+	}
+	var out []string
+	for i, p := range added {
+		if known[p] {
+			continue
+		}
+		k := pathfold.KeyPath(p)
+		for j, g := range gs {
+			plain := p
+			if j < len(builtin) {
+				plain = asciiLower(p)
+			}
+			if gitx.MatchGlob(g.folded, k) && !gitx.MatchGlob(g.plain, plain) {
+				out = append(out, added[i])
+				break
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// asciiLower lowers A-Z only (git's icase), leaving every other byte as is.
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			b[i] = c + 'a' - 'A'
+		}
+	}
+	return string(b)
+}
+
 // newCollisions returns the case/Unicode-folding collision groups of the
-// head tree that are not identical in the base tree (base "": initial mode,
-// every group counts). Only the trees are read; nothing is checked out.
+// head tree that are not pre-existing in the base tree (base "": initial
+// mode, every group counts). Pre-existing means the same members with the
+// same mode and object id on both sides (fix wave 8 (R2)): a content change
+// inside an old group makes it new. Only the trees are read; nothing is
+// checked out.
 func newCollisions(top, base, head string) ([]pathfold.Group, error) {
-	hp, err := gitx.TreePaths(top, head)
+	hp, hs, err := gitx.TreeSigs(top, head)
 	if err != nil {
 		return nil, err
 	}
 	hg := pathfold.Collisions(hp)
 	if len(hg) == 0 || base == "" {
-		return pathfold.New(hg, nil), nil
+		return pathfold.New(hg, nil, hs, nil), nil
 	}
-	bp, err := gitx.TreePaths(top, base)
+	bp, bs, err := gitx.TreeSigs(top, base)
 	if err != nil {
 		return nil, err
 	}
-	return pathfold.New(hg, pathfold.Collisions(bp)), nil
+	return pathfold.New(hg, pathfold.Collisions(bp), hs, bs), nil
 }
 
 // maxCollisionGroups is how many collision groups a message lists.
@@ -234,7 +308,10 @@ const maxCollisionGroups = 5
 
 // CollisionList renders up to maxCollisionGroups groups as
 // "{a, b}; {c, d}" (every member escaped: a path may hold control bytes)
-// plus " 외 N건" for the rest.
+// plus " 외 N건" for the rest. In a group with a non-ASCII member every
+// member is followed by its non-ASCII code points ("문서 [U+BB38 U+C11C]",
+// an ASCII-only member "[ASCII]"), so NFC and NFD spellings that look the
+// same can be told apart (fix wave 8 (R4)); the suffix is ASCII.
 func CollisionList(gs []pathfold.Group) string {
 	var parts []string
 	for i, g := range gs {
@@ -242,8 +319,15 @@ func CollisionList(gs []pathfold.Group) string {
 			break
 		}
 		ms := make([]string, len(g.Members))
+		nonASCII := false
+		for _, m := range g.Members {
+			nonASCII = nonASCII || !isASCII(m)
+		}
 		for j, m := range g.Members {
 			ms[j] = textsafe.Escape(m)
+			if nonASCII {
+				ms[j] += " " + codePoints(m)
+			}
 		}
 		parts = append(parts, "{"+strings.Join(ms, ", ")+"}")
 	}
@@ -252,6 +336,35 @@ func CollisionList(gs []pathfold.Group) string {
 		s += fmt.Sprintf(" 외 %d건", n)
 	}
 	return s
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// codePoints lists the non-ASCII runes of s as "[U+XXXX ...]" (an invalid
+// UTF-8 byte as \xNN), or "[ASCII]" when there is none.
+func codePoints(s string) string {
+	var cps []string
+	for i := 0; i < len(s); {
+		r, n := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case r == utf8.RuneError && n <= 1:
+			cps = append(cps, fmt.Sprintf("\\x%02x", s[i]))
+		case r >= 0x80:
+			cps = append(cps, fmt.Sprintf("U+%04X", r))
+		}
+		i += max(n, 1)
+	}
+	if len(cps) == 0 {
+		return "[ASCII]"
+	}
+	return "[" + strings.Join(cps, " ") + "]"
 }
 
 // collisionViolation is the one path_case_collision violation of a run.

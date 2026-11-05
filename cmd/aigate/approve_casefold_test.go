@@ -93,3 +93,32 @@ func TestLoadedDirsAndBuiltinGuardsAgreeCaseInsensitively(t *testing.T) {
 		}
 	}
 }
+
+// FIX WAVE 8 (R1): approve shows a folded alias of a guarded name (go.worK
+// with the Kelvin sign) as a new guarded file with its diff, and the hash it
+// grants is the one run checks: the same head is then ok.
+func TestApproveShowsFoldedAlias(t *testing.T) {
+	repo, base := newRepo(t)
+	const alias = "go.worK"
+	head := gittest.Plumb(t, repo, base, map[string]string{alias: "go 1.27\n\nuse .\n"})
+	if c, out, e := run("run", "--repo", repo, "--base", base, "--head", head); c != 3 {
+		t.Fatalf("alias must need approval: run exit %d %s %s", c, out, e)
+	}
+	orig := requireTTY
+	requireTTY = func() error { return nil }
+	t.Cleanup(func() { requireTTY = orig })
+	var o, e bytes.Buffer
+	code := Main([]string{"approve", "--repo", repo, "--base", base, "--head", head}, strings.NewReader("yes\n"), &o, &e)
+	out := o.String()
+	if code != 0 || rawUnsafe(out) || !strings.Contains(out, "approved.") {
+		t.Fatalf("approve: %d %q %q", code, out, e.String())
+	}
+	for _, s := range []string{"+ " + alias, "b/" + alias, "+use ."} {
+		if !strings.Contains(out, s) {
+			t.Errorf("approve output lacks %q: %q", s, out)
+		}
+	}
+	if c, out, e := run("run", "--repo", repo, "--base", base, "--head", head); c != 0 {
+		t.Fatalf("after approval: %d %s %s", c, out, e)
+	}
+}

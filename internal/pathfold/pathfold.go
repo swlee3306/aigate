@@ -141,12 +141,17 @@ func Collisions(paths []string) []Group {
 	return out
 }
 
-// New returns the groups of head that are not pre-existing, i.e. not present
-// with exactly the same members in base (nil base: every group is new), in
-// Key order. A new group that only repeats its parent's collision (its
+// New returns the groups of head that are not pre-existing, in Key order
+// (nil base: every group is new). A group is pre-existing only when base has
+// a group with the same Key, exactly the same members, and every member has
+// the same signature on both sides (fix wave 8 (R2)): headSig/baseSig map a
+// path to its "mode object-id" from `git ls-tree -r -t` (directories are
+// members too and carry their tree id, which changes when anything beneath
+// changes). A member without a signature on either side makes the group new
+// (fail closed). A new group that only repeats its parent's collision (its
 // members differ only in a parent component, and that parent group is new
 // too) is left out: the parent group already names it.
-func New(head, base []Group) []Group {
+func New(head, base []Group, headSig, baseSig map[string]string) []Group {
 	old := map[string]string{}
 	for _, g := range base {
 		old[g.Key] = strings.Join(g.Members, "\x00")
@@ -154,7 +159,7 @@ func New(head, base []Group) []Group {
 	isNew := map[string]bool{}
 	var fresh []Group
 	for _, g := range head {
-		if m, ok := old[g.Key]; ok && m == strings.Join(g.Members, "\x00") {
+		if m, ok := old[g.Key]; ok && m == strings.Join(g.Members, "\x00") && sameSigs(g.Members, headSig, baseSig) {
 			continue
 		}
 		isNew[g.Key] = true
@@ -170,6 +175,19 @@ func New(head, base []Group) []Group {
 	return out
 }
 
+// sameSigs reports whether every member has a signature on both sides and
+// the two are equal.
+func sameSigs(members []string, headSig, baseSig map[string]string) bool {
+	for _, m := range members {
+		h, ok1 := headSig[m]
+		b, ok2 := baseSig[m]
+		if !ok1 || !ok2 || h != b {
+			return false
+		}
+	}
+	return true
+}
+
 // sameLast reports whether every member has the same last component.
 func sameLast(ms []string) bool {
 	last := func(s string) string { return s[strings.LastIndexByte(s, '/')+1:] }
@@ -179,4 +197,87 @@ func sameLast(ms []string) bool {
 		}
 	}
 	return true
+}
+
+// KeyPath returns the folding key of a whole path: Key of every
+// "/"-separated component, joined with "/" (the Key of a Group).
+func KeyPath(p string) string {
+	f := newFolder()
+	cs := strings.Split(p, "/")
+	for i, c := range cs {
+		cs[i] = f.key(c)
+	}
+	return strings.Join(cs, "/")
+}
+
+// FoldGlob folds the literal parts of a slash-separated glob with the same
+// key as KeyPath, so that a folded path can be matched against it (fix wave
+// 8: folded aliases of guard globs). The glob syntax is kept: "**"
+// components, "*" and "?" are copied; a "\x" escape folds x and keeps it
+// escaped; a "[...]" class is copied with its ASCII letters lowered (folded
+// paths hold no upper-case ASCII) and every other rune folded only when its
+// key is one rune (a rune that folds to several, such as ß→ss, stays as it
+// is: a class matches one rune). Known approximations, all on the side of a
+// glob matching less: "?" and a class match one rune of the folded key, so
+// they do not match a rune that folds or decomposes to several (é→e+U+0301).
+func FoldGlob(g string) string {
+	f := newFolder()
+	cs := strings.Split(g, "/")
+	for i, c := range cs {
+		if c != "**" {
+			cs[i] = foldGlobComponent(f, c)
+		}
+	}
+	return strings.Join(cs, "/")
+}
+
+func foldGlobComponent(f *folder, c string) string {
+	var b, lit strings.Builder
+	flush := func() {
+		if lit.Len() > 0 {
+			b.WriteString(f.key(lit.String()))
+			lit.Reset()
+		}
+	}
+	rs := []rune(c)
+	for i := 0; i < len(rs); i++ {
+		switch r := rs[i]; r {
+		case '*', '?':
+			flush()
+			b.WriteRune(r)
+		case '\\':
+			flush()
+			if i+1 < len(rs) {
+				i++
+				for _, k := range f.key(string(rs[i])) {
+					if strings.ContainsRune("*?[\\", k) {
+						b.WriteRune('\\')
+					}
+					b.WriteRune(k)
+				}
+			} else {
+				b.WriteRune(r)
+			}
+		case '[':
+			flush()
+			b.WriteRune(r)
+			for i++; i < len(rs); i++ {
+				r := rs[i]
+				if r < 0x80 {
+					b.WriteString(strings.ToLower(string(r)))
+				} else if k := []rune(f.key(string(r))); len(k) == 1 {
+					b.WriteRune(k[0])
+				} else {
+					b.WriteRune(r)
+				}
+				if r == ']' && i > 0 && rs[i-1] != '[' {
+					break
+				}
+			}
+		default:
+			lit.WriteRune(r)
+		}
+	}
+	flush()
+	return b.String()
 }
