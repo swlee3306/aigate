@@ -53,6 +53,8 @@ type TaskView struct {
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
 	Error      string    `json:"error,omitempty"`
+	HeadSHA    string    `json:"head_sha,omitempty"`
+	Verdict    string    `json:"verdict,omitempty"`
 }
 
 // ApprovalView is the JSON form of a pending-approvals entry.
@@ -71,7 +73,7 @@ type ApprovalView struct {
 func viewOf(t store.Task) TaskView {
 	return TaskView{ID: t.ID, Repo: t.Repo, Base: t.Base, Prompt: t.Prompt, Class: t.Class,
 		Agent: t.Agent, State: string(t.State), Attempts: t.Attempts, RetryState: string(t.RetryState),
-		CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt, Error: t.ErrorText}
+		CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt, Error: t.ErrorText, HeadSHA: t.HeadSHA, Verdict: t.Verdict}
 }
 
 type submitRequest struct {

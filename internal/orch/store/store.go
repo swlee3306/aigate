@@ -21,6 +21,9 @@ import (
 //go:embed schema.sql
 var schemaV1 string
 
+//go:embed schema_v2.sql
+var schemaV2 string
+
 // MaxErrorText caps Task.ErrorText so a noisy failure cannot bloat the DB.
 const MaxErrorText = 4096
 
@@ -45,6 +48,9 @@ type Task struct {
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 	ErrorText  string
+	HeadSHA    string // the agent's head commit, set by the collecting step
+	Verdict    string // gate category of the last verification
+	ReportPath string // saved report JSON of the last verification
 }
 
 // Approval is a pending-approvals entry (design section 6).
@@ -84,6 +90,7 @@ type Store struct {
 // migrations[i] upgrades schema version i to i+1.
 var migrations = []func(tx *sql.Tx) error{
 	func(tx *sql.Tx) error { _, err := tx.Exec(schemaV1); return err },
+	func(tx *sql.Tx) error { _, err := tx.Exec(schemaV2); return err },
 }
 
 // Open creates or opens the database at path with mode 0600.
@@ -171,7 +178,7 @@ func capText(s string) string {
 	return s + "…[cut]"
 }
 
-const taskCols = `id, repo, base, prompt, class, agent, state, attempts, retry_state, error_text, created_at, updated_at`
+const taskCols = `id, repo, base, prompt, class, agent, state, attempts, retry_state, error_text, created_at, updated_at, head_sha, verdict, report_path`
 
 type scanner interface{ Scan(...any) error }
 
@@ -179,7 +186,7 @@ func scanTask(r scanner) (Task, error) {
 	var t Task
 	var c, u int64
 	err := r.Scan(&t.ID, &t.Repo, &t.Base, &t.Prompt, &t.Class, &t.Agent, &t.State,
-		&t.Attempts, &t.RetryState, &t.ErrorText, &c, &u)
+		&t.Attempts, &t.RetryState, &t.ErrorText, &c, &u, &t.HeadSHA, &t.Verdict, &t.ReportPath)
 	t.CreatedAt, t.UpdatedAt = ts(c), ts(u)
 	return t, err
 }
@@ -240,6 +247,28 @@ func (s *Store) ListTasks(ctx context.Context, limit int) ([]Task, error) {
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// SetHeadSHA records the agent's head commit. It is idempotent.
+func (s *Store) SetHeadSHA(ctx context.Context, id int64, sha string) error {
+	return s.setCols(ctx, id, `head_sha=?`, sha)
+}
+
+// SetVerdict records the gate category and the saved report path of the last
+// verification. It is idempotent.
+func (s *Store) SetVerdict(ctx context.Context, id int64, verdict, reportPath string) error {
+	return s.setCols(ctx, id, `verdict=?, report_path=?`, verdict, reportPath)
+}
+
+func (s *Store) setCols(ctx context.Context, id int64, set string, args ...any) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET `+set+` WHERE id=?`, append(args, id)...)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // Transition moves a task from `from` to `to` only if it is currently in

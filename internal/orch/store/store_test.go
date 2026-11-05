@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -338,5 +339,56 @@ func TestListTasksNewestFirst(t *testing.T) {
 	one, _ := s.ListTasks(context.Background(), 1)
 	if len(one) != 1 {
 		t.Fatalf("limit ignored: %d", len(one))
+	}
+}
+
+// A database made by schema version 1 keeps its tasks when opened by this build.
+func TestMigrateV1ToV2KeepsTasks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v1.db")
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{schemaV1,
+		`CREATE TABLE schema_version (version INTEGER NOT NULL)`,
+		`INSERT INTO schema_version(version) VALUES (1)`,
+		`INSERT INTO tasks(repo, base, prompt, class, agent, state, created_at, updated_at)
+		 VALUES ('/r','abc','old prompt','docs','claude','verifying',1,2)`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	got, err := s.GetTask(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Prompt != "old prompt" || got.State != StateVerifying || got.HeadSHA != "" || got.Verdict != "" || got.ReportPath != "" {
+		t.Fatalf("task after migration: %+v", got)
+	}
+	var v int
+	s.db.QueryRow(`SELECT version FROM schema_version`).Scan(&v)
+	if v != 2 {
+		t.Fatalf("version %d", v)
+	}
+	if err := s.SetHeadSHA(context.Background(), 1, "deadbeef"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetVerdict(context.Background(), 1, "ok", "/p.json"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.GetTask(context.Background(), 1)
+	if got.HeadSHA != "deadbeef" || got.Verdict != "ok" || got.ReportPath != "/p.json" {
+		t.Fatalf("%+v", got)
+	}
+	if err := s.SetHeadSHA(context.Background(), 99, "x"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want ErrNotFound, got %v", err)
 	}
 }

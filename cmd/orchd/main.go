@@ -22,7 +22,7 @@ type stringList []string
 func (s *stringList) String() string     { return fmt.Sprint(*s) }
 func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 
-// placeholderSteps stands in until the real steps exist (tasks 9 and 11). Every
+// placeholderSteps is used when no VM flags are given. Every
 // step reports an infrastructure error, so a task retries and ends in failed.
 // It can never produce passed.
 type placeholderSteps struct{}
@@ -60,10 +60,19 @@ func run(args []string) int {
 	fs.StringVar(&cfg.Socket, "socket", envOr("ORCHD_SOCKET", "/run/orchd/orchd.sock"), "unix socket path")
 	fs.IntVar(&cfg.Concurrency, "concurrency", 1, "tasks run in parallel")
 	fs.Var(&repos, "allow-repo", "repository root tasks may use (repeatable; none = refuse all)")
+	var vf vmFlags
+	vf.register(fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	cfg.AllowedRepos = repos
+	if vf.enabled() {
+		// Refuse before touching the database or the socket.
+		if err := vf.validate(); err != nil {
+			fmt.Fprintln(os.Stderr, "orchd:", err)
+			return 2
+		}
+	}
 
 	st, err := store.Open(cfg.DB)
 	if err != nil {
@@ -71,7 +80,14 @@ func run(args []string) int {
 		return 1
 	}
 	defer st.Close()
-	d, err := api.NewDaemon(cfg, st, placeholderSteps{})
+	var provider api.StepProvider = placeholderSteps{}
+	if vf.enabled() {
+		if provider, err = vf.provider(st, cfg.DB); err != nil {
+			fmt.Fprintln(os.Stderr, "orchd:", err)
+			return 2
+		}
+	}
+	d, err := api.NewDaemon(cfg, st, provider)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "orchd:", err)
 		return 1
