@@ -236,11 +236,21 @@ func cmdApprove(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "changed or deleted existing protected files (any hunk, additions too): %d; removed lines: %d; added guarded files: %d\n",
 		len(p.Diff.Changed()), len(p.Diff.RemovedLines), len(p.AddedGuarded))
-	for _, f := range p.Diff.Changed() {
-		fmt.Fprintf(stdout, "  ! %s\n", f)
+	// A symlink is marked with its target (checked like a path by
+	// unsafeApproveText); the target file's content is not in the diff.
+	links, shown := p.Diff.HeadSymlinks(), false
+	for _, l := range []struct {
+		mark  string
+		paths []string
+	}{{"!", p.Diff.Changed()}, {"+", p.AddedGuarded}} {
+		for _, f := range l.paths {
+			_, isLink := links[f]
+			shown = shown || isLink
+			fmt.Fprintf(stdout, "  %s %s\n", l.mark, gitx.SymlinkMark(links, f))
+		}
 	}
-	for _, f := range p.AddedGuarded {
-		fmt.Fprintf(stdout, "  + %s\n", f)
+	if shown {
+		fmt.Fprintln(stdout, "note: a symlink's target content is not part of the reviewed diff (only the link and its target path are); check the target file itself")
 	}
 	// The full text the hash is computed over, untruncated: the human
 	// approves exactly what they read (binary files as a summary line).
@@ -493,6 +503,9 @@ func binaryRefusal(p gate.Protected) (msg, reason string) {
 		if f.Status == "D" || f.Status == "A" && !f.HeadBinary {
 			continue
 		}
+		if f.Status != "A" && f.BaseBinary && !f.HeadBinary && f.HeadMode == "120000" {
+			return fmt.Sprintf("보호 파일 '%s' 가 바이너리에서 심볼릭 링크로 바뀌었습니다(base는 바이너리, head는 심볼릭 링크/텍스트). base의 NUL 바이트가 diff의 '-' 줄에 남아 이 diff는 화면에 그대로 보일 수 없습니다", textsafe.Escape(f.Path)), reasonBinaryBecameText
+		}
 		if f.Status != "A" && f.BaseBinary && !f.HeadBinary {
 			return fmt.Sprintf("보호 파일 '%s' 가 바이너리에서 텍스트로 바뀌었습니다(base는 바이너리, head는 텍스트). base의 NUL 바이트가 diff의 '-' 줄에 남아 이 diff는 화면에 그대로 보일 수 없습니다", textsafe.Escape(f.Path)), reasonBinaryBecameText
 		}
@@ -520,7 +533,7 @@ func unsafeApproveText(p gate.Protected, display string) (string, string) {
 	lists := []struct {
 		what  string
 		paths []string
-	}{{"변경 파일", p.Diff.TouchedFiles}, {"변경·삭제 파일", p.Diff.Changed()}, {"새 보호 파일", p.AddedGuarded}, {"새 파일", p.Diff.AddedFiles}}
+	}{{"변경 파일", p.Diff.TouchedFiles}, {"변경·삭제 파일", p.Diff.Changed()}, {"새 보호 파일", p.AddedGuarded}, {"새 파일", p.Diff.AddedFiles}, {"심볼릭 링크 대상", shownLinkTargets(p)}}
 	for _, l := range lists {
 		for i, f := range l.paths {
 			// a path is printed on one line: a newline in it is unsafe too
@@ -549,6 +562,21 @@ func unsafeApproveText(p gate.Protected, display string) (string, string) {
 		return fmt.Sprintf("승인할 diff 텍스트 %d번째 줄(%s)에 %s", fd.Line, file, fd.Desc), reasonUnsafeBytes
 	}
 	return "", ""
+}
+
+// shownLinkTargets returns the targets approve prints next to a symlink in
+// the changed / added guarded lists, in that order.
+func shownLinkTargets(p gate.Protected) []string {
+	links := p.Diff.HeadSymlinks()
+	var out []string
+	for _, l := range [][]string{p.Diff.Changed(), p.AddedGuarded} {
+		for _, f := range l {
+			if t, ok := links[f]; ok {
+				out = append(out, t)
+			}
+		}
+	}
+	return out
 }
 
 func cmdLedger(args []string, stdout, stderr io.Writer) int {

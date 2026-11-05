@@ -270,6 +270,27 @@ func (d ProtDiff) Changed() []string {
 	return out
 }
 
+// HeadSymlinks maps every protected file that is a symlink at head (mode
+// 120000) to its target. The target file's content is not part of the diff.
+func (d ProtDiff) HeadSymlinks() map[string]string {
+	m := map[string]string{}
+	for _, f := range d.Files {
+		if f.HeadMode == symlinkMode {
+			m[f.Path] = f.HeadSymlinkTarget
+		}
+	}
+	return m
+}
+
+// SymlinkMark renders a path for a listing: "<path> (symlink → <target>)"
+// when it is a symlink at head, else the path itself.
+func SymlinkMark(links map[string]string, p string) string {
+	if t, ok := links[p]; ok {
+		return p + " (symlink → " + t + ")"
+	}
+	return p
+}
+
 // DisplayText is HashedText with the file section of every summarised
 // (genuine binary) protected file replaced by one summary line
 // ("binary file changed: <path>, <head> bytes (base <base> bytes), head blob

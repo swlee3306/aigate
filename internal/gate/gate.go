@@ -22,6 +22,7 @@ import (
 	"aigate/internal/ledger"
 	"aigate/internal/report"
 	"aigate/internal/rules"
+	"aigate/internal/textsafe"
 )
 
 // ToolVersion is recorded in every report.
@@ -385,7 +386,7 @@ func runCompare(ctx context.Context, o Options, home, repoID, top, base, head st
 			continue
 		}
 		if v.Rule == "protected_modified" {
-			v.Detail += protectedHint(p.Diff.Hash, o.ApproveHash)
+			v.Detail += symlinkNote(p.Diff.HeadSymlinks(), v.IDs) + protectedHint(p.Diff.Hash, o.ApproveHash)
 		}
 		add(v)
 	}
@@ -427,6 +428,22 @@ func runCompare(ctx context.Context, o Options, home, repoID, top, base, head st
 		}
 	}
 	return nil
+}
+
+// symlinkNote marks the files that are symlinks at head with their targets
+// (the Markdown view escapes control bytes) and says the target's content is
+// not part of the reviewed diff; "" when none is a symlink.
+func symlinkNote(links map[string]string, files []string) string {
+	var marked []string
+	for _, f := range files {
+		if t, ok := links[f]; ok {
+			marked = append(marked, gitx.SymlinkMark(map[string]string{f: textsafe.Escape(t)}, f))
+		}
+	}
+	if len(marked) == 0 {
+		return ""
+	}
+	return "; 심볼릭 링크: " + strings.Join(marked, ", ") + " — 링크 대상 파일의 내용은 검토한 보호 파일 diff에 포함되지 않습니다"
 }
 
 func protectedHint(real, given string) string {

@@ -509,3 +509,94 @@ func TestApproveMaglessBinaries(t *testing.T) {
 		}
 	})
 }
+
+func symlink(t *testing.T, repo, target, name string) {
+	t.Helper()
+	p := filepath.Join(repo, name)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Remove(p)
+	if err := os.Symlink(target, p); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// FIX WAVE 5 R3: a symlink in the added/changed guarded lists is marked with
+// its target, plus one note that the target's content is not part of the
+// reviewed diff; the run's Markdown report marks it the same way.
+func TestApproveMarksSymlinks(t *testing.T) {
+	repo, base := newRepo(t)
+	write(t, repo, "tests/old.txt", "x\n")
+	base = commit(t, repo, "base2")
+	symlink(t, repo, "../../src/evil.js", "node_modules/helper/index.js")
+	symlink(t, repo, "../ok.flag", "tests/old.txt") // existing file became a symlink (T)
+	commit(t, repo, "links")
+	code, out, errOut := run("run", "--repo", repo, "--base", base)
+	if code != 3 || !strings.Contains(out, "node_modules/helper/index.js (symlink → ../../src/evil.js)") || !strings.Contains(out, "tests/old.txt (symlink → ../ok.flag)") || !strings.Contains(out, "링크 대상") {
+		t.Fatalf("run report should mark symlinks: %d %q %q", code, out, errOut)
+	}
+	code, out, errOut = approveTTY(t, repo, base, "yes\n")
+	if code != 0 || rawUnsafe(out) {
+		t.Fatalf("approve: %d %q %q", code, out, errOut)
+	}
+	for _, s := range []string{
+		"  + node_modules/helper/index.js (symlink → ../../src/evil.js)\n",
+		"  ! tests/old.txt (symlink → ../ok.flag)\n",
+		"note: a symlink's target content is not part of the reviewed diff",
+	} {
+		if !strings.Contains(out, s) {
+			t.Errorf("missing %q in %q", s, out)
+		}
+	}
+	if strings.Count(out, "note: a symlink's target") != 1 {
+		t.Errorf("the note must be printed once: %q", out)
+	}
+}
+
+// A symlink target is checked like a path: a newline or control byte in it
+// is refused before anything is printed (a newline is not caught by the diff
+// scan, where it is just two "+" lines).
+func TestApproveRefusesUnsafeSymlinkTarget(t *testing.T) {
+	for name, target := range map[string]string{"newline": "a\n  + fake/path", "esc": "a\x1b[2Kb", "cr": "a\rb"} {
+		t.Run(name, func(t *testing.T) {
+			repo, base := newRepo(t)
+			symlink(t, repo, target, "node_modules/helper/index.js")
+			commit(t, repo, "link")
+			code, out, errOut := approveTTY(t, repo, base, "yes\n")
+			if code != 64 || out != "" || rawUnsafe(errOut) || !strings.Contains(errOut, "unsafe_bytes") {
+				t.Fatalf("want refusal: %d %q %q", code, out, errOut)
+			}
+			if p := lastRefusal(t, repo); p["reason"] != "unsafe_bytes" {
+				t.Fatalf("ledger reason %v", p["reason"])
+			}
+			noGrant(t)
+		})
+	}
+}
+
+// binary→symlink: the binary_became_text message says the head is a
+// symlink, not plain text.
+func TestApproveBinaryBecameSymlinkMessage(t *testing.T) {
+	repo, base := newRepo(t)
+	write(t, repo, "tests/data.bin", "a\x00b\n")
+	base = commit(t, repo, "base2")
+	symlink(t, repo, "../ok.flag", "tests/data.bin")
+	commit(t, repo, "b2l")
+	code, out, errOut := approveTTY(t, repo, base, "yes\n")
+	if code != 64 || out != "" || !strings.Contains(errOut, "binary_became_text") || !strings.Contains(errOut, "head는 심볼릭 링크") {
+		t.Fatalf("binary→symlink: %d %q %q", code, out, errOut)
+	}
+}
+
+// The run report escapes a symlink target like a path (a newline shows as
+// \x0a, never as a second line or a folded space).
+func TestRunReportEscapesSymlinkTarget(t *testing.T) {
+	repo, base := newRepo(t)
+	symlink(t, repo, "a\nb\x1b", "node_modules/helper/index.js")
+	commit(t, repo, "link")
+	code, out, _ := run("run", "--repo", repo, "--base", base)
+	if code != 3 || rawUnsafe(out) || !strings.Contains(out, `node_modules/helper/index.js (symlink → a\x0ab\x1b)`) {
+		t.Fatalf("report: %d %q", code, out)
+	}
+}
