@@ -3,17 +3,13 @@ package gate
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 
 	"aigate/internal/adapter"
 	"aigate/internal/config"
-	"aigate/internal/gitx"
 	"aigate/internal/report"
 	"aigate/internal/rules"
-	"aigate/internal/runner"
 )
 
 // resolveCommand returns the argv and adapter name for a check.
@@ -32,63 +28,17 @@ func resolveCommand(c config.Check) ([]string, string, error) {
 	return append([]string{}, c.Command...), c.Adapter, nil
 }
 
-// runSide runs one check (setup first) in an isolated worktree of sha.
-func runSide(ctx context.Context, repo, sha string, c config.Check) (rules.RunInfo, report.RunSummary, error) {
+// runSide runs one check (setup first) at sha through ex and parses its
+// result bytes. Everything ex returns is untrusted and bounded here.
+func runSide(ctx context.Context, ex Executor, sha string, c config.Check) (rules.RunInfo, report.RunSummary, error) {
 	argv, ad, err := resolveCommand(c)
 	if err != nil {
 		return rules.RunInfo{}, report.RunSummary{}, err
 	}
-	var info rules.RunInfo
-	var seconds float64
-	err = gitx.WithWorktree(repo, sha, func(dir string) error {
-		if len(c.Setup) > 0 {
-			so := runner.Run(ctx, runner.Spec{Dir: dir, Argv: c.Setup, Timeout: c.Timeout})
-			seconds += so.Seconds
-			if so.TimedOut || so.RC != 0 {
-				info = rules.RunInfo{RC: so.RC, TimedOut: so.TimedOut, Tail: cleanTail(so.Tail)}
-				return nil
-			}
-		}
-		tmp, err := os.MkdirTemp("", "aigate-run-")
-		if err != nil {
-			return err
-		}
-		defer os.RemoveAll(tmp)
-		spec := runner.Spec{Dir: dir, Argv: argv, Timeout: c.Timeout}
-		out := filepath.Join(tmp, "out")
-		switch ad {
-		case "junit":
-			spec.Env = []string{"AIGATE_JUNIT=" + out}
-		case "gotest-json":
-			spec.StdoutFile = out
-		case "exit-code":
-		default:
-			return fmt.Errorf("check %q: unknown adapter %q", c.ID, ad)
-		}
-		o := runner.Run(ctx, spec)
-		seconds += o.Seconds
-		info = rules.RunInfo{RC: o.RC, TimedOut: o.TimedOut, Tail: cleanTail(o.Tail)}
-		if o.TimedOut || o.RC == 127 { // timed out, or command could not be started
-			return nil
-		}
-		var p adapter.Parsed
-		switch ad {
-		case "junit":
-			p = adapter.ParseJUnit(out)
-		case "gotest-json":
-			f, err := os.Open(out)
-			if err != nil {
-				p = adapter.Parsed{ParseFailed: true}
-			} else {
-				p = adapter.ParseGoTestJSON(f)
-				f.Close()
-			}
-		default:
-			p = adapter.ExitCode(c.ID, o.RC)
-		}
-		info.Results, info.ParseFailed = p.Results, p.ParseFailed
-		return nil
-	})
+	o, err := ex.RunCheck(ctx, CheckRequest{SHA: sha, CheckID: c.ID, Argv: argv, Setup: c.Setup, Adapter: ad, Timeout: c.Timeout})
+	if err == nil {
+		err = checkBounds(o)
+	}
 	if err != nil {
 		return rules.RunInfo{}, report.RunSummary{}, fmt.Errorf("check %q at %s: %w", c.ID, short(sha), err)
 	}
@@ -97,7 +47,33 @@ func runSide(ctx context.Context, repo, sha string, c config.Check) (rules.RunIn
 	if err := ctx.Err(); err != nil {
 		return rules.RunInfo{}, report.RunSummary{}, fmt.Errorf("interrupted during check %q at %s: %w", c.ID, short(sha), err)
 	}
-	return info, summary(info, seconds), nil
+	tail := o.Tail
+	if len(tail) > maxTailBytes {
+		tail = tail[len(tail)-maxTailBytes:]
+	}
+	info := rules.RunInfo{RC: o.RC, TimedOut: o.TimedOut, Tail: cleanTail(tail)}
+	if !o.SetupFailed && !o.TimedOut && o.RC != 127 {
+		var p adapter.Parsed
+		switch ad {
+		case "junit":
+			p = adapter.ParseJUnit(o.JUnit)
+		case "gotest-json":
+			p = adapter.ParseGoTestJSON(o.GoTestJSON)
+		default:
+			p = adapter.ExitCode(c.ID, o.RC)
+		}
+		info.Results, info.ParseFailed = p.Results, p.ParseFailed
+	}
+	return info, summary(info, o.Seconds), nil
+}
+
+// checkBounds rejects an Executor result carrying more result bytes than the
+// gate accepts.
+func checkBounds(o CheckOutput) error {
+	if len(o.JUnit) > maxResultBytes || len(o.GoTestJSON) > maxResultBytes {
+		return fmt.Errorf("check output exceeds %d bytes", maxResultBytes)
+	}
+	return nil
 }
 
 const tailRunes = 300

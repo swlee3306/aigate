@@ -17,18 +17,26 @@ func count(r rules.Results) map[rules.Status]int {
 	return m
 }
 
-func open(t *testing.T, name string) *os.File {
+func open(t *testing.T, name string) []byte {
 	t.Helper()
-	f, err := os.Open(filepath.Join("testdata", name))
+	b, err := os.ReadFile(filepath.Join("testdata", name))
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { f.Close() })
-	return f
+	return b
+}
+
+// parseJUnitFile parses a JUnit file; a missing file is nil bytes.
+func parseJUnitFile(path string) Parsed {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ParseJUnit(nil)
+	}
+	return ParseJUnit(b)
 }
 
 func TestParseJUnitPytest(t *testing.T) {
-	p := ParseJUnit(filepath.Join("testdata", "pytest.xml"))
+	p := parseJUnitFile(filepath.Join("testdata", "pytest.xml"))
 	if p.ParseFailed {
 		t.Fatal("ParseFailed")
 	}
@@ -56,7 +64,7 @@ func TestParseJUnitPytest(t *testing.T) {
 }
 
 func TestParseJUnitVitestAndJest(t *testing.T) {
-	v := ParseJUnit(filepath.Join("testdata", "vitest.xml"))
+	v := parseJUnitFile(filepath.Join("testdata", "vitest.xml"))
 	if v.ParseFailed {
 		t.Fatal("vitest ParseFailed")
 	}
@@ -66,7 +74,7 @@ func TestParseJUnitVitestAndJest(t *testing.T) {
 	if v.Results["src/a.test.js::param a b"] != rules.Passed {
 		t.Errorf("vitest ids: %v", v.Results)
 	}
-	j := ParseJUnit(filepath.Join("testdata", "jest.xml"))
+	j := parseJUnitFile(filepath.Join("testdata", "jest.xml"))
 	if j.ParseFailed {
 		t.Fatal("jest ParseFailed")
 	}
@@ -85,7 +93,7 @@ func TestParseJUnitDuplicateKeepsWorst(t *testing.T) {
 	if err := os.WriteFile(p, []byte(xml), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if r := ParseJUnit(p); r.ParseFailed || r.Results["a::t"] != rules.Failed {
+	if r := parseJUnitFile(p); r.ParseFailed || r.Results["a::t"] != rules.Failed {
 		t.Fatalf("got %+v", r)
 	}
 }
@@ -96,13 +104,13 @@ func TestParseFailed(t *testing.T) {
 	if err := os.WriteFile(broken, []byte("<testsuites><testsuite><testcase name="), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if p := ParseJUnit(broken); !p.ParseFailed {
+	if p := parseJUnitFile(broken); !p.ParseFailed {
 		t.Error("broken xml: ParseFailed=false")
 	}
-	if p := ParseJUnit(filepath.Join(dir, "missing.xml")); !p.ParseFailed {
+	if p := parseJUnitFile(filepath.Join(dir, "missing.xml")); !p.ParseFailed {
 		t.Error("missing file: ParseFailed=false")
 	}
-	if p := ParseGoTestJSON(strings.NewReader("not json\n")); !p.ParseFailed {
+	if p := ParseGoTestJSON([]byte("not json\n")); !p.ParseFailed {
 		t.Error("bad json: ParseFailed=false")
 	}
 }
@@ -145,7 +153,7 @@ func TestParseGoTestJSONBuildFail(t *testing.T) {
 
 func TestParseGoTestJSONUnfinishedIsError(t *testing.T) {
 	in := `{"Action":"run","Package":"p","Test":"TestHang"}` + "\n"
-	if p := ParseGoTestJSON(strings.NewReader(in)); p.Results["p/TestHang"] != rules.Error {
+	if p := ParseGoTestJSON([]byte(in)); p.Results["p/TestHang"] != rules.Error {
 		t.Fatalf("got %v", p.Results)
 	}
 }
@@ -206,7 +214,7 @@ func TestPresetFor(t *testing.T) {
 }
 
 func TestParseJUnitSuiteLevelFailureIsError(t *testing.T) {
-	p := ParseJUnit(filepath.Join("testdata", "vitest_syntax_error.xml"))
+	p := parseJUnitFile(filepath.Join("testdata", "vitest_syntax_error.xml"))
 	if p.ParseFailed {
 		t.Fatal("ParseFailed")
 	}
@@ -216,11 +224,11 @@ func TestParseJUnitSuiteLevelFailureIsError(t *testing.T) {
 	// A normal failing test whose name differs from classname stays failed
 	// (vitest fixture), and jest's failing test (name == classname, but the
 	// suite name differs) stays failed too.
-	v := ParseJUnit(filepath.Join("testdata", "vitest.xml"))
+	v := parseJUnitFile(filepath.Join("testdata", "vitest.xml"))
 	if v.Results["src/a.test.js::fails"] != rules.Failed {
 		t.Errorf("vitest fails: %v", v.Results)
 	}
-	j := ParseJUnit(filepath.Join("testdata", "jest.xml"))
+	j := parseJUnitFile(filepath.Join("testdata", "jest.xml"))
 	if j.Results["fails::fails"] != rules.Failed {
 		t.Errorf("jest fails: %v", j.Results)
 	}

@@ -36,6 +36,9 @@ type Options struct {
 	// Initial requests initial mode explicitly (no base; head-only green
 	// check, config read from head). Base must then be empty.
 	Initial bool
+	// Executor runs the checks; nil means a LocalExecutor. Run prepares it
+	// but does not close it: the caller owns an Executor it passes in.
+	Executor Executor
 }
 
 func sortedCopy(s []string) []string {
@@ -444,11 +447,16 @@ func Run(ctx context.Context, o Options) (report.Report, error) {
 		StartedAt: started.Format(time.RFC3339), Checks: []report.CheckResult{},
 		Violations: []rules.Violation{}, Waived: []string{}, Approvals: []report.ApprovalState{}}
 	counts := map[string]any{}
+	ex := o.Executor
+	if ex == nil {
+		ex = &LocalExecutor{}
+		defer ex.Close()
+	}
 
 	switch {
 	case o.Initial:
 		r.Initial = true
-		err = runInitial(ctx, top, head, dirty != "", &r, counts)
+		err = runInitial(ctx, ex, top, head, dirty != "", &r, counts)
 	default:
 		r.Base = base
 		var anc bool
@@ -461,7 +469,7 @@ func Run(ctx context.Context, o Options) (report.Report, error) {
 				Detail: fmt.Sprintf("base %s 는 head %s 의 조상이 아닙니다", short(base), short(head))})
 			break
 		}
-		err = runCompare(ctx, o, home, repoID, top, base, head, dirty != "", &r, counts)
+		err = runCompare(ctx, ex, o, home, repoID, top, base, head, dirty != "", &r, counts)
 	}
 	if err != nil {
 		return report.Report{}, err
@@ -512,7 +520,7 @@ func ruleNames(vs []rules.Violation) []string {
 	return out
 }
 
-func runInitial(ctx context.Context, top, head string, dirty bool, r *report.Report, counts map[string]any) error {
+func runInitial(ctx context.Context, ex Executor, top, head string, dirty bool, r *report.Report, counts map[string]any) error {
 	cfg, err := loadConfig(top, head)
 	if err != nil {
 		return err
@@ -533,8 +541,11 @@ func runInitial(ctx context.Context, top, head string, dirty bool, r *report.Rep
 	if !hasRequired(cfg) {
 		r.Violations = append(r.Violations, noRequired())
 	}
+	if err := ex.Prepare(ctx, top, []string{head}); err != nil {
+		return fmt.Errorf("prepare executor: %w", err)
+	}
 	for _, c := range cfg.Checks {
-		hi, hs, err := runSide(ctx, top, head, c)
+		hi, hs, err := runSide(ctx, ex, head, c)
 		if err != nil {
 			return err
 		}
@@ -547,7 +558,7 @@ func runInitial(ctx context.Context, top, head string, dirty bool, r *report.Rep
 	return nil
 }
 
-func runCompare(ctx context.Context, o Options, home, repoID, top, base, head string, dirty bool, r *report.Report, counts map[string]any) error {
+func runCompare(ctx context.Context, ex Executor, o Options, home, repoID, top, base, head string, dirty bool, r *report.Report, counts map[string]any) error {
 	p, err := Prepare(Options{Repo: top, Base: base, Head: head})
 	if err != nil {
 		return err
@@ -594,16 +605,19 @@ func runCompare(ctx context.Context, o Options, home, repoID, top, base, head st
 	// All base runs first, then all head runs: head code must not run before
 	// any base run, or it could poison shared state ($TMPDIR, caches) and turn
 	// base results into waived failures.
+	if err := ex.Prepare(ctx, top, []string{base, head}); err != nil {
+		return fmt.Errorf("prepare executor: %w", err)
+	}
 	baseRuns := make([]rules.RunInfo, len(cfg.Checks))
 	baseSums := make([]report.RunSummary, len(cfg.Checks))
 	for i, c := range cfg.Checks {
-		if baseRuns[i], baseSums[i], err = runSide(ctx, top, base, c); err != nil {
+		if baseRuns[i], baseSums[i], err = runSide(ctx, ex, base, c); err != nil {
 			return err
 		}
 	}
 	for i, c := range cfg.Checks {
 		bi, bs := baseRuns[i], baseSums[i]
-		hi, hsum, err := runSide(ctx, top, head, c)
+		hi, hsum, err := runSide(ctx, ex, head, c)
 		if err != nil {
 			return err
 		}

@@ -2,8 +2,8 @@ package adapter
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
-	"io"
 	"strings"
 
 	"aigate/internal/rules"
@@ -16,16 +16,20 @@ type goEvent struct {
 	FailedBuild string
 }
 
-// ParseGoTestJSON parses `go test -json` output. Test id is
+// ParseGoTestJSON parses `go test -json` output (data == nil: no output
+// file, ParseFailed). Test id is
 // "package/Test/Sub". A package that failed to build yields "package[build]"
 // = error; a package that failed with no failing test (TestMain, init panic)
 // yields "package[package]" = error; a test that started but never reported a
 // result (panic, timeout) is error.
-func ParseGoTestJSON(r io.Reader) Parsed {
+func ParseGoTestJSON(data []byte) Parsed {
+	if data == nil {
+		return Parsed{ParseFailed: true}
+	}
 	res := rules.Results{}
 	running := map[string]bool{}
 	failedIn := map[string]bool{}
-	sc := bufio.NewScanner(r)
+	sc := bufio.NewScanner(bytes.NewReader(data))
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())

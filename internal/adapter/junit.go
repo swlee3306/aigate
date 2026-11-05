@@ -1,9 +1,9 @@
 package adapter
 
 import (
+	"bytes"
 	"encoding/xml"
 	"io"
-	"os"
 
 	"aigate/internal/rules"
 )
@@ -16,19 +16,18 @@ type junitCase struct {
 	Skipped   []struct{} `xml:"skipped"`
 }
 
-// ParseJUnit reads a JUnit XML file. The id is "classname::name" (just name
+// ParseJUnit parses JUnit XML. data == nil means the runner produced no file
+// (ParseFailed); an empty non-nil slice is an empty report. The id is "classname::name" (just name
 // when classname is empty), each part normalized. error beats failure beats
 // skipped; a failure whose name equals its classname and the enclosing suite
 // name is an error (suite-level load failure); duplicate ids keep the worst status.
-func ParseJUnit(path string) Parsed {
-	f, err := os.Open(path)
-	if err != nil {
+func ParseJUnit(data []byte) Parsed {
+	if data == nil {
 		return Parsed{Results: rules.Results{}, ParseFailed: true}
 	}
-	defer f.Close()
 	res := rules.Results{}
 	var suites []string // names of the enclosing <testsuite> elements
-	dec := xml.NewDecoder(f)
+	dec := xml.NewDecoder(bytes.NewReader(data))
 	for {
 		tok, err := dec.Token()
 		if err == io.EOF {
