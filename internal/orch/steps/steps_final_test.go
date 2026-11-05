@@ -2,12 +2,14 @@ package steps
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"aigate/internal/ledger"
 	"aigate/internal/orch/approvals"
 	"aigate/internal/orch/machine"
 	"aigate/internal/orch/policy"
@@ -166,5 +168,57 @@ func TestCollectPassesTaskBase(t *testing.T) {
 	e.drain()
 	if e.agent.collectBase != e.base {
 		t.Fatalf("collect got base %q, want %q", e.agent.collectBase, e.base)
+	}
+}
+
+// Every transition and every publish action is in the orchestrator ledger, in
+// order, and the ledger verifies.
+func TestLedgerHasTransitionsAndPublishActions(t *testing.T) {
+	remote := t.TempDir()
+	if out, err := exec.Command("git", "init", "-q", "--bare", remote).CombinedOutput(); err != nil {
+		t.Fatal(string(out))
+	}
+	var e *env
+	e = newEnv(t, func(c *Config, en *env) {
+		en.agent.head = agentCommit(t, en.repo, map[string]string{"x.txt": "x\n"})
+		p, err := publish.New(publish.Config{Remote: remote, Allow: policy.NewAllowlist("push_branch"),
+			Ledger: publish.LedgerRecorder(policy.OrchLedgerPath(c.GateHome))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.Publisher = p
+	})
+	if tk := e.drain(); tk.State != machine.StateDone {
+		t.Fatalf("state %s %q", tk.State, tk.ErrorText)
+	}
+	lp := policy.OrchLedgerPath(e.p.cfg.GateHome)
+	evs, err := ledger.Events(lp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seq []string
+	for _, ev := range evs {
+		switch ev.Type {
+		case "task_transition":
+			seq = append(seq, fmt.Sprint(ev.Payload["from"], ">", ev.Payload["to"]))
+		default:
+			seq = append(seq, ev.Type)
+		}
+	}
+	want := "queued>preparing,preparing>agent_running,agent_running>collecting,collecting>verifying," +
+		"verifying>passed,passed>publishing,publish_action,publish_result,publishing>done"
+	if strings.Join(seq, ",") != want {
+		t.Fatalf("ledger order:\n got %v\nwant %s", seq, want)
+	}
+	for _, ev := range evs {
+		if ev.Repo != policy.OrchRepo {
+			t.Fatalf("repo %q", ev.Repo)
+		}
+		if ev.Type == "task_transition" && ev.Payload["to"] == "verifying" && ev.Payload["head"] != e.agent.head {
+			t.Fatalf("verifying event lacks the head: %+v", ev.Payload)
+		}
+	}
+	if _, err := ledger.Verify(lp); err != nil {
+		t.Fatal(err)
 	}
 }

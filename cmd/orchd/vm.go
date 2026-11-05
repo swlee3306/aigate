@@ -169,7 +169,8 @@ func (v *vmFlags) provider(st *store.Store, dbPath string) (api.StepProvider, er
 		pcfg := publish.Config{Remote: v.GitRemote, TokenFile: v.TokenFile,
 			Allow:  policy.NewAllowlist(splitList(v.PublishAllow)...),
 			GitLab: publish.GitLab{BaseURL: v.GitLabURL, Project: v.GitLabProject, TargetBranch: v.GitLabTarget},
-			Grants: approvals.Grants{Home: gateHome}}
+			Grants: approvals.Grants{Home: gateHome},
+			Ledger: publish.LedgerRecorder(policy.OrchLedgerPath(gateHome))}
 		if v.live != nil {
 			pcfg.AllowSource = func() policy.Allowlist { return v.live.Current().AllowList() }
 		}

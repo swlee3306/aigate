@@ -55,7 +55,11 @@ func NewDaemon(cfg Config, st *store.Store, p StepProvider) (*Daemon, error) {
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = 250 * time.Millisecond
 	}
-	m := machine.New(st, p.Steps())
+	var opts []machine.Option
+	if mo, ok := p.(interface{ MachineOptions() []machine.Option }); ok {
+		opts = mo.MachineOptions()
+	}
+	m := machine.New(st, p.Steps(), opts...)
 	h, err := newHandler(st, m, cfg.AllowedRepos, cfg.GateHome)
 	if err != nil {
 		return nil, err

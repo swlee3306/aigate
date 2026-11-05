@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -26,6 +27,7 @@ import (
 
 	"aigate/internal/gate"
 	"aigate/internal/gitx"
+	"aigate/internal/ledger"
 	"aigate/internal/orch/approvals"
 	"aigate/internal/orch/machine"
 	"aigate/internal/orch/policy"
@@ -119,9 +121,6 @@ type Config struct {
 	ReportDir string
 	// GateHome is the gate's home (approvals, ledger); empty uses the gate default.
 	GateHome string
-	// LedgerPath is the hook point for Task 11's ledger writer. Unused here:
-	// the gate itself appends its own run_result event under GateHome.
-	LedgerPath string
 	// Gate defaults to gate.Run.
 	Gate GateFunc
 	// Policy, when set, is re-read at the start of every task (its hash is
@@ -172,6 +171,47 @@ func NewProvider(st *store.Store, cfg Config) (*Provider, error) {
 		}
 	}
 	return &Provider{st: st, cfg: cfg}, nil
+}
+
+// maxLedgerNote caps the note written into a task_transition event.
+const maxLedgerNote = 300
+
+// MachineOptions are the machine options the provider needs; api.NewDaemon
+// applies them. They append a task_transition event to the orchestrator
+// ledger (<gate home>/.aigate/ledger/orchd.jsonl, repo "orchd") for every
+// transition.
+//
+// Durability: the event is written AFTER the transition committed in SQLite,
+// so a crash in between can lose one transition event (the SQLite event table
+// still has it). Outward actions are different: the publisher writes
+// publish_action BEFORE each action (see publish.Recorder), so an action is
+// never unrecorded. A ledger write failure is logged, it never fails a task.
+func (p *Provider) MachineOptions() []machine.Option {
+	return []machine.Option{machine.WithOnTransition(p.recordTransition)}
+}
+
+func (p *Provider) recordTransition(t store.Task, from, to machine.State, note string) {
+	home, err := gate.Home(p.cfg.GateHome)
+	if err != nil {
+		log.Printf("orchd: ledger: %v", err)
+		return
+	}
+	if cur, err := p.st.GetTask(context.Background(), t.ID); err == nil {
+		t = cur // head and policy hash may have been set by the step that just ran
+	}
+	if len(note) > maxLedgerNote {
+		note = note[:maxLedgerNote]
+		for !utf8.ValidString(note) {
+			note = note[:len(note)-1]
+		}
+	}
+	err = ledger.Append(policy.OrchLedgerPath(home), "task_transition", policy.OrchRepo, map[string]any{
+		"task": int(t.ID), "from": string(from), "to": string(to), "note": note,
+		"head": t.HeadSHA, "policy_hash": t.PolicyHash,
+	}, time.Now().UTC())
+	if err != nil {
+		log.Printf("orchd: ledger: task %d %s -> %s not recorded: %v", t.ID, from, to, err)
+	}
 }
 
 // Steps returns the five steps.

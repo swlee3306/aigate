@@ -180,7 +180,7 @@ func newEnv(t *testing.T, mod func(*Config, *env)) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.m = machine.New(st, e.p.Steps())
+	e.m = machine.New(st, e.p.Steps(), e.p.MachineOptions()...)
 	e.id, err = st.CreateTask(context.Background(), store.Task{Repo: repo, Base: base, Prompt: "do it", Class: "docs", Agent: "claude"})
 	if err != nil {
 		t.Fatal(err)
