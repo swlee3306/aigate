@@ -445,8 +445,50 @@ func blobInfo(repo, sha string) (nulLine int, size int64, shebang bool, blob []b
 	return nulLine, int64(len(b)), bytes.HasPrefix(b, []byte("#!")), b, nil
 }
 
-// ProtectedDiff diffs base..head restricted to the protected globs.
-func ProtectedDiff(repo, base, head string, protected []string) (ProtDiff, error) {
+// Pathspec is one glob matched with git's ":(glob)" pathspec semantics;
+// ICase adds git's "icase" magic (ASCII case-insensitive matching, used for
+// the built-in guards so `Node_Modules/` or `.NPMRC` cannot slip past them on
+// a case-insensitive file system). Repo-config globs stay case-sensitive.
+type Pathspec struct {
+	Glob  string
+	ICase bool
+}
+
+// Globs returns case-sensitive pathspecs for gs.
+func Globs(gs ...string) []Pathspec { return specsOf(gs, false) }
+
+// ICaseGlobs returns case-insensitive pathspecs for gs.
+func ICaseGlobs(gs ...string) []Pathspec { return specsOf(gs, true) }
+
+func specsOf(gs []string, icase bool) []Pathspec {
+	out := make([]Pathspec, 0, len(gs))
+	for _, g := range gs {
+		out = append(out, Pathspec{Glob: g, ICase: icase})
+	}
+	return out
+}
+
+// arg renders the pathspec as a git argument.
+func (p Pathspec) arg() string {
+	if p.ICase {
+		return ":(glob,icase)" + p.Glob
+	}
+	return ":(glob)" + p.Glob
+}
+
+// TreePaths returns every path (files, symlinks, gitlinks; never trees) of
+// the tree of commit sha, in git's order, without consulting the working tree
+// or core.ignorecase.
+func TreePaths(repo, sha string) ([]string, error) {
+	out, err := run(repo, "ls-tree", "-r", "-z", "--name-only", "--full-tree", sha)
+	if err != nil {
+		return nil, fmt.Errorf("ls-tree %s: %w", sha, err)
+	}
+	return splitZ(out), nil
+}
+
+// ProtectedDiff diffs base..head restricted to the protected pathspecs.
+func ProtectedDiff(repo, base, head string, protected []Pathspec) (ProtDiff, error) {
 	var d ProtDiff
 	if len(protected) == 0 {
 		d.Hash = hashOf(d.HashedText())
@@ -454,7 +496,7 @@ func ProtectedDiff(repo, base, head string, protected []string) (ProtDiff, error
 	}
 	specs := []string{"--"}
 	for _, p := range protected {
-		specs = append(specs, ":(glob)"+p)
+		specs = append(specs, p.arg())
 	}
 
 	text, err := run(repo, diffCmd(base, head, specs, "--text", "-U0")...)
@@ -589,15 +631,15 @@ func hashOf(hashed string) string {
 }
 
 // AddedMatching returns the sorted paths added between base and head that match
-// any glob, using git's own ":(glob)" pathspec semantics. Invalid pathspecs
-// yield an error (never fail open).
-func AddedMatching(repo, base, head string, globs []string) ([]string, error) {
+// any pathspec, using git's own ":(glob)" (and "icase") pathspec semantics.
+// Invalid pathspecs yield an error (never fail open).
+func AddedMatching(repo, base, head string, globs []Pathspec) ([]string, error) {
 	if len(globs) == 0 {
 		return nil, nil
 	}
 	args := append(append([]string{}, diffConfig...), "diff", "--name-status", "-z", "--no-renames", "--diff-filter=A", base, head, "--")
 	for _, g := range globs {
-		args = append(args, ":(glob)"+g)
+		args = append(args, g.arg())
 	}
 	out, err := run(repo, args...)
 	if err != nil {

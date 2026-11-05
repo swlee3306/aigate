@@ -55,7 +55,7 @@ func TestProtectedDiffModify(t *testing.T) {
 	write(t, r, "tests/a_test.py", "one\nthree\nfour\n")
 	write(t, r, "src/x.py", "y\n")
 	head := commit(t, r, "head")
-	d, err := ProtectedDiff(r, base, head, []string{"tests/**"})
+	d, err := ProtectedDiff(r, base, head, Globs("tests/**"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestProtectedDiffAddOnly(t *testing.T) {
 	base := commit(t, r, "base")
 	write(t, r, "tests/new_test.py", "a\nb\n")
 	head := commit(t, r, "head")
-	d, err := ProtectedDiff(r, base, head, []string{"tests/**"})
+	d, err := ProtectedDiff(r, base, head, Globs("tests/**"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestProtectedDiffDeletedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	head := commit(t, r, "head")
-	d, err := ProtectedDiff(r, base, head, []string{"tests/**"})
+	d, err := ProtectedDiff(r, base, head, Globs("tests/**"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestProtectedDiffRemovedLineStartingWithDashes(t *testing.T) {
 	base := commit(t, r, "base")
 	write(t, r, "tests/a.py", "keep\n")
 	head := commit(t, r, "head")
-	d, err := ProtectedDiff(r, base, head, []string{"tests/**"})
+	d, err := ProtectedDiff(r, base, head, Globs("tests/**"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestProtectedDiffRenameIsDeleteAndAdd(t *testing.T) {
 	base := commit(t, r, "base")
 	git(t, r, "mv", "tests/old.py", "tests/new.py")
 	head := commit(t, r, "head")
-	d, err := ProtectedDiff(r, base, head, []string{"tests/**"})
+	d, err := ProtectedDiff(r, base, head, Globs("tests/**"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestProtectedDiffSpacesAndKorean(t *testing.T) {
 	write(t, r, "tests/한글 테스트.py", "가\n")
 	write(t, r, "tests/새 파일.py", "x\n")
 	head := commit(t, r, "head")
-	d, err := ProtectedDiff(r, base, head, []string{"tests/**"})
+	d, err := ProtectedDiff(r, base, head, Globs("tests/**"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +178,7 @@ func TestProtectedDiffBinaryRemoval(t *testing.T) {
 	base := commit(t, r, "base")
 	write(t, r, "tests/data.bin", "z\x00y")
 	head := commit(t, r, "head")
-	d, err := ProtectedDiff(r, base, head, []string{"tests/**"})
+	d, err := ProtectedDiff(r, base, head, Globs("tests/**"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func TestProtectedDiffGlobStarStar(t *testing.T) {
 	write(t, r, "pkg/sub/conftest.py", "b\n")
 	write(t, r, "pkg/other.py", "b\n")
 	head := commit(t, r, "head")
-	d, err := ProtectedDiff(r, base, head, []string{"**/conftest.py"})
+	d, err := ProtectedDiff(r, base, head, Globs("**/conftest.py"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func TestProtectedDiffHash(t *testing.T) {
 	base := commit(t, r, "base")
 	write(t, r, "tests/a.py", "1\n")
 	h1 := commit(t, r, "h1")
-	pat := []string{"tests/**"}
+	pat := Globs("tests/**")
 	a, err := ProtectedDiff(r, base, h1, pat)
 	if err != nil {
 		t.Fatal(err)
@@ -408,7 +408,7 @@ func TestHashPinnedAgainstConfigAndClone(t *testing.T) {
 	write(t, r, "tests/a.py", "1\n")
 	write(t, r, "tests/b.bin", "a\x00c")
 	head := commit(t, r, "head")
-	pat := []string{"tests/**"}
+	pat := Globs("tests/**")
 	d1, err := ProtectedDiff(r, base, head, pat)
 	if err != nil {
 		t.Fatal(err)
@@ -457,12 +457,12 @@ func TestAddedMatching(t *testing.T) {
 		{nil, nil},
 	}
 	for _, c := range cases {
-		got, err := AddedMatching(r, base, head, c.globs)
+		got, err := AddedMatching(r, base, head, Globs(c.globs...))
 		if err != nil || !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%q: got %q err %v want %q", c.globs, got, err, c.want)
 		}
 	}
-	if _, err := AddedMatching(r, base, head, []string{"../outside"}); err == nil {
+	if _, err := AddedMatching(r, base, head, Globs("../outside")); err == nil {
 		t.Error("invalid pathspec must error")
 	}
 }
@@ -478,7 +478,7 @@ func TestProtectedDiffIgnoresDiffAttributes(t *testing.T) {
 	write(t, r, ".gitattributes", "tests/** -diff\n")
 	head := commit(t, r, "head")
 	write(t, r, ".git/info/attributes", "tests/** binary\n")
-	d, err := ProtectedDiff(r, base, head, []string{"tests/**"})
+	d, err := ProtectedDiff(r, base, head, Globs("tests/**"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,7 +502,7 @@ func TestProtectedDiffDeletedEmptyFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	head := commit(t, r, "head")
-	d, err := ProtectedDiff(r, base, head, []string{"tests/**"})
+	d, err := ProtectedDiff(r, base, head, Globs("tests/**"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -523,7 +523,7 @@ func TestProtectedDiffBinaryAppendIsNonText(t *testing.T) {
 	base := commit(t, r, "base")
 	write(t, r, "tests/golden.bin", "a\x00b\nc\x00d\n") // only an added "line"
 	head := commit(t, r, "head")
-	d, err := ProtectedDiff(r, base, head, []string{"tests/**"})
+	d, err := ProtectedDiff(r, base, head, Globs("tests/**"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -550,7 +550,7 @@ func TestProtectedDiffModeAndTypeChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	head := commit(t, r, "head")
-	d, err := ProtectedDiff(r, base, head, []string{"tests/**"})
+	d, err := ProtectedDiff(r, base, head, Globs("tests/**"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -573,7 +573,7 @@ func TestProtectedDiffPureTextAdditionIsModifiedExisting(t *testing.T) {
 	write(t, r, "tests/a.py", "one\ntwo\n")
 	write(t, r, "tests/new_test.py", "def test_x():\n    pass\n")
 	head := commit(t, r, "head")
-	d, err := ProtectedDiff(r, base, head, []string{"tests/**"})
+	d, err := ProtectedDiff(r, base, head, Globs("tests/**"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -606,7 +606,7 @@ func TestProtectedDiffModifiedExistingCoversEveryChange(t *testing.T) {
 	write(t, r, "tests/edit.py", "a\nB\n")
 	git(t, r, "mv", "tests/old.py", "tests/renamed.py")
 	head := commit(t, r, "head")
-	d, err := ProtectedDiff(r, base, head, []string{"tests/**"})
+	d, err := ProtectedDiff(r, base, head, Globs("tests/**"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -628,7 +628,7 @@ func TestProtectedDiffHashedTextMatchesHash(t *testing.T) {
 	write(t, r, "tests/a.py", "ONE\nadded\n")
 	write(t, r, "tests/conftest.py", "import os\n")
 	head := commit(t, r, "head")
-	d, err := ProtectedDiff(r, base, head, []string{"tests/**"})
+	d, err := ProtectedDiff(r, base, head, Globs("tests/**"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -652,7 +652,7 @@ func TestHashPinnedAgainstDiffConfig(t *testing.T) {
 	write(t, r, "tests/a.py", "def f():\n    A\n\n    b\n\ndef g():\n    C\n")
 	write(t, r, "tests/b.py", "2\n")
 	head := commit(t, r, "head")
-	pat := []string{"tests/**"}
+	pat := Globs("tests/**")
 	d1, err := ProtectedDiff(r, base, head, pat)
 	if err != nil {
 		t.Fatal(err)
@@ -737,7 +737,7 @@ func TestProtectedDiffGitlink(t *testing.T) {
 		name, from, to, status string
 	}{{"add", base, added, "A"}, {"bump", added, bumped, "M"}, {"remove", bumped, removed, "D"}} {
 		t.Run(c.name, func(t *testing.T) {
-			d, err := ProtectedDiff(r, c.from, c.to, []string{"vendor/**"})
+			d, err := ProtectedDiff(r, c.from, c.to, Globs("vendor/**"))
 			if err != nil {
 				t.Fatalf("gitlink %s: %v", c.name, err)
 			}
@@ -776,7 +776,7 @@ func TestFileChangeBinaryPerSide(t *testing.T) {
 		t.Fatal(err)
 	}
 	head := commit(t, r, "head")
-	d, err := ProtectedDiff(r, base, head, []string{"tests/**"})
+	d, err := ProtectedDiff(r, base, head, Globs("tests/**"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -828,7 +828,7 @@ func TestFileChangeHeadModeAndShebang(t *testing.T) {
 	}
 	write(t, r, "tests/pic.png", "\x89PNG\x00\n")
 	head := commit(t, r, "head")
-	d, err := ProtectedDiff(r, base, head, []string{"tests/**"})
+	d, err := ProtectedDiff(r, base, head, Globs("tests/**"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -859,7 +859,7 @@ func TestFileChangeHeadPrefixAndSymlinkTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	head := commit(t, r, "head")
-	d, err := ProtectedDiff(r, base, head, []string{"tests/**"})
+	d, err := ProtectedDiff(r, base, head, Globs("tests/**"))
 	if err != nil {
 		t.Fatal(err)
 	}

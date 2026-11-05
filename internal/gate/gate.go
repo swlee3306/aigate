@@ -20,6 +20,7 @@ import (
 	"aigate/internal/config"
 	"aigate/internal/gitx"
 	"aigate/internal/ledger"
+	"aigate/internal/pathfold"
 	"aigate/internal/report"
 	"aigate/internal/rules"
 	"aigate/internal/textsafe"
@@ -123,7 +124,12 @@ func union(a, b []string) []string {
 // uses; a new pytest.ini/tox.ini/setup.cfg can take over pytest's config;
 // sitecustomize/usercustomize run at interpreter start. Like every
 // approval_on_add path they are also part of the protected diff, so any
-// change to an existing one needs approval too.
+// change to an existing one needs approval too. They are matched
+// case-insensitively (git ":(glob,icase)", ASCII; fix wave 7 (A)), so
+// `Node_Modules/`, `Vendor/` or `.NPMRC` cannot slip past them on a
+// case-insensitive file system; repo-config globs stay case-sensitive so the
+// approval hashes of existing user globs do not change. Unicode folding
+// (ſ, K) is caught by the path collision check instead (pathfold).
 var BuiltinGuarded = []string{
 	"**/node_modules/**",
 	".gitattributes", "**/.gitattributes", ".gitmodules",
@@ -141,6 +147,11 @@ type Protected struct {
 	Diff                    gitx.ProtDiff
 	AddedGuarded            []string
 	Cfg                     config.Config
+	// Collisions are the path groups of the head tree that a case- or
+	// normalization-insensitive file system maps onto one entry and that are
+	// not pre-existing (identical) in base (fix wave 7 (B)). Non-empty: run
+	// skips every check (path_case_collision) and approve refuses.
+	Collisions []pathfold.Group
 }
 
 // NeedsApproval reports whether the protected diff needs a human approval:
@@ -179,8 +190,14 @@ func Prepare(o Options) (Protected, error) {
 		return Protected{}, err
 	}
 	p := Protected{RepoID: id, Top: top, Base: base, Head: head, Cfg: cfg}
-	guarded := union(cfg.ApprovalOnAdd, BuiltinGuarded)
-	p.Diff, err = gitx.ProtectedDiff(top, base, head, union(cfg.Protected, guarded))
+	if p.Collisions, err = newCollisions(top, base, head); err != nil {
+		return Protected{}, err
+	}
+	// user globs case-sensitive, built-in guards case-insensitive (git ORs
+	// the pathspecs, so a user glob equal to a built-in one is harmless)
+	builtin := gitx.ICaseGlobs(BuiltinGuarded...)
+	guarded := append(gitx.Globs(cfg.ApprovalOnAdd...), builtin...)
+	p.Diff, err = gitx.ProtectedDiff(top, base, head, append(gitx.Globs(union(cfg.Protected, cfg.ApprovalOnAdd)...), builtin...))
 	if err != nil {
 		return Protected{}, err
 	}
@@ -189,6 +206,58 @@ func Prepare(o Options) (Protected, error) {
 		return Protected{}, err
 	}
 	return p, nil
+}
+
+// newCollisions returns the case/Unicode-folding collision groups of the
+// head tree that are not identical in the base tree (base "": initial mode,
+// every group counts). Only the trees are read; nothing is checked out.
+func newCollisions(top, base, head string) ([]pathfold.Group, error) {
+	hp, err := gitx.TreePaths(top, head)
+	if err != nil {
+		return nil, err
+	}
+	hg := pathfold.Collisions(hp)
+	if len(hg) == 0 || base == "" {
+		return pathfold.New(hg, nil), nil
+	}
+	bp, err := gitx.TreePaths(top, base)
+	if err != nil {
+		return nil, err
+	}
+	return pathfold.New(hg, pathfold.Collisions(bp)), nil
+}
+
+// maxCollisionGroups is how many collision groups a message lists.
+const maxCollisionGroups = 5
+
+// CollisionList renders up to maxCollisionGroups groups as
+// "{a, b}; {c, d}" (every member escaped: a path may hold control bytes)
+// plus " 외 N건" for the rest.
+func CollisionList(gs []pathfold.Group) string {
+	var parts []string
+	for i, g := range gs {
+		if i == maxCollisionGroups {
+			break
+		}
+		ms := make([]string, len(g.Members))
+		for j, m := range g.Members {
+			ms[j] = textsafe.Escape(m)
+		}
+		parts = append(parts, "{"+strings.Join(ms, ", ")+"}")
+	}
+	s := strings.Join(parts, "; ")
+	if n := len(gs) - maxCollisionGroups; n > 0 {
+		s += fmt.Sprintf(" 외 %d건", n)
+	}
+	return s
+}
+
+// collisionViolation is the one path_case_collision violation of a run.
+func collisionViolation(gs []pathfold.Group) rules.Violation {
+	return rules.Violation{Rule: "path_case_collision", Category: rules.CategoryIncomplete,
+		Detail: fmt.Sprintf("head 트리에 대소문자·유니코드 정규화를 구분하지 않는 파일 시스템(macOS APFS, Windows NTFS)에서 같은 경로가 되는 이름이 있습니다(충돌 %d건, base에 똑같이 있던 충돌은 제외): %s. "+
+			"그런 파일 시스템에서는 이 경로들이 서로 덮어쓰거나 가려 checkout 결과가 커밋된 트리와 같지 않으므로 검사를 실행하지 않았습니다. 커밋에서 충돌하는 이름을 고치세요.",
+			len(gs), CollisionList(gs))}
 }
 
 func selfCompare(sha string) error {
@@ -334,6 +403,14 @@ func runInitial(ctx context.Context, top, head string, dirty bool, r *report.Rep
 		return err
 	}
 	r.ConfigHash = cfg.Hash()
+	gs, err := newCollisions(top, "", head)
+	if err != nil {
+		return err
+	}
+	if len(gs) > 0 {
+		r.Violations = append(r.Violations, collisionViolation(gs))
+		return nil
+	}
 	if dirty {
 		r.Violations = append(r.Violations, rules.Violation{Rule: "dirty_tree", Category: rules.CategoryIncomplete,
 			Detail: "커밋되지 않은 변경이 있습니다"})
@@ -362,6 +439,12 @@ func runCompare(ctx context.Context, o Options, home, repoID, top, base, head st
 	}
 	cfg := p.Cfg
 	r.ConfigHash = cfg.Hash()
+	// Before any checkout: a colliding head would not be checked out as
+	// committed, so no check result could be trusted (like base_not_ancestor).
+	if len(p.Collisions) > 0 {
+		r.Violations = append(r.Violations, collisionViolation(p.Collisions))
+		return nil
+	}
 
 	hasProt := p.NeedsApproval()
 	valid := false
