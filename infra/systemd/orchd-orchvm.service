@@ -1,0 +1,46 @@
+# orchd as deployed on orch-vm (layout under /home/orch). Install:
+#   sudo cp orchd-orchvm.service /etc/systemd/system/orchd.service && sudo systemctl daemon-reload && sudo systemctl enable --now orchd
+# Flags mirror the verified manual run. Change the snapshot name here when a newer clean snapshot is made.
+[Unit]
+Description=aigate orchestrator daemon (orchd) on orch-vm
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=orch
+Group=orch
+Environment=HOME=/home/orch
+WorkingDirectory=/home/orch
+ExecStart=/home/orch/bin/orchd \
+  --db /home/orch/orchd/state/orchd.db \
+  --socket /home/orch/orchd/run/orchd.sock \
+  --policy /home/orch/orchd/policy.yml \
+  --agent-host 10.70.0.12 --agent-user agent --agent-key /home/orch/.ssh/id_aigate --agent-known-hosts /home/orch/.ssh/known_hosts_aigate \
+  --test-host 10.70.0.13 --test-user runner --test-key /home/orch/.ssh/id_aigate --test-known-hosts /home/orch/.ssh/known_hosts_aigate \
+  --test-repo-dir /srv/aigate/repo.git --test-work-dir /srv/aigate/work \
+  --cloud-cmd "openstack --os-cloud exporter-internal" --test-snapshot test-vm-clean3 \
+  --git-remote /home/orch/repos/remote.git \
+  --gate-home /home/orch/orchd/gate-home --report-dir /home/orch/orchd/reports
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+KillSignal=SIGTERM
+UMask=0077
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+# /home is a separate mount: without ProtectHome the whole home stays writable (verified with nsenter)
+ProtectHome=read-only
+ReadWritePaths=/home/orch/orchd /home/orch/repos
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# AF_NETLINK: the openstack CLI (name resolution) fails with 'Address family not supported' without it
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target
