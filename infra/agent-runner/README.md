@@ -84,9 +84,8 @@ agent-vm에서(관리자 키로): `sudo rm /etc/ssh/sshd_config.d/aigate-agent.c
   - `prepare 5001`(번들) → `run 5001 claude`(8 s) → 에이전트가 커밋 → `collect-info`가 commits=1 보고.
   - 오케스트레이터 쪽 `git fetch --upload-pack=upload-pack ssh://agent@10.70.0.12/<task>`가 작업 브랜치만 가져옴(fsck 켬). 다른 ref·경로 밖 요청은 거부.
   - 호스트키 미등록이면 `StrictHostKeyChecking=yes`로 연결 거부.
-- **Codex는 아직 동작하지 않는다.** `codex exec --sandbox workspace-write`가 `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`로 실패한다.
-  원인: Ubuntu 24.04의 `kernel.apparmor_restrict_unprivileged_userns=1`(agent 계정이 `unshare -Urn`도 못 함).
-  선택지(사용자 결정 필요, 임의로 적용하지 않음):
-  A) agent-vm에서만 `sysctl kernel.apparmor_restrict_unprivileged_userns=0`(샌드박스 유지, VM 커널 공격면 증가),
-  B) `CODEX_ARGS`에 `--dangerously-bypass-approvals-and-sandbox`(VM이 샌드박스. 권한 분류기가 이 플래그를 막았으므로 사용자 규칙 추가 필요),
-  C) 당분간 Claude만 에이전트로 사용. 지금은 C.
+- **Codex (2026-11-06 해결):** `codex exec --sandbox workspace-write`가 `bwrap: loopback: Failed RTM_NEWADDR`로 실패했다(Ubuntu 24.04의
+  `kernel.apparmor_restrict_unprivileged_userns=1`). 전역 sysctl을 푸는 대신 **Codex가 자체 포함한 bwrap 바이너리 하나에만** 사용자 네임스페이스를 허용하는
+  AppArmor 프로파일을 `infra/agent-codex-sandbox.sh --apply`로 설치(사용자가 직접 실행). 전역 sysctl은 1 유지, 일반 `unshare`는 계속 차단.
+  확인: `--check`, 그리고 오케스트레이터 작업 8(`--agent codex`): prepare → codex 실행 → 커밋 → 수집 → 판정 ok → push, 34 s.
+  롤백 `--rollback`. Codex 업그레이드로 바이너리 경로가 바뀌면 `--apply`를 다시 실행해야 한다. 샌드박스는 켜져 있다(해제 플래그 미사용).
