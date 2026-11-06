@@ -7,6 +7,23 @@
 // orchestrator. Everything an VM returns is untrusted input and is
 // size-capped and strictly parsed here.
 //
+// Volumes: a restore creates a NEW volume from the snapshot and by default
+// never deletes the earlier ones (they fill the Cinder quota: the homeserver
+// hit HTTP 413 after a few restores). With TestVM.PruneRestoreVolumes
+// (orchd --prune-restore-volumes, default off) Prune runs only AFTER a restore
+// succeeded (new server ACTIVE, ssh answered) and deletes by volume ID, at
+// most MaxPrune (default 5) per restore, and only a volume that (1) is named
+// exactly <vm>-root-YYYYMMDD-HHMMSS-xxxx or legacy <vm>-root-HHMMSS (never the
+// golden <vm>-root), (2) is not the volume the server now boots from, (3) is
+// not the source volume of any snapshot, (4) has no attachment to a server
+// that still exists (attachments to deleted servers are cleared first with
+// `volume attachment delete`, microversion 3.44), and (5) was re-read just
+// before deletion and still passes 1-4. A prune problem is a warning in the
+// RestoreRecord and never fails the restore. (6) The OpenStackCLI allow-list
+// gained only `volume delete <uuid>` and `volume attachment delete <uuid>`,
+// each runnable only for an id Prune verified a moment before. Not verified
+// against the real homeserver. infra/snapshot.sh prune still only lists.
+//
 // Open decision (NOT decided here): OpenStackCLI reaches the homeserver's
 // admin OpenStack credentials over ssh (default `ssh openstack-host openstack
 // --os-cloud exporter-internal`). Giving orch-vm that path is a privilege

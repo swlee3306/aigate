@@ -15,7 +15,8 @@ import (
 )
 
 // Cloud is what Restore needs from the infrastructure. Tests use a fake;
-// OpenStackCLI is the real one. Implementations must never delete volumes.
+// OpenStackCLI is the real one. Deleting old restore volumes is not part of it: that is the optional Pruner,
+// used only when TestVM.PruneRestoreVolumes is set.
 type Cloud interface {
 	// DeleteServer removes the server (its volume is kept). A missing server is not an error.
 	DeleteServer(ctx context.Context, server string) error
@@ -34,6 +35,10 @@ type RestoreRecord struct {
 	Slow     bool   // Duration exceeded TestVM.SlowAfter
 	Volume   string // the new boot volume
 	Err      string // empty on success
+	// Pruned lists old restore volumes deleted after this restore; a
+	// PruneWarning is a tolerated prune problem (never a restore failure).
+	Pruned        []string
+	PruneWarnings []string
 }
 
 // TestVM is the throwaway check VM. After a failed restore it is unusable
@@ -52,6 +57,11 @@ type TestVM struct {
 	// Suffix returns the random part of a restore volume name (default: 4 hex
 	// digits from crypto/rand); tests replace it.
 	Suffix func() string
+	// PruneRestoreVolumes (default false) deletes the volumes of earlier
+	// restores after a successful restore, through Cloud if it is a Pruner,
+	// under the guards in the package doc. A failure only adds a warning to
+	// the restore record.
+	PruneRestoreVolumes bool
 
 	mu       sync.Mutex
 	broken   error // set by a failed restore, cleared by a successful one
@@ -90,7 +100,8 @@ func (t *TestVM) now() time.Time {
 // delete the server (volume kept), create a new volume from the snapshot, boot
 // the server from it, wait until ssh answers, all within RestoreTimeout. Any
 // failure marks the VM unusable until a later Restore succeeds. The old volume
-// is never deleted; PruneCandidates lists it for manual deletion.
+// is deleted only when PruneRestoreVolumes is set (after success, guarded);
+// otherwise PruneCandidates lists it for manual deletion.
 func (t *TestVM) Restore(ctx context.Context) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -112,7 +123,7 @@ func (t *TestVM) Restore(ctx context.Context) error {
 	start := t.now()
 	t.broken = errors.New("restore in progress")
 	t.restores++
-	// date + time + random suffix: restore volumes are never deleted, and a
+	// date + time + random suffix: restore volumes may stay around, and a
 	// name that repeats (every 24 h, or twice in one second) would make later
 	// `volume show <name>` calls ambiguous.
 	volume := fmt.Sprintf("%s-root-%s-%s", t.name(), start.Format("20060102-150405"), t.suffix())
@@ -129,8 +140,34 @@ func (t *TestVM) Restore(ctx context.Context) error {
 	}
 	t.broken = nil
 	t.active = volume
+	if t.PruneRestoreVolumes {
+		t.prune(ctx, &rec)
+	}
 	t.history = append(t.history, rec)
 	return nil
+}
+
+// prune runs after a successful restore, with its own bound, and records the
+// outcome in rec. It cannot fail the restore.
+func (t *TestVM) prune(ctx context.Context, rec *RestoreRecord) {
+	p, ok := t.Cloud.(Pruner)
+	if !ok {
+		rec.PruneWarnings = append(rec.PruneWarnings, "prune requested but the cloud cannot prune")
+		return
+	}
+	pctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	defer func() {
+		if r := recover(); r != nil {
+			rec.PruneWarnings = append(rec.PruneWarnings, fmt.Sprintf("prune panicked: %v", r))
+		}
+	}()
+	res, err := p.Prune(pctx)
+	rec.Pruned = res.Deleted
+	rec.PruneWarnings = append(rec.PruneWarnings, res.Warnings...)
+	if err != nil {
+		rec.PruneWarnings = append(rec.PruneWarnings, "prune failed: "+err.Error())
+	}
 }
 
 func (t *TestVM) restore(ctx context.Context, snap, volume string) error {

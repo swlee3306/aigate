@@ -29,6 +29,8 @@ type vmFlags struct {
 	CloudCmd, TestSnapshot                                     string
 	AgentTimeout                                               time.Duration
 	RestoreEachJob, AllowPublishWithoutRestore                 bool
+	PruneRestoreVolumes                                        bool
+	PruneMax                                                   int
 	ReportDir, GateHome                                        string
 	// Publishing (all optional; none given = local-only, nothing is pushed).
 	// live is the policy in force (nil without --policy); limits come from it.
@@ -67,6 +69,9 @@ func (v *vmFlags) register(fs *flag.FlagSet) {
 	sf(&v.TokenFile, "gitlab-token-file", "", "0600 file holding the GitLab write token (never printed)")
 	fs.DurationVar(&v.AgentTimeout, "agent-timeout", steps.DefaultAgentTimeout, "limit of one agent run")
 	fs.BoolVar(&v.RestoreEachJob, "restore-each-job", true, "restore the test VM before every verification")
+	fs.BoolVar(&v.PruneRestoreVolumes, "prune-restore-volumes", false,
+		"after a successful restore, delete the volumes earlier restores created (guarded: exact driver name, not the boot volume, not a snapshot origin, no live attachment)")
+	fs.IntVar(&v.PruneMax, "prune-max", 5, "most volumes --prune-restore-volumes deletes per restore")
 	fs.BoolVar(&v.AllowPublishWithoutRestore, "allow-publish-without-restore", false,
 		"allow --restore-each-job=false together with publishing (a check can then leave a process that forges the next task's results)")
 }
@@ -84,6 +89,9 @@ func (v *vmFlags) enabled() bool {
 
 // validate refuses a half-specified VM configuration.
 func (v *vmFlags) validate() error {
+	if v.PruneMax < 0 || v.PruneMax > 50 {
+		return errors.New("--prune-max must be between 0 (default 5) and 50")
+	}
 	var missing []string
 	for _, r := range []struct{ name, val string }{
 		{"agent-host", v.AgentHost}, {"agent-key", v.AgentKey}, {"agent-known-hosts", v.AgentKnownHosts},
@@ -158,8 +166,9 @@ func (v *vmFlags) provider(st *store.Store, dbPath string) (api.StepProvider, er
 	if _, err := remote.NewSSH(sshCfg); err != nil { // validates host, user, paths early
 		return nil, fmt.Errorf("test VM: %w", err)
 	}
-	cloud := &vm.OpenStackCLI{Prefix: strings.Fields(v.CloudCmd), Probe: tcpProbe(v.TestHost), Snapshot: v.TestSnapshot}
-	test := &vm.TestVM{Cloud: cloud, SSH: sshCfg, Snapshot: v.TestSnapshot}
+	cloud := &vm.OpenStackCLI{Prefix: strings.Fields(v.CloudCmd), Probe: tcpProbe(v.TestHost), Snapshot: v.TestSnapshot,
+		PruneRestoreVolumes: v.PruneRestoreVolumes, MaxPrune: v.PruneMax}
+	test := &vm.TestVM{Cloud: cloud, SSH: sshCfg, Snapshot: v.TestSnapshot, PruneRestoreVolumes: v.PruneRestoreVolumes}
 	cfg := steps.DefaultConfig()
 	cfg.Agent, cfg.Test = agent, test
 	cfg.AgentTimeout, cfg.RestoreEachJob = v.AgentTimeout, v.RestoreEachJob
@@ -252,6 +261,7 @@ func (v *vmFlags) describe(db string, concurrency int) []string {
 		"database " + db,
 		fmt.Sprintf("concurrency %d, agent timeout %s", concurrency, v.AgentTimeout),
 		fmt.Sprintf("restore test VM before each job: %t", v.RestoreEachJob),
+		fmt.Sprintf("prune old restore volumes after a restore: %t (max %d per restore)", v.PruneRestoreVolumes, v.PruneMax),
 		"publish allowlist: " + allow + " (source: " + source + ")",
 	}
 	if v.live != nil {

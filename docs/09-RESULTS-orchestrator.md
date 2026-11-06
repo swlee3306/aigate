@@ -48,13 +48,14 @@
 - `volume revert`는 불가(앞 절). 새 볼륨+새 서버 방식 52 s(삭제 10 + 볼륨 6 + 서버 11 + ssh 25).
 - 호스트키: 복원하면 서버가 새로 생겨 cloud-init이 호스트키를 다시 만든다. 스냅샷에 `ssh_deletekeys: false`(`/etc/cloud/cloud.cfg.d/99-aigate-hostkeys.cfg`)를 넣어 `test-vm-clean2`를 만든 뒤 복원하니 **호스트키 동일(SHA256:Boso/…), orch-vm의 고정 키로 재등록 없이 엄격 검사 로그인 성공**. 이전 스냅샷 `test-vm-clean`은 호스트키 문제가 남아 있다.
 - `orchd --test-snapshot test-vm-clean2`로 지정. Go의 `TestVM.Restore`+`OpenStackCLI`는 스텁 테스트까지만 하고 실제 홈서버에는 실행하지 않았다(아래 결정 사항).
-- 복원마다 30 GB 씬 볼륨이 남고 삭제된 서버의 attachment가 정리되지 않는다(수동 정리).
+- 복원마다 30 GB 씬 볼륨이 남고 삭제된 서버의 attachment가 정리되지 않는다(기본은 수동 정리; 선택 기능 `--prune-restore-volumes`는 아래 Known limits).
 
 ### 이번 시험으로 확인된 설계 변경·발견
 1. 호스트키: 스냅샷에 보존해야 한다(위). 2. 단계 연결 코드(Task 9b)가 계획에 없었다. 3. 승인은 데몬이 아니라 TTY에서 쓰는 승인 파일이 권한이다(Task 11).
 4. Codex: 처음에는 agent-vm에서 동작하지 않았다(AppArmor 사용자 네임스페이스 제한). 권한 분류기가 샌드박스 해제와 전역 sysctl 완화를 거부해, 바이너리 한 개에만 허용하는 AppArmor 프로파일(`infra/agent-codex-sandbox.sh`, 사용자가 실행)로 해결. 샌드박스 유지. 작업 8로 전체 흐름 확인(done, 34 s).
 
 ### Known limits (최종 검토에서 나왔고 고치지 않은 것)
+- **복원 볼륨 정리(`--prune-restore-volumes`, 기본 꺼짐).** 이전의 "볼륨을 절대 지우지 않는다" 결정을 다음 범위로 바꿨다. 복원마다 새 30 GB 볼륨이 생겨 홈서버 Cinder 쿼터(300 GB)가 몇 번 만에 차고 HTTP 413으로 작업이 실패했다. 옵션을 켜면 복원이 **성공한 뒤**(새 서버 ACTIVE, ssh 응답) 이전 복원이 만든 볼륨을 ID로 지운다. 지우려면 모두 만족해야 한다. (1) 이름이 드라이버 패턴 `^<vm>-root-\d{8}-\d{6}-[0-9a-f]{4}$` 또는 옛 `^<vm>-root-\d{6}$`와 정확히 일치(골든 `<vm>-root`와 그 밖의 이름은 제외). (2) 서버가 지금 부팅하는 볼륨이 아님(`server show -c volumes_attached`의 id 비교). (3) 어떤 스냅샷의 원본 볼륨도 아님(건너뜀, 오류 아님). (4) attachment가 없거나 전부 이미 없는 서버를 가리킴(`server list --all-projects`와 비교; 낡은 attachment는 `volume attachment delete`(마이크로버전 3.44)로 먼저 지움, 존재하는 서버에 붙어 있으면 건너뜀). (5) 복원당 최대 N개(`--prune-max`, 기본 5), 정리 실패는 복원과 작업을 절대 실패시키지 않고 복원 기록의 `PruneWarnings`로 남김. (6) 셸 없이 정확한 argv로, 기존 `OpenStackCLI` 동사 허용 목록에 `volume delete <id>`와 `volume attachment delete <id>`만 추가(id는 UUID, 삭제 직전에 다시 읽어 1-4를 다시 만족해야 하며 Prune이 방금 검증한 id만 통과). 상태를 판단할 수 없으면(서버/스냅샷 조회 실패) 아무것도 지우지 않는다. 시작 로그에 켜짐 여부가 찍힌다. `infra/snapshot.sh prune`은 여전히 후보를 나열만 한다. **실제 홈서버에서는 검증하지 않았다**(스텁 클라우드 단위 테스트까지; 특히 `volume show -f json`의 attachments 필드 모양).
 - **"게시 후 회귀" 강등 트리거는 운영에서 도달할 수 없다.** `done`은 종료 상태라 한 번 `done`이 된 작업은 다시 `verifying`에 들어가지 않는다. `wasPublished`는 실제 경로에서 항상 거짓이다. 단위 테스트(`TestVerifyDirectlyOnDoneTaskDemotes`)는 `done` 작업에 `verify`를 직접 호출하므로 강등 로직만 확인하며 상태 머신 경로를 검증하지 않는다. 진짜 트리거는 내구성 있는 게시 기록이 필요하다(예: 같은 클래스·저장소의 이후 작업이 자동 게시된 작업 뒤에 실패). 이제 원장의 `publish_action`/`publish_result` 이벤트가 그 기록이 된다.
 - **DB를 교체하면 작업 ID가 1부터 다시 시작한다.** `refs/orch/<id>`, 원격 `orch/<id>` 브랜치, `PublishHash`(작업 ID 기반)가 이전 것과 충돌할 수 있다(non-fast-forward push 실패, 오래된 MR을 "이미 있음"으로 취급, 이전 승인 재사용). 운영 규칙: **`refs/orch/*`와 원격의 `orch/*` 브랜치를 지우지 않고 DB를 교체하지 않는다.**
 - **orchd가 죽으면 실행 중이던 에이전트가 재시도와 나란히 계속 돌 수 있다.** 래퍼의 `run`은 프로세스 그룹을 따로 두지만 감시 타이머만 죽이고, `Recover`는 `prepare` 없이 `agent_running`을 다시 실행한다. 운영 규칙: **orchd가 비정상 종료한 뒤에는 다시 제출하기 전에 agent-vm에 남은 에이전트 프로세스가 있는지 확인한다.** 값싼 완화책(래퍼가 `run`/`prepare`에서 pidfile에 적힌 작업의 프로세스 그룹을 먼저 죽인다)이 다음 단계다. Task 4의 보류 항목은 테스트 VM 실행기만 다룬다.

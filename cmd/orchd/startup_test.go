@@ -80,4 +80,14 @@ func TestStartupLogDescribesConfiguration(t *testing.T) {
 	if strings.Contains(out, "/secret/token") {
 		t.Error("token file path logged")
 	}
+	if !strings.Contains(out, "prune old restore volumes after a restore: false (max 5 per restore)") {
+		t.Errorf("prune default (off) not logged:\n%s", out)
+	}
+	var w vmFlags
+	fs = flag.NewFlagSet("x", flag.ContinueOnError)
+	w.register(fs)
+	fs.Parse([]string{"--prune-restore-volumes", "--prune-max", "2"})
+	if out := strings.Join(w.describe("db", 1), "\n"); !strings.Contains(out, "prune old restore volumes after a restore: true (max 2 per restore)") {
+		t.Errorf("prune on not logged:\n%s", out)
+	}
 }

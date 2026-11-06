@@ -8,14 +8,18 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
 // OpenStackCLI is the real Cloud: it runs `<Prefix> <verb...>` where Prefix is
 // by default `ssh openstack-host openstack --os-cloud exporter-internal`.
 // Every command is checked against a strict allow-list of verbs, limited to
-// the test VM's own resources by name, before it runs. There is no volume
-// delete verb: old restore volumes stay until a human deletes them.
+// the test VM's own resources by name, before it runs. The only delete verbs
+// besides `server delete` are `volume delete <id>` and `volume attachment
+// delete <id>`, and they run only inside Prune (see prune.go), only for ids
+// that Prune re-read and verified a moment before, and only when
+// PruneRestoreVolumes is set (default off).
 //
 // See the package doc for the open privilege question this raises.
 type OpenStackCLI struct {
@@ -30,10 +34,19 @@ type OpenStackCLI struct {
 	PollInterval time.Duration // default 2s
 	// Run executes argv (prefix included); nil means exec. Tests replace it.
 	Run func(ctx context.Context, argv []string) ([]byte, error)
+	// PruneRestoreVolumes enables Prune (default false: Prune does nothing).
+	// MaxPrune caps the volumes one Prune call tries to delete (default 5).
+	PruneRestoreVolumes bool
+	MaxPrune            int
+
+	mu       sync.Mutex      // guards the two sets below
+	okDelete map[string]bool // volume ids Prune verified; only these may be deleted
+	okAttach map[string]bool // attachment ids Prune found stale; only these may be deleted
 }
 
 var (
 	argRE  = regexp.MustCompile(`^[A-Za-z0-9_-][A-Za-z0-9_.,=:-]*$`)
+	uuidRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 	sizeRE = regexp.MustCompile(`^[0-9]{1,4}$`)
 	// restoreRE matches test-vm-root-YYYYMMDD-HHMMSS-xxxx (the legacy
 	// test-vm-root-HHMMSS is still recognised for listing and pruning).
@@ -99,10 +112,25 @@ func (o *OpenStackCLI) allowed(args []string) error {
 	case is("server", "create", "--flavor", o.flavor(), "--volume", "*", "--nic", "*", "--key-name", o.keyName(), "--wait", vm, "-f", "value", "-c", "status") &&
 		rv.MatchString(args[5]) && nicRE(o.fixedIP()).MatchString(args[7]):
 	case is("volume", "list", "-f", "value", "-c", "ID", "-c", "Name"):
+	// read-only verbs for Prune
+	case is("server", "show", vm, "-f", "json", "-c", "volumes_attached"):
+	case is("server", "list", "--all-projects", "-f", "value", "-c", "ID"):
+	case is("volume", "snapshot", "list", "--all-projects", "-f", "value", "-c", "ID"):
+	case is("volume", "snapshot", "show", "*", "-f", "value", "-c", "volume_id") && uuidRE.MatchString(args[3]):
+	case is("volume", "show", "*", "-f", "json", "-c", "name", "-c", "status", "-c", "attachments") && uuidRE.MatchString(args[2]):
+	// the only two deletes: by UUID, and only what Prune just verified
+	case is("--os-volume-api-version", "3.44", "volume", "attachment", "delete", "*") && uuidRE.MatchString(args[5]) && o.permitted(o.okAttach, args[5]):
+	case is("volume", "delete", "*") && uuidRE.MatchString(args[2]) && o.permitted(o.okDelete, args[2]):
 	default:
 		return errors.New("command is not in the allow-list")
 	}
 	return nil
+}
+
+func (o *OpenStackCLI) permitted(set map[string]bool, id string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return set[id]
 }
 
 func nicRE(ip string) *regexp.Regexp {

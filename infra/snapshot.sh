@@ -31,7 +31,7 @@ case $cmd in
   restore)
     # `volume revert` fails on the homeserver (Cinder has no oslo_concurrency lock_path) and needs an
     # unattached volume anyway. So: delete the server (volume kept), create a NEW volume from the clean
-    # snapshot (LVM thin clone), boot the server from it. Old volumes are never deleted here; list them with
+    # snapshot (LVM thin clone), boot the server from it. Old volumes are never deleted here (orchd --prune-restore-volumes can, guarded); list them with
     # `snapshot.sh prune <vm>` and delete by hand. No user-data on re-create: the snapshot already holds users,
     # rules and config (cloud-init would otherwise rewrite /etc/nftables.conf with the boot-time version).
     case $vm in orch-vm) flavor=aigate.orch ;; agent-vm) flavor=aigate.agent ;; test-vm) flavor=aigate.test ;; esac
@@ -43,7 +43,7 @@ case $cmd in
     wait_ssh; t4=$(now)
     echo "restore: total $((t4-t0)) s = delete-server $((t1-t0)) + volume-from-snapshot $((t2-t1)) + create-server $((t3-t2)) + ssh-ready $((t4-t3))  [volume $newvol]" ;;
   prune)
-    echo "volumes of $vm (candidates for manual deletion except the one the server boots from; golden volume is $vol, snapshot origin):"
+    echo "volumes of $vm (list only, this script never deletes; orchd --prune-restore-volumes does it under guards; candidates except the one the server boots from; golden volume is $vol, snapshot origin):"
     osw volume list -f value -c ID -c Name | grep -E " $vm-root(-[0-9]+)*(-[0-9a-f]{4})?$" || true ;;
   time)
     for i in $(seq 1 "$n"); do
