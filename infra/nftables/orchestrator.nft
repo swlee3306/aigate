@@ -26,6 +26,8 @@ table inet aigate {
     ip daddr 8.8.8.8 udp dport 53 accept
     ip daddr 8.8.8.8 tcp dport 53 accept
     oifname "tailscale0" accept
+    # OpenStack API of the homeserver only (identity, compute, volume, image, network, placement), for test VM restore
+    ip daddr 192.168.1.121 tcp dport { 5000, 8774, 8776, 9292, 9696, 8778 } accept
     udp dport { 3478, 41641 } ip daddr != @private4 accept
     tcp dport { 80, 443 } ip daddr != @private4 accept
   }

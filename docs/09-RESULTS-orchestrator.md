@@ -76,3 +76,11 @@
 - 시작 로그에 실효 설정이 모두 찍힌다(복원 여부, 허용 목록과 출처, 정책 해시, 원격, VM 주소). 복원 없이 게시하는 구성은 `--allow-publish-without-restore` 없이는 시작 거부.
 - 같은 DB로 두 번째 `orchd`를 띄우면 `another orchd already runs ... refusing to start a second one`으로 거부(exit 1).
 - 새 작업 7: 정상 `done`. 원장에 `task_transition` 9건, `publish_action`(push 전), `publish_result`, 순서대로 기록.
+
+## 실제 저장소 통합 시험: sample-collector (2026-11-06)
+구성: 로컬 클론(`aigate-adoption`, 0e2db75, 게이트 설정 포함)을 번들로 orch-vm에 옮김(원격 없음, GitLab·Tailscale 사용 안 함, 게시 대상은 로컬 bare 저장소).
+정책 `sample-app: L1`, 허용 목록 `push_branch`, 복원 없음. 이전 방침(push 금지, 내부 시험만) 유지.
+- 작업 9("테스트 없는 작은 순수 헬퍼에 새 테스트 파일 추가", Claude): **done**, 게이트 `ok`(unit·vet·build), 에이전트가 `pkg/webapp_server/router/unique_values_test.go`(51줄) 하나를 추가, `refs/heads/orch/9`에 게시.
+- 단계별 시간: 준비 2.3 s, 에이전트 34.8 s, 수집 1.2 s, **판정 260.8 s**, 게시 0.6 s, 합계 약 300 s.
+- 판정이 맥(47~58 s)보다 4~5배 긴 이유(추정): test-vm에서 Go 모듈·빌드 캐시가 차가운 채로 base와 head에서 각각 unit·vet·build를 돌림. 작업마다 복원하면 캐시가 매번 비므로,
+  **깨끗한 스냅샷에 모듈 다운로드와 빌드 캐시를 미리 데워 두는 것**이 가장 큰 시간 절감 후보다(미시험).
