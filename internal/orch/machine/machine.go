@@ -157,7 +157,8 @@ func (m *Machine) stepFailed(ctx context.Context, t store.Task, cause error) err
 	why := noteCause(text)
 	if t.Attempts+1 >= m.maxAttempts {
 		return m.transition(ctx, t, StateFailed,
-			fmt.Sprintf("%s failed after %d attempts: %s", t.State, t.Attempts+1, why), store.TransitionOpts{ErrorText: text})
+			fmt.Sprintf("%s failed after %d attempts: %s", t.State, t.Attempts+1, why),
+			store.TransitionOpts{ErrorText: text, InfraFailed: true, RetryState: t.State})
 	}
 	return m.transition(ctx, t, StateError, fmt.Sprintf("%s failed (attempt %d): %s", t.State, t.Attempts+1, why),
 		store.TransitionOpts{ErrorText: text, RetryState: t.State})

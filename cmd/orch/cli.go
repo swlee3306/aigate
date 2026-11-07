@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"aigate/internal/orch/api"
+	"aigate/internal/orch/machine"
 )
 
 const defaultSocket = "/run/orchd/orchd.sock"
@@ -26,6 +27,7 @@ const usage = `사용법: orch [--socket PATH] [--json] <명령>
   list                                                              작업 목록
   show ID                                                           작업 상세
   cancel ID                                                         작업 취소
+  retry ID                                                          인프라 오류로 실패한(failed) 작업을 실패한 단계부터 다시 시도(최대 3회)
   approvals                                                         승인 대기 목록
   approve ID                                                        승인(사람이 터미널에서 직접, TTY 필요)
   reverify ID                                                       이미 승인한 항목의 재검증 요청(승인 기록이 있어야 함)
@@ -177,7 +179,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 			}
 			fmt.Fprintf(stdout, "%-5s %-14s %-7s %-12s %s\n", "ID", "상태", "에이전트", "종류", "저장소")
 			for _, v := range vs {
-				fmt.Fprintf(stdout, "%-5d %-14s %-9s %-12s %s\n", v.ID, v.State, v.Agent, v.Class, v.Repo)
+				state := v.State
+				if v.Retryable {
+					state += " (재시도 가능)"
+				}
+				fmt.Fprintf(stdout, "%-5d %-14s %-9s %-12s %s\n", v.ID, state, v.Agent, v.Class, v.Repo)
 			}
 		})
 	case "show":
@@ -198,7 +204,26 @@ func run(args []string, stdout, stderr io.Writer) int {
 			if v.Error != "" {
 				fmt.Fprintf(stdout, "  오류:     %s\n", v.Error)
 			}
+			if v.Retryable {
+				fmt.Fprintf(stdout, "  재시도:   가능 (%s부터, 지금까지 %d/%d회) — orch retry %d\n", v.RetryState, v.Retries, machine.MaxRetries, v.ID)
+			} else if v.Retries > 0 {
+				fmt.Fprintf(stdout, "  재시도:   %d/%d회 사용\n", v.Retries, machine.MaxRetries)
+			}
 			fmt.Fprintf(stdout, "  프롬프트:\n%s\n", indent(v.Prompt))
+		})
+	case "retry":
+		id, err := idArg()
+		if err != nil {
+			return fail(err)
+		}
+		raw, err := c.call("POST", "/tasks/"+id+"/retry", nil)
+		if err != nil {
+			return fail(err)
+		}
+		return out(raw, func() {
+			var v api.TaskView
+			json.Unmarshal(raw, &v)
+			fmt.Fprintf(stdout, "작업 #%s 다시 시도: %s부터\n", id, v.State)
 		})
 	case "approvals":
 		raw, err := c.call("GET", "/approvals", nil)

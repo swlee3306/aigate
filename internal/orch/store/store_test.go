@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -382,7 +383,7 @@ func TestMigrateV1ToV2KeepsTasks(t *testing.T) {
 	}
 	var v int
 	s.db.QueryRow(`SELECT version FROM schema_version`).Scan(&v)
-	if v != 4 {
+	if v != 5 {
 		t.Fatalf("version %d", v)
 	}
 	if err := s.SetHeadSHA(context.Background(), 1, "deadbeef"); err != nil {
@@ -524,5 +525,67 @@ func TestAddApprovalResolvedIsADeadEnd(t *testing.T) {
 	}
 	if _, err := s.AddApproval(ctx, Approval{TaskID: id, Kind: KindProtectedModified, Hash: "h"}); !errors.Is(err, ErrApprovalResolved) {
 		t.Fatalf("err %v", err)
+	}
+}
+
+// A version-4 database keeps its tasks through v5; the backfill marks only old
+// failed tasks whose last failure note is "<step> failed after N attempts".
+func TestMigrateV4ToV5BackfillsInfraFailures(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v4.db")
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stmts := []string{schemaV1, schemaV2, schemaV3, schemaV4,
+		`CREATE TABLE schema_version (version INTEGER NOT NULL)`,
+		`INSERT INTO schema_version(version) VALUES (4)`}
+	// id, state, error_text, last event (from, to, note)
+	type row struct{ state, errText, from, note string }
+	rows := []row{
+		{"failed", "restore quota 413", "verifying", "verifying failed after 3 attempts: restore quota 413"}, // 1 infra
+		{"failed", "", "verifying", "behavior_failure"},                                                      // 2 verdict
+		{"failed", "approval rejected: x", "needs_approval", "approval rejected"},                            // 3
+		{"failed", "step repeatedly interrupted by a crash", "collecting", "collecting interrupted 3 times"}, // 4
+		{"failed", "", "collecting", "collecting failed after 3 attempts: x"},                                // 5 empty error_text
+		{"done", "old error", "publishing", "publishing failed after 3 attempts: x"},                         // 6 not failed
+		{"failed", "x", "preparing", "verifying failed after 3 attempts: x"},                                 // 7 step mismatch
+		{"failed", "push boom", "publishing", "publishing failed after 3 attempts: push boom"},               // 8 infra (publishing, refused later)
+	}
+	for i, r := range rows {
+		stmts = append(stmts,
+			fmt.Sprintf(`INSERT INTO tasks(repo, base, prompt, state, error_text, created_at, updated_at) VALUES ('/r','b','p%d','%s','%s',1,2)`, i+1, r.state, r.errText),
+			fmt.Sprintf(`INSERT INTO task_events(task_id, from_state, to_state, note, at) VALUES (%d,'%s','%s','%s',3)`, i+1, r.from, r.state, r.note))
+	}
+	for _, q := range stmts {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	db.Close()
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	want := map[int64]State{1: StateVerifying, 8: StatePublishing}
+	for i := range rows {
+		id := int64(i + 1)
+		got, err := s.GetTask(ctx, id)
+		if err != nil || got.Prompt != fmt.Sprintf("p%d", id) {
+			t.Fatalf("task %d: %+v %v", id, got, err)
+		}
+		step, infra := want[id]
+		if got.InfraFailed != (infra != false) || (infra && got.RetryState != step) || (!infra && got.RetryState != "") {
+			t.Errorf("task %d: infra=%v retry_state=%q", id, got.InfraFailed, got.RetryState)
+		}
+		if got.Retries != 0 {
+			t.Errorf("task %d retries %d", id, got.Retries)
+		}
+	}
+	var v int
+	s.db.QueryRow(`SELECT version FROM schema_version`).Scan(&v)
+	if v != 5 {
+		t.Fatalf("version %d", v)
 	}
 }

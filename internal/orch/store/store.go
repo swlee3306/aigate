@@ -30,6 +30,9 @@ var schemaV3 string
 //go:embed schema_v4.sql
 var schemaV4 string
 
+//go:embed schema_v5.sql
+var schemaV5 string
+
 // MaxErrorText caps Task.ErrorText so a noisy failure cannot bloat the DB.
 const MaxErrorText = 4096
 
@@ -59,6 +62,11 @@ type Task struct {
 	ReportPath string // saved report JSON of the last verification
 	// PolicyHash is the hash of the policy.yml the task started under.
 	PolicyHash string
+	// InfraFailed is true for a failed task whose step kept failing on an
+	// infrastructure error (not a verdict); RetryState then names that step.
+	InfraFailed bool
+	// Retries counts operator retries (orch retry).
+	Retries int
 }
 
 // Approval is a pending-approvals entry (design section 6).
@@ -87,7 +95,10 @@ type Event struct {
 // TransitionOpts carries the optional extras of a transition.
 type TransitionOpts struct {
 	ErrorText  string // recorded when moving to StateError or StateFailed
-	RetryState State  // step to resume, recorded when moving to StateError
+	RetryState State  // step to resume, recorded when moving to StateError (or failed with InfraFailed)
+	// InfraFailed marks a move to StateFailed caused by a step failing after the
+	// attempt limit; RetryState (the failed step) is then kept for `orch retry`.
+	InfraFailed bool
 }
 
 // Store is safe for concurrent use.
@@ -117,6 +128,7 @@ var migrations = []func(tx *sql.Tx) error{
 	func(tx *sql.Tx) error { _, err := tx.Exec(schemaV2); return err },
 	func(tx *sql.Tx) error { _, err := tx.Exec(schemaV3); return err },
 	func(tx *sql.Tx) error { _, err := tx.Exec(schemaV4); return err },
+	func(tx *sql.Tx) error { _, err := tx.Exec(schemaV5); return err },
 }
 
 // Open creates or opens the database at path with mode 0600.
@@ -211,15 +223,17 @@ func capText(s string) string {
 	return s + "…[cut]"
 }
 
-const taskCols = `id, repo, base, prompt, class, agent, state, attempts, retry_state, error_text, created_at, updated_at, head_sha, verdict, report_path, policy_hash`
+const taskCols = `id, repo, base, prompt, class, agent, state, attempts, retry_state, error_text, created_at, updated_at, head_sha, verdict, report_path, policy_hash, infra_failed, retries`
 
 type scanner interface{ Scan(...any) error }
 
 func scanTask(r scanner) (Task, error) {
 	var t Task
 	var c, u int64
+	var infra int
 	err := r.Scan(&t.ID, &t.Repo, &t.Base, &t.Prompt, &t.Class, &t.Agent, &t.State,
-		&t.Attempts, &t.RetryState, &t.ErrorText, &c, &u, &t.HeadSHA, &t.Verdict, &t.ReportPath, &t.PolicyHash)
+		&t.Attempts, &t.RetryState, &t.ErrorText, &c, &u, &t.HeadSHA, &t.Verdict, &t.ReportPath, &t.PolicyHash, &infra, &t.Retries)
+	t.InfraFailed = infra != 0
 	t.CreatedAt, t.UpdatedAt = ts(c), ts(u)
 	return t, err
 }
@@ -345,6 +359,10 @@ func transitionTx(ctx context.Context, tx *sql.Tx, id int64, from, to State, not
 		q = `UPDATE tasks SET state=?, attempts=attempts+1, retry_state=?, error_text=?, running=0, updated_at=?
 		     WHERE id=? AND state=?`
 		args = []any{to, o.RetryState, capText(o.ErrorText), n, id, from}
+	case to == StateFailed && o.InfraFailed:
+		q = `UPDATE tasks SET state=?, attempts=0, retry_state=?, infra_failed=1, running=0, updated_at=?, error_text=?
+		     WHERE id=? AND state=?`
+		args = []any{to, o.RetryState, n, capText(o.ErrorText), id, from}
 	case from == StateError:
 		q = `UPDATE tasks SET state=?, retry_state='', running=0, updated_at=?, error_text=CASE WHEN ?<>'' THEN ? ELSE error_text END
 		     WHERE id=? AND state=?`
@@ -375,6 +393,48 @@ func transitionTx(ctx context.Context, tx *sql.Tx, id int64, from, to State, not
 		return err
 	}
 	return nil
+}
+
+// RetryFailed moves an infrastructure-failed task from `failed` back to `to`
+// (the step recorded in retry_state), resets attempts and the error text, counts
+// the retry and writes the event, all in one compare-and-set transaction. It
+// returns ErrStateMismatch when the task is not (or no longer) in that failed
+// state with a free retry, so of two concurrent callers exactly one succeeds.
+// The edge failed -> to is NOT in machine.Allowed; only machine.Retry calls this.
+func (s *Store) RetryFailed(ctx context.Context, id int64, to State, maxRetries int, note string) error {
+	if err := s.alive(); err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	n := now()
+	res, err := tx.ExecContext(ctx,
+		`UPDATE tasks SET state=?, attempts=0, retry_state='', infra_failed=0, error_text='', retries=retries+1, running=0, updated_at=?
+		 WHERE id=? AND state=? AND infra_failed=1 AND retry_state=? AND retries<?`,
+		to, n, id, StateFailed, to, maxRetries)
+	if err != nil {
+		return err
+	}
+	if c, _ := res.RowsAffected(); c == 0 {
+		var cur State
+		err := tx.QueryRowContext(ctx, `SELECT state FROM tasks WHERE id=?`, id).Scan(&cur)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: task %d is %s, not an infrastructure-failed task with a free retry", ErrStateMismatch, id, cur)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO task_events(task_id, from_state, to_state, note, at) VALUES (?,?,?,?,?)`,
+		id, StateFailed, to, note, n); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // Events lists a task's transitions oldest first.

@@ -64,6 +64,10 @@ type TaskView struct {
 	Error      string    `json:"error,omitempty"`
 	HeadSHA    string    `json:"head_sha,omitempty"`
 	Verdict    string    `json:"verdict,omitempty"`
+	// Retryable: `orch retry` is allowed now (failed on infrastructure, within the retry limit).
+	Retryable bool `json:"retryable,omitempty"`
+	// Retries is how many times an operator retried this task.
+	Retries int `json:"retries,omitempty"`
 }
 
 // ApprovalView is the JSON form of a pending-approvals entry.
@@ -82,7 +86,8 @@ type ApprovalView struct {
 func viewOf(t store.Task) TaskView {
 	return TaskView{ID: t.ID, Repo: t.Repo, Base: t.Base, Prompt: t.Prompt, Class: t.Class,
 		Agent: t.Agent, State: string(t.State), Attempts: t.Attempts, RetryState: string(t.RetryState),
-		CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt, Error: t.ErrorText, HeadSHA: t.HeadSHA, Verdict: t.Verdict}
+		CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt, Error: t.ErrorText, HeadSHA: t.HeadSHA, Verdict: t.Verdict,
+		Retryable: machine.Retryable(t) == nil, Retries: t.Retries}
 }
 
 type submitRequest struct {
@@ -130,6 +135,7 @@ func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome 
 	mux.HandleFunc("GET /tasks", h.list)
 	mux.HandleFunc("GET /tasks/{id}", h.get)
 	mux.HandleFunc("POST /tasks/{id}/cancel", h.cancel)
+	mux.HandleFunc("POST /tasks/{id}/retry", h.retry)
 	mux.HandleFunc("GET /approvals", h.approvals)
 	mux.HandleFunc("GET /approvals/{id}", h.approvalGet)
 	mux.HandleFunc("POST /approvals/{id}/reverify", h.reverify)
@@ -359,6 +365,29 @@ func (h *handler) cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, viewOf(t))
+}
+
+// retry resumes an infrastructure-failed task from the step that failed.
+func (h *handler) retry(w http.ResponseWriter, r *http.Request) {
+	id, err := taskID(r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	t, err := h.m.Retry(r.Context(), id)
+	var nr *machine.NotRetryableError
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeErr(w, &httpError{404, "작업을 찾을 수 없습니다"})
+	case errors.As(err, &nr):
+		writeErr(w, &httpError{409, nr.Reason})
+	case errors.Is(err, store.ErrStateMismatch):
+		writeErr(w, &httpError{409, "작업 상태가 방금 바뀌어 다시 시도하지 않았습니다. 변경 없음"})
+	case err != nil:
+		writeErr(w, err)
+	default:
+		writeJSON(w, 200, viewOf(t))
+	}
 }
 
 func (h *handler) approvals(w http.ResponseWriter, r *http.Request) {
