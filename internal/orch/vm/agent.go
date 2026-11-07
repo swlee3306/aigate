@@ -24,6 +24,18 @@
 // each runnable only for an id Prune verified a moment before. Not verified
 // against the real homeserver. infra/snapshot.sh prune still only lists.
 //
+// Prune timing (speed never relaxes a guard above): with the pre-restore prune
+// (PreRestorePruner, server absent) a restore asks QuotaGate once (read-only
+// `quota show --usage`) whether gigabytes headroom >= 2 x the snapshot size
+// and volumes headroom >= 2. If so the pre-prune is skipped (phase quota_ok)
+// and the post-restore Prune runs in a background goroutine with its own
+// 5-minute context; the next Restore waits (PruneWait, default 2 min) for it
+// before deleting the server, and pruneMu keeps any two prunes from
+// overlapping. If the quota is tight or unreadable, the pre-prune runs as
+// before and no post-restore prune follows. TestVM.OnPrune reports background
+// results. pruneState issues its independent read-only calls concurrently
+// (at most 4); any failed call still means nothing is deleted.
+//
 // Open decision (NOT decided here): OpenStackCLI reaches the homeserver's
 // admin OpenStack credentials over ssh (default `ssh openstack-host openstack
 // --os-cloud exporter-internal`). Giving orch-vm that path is a privilege

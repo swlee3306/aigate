@@ -45,10 +45,17 @@ type RestoreRecord struct {
 	// Phases times each restore phase in execution order (only phases that
 	// ran). The failing phase has Err set; earlier phases are kept.
 	Phases []Phase
+
+	quotaSkipped bool // the quota gate skipped the pre-restore prune
+	preRan       bool // a pre-restore prune ran (so no post-restore prune is needed)
 }
 
-// Phase is the timing of one restore phase: pre_prune, delete_server,
-// create_volume, create_server, wait_ssh or post_prune.
+// Phase is the timing of one restore phase: prune_wait (the restore waited
+// for an earlier background prune), delete_server, quota_ok (the quota had
+// room, so the pre-restore prune was skipped) or quota_check (it had not, or
+// could not be read) followed by pre_prune, create_volume, create_server,
+// wait_ssh, and post_prune (synchronous) or post_prune_bg (added to the
+// record when the background prune finishes).
 type Phase struct {
 	Name string
 	Dur  time.Duration
@@ -73,11 +80,24 @@ type TestVM struct {
 	Suffix func() string
 	// PruneRestoreVolumes (default false) deletes the volumes of earlier
 	// restores, through Cloud if it is a Pruner / PreRestorePruner, under the
-	// guards in the package doc: once after DeleteServer and before the new
-	// volume is created (the quota counts snapshots too, so a full quota would
-	// otherwise fail the create), and once after a successful restore. A
-	// failure only adds a warning to the restore record.
+	// guards in the package doc: after DeleteServer and before the new volume
+	// is created (the quota counts snapshots too, so a full quota would
+	// otherwise fail the create), or, when the QuotaGate shows room, after the
+	// restore in the background. A failure only adds a warning to the record.
 	PruneRestoreVolumes bool
+	// OnPrune, when set, receives the result of every background prune (the
+	// one that follows a restore whose pre-prune the quota gate skipped), from
+	// the background goroutine, after the result was merged into the matching
+	// RestoreRecord. A panic in it is recovered.
+	OnPrune func(PruneResult, error)
+	// PruneWait bounds how long a Restore waits for an in-flight background
+	// prune before it deletes the server (default 2 minutes). After the bound
+	// it goes on, with a warning phase; prunes still never overlap (pruneMu).
+	PruneWait time.Duration
+
+	pruneMu ctxMutex // at most one prune of any kind at a time
+	bgMu    sync.Mutex
+	bgDone  chan struct{} // closed when the latest background prune has finished and reported
 
 	mu       sync.Mutex
 	broken   error // set by a failed restore, cleared by a successful one
@@ -116,10 +136,13 @@ func (t *TestVM) now() time.Time {
 // delete the server (volume kept), create a new volume from the snapshot, boot
 // the server from it, wait until ssh answers, all within RestoreTimeout. Any
 // failure marks the VM unusable until a later Restore succeeds. Old restore volumes
-// are deleted only when PruneRestoreVolumes is set (guarded, before the new
-// volume is created and again after success);
-// otherwise PruneCandidates lists it for manual deletion.
+// are deleted only when PruneRestoreVolumes is set (guarded): before the new
+// volume is created, unless the quota gate shows room for this restore and the
+// next, in which case after success in a background goroutine that the next
+// Restore waits for. Otherwise PruneCandidates lists them for manual deletion.
 func (t *TestVM) Restore(ctx context.Context) error {
+	// Before the lock: the background prune needs t.mu to merge its result.
+	wait := t.waitBackgroundPrune(ctx)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.Cloud == nil {
@@ -147,6 +170,12 @@ func (t *TestVM) Restore(ctx context.Context) error {
 	rctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var rec RestoreRecord
+	if wait != nil {
+		rec.Phases = append(rec.Phases, *wait)
+		if wait.Err != "" {
+			rec.PruneWarnings = append(rec.PruneWarnings, "background prune still running ("+wait.Err+"): restoring anyway")
+		}
+	}
 	err := t.restore(rctx, snap, volume, &rec)
 	rec.At, rec.Duration, rec.Volume = start, t.now().Sub(start), volume
 	rec.Slow = rec.Duration > slow
@@ -158,11 +187,129 @@ func (t *TestVM) Restore(ctx context.Context) error {
 	}
 	t.broken = nil
 	t.active = volume
+	background := false
 	if t.PruneRestoreVolumes {
-		t.timed(&rec, "post_prune", func() error { t.prune(ctx, &rec); return nil })
+		switch {
+		case rec.quotaSkipped:
+			// Nothing was pruned before the restore: do it now, off the critical path.
+			if _, ok := t.Cloud.(Pruner); ok {
+				background = true
+			} else {
+				rec.PruneWarnings = append(rec.PruneWarnings, "prune requested but the cloud cannot prune")
+			}
+		case rec.preRan:
+			// The pre-restore prune just ran with the server absent; nothing new can have appeared.
+		default: // a cloud that cannot pre-prune: the old post-restore prune, in line
+			t.timed(&rec, "post_prune", func() error { t.prune(ctx, &rec); return nil })
+		}
 	}
 	t.history = append(t.history, rec)
+	if background {
+		t.startBackgroundPrune(len(t.history)-1, volume)
+	}
 	return nil
+}
+
+// ctxMutex is a mutex whose waiters give up with their context.
+type ctxMutex struct {
+	once sync.Once
+	ch   chan struct{}
+}
+
+func (m *ctxMutex) lock(ctx context.Context) error {
+	m.once.Do(func() { m.ch = make(chan struct{}, 1) })
+	select {
+	case m.ch <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+func (m *ctxMutex) unlock() { <-m.ch }
+
+// waitBackgroundPrune blocks (bounded by PruneWait and ctx) while a background
+// prune from an earlier restore is in flight, so that restore does not delete
+// the server under it. It returns the prune_wait phase, or nil when nothing
+// was in flight.
+func (t *TestVM) waitBackgroundPrune(ctx context.Context) *Phase {
+	t.bgMu.Lock()
+	done := t.bgDone
+	t.bgMu.Unlock()
+	if done == nil {
+		return nil
+	}
+	select {
+	case <-done:
+		return nil
+	default:
+	}
+	limit := t.PruneWait
+	if limit <= 0 {
+		limit = 2 * time.Minute
+	}
+	start := time.Now()
+	timer := time.NewTimer(limit)
+	defer timer.Stop()
+	ph := &Phase{Name: "prune_wait"}
+	select {
+	case <-done:
+	case <-timer.C:
+		ph.Err = "timed out after " + limit.String()
+	case <-ctx.Done():
+		ph.Err = ctx.Err().Error()
+	}
+	ph.Dur = time.Since(start)
+	return ph
+}
+
+// startBackgroundPrune prunes after a restore in its own goroutine and context
+// (not the task's, bounded to 5 minutes), serialized with every other prune.
+// It merges the outcome into history[idx] (checked by volume name), reports it
+// through OnPrune and only then closes bgDone. Called with t.mu held.
+func (t *TestVM) startBackgroundPrune(idx int, volume string) {
+	p := t.Cloud.(Pruner)
+	done := make(chan struct{})
+	t.bgMu.Lock()
+	t.bgDone = done
+	t.bgMu.Unlock()
+	go func() {
+		defer close(done)
+		begin := time.Now()
+		var res PruneResult
+		var err error
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					err = fmt.Errorf("prune panicked: %v", r)
+				}
+			}()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			if lerr := t.pruneMu.lock(ctx); lerr != nil {
+				err = fmt.Errorf("waiting for another prune: %w", lerr)
+				return
+			}
+			defer t.pruneMu.unlock()
+			res, err = p.Prune(ctx)
+		}()
+		ph := Phase{Name: "post_prune_bg", Dur: time.Since(begin)}
+		if err != nil {
+			ph.Err = err.Error()
+		}
+		t.mu.Lock()
+		if idx < len(t.history) && t.history[idx].Volume == volume {
+			rec := &t.history[idx]
+			rec.merge(res, err, "prune")
+			rec.Phases = append(rec.Phases, ph)
+		}
+		t.mu.Unlock()
+		if t.OnPrune != nil {
+			func() {
+				defer func() { _ = recover() }()
+				t.OnPrune(res, err)
+			}()
+		}
+	}()
 }
 
 // prune runs after a successful restore, with its own bound, and records the
@@ -180,6 +327,11 @@ func (t *TestVM) prune(ctx context.Context, rec *RestoreRecord) {
 			rec.PruneWarnings = append(rec.PruneWarnings, fmt.Sprintf("prune panicked: %v", r))
 		}
 	}()
+	if err := t.pruneMu.lock(pctx); err != nil {
+		rec.PruneWarnings = append(rec.PruneWarnings, "prune skipped, another prune is running: "+err.Error())
+		return
+	}
+	defer t.pruneMu.unlock()
 	res, err := p.Prune(pctx)
 	rec.merge(res, err, "prune")
 }
@@ -202,6 +354,7 @@ func (t *TestVM) prePrune(ctx context.Context, rec *RestoreRecord) {
 	if !ok {
 		return
 	}
+	rec.preRan = true
 	defer func() {
 		if r := recover(); r != nil {
 			rec.PruneWarnings = append(rec.PruneWarnings, fmt.Sprintf("pre-restore prune panicked: %v", r))
@@ -209,8 +362,57 @@ func (t *TestVM) prePrune(ctx context.Context, rec *RestoreRecord) {
 	}()
 	pctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
+	if err := t.pruneMu.lock(pctx); err != nil {
+		rec.PruneWarnings = append(rec.PruneWarnings, "pre-restore prune skipped, another prune is running: "+err.Error())
+		return
+	}
+	defer t.pruneMu.unlock()
 	res, err := p.PrunePreRestore(pctx)
 	rec.merge(res, err, "pre-restore prune")
+}
+
+// quotaGate asks a cloud that can (QuotaGate, and PreRestorePruner so that
+// skipping means something) whether the quota already has room for this
+// restore and the next. True means: skip the pre-restore prune (phase
+// quota_ok, and the post-restore prune moves to the background). Anything
+// else, including an error or a panic, records quota_check with the reason
+// and returns false: the pre-restore prune then runs exactly as without a gate.
+func (t *TestVM) quotaGate(ctx context.Context, rec *RestoreRecord) (skip bool) {
+	g, ok := t.Cloud.(QuotaGate)
+	if _, pre := t.Cloud.(PreRestorePruner); !ok || !pre {
+		return false
+	}
+	start := t.now()
+	var fits bool
+	var detail string
+	var err error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fits, err = false, fmt.Errorf("quota gate panicked: %v", r)
+			}
+		}()
+		qctx, cancel := context.WithTimeout(ctx, time.Minute)
+		defer cancel()
+		fits, detail, err = g.RestoreFits(qctx)
+	}()
+	ph := Phase{Name: "quota_ok", Dur: t.now().Sub(start)}
+	switch {
+	case err == nil && fits:
+		rec.quotaSkipped = true
+	default:
+		ph.Name = "quota_check"
+		if err != nil {
+			ph.Err = err.Error()
+		} else {
+			ph.Err = detail
+			if ph.Err == "" {
+				ph.Err = "not enough quota headroom"
+			}
+		}
+	}
+	rec.Phases = append(rec.Phases, ph)
+	return rec.quotaSkipped
 }
 
 // timed runs fn and appends its duration (by t.now deltas) to rec.Phases;
@@ -235,7 +437,7 @@ func (t *TestVM) restore(ctx context.Context, snap, volume string, rec *RestoreR
 	}); err != nil {
 		return err
 	}
-	if t.PruneRestoreVolumes {
+	if t.PruneRestoreVolumes && !t.quotaGate(ctx, rec) {
 		t.timed(rec, "pre_prune", func() error { t.prePrune(ctx, rec); return nil })
 	}
 	t.created = append(t.created, volume) // recorded first: a half-made volume is a prune candidate too

@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -43,6 +45,15 @@ type Pruner interface {
 // stale attachment remains) becomes a candidate like any other restore volume.
 type PreRestorePruner interface {
 	PrunePreRestore(ctx context.Context) (PruneResult, error)
+}
+
+// QuotaGate is optionally implemented by a Cloud that can tell, with one
+// read-only quota lookup, whether the next restore fits without pruning first
+// (see TestVM: it then skips the pre-restore prune). It must answer true only
+// when it is sure; any doubt (unreadable, unparsable, tight) is false or an
+// error, and TestVM then prunes before restoring exactly as without a gate.
+type QuotaGate interface {
+	RestoreFits(ctx context.Context) (fits bool, detail string, err error)
 }
 
 // pruneNameRE is the driver's own naming pattern: the current
@@ -228,69 +239,152 @@ func (o *OpenStackCLI) evaluate(ctx context.Context, id string, absent bool) (vi
 	return vi, stale, "", nil
 }
 
-func (o *OpenStackCLI) pruneState(ctx context.Context, absent bool) (pruneState, error) {
+// pruneParallel caps the read-only openstack calls pruneState keeps in flight.
+const pruneParallel = 4
+
+// pruneState reads everything the guards judge against. The independent
+// read-only calls run concurrently (at most pruneParallel at a time); any
+// failed or untrusted answer is an error, so nothing is ever deleted on a
+// partial picture.
+func (o *OpenStackCLI) pruneState(parent context.Context, absent bool) (pruneState, error) {
 	st := pruneState{boot: map[string]bool{}, servers: map[string]bool{}, origins: map[string]bool{}}
 	vm := o.vm()
-	var out string
-	var err error
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	sem := make(chan struct{}, pruneParallel)
+	var wg sync.WaitGroup
+	var emu sync.Mutex // guards first and the maps in st
+	var first error
+	fail := func(err error) {
+		emu.Lock()
+		if first == nil {
+			first = err
+			cancel() // stop the siblings early; the first error is the one reported
+		}
+		emu.Unlock()
+	}
+	call := func(args ...string) (string, error) {
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+		defer func() { <-sem }()
+		return o.run(ctx, args...)
+	}
+	// spawn runs fn in a goroutine, turning a panic into an error.
+	spawn := func(fn func() error) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					fail(fmt.Errorf("prune state: panic: %v", r))
+				}
+			}()
+			if err := fn(); err != nil {
+				fail(err)
+			}
+		}()
+	}
+	var myID string
 	if absent {
-		if out, err = o.run(ctx, "server", "list", "--all-projects", "-f", "value", "-c", "ID", "-c", "Name"); err != nil {
-			return st, err
-		}
-		for _, l := range strings.Split(out, "\n") {
-			f := strings.Fields(l)
-			if len(f) == 0 {
-				continue
+		spawn(func() error {
+			out, err := call("server", "list", "--all-projects", "-f", "value", "-c", "ID", "-c", "Name")
+			if err != nil {
+				return err
 			}
-			if !uuidRE.MatchString(f[0]) {
-				return st, fmt.Errorf("unexpected server list line %q: not trusting it", l)
+			emu.Lock()
+			defer emu.Unlock()
+			for _, l := range strings.Split(out, "\n") {
+				f := strings.Fields(l)
+				if len(f) == 0 {
+					continue
+				}
+				if !uuidRE.MatchString(f[0]) {
+					return fmt.Errorf("unexpected server list line %q: not trusting it", l)
+				}
+				if len(f) > 1 && strings.Join(f[1:], " ") == vm {
+					return fmt.Errorf("server %s still exists: not in server-absent mode", vm)
+				}
+				st.servers[f[0]] = true
 			}
-			if len(f) > 1 && strings.Join(f[1:], " ") == vm {
-				return st, fmt.Errorf("server %s still exists: not in server-absent mode", vm)
+			if len(st.servers) == 0 { // an empty list is more likely a broken read than an empty cloud
+				return errors.New("server list is empty: not trusting it")
 			}
-			st.servers[f[0]] = true
-		}
-		if len(st.servers) == 0 { // an empty list is more likely a broken read than an empty cloud
-			return st, errors.New("server list is empty: not trusting it")
-		}
+			return nil
+		})
 	} else {
-		myID, err := o.run(ctx, "server", "show", vm, "-f", "value", "-c", "id")
-		if err != nil || myID == "" {
-			return st, fmt.Errorf("cannot determine %s's boot volume: server show failed", vm)
-		}
-		out, err := o.run(ctx, "server", "show", vm, "-f", "json", "-c", "volumes_attached")
+		spawn(func() error {
+			out, err := call("server", "show", vm, "-f", "json", "-c", "id", "-c", "volumes_attached")
+			if err != nil {
+				return fmt.Errorf("cannot determine %s's boot volume: server show failed", vm)
+			}
+			var doc struct {
+				ID string `json:"id"`
+			}
+			if json.Unmarshal([]byte(out), &doc) != nil || doc.ID == "" {
+				return fmt.Errorf("cannot determine %s's boot volume: server show failed", vm)
+			}
+			ids, err := parseVolumesAttached(out)
+			if err != nil || len(ids) == 0 {
+				return fmt.Errorf("cannot determine %s's boot volume: %v", vm, errOr(err, "none attached"))
+			}
+			emu.Lock()
+			defer emu.Unlock()
+			myID = doc.ID
+			for _, i := range ids {
+				st.boot[i] = true
+			}
+			return nil
+		})
+		spawn(func() error {
+			out, err := call("server", "list", "--all-projects", "-f", "value", "-c", "ID")
+			if err != nil {
+				return err
+			}
+			emu.Lock()
+			defer emu.Unlock()
+			for _, l := range strings.Fields(out) {
+				st.servers[l] = true
+			}
+			return nil
+		})
+	}
+	spawn(func() error {
+		out, err := call("volume", "snapshot", "list", "--all-projects", "-f", "value", "-c", "ID")
 		if err != nil {
-			return st, err
+			return err
 		}
-		ids, err := parseVolumesAttached(out)
-		if err != nil || len(ids) == 0 {
-			return st, fmt.Errorf("cannot determine %s's boot volume: %v", vm, errOr(err, "none attached"))
+		sids := strings.Fields(out)
+		for _, sid := range sids { // validate every id before any show runs
+			if !uuidRE.MatchString(sid) {
+				return fmt.Errorf("unexpected snapshot id %q", sid)
+			}
 		}
-		for _, i := range ids {
-			st.boot[i] = true
+		for _, sid := range sids {
+			spawn(func() error {
+				v, err := call("volume", "snapshot", "show", sid, "-f", "value", "-c", "volume_id")
+				if err != nil || !uuidRE.MatchString(v) {
+					return fmt.Errorf("cannot read the source volume of snapshot %s", sid)
+				}
+				emu.Lock()
+				st.origins[v] = true
+				emu.Unlock()
+				return nil
+			})
 		}
-		if out, err = o.run(ctx, "server", "list", "--all-projects", "-f", "value", "-c", "ID"); err != nil {
-			return st, err
-		}
-		for _, l := range strings.Fields(out) {
-			st.servers[l] = true
-		}
-		if !st.servers[myID] { // the list must at least contain the server we just made
-			return st, errors.New("server list does not contain the test VM: not trusting it")
-		}
+		return nil
+	})
+	wg.Wait()
+	if first != nil {
+		return st, first
 	}
-	if out, err = o.run(ctx, "volume", "snapshot", "list", "--all-projects", "-f", "value", "-c", "ID"); err != nil {
-		return st, err
+	if parent.Err() != nil {
+		return st, parent.Err()
 	}
-	for _, sid := range strings.Fields(out) {
-		if !uuidRE.MatchString(sid) {
-			return st, fmt.Errorf("unexpected snapshot id %q", sid)
-		}
-		v, err := o.run(ctx, "volume", "snapshot", "show", sid, "-f", "value", "-c", "volume_id")
-		if err != nil || !uuidRE.MatchString(v) {
-			return st, fmt.Errorf("cannot read the source volume of snapshot %s", sid)
-		}
-		st.origins[v] = true
+	if !absent && !st.servers[myID] { // the list must at least contain the server we just made
+		return st, errors.New("server list does not contain the test VM: not trusting it")
 	}
 	return st, nil
 }
@@ -349,4 +443,105 @@ func (o *OpenStackCLI) readVolume(ctx context.Context, id string) (volumeInfo, e
 		vi.Atts = append(vi.Atts, attachment{ID: aid, Server: a.ServerID})
 	}
 	return vi, nil
+}
+
+// RestoreFits reports whether the quota has room for the new restore volume
+// AND one more (so the next restore cannot hit HTTP 413 either): headroom
+// (limit - in_use - reserved; a limit of -1 is unlimited) of `gigabytes` at
+// least 2 x the clean snapshot's size and of `volumes` at least 2. Per-type
+// variants (gigabytes_<type>, volumes_<type>) must pass too. Two read-only
+// calls: `volume snapshot show <snap> -c size` and `quota show --usage`.
+// Anything unreadable or unparsable is an error and never "fits".
+func (o *OpenStackCLI) RestoreFits(ctx context.Context) (bool, string, error) {
+	var sizeOut, quotaOut string
+	var sizeErr, quotaErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		sizeOut, sizeErr = o.run(ctx, "volume", "snapshot", "show", o.snapshot(), "-f", "value", "-c", "size")
+	}()
+	go func() {
+		defer wg.Done()
+		quotaOut, quotaErr = o.run(ctx, "quota", "show", "--usage", "-f", "json")
+	}()
+	wg.Wait()
+	if sizeErr != nil {
+		return false, "", sizeErr
+	}
+	if quotaErr != nil {
+		return false, "", quotaErr
+	}
+	if !sizeRE.MatchString(sizeOut) {
+		return false, "", fmt.Errorf("unreadable snapshot size %q", sizeOut)
+	}
+	size, _ := strconv.Atoi(sizeOut)
+	if size <= 0 {
+		return false, "", fmt.Errorf("unusable snapshot size %q", sizeOut)
+	}
+	return quotaFits(quotaOut, size)
+}
+
+// quotaFits applies the headroom rule to the JSON of `quota show --usage`.
+func quotaFits(doc string, size int) (bool, string, error) {
+	var rows []map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(doc), &rows); err != nil {
+		return false, "", fmt.Errorf("unreadable quota: %w", err)
+	}
+	num := func(row map[string]json.RawMessage, key string) (int64, error) {
+		for k, raw := range row {
+			if strings.EqualFold(k, key) {
+				var n int64
+				if err := json.Unmarshal(raw, &n); err != nil {
+					return 0, fmt.Errorf("quota field %q is not an integer: %s", key, raw)
+				}
+				return n, nil
+			}
+		}
+		return 0, fmt.Errorf("quota row has no %q", key)
+	}
+	seenGB, seenVol := false, false
+	fits, detail := true, ""
+	for _, row := range rows {
+		var name string
+		for k, raw := range row {
+			if strings.EqualFold(k, "resource") && json.Unmarshal(raw, &name) != nil {
+				return false, "", errors.New("unreadable quota resource name")
+			}
+		}
+		var need int64
+		switch {
+		case name == "gigabytes" || strings.HasPrefix(name, "gigabytes_"):
+			need, seenGB = 2*int64(size), seenGB || name == "gigabytes"
+		case name == "volumes" || strings.HasPrefix(name, "volumes_"):
+			need, seenVol = 2, seenVol || name == "volumes"
+		default:
+			continue
+		}
+		limit, err := num(row, "limit")
+		if err != nil {
+			return false, "", err
+		}
+		used, err := num(row, "in use")
+		if err != nil {
+			return false, "", err
+		}
+		reserved, err := num(row, "reserved")
+		if err != nil {
+			return false, "", err
+		}
+		if used < 0 || reserved < 0 || limit < -1 {
+			return false, "", fmt.Errorf("implausible quota numbers for %s", name)
+		}
+		if limit == -1 {
+			continue // unlimited
+		}
+		if head := limit - used - reserved; head < need {
+			fits, detail = false, fmt.Sprintf("%s headroom %d < %d", name, head, need)
+		}
+	}
+	if !seenGB || !seenVol {
+		return false, "", errors.New("quota lacks gigabytes or volumes")
+	}
+	return fits, detail, nil
 }

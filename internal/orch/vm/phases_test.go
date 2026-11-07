@@ -69,7 +69,8 @@ func TestRestorePhasesSuccessWithPrune(t *testing.T) {
 	}
 	rec, _ := v.LastRestore()
 	// pre_prune runs after delete_server, so the recorded order is execution order.
-	if got := phaseString(rec.Phases); got != "delete_server=10s pre_prune=4s create_volume=6s create_server=11s wait_ssh=21s post_prune=2s" {
+	// Having pruned before the restore, there is no post-restore prune any more.
+	if got := phaseString(rec.Phases); got != "delete_server=10s pre_prune=4s create_volume=6s create_server=11s wait_ssh=21s" {
 		t.Fatalf("phases: %s", got)
 	}
 }

@@ -5,7 +5,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -168,7 +170,8 @@ func (v *vmFlags) provider(st *store.Store, dbPath string) (api.StepProvider, er
 	}
 	cloud := &vm.OpenStackCLI{Prefix: strings.Fields(v.CloudCmd), Probe: tcpProbe(v.TestHost), Snapshot: v.TestSnapshot,
 		PruneRestoreVolumes: v.PruneRestoreVolumes, MaxPrune: v.PruneMax}
-	test := &vm.TestVM{Cloud: cloud, SSH: sshCfg, Snapshot: v.TestSnapshot, PruneRestoreVolumes: v.PruneRestoreVolumes}
+	test := &vm.TestVM{Cloud: cloud, SSH: sshCfg, Snapshot: v.TestSnapshot, PruneRestoreVolumes: v.PruneRestoreVolumes,
+		OnPrune: pruneLogger(os.Stderr)}
 	cfg := steps.DefaultConfig()
 	cfg.Agent, cfg.Test = agent, test
 	cfg.AgentTimeout, cfg.RestoreEachJob = v.AgentTimeout, v.RestoreEachJob
@@ -199,6 +202,27 @@ func (v *vmFlags) provider(st *store.Store, dbPath string) (api.StepProvider, er
 		return nil, err
 	}
 	return p, nil
+}
+
+// pruneLogger returns the TestVM.OnPrune callback that writes one line per
+// background prune: counts, then the deleted and skipped volume NAMES (the
+// "name id" entries are cut to the name; no ids, no credentials).
+func pruneLogger(w io.Writer) func(vm.PruneResult, error) {
+	names := func(l []string) string {
+		var n []string
+		for _, e := range l {
+			n = append(n, strings.Fields(e + " ")[0])
+		}
+		return strings.Join(n, ",")
+	}
+	return func(res vm.PruneResult, err error) {
+		line := fmt.Sprintf("orchd: background prune: deleted %d [%s], skipped %d [%s], warnings %d",
+			len(res.Deleted), names(res.Deleted), len(res.Skipped), names(res.Skipped), len(res.Warnings))
+		if err != nil {
+			line += ", error: " + err.Error()
+		}
+		fmt.Fprintln(w, line)
+	}
 }
 
 // tcpProbe checks that something answers on the ssh port. It deliberately

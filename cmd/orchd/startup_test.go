@@ -1,9 +1,12 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"strings"
 	"testing"
+
+	"aigate/internal/orch/vm"
 )
 
 func TestRestoreOffWithPublishingIsRefused(t *testing.T) {
@@ -89,5 +92,24 @@ func TestStartupLogDescribesConfiguration(t *testing.T) {
 	fs.Parse([]string{"--prune-restore-volumes", "--prune-max", "2"})
 	if out := strings.Join(w.describe("db", 1), "\n"); !strings.Contains(out, "prune old restore volumes after a restore: true (max 2 per restore)") {
 		t.Errorf("prune on not logged:\n%s", out)
+	}
+}
+
+func TestPruneLogLineHasCountsAndNamesOnly(t *testing.T) {
+	var b strings.Builder
+	f := pruneLogger(&b)
+	f(vm.PruneResult{
+		Deleted:  []string{"test-vm-root-20261101-100000-aaaa 00000000-0000-4000-8000-000000000001"},
+		Skipped:  []string{"test-vm-root-20261102-100000-bbbb 00000000-0000-4000-8000-000000000002: attached to existing server x"},
+		Warnings: []string{"w1", "w2"},
+	}, errors.New("list failed"))
+	out := b.String()
+	for _, want := range []string{"orchd: background prune", "deleted 1", "skipped 1", "warnings 2", "error: list failed", "test-vm-root-20261101-100000-aaaa"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in %q", want, out)
+		}
+	}
+	if strings.Count(out, "\n") != 1 || strings.Contains(out, "0000-4000") {
+		t.Errorf("want one line without ids: %q", out)
 	}
 }

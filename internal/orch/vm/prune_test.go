@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -26,6 +27,15 @@ type sCloud struct {
 	log     []string
 	fail    map[string]bool // key prefix of a command that fails
 	quota   int             // >0: volumes + snapshots may not exceed it (create volume then fails with 413)
+
+	// Pruning runs read-only calls concurrently, so the stub is goroutine safe:
+	// mu guards all state above; the counters below are guarded by cmu.
+	mu          sync.Mutex
+	cmu         sync.Mutex
+	inflight    int
+	maxInflight int
+	delay       time.Duration // each call sleeps this long (outside mu) so overlap is observable
+	quotaJSON   string        // answer of `quota show --usage -f json`; empty = the stub does not know the verb
 }
 
 func newSCloud() *sCloud {
@@ -64,6 +74,18 @@ func (c *sCloud) deleted(substr string) bool {
 }
 
 func (c *sCloud) run(ctx context.Context, argv []string) ([]byte, error) {
+	c.cmu.Lock()
+	c.inflight++
+	if c.inflight > c.maxInflight {
+		c.maxInflight = c.inflight
+	}
+	c.cmu.Unlock()
+	if c.delay > 0 {
+		time.Sleep(c.delay)
+	}
+	defer func() { c.cmu.Lock(); c.inflight--; c.cmu.Unlock() }()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	a := argv[1:] // Prefix is {"os"}
 	cmd := strings.Join(a, " ")
 	c.log = append(c.log, cmd)
@@ -79,9 +101,18 @@ func (c *sCloud) run(ctx context.Context, argv []string) ([]byte, error) {
 			return []byte(id), nil
 		}
 		return nil, errors.New("no server")
-	case has("server show test-vm -f json -c volumes_attached"):
-		b, _ := json.Marshal(map[string]any{"volumes_attached": []map[string]string{{"id": c.bootOf["test-vm"]}}})
+	case has("server show test-vm -f json -c id -c volumes_attached"):
+		id := c.serverNamed("test-vm")
+		if id == "" {
+			return nil, errors.New("no server")
+		}
+		b, _ := json.Marshal(map[string]any{"id": id, "volumes_attached": []map[string]string{{"id": c.bootOf["test-vm"]}}})
 		return b, nil
+	case has("quota show --usage -f json"):
+		if c.quotaJSON == "" {
+			return nil, errors.New("stub: no quota")
+		}
+		return []byte(c.quotaJSON), nil
 	case has("server list"):
 		var ids []string
 		for id, name := range c.servers {
@@ -657,7 +688,7 @@ func (p *prePrunerCloud) PrunePreRestore(context.Context) (PruneResult, error) {
 func TestFailingPrePruneNeverFailsRestore(t *testing.T) {
 	now := time.Date(2026, 11, 6, 10, 0, 0, 0, time.UTC)
 	c := &prePrunerCloud{preErr: errors.New("pre boom"), preRes: PruneResult{Deleted: []string{"a 1"}, Skipped: []string{"b 2: x"}, Warnings: []string{"w"}}}
-	c.res = PruneResult{Deleted: []string{"c 3"}}
+	c.res = PruneResult{Deleted: []string{"c 3"}} // never used: the pre-prune ran, so no post-restore prune
 	v := newTestVM(c, &now)
 	v.PruneRestoreVolumes = true
 	if err := v.Restore(context.Background()); err != nil {
@@ -667,7 +698,7 @@ func TestFailingPrePruneNeverFailsRestore(t *testing.T) {
 		t.Fatalf("order %s", got)
 	}
 	rec, _ := v.LastRestore()
-	if rec.Err != "" || strings.Join(rec.Pruned, "|") != "a 1|c 3" || len(rec.PruneSkipped) != 1 ||
+	if rec.Err != "" || strings.Join(rec.Pruned, "|") != "a 1" || len(rec.PruneSkipped) != 1 ||
 		!strings.Contains(strings.Join(rec.PruneWarnings, "|"), "pre boom") || !strings.Contains(strings.Join(rec.PruneWarnings, "|"), "w") {
 		t.Fatalf("%+v", rec)
 	}

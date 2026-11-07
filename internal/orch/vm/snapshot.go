@@ -113,12 +113,13 @@ func (o *OpenStackCLI) allowed(args []string) error {
 		rv.MatchString(args[5]) && nicRE(o.fixedIP()).MatchString(args[7]):
 	case is("volume", "list", "-f", "value", "-c", "ID", "-c", "Name"):
 	// read-only verbs for Prune
-	case is("server", "show", vm, "-f", "json", "-c", "volumes_attached"):
+	case is("server", "show", vm, "-f", "json", "-c", "id", "-c", "volumes_attached"): // one call for id and boot volumes
 	case is("server", "list", "--all-projects", "-f", "value", "-c", "ID"):
 	case is("server", "list", "--all-projects", "-f", "value", "-c", "ID", "-c", "Name"): // pre-restore prune
 	case is("volume", "snapshot", "list", "--all-projects", "-f", "value", "-c", "ID"):
 	case is("volume", "snapshot", "show", "*", "-f", "value", "-c", "volume_id") && uuidRE.MatchString(args[3]):
 	case is("volume", "show", "*", "-f", "json", "-c", "name", "-c", "status", "-c", "attachments") && uuidRE.MatchString(args[2]):
+	case is("quota", "show", "--usage", "-f", "json"): // read-only: the quota gate of the pre-restore prune
 	// the only two deletes: by UUID, and only what Prune just verified
 	case is("--os-volume-api-version", "3.44", "volume", "attachment", "delete", "*") && uuidRE.MatchString(args[5]) && o.permitted(o.okAttach, args[5]):
 	case is("volume", "delete", "*") && uuidRE.MatchString(args[2]) && o.permitted(o.okDelete, args[2]):
