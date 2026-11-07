@@ -17,6 +17,7 @@ import (
 // parked builds a task in needs_approval with one pending entry of kind.
 func parked(t *testing.T, e *env, kind, hash string) (taskID, apprID int64, home string) {
 	t.Helper()
+	e.d.pauseWorkers() // the loop must not claim the task between CreateTask and the manual Transition
 	home = t.TempDir()
 	e.d.handler.grants = approvals.Grants{Home: home}
 	ctx := context.Background()

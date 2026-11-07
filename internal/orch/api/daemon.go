@@ -42,6 +42,11 @@ type Daemon struct {
 	m       *machine.Machine
 	handler *handler
 	ready   chan struct{}
+
+	// tickMu/paused exist only so tests can stop the worker loop deterministically
+	// (see pauseWorkers in the test files); production never sets paused.
+	tickMu sync.RWMutex
+	paused bool
 }
 
 // NewDaemon builds the machine from the provider and the API handler.
@@ -120,7 +125,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 func (d *Daemon) work(ctx context.Context) {
 	for ctx.Err() == nil {
-		err := d.m.Tick(ctx)
+		d.tickMu.RLock()
+		var err error
+		if d.paused {
+			err = machine.ErrNoWork
+		} else {
+			err = d.m.Tick(ctx)
+		}
+		d.tickMu.RUnlock()
 		if err == nil {
 			continue
 		}
