@@ -42,6 +42,17 @@ type RestoreRecord struct {
 	Pruned        []string
 	PruneSkipped  []string
 	PruneWarnings []string
+	// Phases times each restore phase in execution order (only phases that
+	// ran). The failing phase has Err set; earlier phases are kept.
+	Phases []Phase
+}
+
+// Phase is the timing of one restore phase: pre_prune, delete_server,
+// create_volume, create_server, wait_ssh or post_prune.
+type Phase struct {
+	Name string
+	Dur  time.Duration
+	Err  string // empty on success
 }
 
 // TestVM is the throwaway check VM. After a failed restore it is unusable
@@ -148,7 +159,7 @@ func (t *TestVM) Restore(ctx context.Context) error {
 	t.broken = nil
 	t.active = volume
 	if t.PruneRestoreVolumes {
-		t.prune(ctx, &rec)
+		t.timed(&rec, "post_prune", func() error { t.prune(ctx, &rec); return nil })
 	}
 	t.history = append(t.history, rec)
 	return nil
@@ -202,24 +213,54 @@ func (t *TestVM) prePrune(ctx context.Context, rec *RestoreRecord) {
 	rec.merge(res, err, "pre-restore prune")
 }
 
+// timed runs fn and appends its duration (by t.now deltas) to rec.Phases;
+// a failure is recorded with Err set.
+func (t *TestVM) timed(rec *RestoreRecord, name string, fn func() error) error {
+	start := t.now()
+	err := fn()
+	ph := Phase{Name: name, Dur: t.now().Sub(start)}
+	if err != nil {
+		ph.Err = err.Error()
+	}
+	rec.Phases = append(rec.Phases, ph)
+	return err
+}
+
 func (t *TestVM) restore(ctx context.Context, snap, volume string, rec *RestoreRecord) error {
-	if err := t.Cloud.DeleteServer(ctx, t.name()); err != nil {
-		return fmt.Errorf("delete server: %w", err)
+	if err := t.timed(rec, "delete_server", func() error {
+		if err := t.Cloud.DeleteServer(ctx, t.name()); err != nil {
+			return fmt.Errorf("delete server: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 	if t.PruneRestoreVolumes {
-		t.prePrune(ctx, rec)
+		t.timed(rec, "pre_prune", func() error { t.prePrune(ctx, rec); return nil })
 	}
 	t.created = append(t.created, volume) // recorded first: a half-made volume is a prune candidate too
-	if err := t.Cloud.CreateVolumeFromSnapshot(ctx, snap, volume); err != nil {
-		return fmt.Errorf("create volume: %w", err)
+	if err := t.timed(rec, "create_volume", func() error {
+		if err := t.Cloud.CreateVolumeFromSnapshot(ctx, snap, volume); err != nil {
+			return fmt.Errorf("create volume: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
-	if err := t.Cloud.CreateServer(ctx, t.name(), volume); err != nil {
-		return fmt.Errorf("create server: %w", err)
+	if err := t.timed(rec, "create_server", func() error {
+		if err := t.Cloud.CreateServer(ctx, t.name(), volume); err != nil {
+			return fmt.Errorf("create server: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
-	if err := t.Cloud.WaitSSH(ctx, t.name()); err != nil {
-		return fmt.Errorf("wait for ssh: %w", err)
-	}
-	return nil
+	return t.timed(rec, "wait_ssh", func() error {
+		if err := t.Cloud.WaitSSH(ctx, t.name()); err != nil {
+			return fmt.Errorf("wait for ssh: %w", err)
+		}
+		return nil
+	})
 }
 
 // Usable reports whether the VM may be used, and why not.
@@ -242,14 +283,19 @@ func (t *TestVM) Executor() (gate.Executor, error) {
 	return remote.NewSSH(t.SSH)
 }
 
-// LastRestore returns the most recent restore record.
+// LastRestore returns a copy of the most recent restore record.
 func (t *TestVM) LastRestore() (RestoreRecord, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if len(t.history) == 0 {
 		return RestoreRecord{}, false
 	}
-	return t.history[len(t.history)-1], true
+	rec := t.history[len(t.history)-1]
+	rec.Pruned = append([]string(nil), rec.Pruned...)
+	rec.PruneSkipped = append([]string(nil), rec.PruneSkipped...)
+	rec.PruneWarnings = append([]string(nil), rec.PruneWarnings...)
+	rec.Phases = append([]Phase(nil), rec.Phases...)
+	return rec, true
 }
 
 // History returns every restore record, oldest first.

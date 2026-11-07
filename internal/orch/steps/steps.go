@@ -49,6 +49,12 @@ type AgentDriver interface {
 	Collect(ctx context.Context, task, localRepo, baseSHA string) (headSHA string, commits int, err error)
 }
 
+// restoreReporter is optionally implemented by a TestDriver (*vm.TestVM does)
+// to expose the phase timings of its last restore.
+type restoreReporter interface {
+	LastRestore() (vm.RestoreRecord, bool)
+}
+
 // TestDriver is what the steps need from the test VM (*vm.TestVM).
 type TestDriver interface {
 	Restore(ctx context.Context) error
@@ -143,6 +149,8 @@ type Provider struct {
 	cfg Config
 	// vmMu serialises use of the single test VM (restore + gate run).
 	vmMu sync.Mutex
+	// now is the clock for the verify timings (default time.Now; tests replace it).
+	now func() time.Time
 }
 
 // NewProvider validates cfg and fills the defaults.
@@ -170,7 +178,7 @@ func NewProvider(st *store.Store, cfg Config) (*Provider, error) {
 			return nil, errors.New("steps: with a policy the Publisher must implement Planner")
 		}
 	}
-	return &Provider{st: st, cfg: cfg}, nil
+	return &Provider{st: st, cfg: cfg, now: time.Now}, nil
 }
 
 // maxLedgerNote caps the note written into a task_transition event.
@@ -309,9 +317,26 @@ func (p *Provider) verify(ctx context.Context, t store.Task) (machine.Outcome, e
 	}
 	p.vmMu.Lock()
 	defer p.vmMu.Unlock()
+	var restoreWall time.Duration
+	var restoreRec *vm.RestoreRecord
 	if p.cfg.RestoreEachJob {
-		if err := p.cfg.Test.Restore(ctx); err != nil {
+		start := p.now()
+		err := p.cfg.Test.Restore(ctx)
+		restoreWall = p.now().Sub(start)
+		rr, hasRec := p.cfg.Test.(restoreReporter)
+		var rec vm.RestoreRecord
+		var ok bool
+		if hasRec {
+			rec, ok = rr.LastRestore()
+		}
+		if err != nil {
+			if ok && len(rec.Phases) > 0 {
+				return machine.Outcome{}, fmt.Errorf("restore test vm: %w (phases: %s)", err, failedPhases(rec.Phases))
+			}
 			return machine.Outcome{}, fmt.Errorf("restore test vm: %w", err)
+		}
+		if ok {
+			restoreRec = &rec
 		}
 	}
 	ex, err := p.cfg.Test.Executor()
@@ -319,8 +344,10 @@ func (p *Provider) verify(ctx context.Context, t store.Task) (machine.Outcome, e
 		return machine.Outcome{}, fmt.Errorf("test vm executor: %w", err)
 	}
 	defer ex.Close()
+	gateStart := p.now()
 	r, err := p.cfg.Gate(ctx, gate.Options{Repo: t.Repo, Base: t.Base, Head: t.HeadSHA,
 		TaskClass: t.Class, HomeDir: p.cfg.GateHome, Executor: ex})
+	gateWall := p.now().Sub(gateStart)
 	if err != nil {
 		return machine.Outcome{}, fmt.Errorf("gate: %w", err)
 	}
@@ -340,18 +367,38 @@ func (p *Provider) verify(ctx context.Context, t store.Task) (machine.Outcome, e
 			return machine.Outcome{}, err
 		}
 	}
+	var baseSec, headSec float64
+	for _, c := range r.Checks {
+		baseSec += c.Base.Seconds
+		headSec += c.Head.Seconds
+	}
+	// A bare report (no checks) from a driver that reports no restore has
+	// nothing worth timing; the note stays as it was.
+	timing := ""
+	if restoreRec != nil || len(r.Checks) > 0 {
+		timing = timingSummary(restoreRec, restoreWall, gateWall, baseSec, headSec)
+	}
+	var out machine.Outcome
 	switch r.Category {
 	case rules.CategoryOK:
-		return machine.Outcome{Next: machine.StatePassed, Note: "verdict ok"}, nil
+		out = machine.Outcome{Next: machine.StatePassed, Note: "verdict ok"}
 	case rules.CategoryWeakened:
 		if onlyProtected(r) {
-			return p.needApproval(ctx, t, r)
+			o, err := p.needApproval(ctx, t, r)
+			if err != nil {
+				return o, err
+			}
+			out = o
+			break
 		}
-		fallthrough
+		out, _ = failed(fmt.Sprintf("%s: %s", r.Category, ruleList(r)))
 	case rules.CategoryBehavior, rules.CategoryIncomplete:
-		return failed(fmt.Sprintf("%s: %s", r.Category, ruleList(r)))
+		out, _ = failed(fmt.Sprintf("%s: %s", r.Category, ruleList(r)))
+	default:
+		return machine.Outcome{}, fmt.Errorf("gate returned unknown category %q", r.Category)
 	}
-	return machine.Outcome{}, fmt.Errorf("gate returned unknown category %q", r.Category)
+	out.Note += timing
+	return out, nil
 }
 
 func short(s string) string {
