@@ -1,5 +1,6 @@
 # orchd as deployed on orch-vm (layout under /home/orch). Install:
 #   sudo cp orchd-orchvm.service /etc/systemd/system/orchd.service && sudo systemctl daemon-reload && sudo systemctl enable --now orchd
+# --prune-restore-volumes: user-approved 2026-11-07 (Cinder's 300 GB quota counts snapshots + restore clones; see internal/orch/vm/prune.go for the guards).
 # Flags mirror the verified manual run. Change the snapshot name here when a newer clean snapshot is made.
 [Unit]
 Description=aigate orchestrator daemon (orchd) on orch-vm
@@ -20,6 +21,7 @@ ExecStart=/home/orch/bin/orchd \
   --test-host 10.70.0.13 --test-user runner --test-key /home/orch/.ssh/id_aigate --test-known-hosts /home/orch/.ssh/known_hosts_aigate \
   --test-repo-dir /srv/aigate/repo.git --test-work-dir /srv/aigate/work \
   --cloud-cmd "openstack --os-cloud exporter-internal" --test-snapshot test-vm-clean3 \
+  --prune-restore-volumes --prune-max 5 \
   --git-remote /home/orch/repos/remote.git \
   --gate-home /home/orch/orchd/gate-home --report-dir /home/orch/orchd/reports
 Restart=on-failure
