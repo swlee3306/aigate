@@ -589,3 +589,84 @@ func TestMigrateV4ToV5BackfillsInfraFailures(t *testing.T) {
 		t.Fatalf("version %d", v)
 	}
 }
+
+func TestEnsureMinNextTaskID(t *testing.T) {
+	ctx := context.Background()
+	t.Run("empty db without sequence row", func(t *testing.T) {
+		s, _ := openTemp(t)
+		for _, n := range []int64{-5, 0, 1} { // no-ops
+			if err := s.EnsureMinNextTaskID(ctx, n); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := s.EnsureMinNextTaskID(ctx, 21); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.EnsureMinNextTaskID(ctx, 21); err != nil { // idempotent
+			t.Fatal(err)
+		}
+		if id := newTask(t, s); id != 21 {
+			t.Fatalf("first id %d, want 21", id)
+		}
+		if id := newTask(t, s); id != 22 {
+			t.Fatalf("second id %d, want 22", id)
+		}
+	})
+	t.Run("never lowers", func(t *testing.T) {
+		s, _ := openTemp(t)
+		for i := 0; i < 5; i++ {
+			newTask(t, s)
+		}
+		if err := s.EnsureMinNextTaskID(ctx, 3); err != nil {
+			t.Fatal(err)
+		}
+		if id := newTask(t, s); id != 6 {
+			t.Fatalf("id %d, want 6", id)
+		}
+	})
+	t.Run("raises a db with tasks", func(t *testing.T) {
+		s, _ := openTemp(t)
+		newTask(t, s)
+		newTask(t, s)
+		if err := s.EnsureMinNextTaskID(ctx, 50); err != nil {
+			t.Fatal(err)
+		}
+		if id := newTask(t, s); id != 50 {
+			t.Fatalf("id %d, want 50", id)
+		}
+	})
+	t.Run("deleted ids", func(t *testing.T) {
+		s, path := openTemp(t)
+		for i := 0; i < 3; i++ {
+			newTask(t, s)
+		}
+		s.Close()
+		db, err := sql.Open("sqlite", "file:"+path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, q := range []string{`DELETE FROM task_events`, `DELETE FROM tasks`} {
+			if _, err := db.Exec(q); err != nil {
+				t.Fatal(err)
+			}
+		}
+		db.Close()
+		s2, err := Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s2.Close()
+		if err := s2.EnsureMinNextTaskID(ctx, 2); err != nil { // below the old sequence: no change
+			t.Fatal(err)
+		}
+		if id := newTask(t, s2); id != 4 {
+			t.Fatalf("id %d, want 4 (sequence survives deletes)", id)
+		}
+		if err := s2.EnsureMinNextTaskID(ctx, 10); err != nil {
+			t.Fatal(err)
+		}
+		if seq, err := s2.TaskSeq(ctx); err != nil || seq != 9 {
+			t.Fatalf("seq %d err %v, want 9", seq, err)
+		}
+	})
+}

@@ -755,3 +755,50 @@ func resolveTx(ctx context.Context, tx *sql.Tx, id int64, status string) (resolv
 	}
 	return resolved{taskID, kind}, nil
 }
+
+// TaskSeq returns the highest task id handed out so far (0 for none), as
+// recorded by the AUTOINCREMENT sequence, or the largest existing id if that
+// is higher.
+func (s *Store) TaskSeq(ctx context.Context) (int64, error) {
+	var seq, maxID sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, `SELECT seq FROM sqlite_sequence WHERE name = 'tasks'`).Scan(&seq); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT MAX(id) FROM tasks`).Scan(&maxID); err != nil {
+		return 0, err
+	}
+	if maxID.Int64 > seq.Int64 {
+		return maxID.Int64, nil
+	}
+	return seq.Int64, nil
+}
+
+// EnsureMinNextTaskID raises the task id sequence so the next created task
+// gets an id >= next. It never lowers the sequence and is idempotent. It is
+// used so a replaced database does not reuse ids that already left refs.
+func (s *Store) EnsureMinNextTaskID(ctx context.Context, next int64) error {
+	if next <= 1 {
+		return nil
+	}
+	want := next - 1
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var cur int64
+	err = tx.QueryRowContext(ctx, `SELECT seq FROM sqlite_sequence WHERE name = 'tasks'`).Scan(&cur)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		if _, err := tx.ExecContext(ctx, `INSERT INTO sqlite_sequence(name, seq) VALUES ('tasks', ?)`, want); err != nil {
+			return err
+		}
+	case err != nil:
+		return err
+	case cur < want:
+		if _, err := tx.ExecContext(ctx, `UPDATE sqlite_sequence SET seq = ? WHERE name = 'tasks'`, want); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}

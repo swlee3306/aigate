@@ -113,6 +113,7 @@ func run(args []string) int {
 		return 1
 	}
 	defer st.Close()
+	seedTaskIDs(context.Background(), st, cfg.AllowedRepos, vf.GitRemote, log.Printf)
 	if vf.enabled() {
 		if err := approvals.CheckPrivate(cfg.DB); err != nil {
 			fmt.Fprintln(os.Stderr, "orchd:", err)
