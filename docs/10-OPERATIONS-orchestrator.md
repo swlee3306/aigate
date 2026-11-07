@@ -85,7 +85,8 @@ orch --socket ~/orchd/run/orchd.sock retry <ID>      # 작업 #N 다시 시도: 
 ## 7. 알려진 한계·함정
 - exit-code 어댑터는 VM이 말하는 종료 코드를 믿는다. 검사 코드는 같은 uid로 돌아 자기 결과 파일을 위조할 수 있다(스냅샷 복원과 크기 상한으로 완화).
 - 복원 켠 채 게시 설정이 있으면 서비스가 시작을 거부하는 장치가 있다(`--allow-publish-without-restore`).
-- 강등 트리거 "게시 후 회귀"는 현재 구조에서 도달 불가, `orchd`가 죽으면 에이전트가 남아 재시도와 겹칠 수 있다(상세: 결과 문서의 한계 절).
+- 강등 트리거 "게시 후 회귀"는 현재 구조에서 도달 불가.
+- `orchd`가 죽은 뒤 재시도와 겹치는 에이전트는 래퍼가 같은 작업의 `run`/`prepare` 시작 때 `run.pid`로 정리한다(`reaped previous agent run (pid N)`이 stderr에 남음; 같은 작업에 살아 있는 다른 실행이 남으면 종료 코드 5). **`infra/agent-runner/install.sh --apply`로 래퍼를 다시 설치해야 적용된다**(상세: 결과 문서의 한계 절).
 - DB를 교체해도 orchd는 시작할 때 저장소의 `refs/orch/*`와 로컬 원격의 `orch/*` 브랜치에서 가장 큰 작업 ID를 찾아 그 다음 번호부터 시작한다(읽지 못한 저장소는 시작 로그에 경고).
 - Codex는 agent-vm에서 전용 AppArmor 프로파일(`infra/agent-codex-sandbox.sh`)로 동작한다. Codex 업그레이드로 바이너리 경로가 바뀌면 `--apply`를 다시 실행한다.
 - Mac 쪽: Wi-Fi 비공개 주소는 `home-wifi-5G`에서 "고정식"(aa:bb:cc:dd:ee:ff). Orca Computer Use의 접근성 권한은 목록 표시와 실제가 다를 수 있어 실제 호출로 확인하고, 안 되면 "기기 제어 및 데이터 접근"에서 껐다 켠 뒤 Orca를 재시작한다.

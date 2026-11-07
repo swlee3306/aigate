@@ -54,6 +54,94 @@ unset GIT_DIR GIT_WORK_TREE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIE
 
 have_ws() { [ -d "$d" ] && [ ! -L "$d" ] && [ -d "$ws/.git" ] && [ ! -L "$ws" ] && [ ! -L "$ws/.git" ] && [ -f "$d/base" ]; }
 
+# ---- crash recovery: one live agent run per task ----
+# `run` records its process-group leader in $d/run.pid (6 lines: leader pid, its start time, agent binary name,
+# wrapper pid, wrapper start time, wrapper script name). A later `run`/`prepare` of the SAME task calls reap_previous first.
+# A pid is only trusted when it is numeric, > 1, alive (not a zombie), its start time still equals the recorded one,
+# it is the leader of its own process group and its command line still names the agent (or this wrapper).
+# Anything else (recycled pid, unreadable or stale file) is never signalled; the file is just removed.
+valid_pid()  { [[ $1 =~ ^[0-9]{1,9}$ ]] && [ "$1" -gt 1 ]; }
+proc_stat()  { ps -o stat= -p "$1" 2>/dev/null | tr -d ' '; }
+proc_alive() { local s; s=$(proc_stat "$1"); [ -n "$s" ] && [ "${s#Z}" = "$s" ]; }
+proc_start() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//'; }
+proc_pgid()  { ps -o pgid= -p "$1" 2>/dev/null | tr -d ' '; }
+proc_cmd()   { ps -ww -o command= -p "$1" 2>/dev/null; }
+contains()   { [ -n "$2" ] || return 1; case $1 in *"$2"*) return 0 ;; esac; return 1; }
+wait_gone()  { # wait_gone <test command...>: up to 5 s (50 x 0.1 s) until the command fails
+	local i=0
+	while [ "$i" -lt 50 ] && "$@"; do sleep 0.1; i=$((i+1)); done
+	! "$@"
+}
+group_alive() { kill -0 -- "-$1" 2>/dev/null; }
+
+reap_previous() {
+	local f=$d/run.pid pid lst am wpid wlst wm cmd gok=0 wok=0 did=0
+	{ [ -e "$f" ] || [ -L "$f" ]; } || return 0
+	if [ -L "$f" ] || [ ! -f "$f" ]; then rm -f "$f"; return 0; fi
+	pid= lst= am= wpid= wlst= wm=
+	{ read -r pid; read -r lst; read -r am; read -r wpid; read -r wlst; read -r wm; } < "$f" 2>/dev/null || true
+	if valid_pid "$pid" && [ -n "$lst" ] && [ -n "$am" ] && [ "$pid" != "$$" ] && proc_alive "$pid" \
+	   && [ "$(proc_start "$pid")" = "$lst" ] && [ "$(proc_pgid "$pid")" = "$pid" ] && [ "$(proc_pgid "$$")" != "$pid" ]; then
+		cmd=$(proc_cmd "$pid")
+		if contains "$cmd" "$am" || contains "$cmd" "$wm"; then gok=1; fi
+	fi
+	if valid_pid "$wpid" && [ -n "$wlst" ] && [ -n "$wm" ] && [ "$wpid" != "$$" ] && proc_alive "$wpid" \
+	   && [ "$(proc_start "$wpid")" = "$wlst" ] && contains "$(proc_cmd "$wpid")" "$wm"; then wok=1; fi
+	if [ "$wok" = 1 ]; then
+		# the old wrapper first: its trap kills the agent group and releases its own files, then it cannot race with us
+		kill -s TERM "$wpid" 2>/dev/null && did=1
+		wait_gone proc_alive "$wpid" || kill -s KILL "$wpid" 2>/dev/null
+		wait_gone proc_alive "$wpid" || true
+	fi
+	if [ "$gok" = 1 ] && proc_alive "$pid" && [ "$(proc_start "$pid")" = "$lst" ]; then
+		kill -s TERM -- "-$pid" 2>/dev/null && did=1
+		wait_gone group_alive "$pid" || kill -s KILL -- "-$pid" 2>/dev/null
+		wait_gone group_alive "$pid" || true
+	fi
+	rm -f "$f"
+	if [ "$did" = 1 ]; then echo "reaped previous agent run (pid $pid)" >&2; fi
+	return 0
+}
+
+# one live `run` per task: mkdir lock whose owner file names the holder (wrapper pid + start time)
+lock=$d/run.lock
+lock_owner_live() {
+	local op ol i=0
+	while [ "$i" -lt 3 ]; do
+		op= ol=
+		{ read -r op; read -r ol; } < "$lock/owner" 2>/dev/null || true
+		[ -n "$op" ] && break
+		sleep 0.1; i=$((i+1))   # the holder may be between mkdir and writing its owner file
+	done
+	valid_pid "$op" && [ -n "$ol" ] && proc_alive "$op" && [ "$(proc_start "$op")" = "$ol" ]
+}
+acquire_lock() {
+	local n=0 st
+	st=$(proc_start "$$"); [ -n "$st" ] || return 1
+	while [ "$n" -lt 2 ]; do
+		if mkdir "$lock" 2>/dev/null; then
+			printf '%s\n%s\n' "$$" "$st" > "$lock/owner"; return 0
+		fi
+		if lock_owner_live; then return 1; fi
+		rm -rf "$lock"; n=$((n+1))
+	done
+	return 1
+}
+mine() { # mine <file>: first line is this wrapper's / leader's pid
+	local x=; { read -r x; } < "$1" 2>/dev/null || true; [ "$x" = "$2" ]
+}
+agent_live=0 leader=
+run_cleanup() {
+	trap - EXIT INT TERM HUP
+	if [ "$agent_live" = 1 ] && [ -n "$leader" ]; then kill -s KILL -- "-$leader" >/dev/null 2>&1; fi
+	[ -n "${rd:-}" ] && kill -s KILL -- "-$rd" >/dev/null 2>&1
+	[ -n "${wd:-}" ] && kill -s KILL -- "-$wd" >/dev/null 2>&1
+	[ -n "${gd:-}" ] && kill -s KILL -- "-$gd" >/dev/null 2>&1
+	if [ -f "$d/run.pid" ] && [ -n "$leader" ] && mine "$d/run.pid" "$leader"; then rm -f "$d/run.pid"; fi
+	if mine "$lock/owner" "$$"; then rm -rf "$lock"; fi
+	rm -f "$d/go"
+}
+
 case $sub in
 upload-pack)
 	have_ws || fail "no workspace for task $task" 4
@@ -65,6 +153,7 @@ upload-pack)
 
 prepare)
 	mkdir -p "$ROOT" || fail "cannot create $ROOT" 5
+	if [ -d "$d" ] && [ ! -L "$d" ]; then reap_previous; fi
 	[ ! -L "$d" ] || rm -f "$d"
 	rm -rf "$d" && mkdir "$d" || fail "cannot reset workspace" 5
 	head -c "$((PREP_MAX + 1))" > "$d/in.bundle"
@@ -102,31 +191,48 @@ collect-info)
 
 run)
 	have_ws || fail "no workspace for task $task" 4
+	reap_previous
+	acquire_lock || fail "another agent run for task $task is still active" 5
+	trap run_cleanup EXIT
+	trap 'exit 143' INT TERM HUP
 	head -c "$((PROMPT_MAX + 1))" > "$d/prompt"
 	psize=$(wc -c < "$d/prompt" | tr -d ' ')
 	if [ "$psize" -eq 0 ] || [ "$psize" -gt "$PROMPT_MAX" ]; then rm -f "$d/prompt"; fail "prompt empty or over $PROMPT_MAX bytes"; fi
 	g -C "$ws" checkout -q "$branch" >/dev/null 2>&1 || fail "cannot check out $branch" 4
 	set -m   # job control: each background job is its own process group, so a timeout kills the whole tree
-	rm -f "$d/ot" "$d/tail" "$d/to"
-	mkfifo "$d/ot" || fail "mkfifo failed" 5
+	rm -f "$d/ot" "$d/tail" "$d/to" "$d/go"
+	mkfifo "$d/ot" "$d/go" || fail "mkfifo failed" 5
+	exec 4<>"$d/go"   # start gate: the agent only starts after run.pid names its process group
 	tail -c "$TAIL_MAX" < "$d/ot" > "$d/tail" &
 	rd=$!
 	cd "$ws" || fail "cannot enter workspace" 4
-	if [ "$agent" = claude ]; then
-		env -u SSH_ORIGINAL_COMMAND -u SSH_CONNECTION -u SSH_CLIENT -u SSH_AUTH_SOCK "$CLAUDE_BIN" "${CLAUDE_ARGS[@]}" < "$d/prompt" > "$d/ot" 2>&1 &
-	else
-		env -u SSH_ORIGINAL_COMMAND -u SSH_CONNECTION -u SSH_CLIENT -u SSH_AUTH_SOCK "$CODEX_BIN" "${CODEX_ARGS[@]}" < "$d/prompt" > "$d/ot" 2>&1 &
-	fi
+	if [ "$agent" = claude ]; then bin=$CLAUDE_BIN; else bin=$CODEX_BIN; fi
+	(
+		read -r _ <&4; exec 4>&-
+		if [ "$agent" = claude ]; then
+			exec env -u SSH_ORIGINAL_COMMAND -u SSH_CONNECTION -u SSH_CLIENT -u SSH_AUTH_SOCK "$CLAUDE_BIN" "${CLAUDE_ARGS[@]}" < "$d/prompt" > "$d/ot" 2>&1
+		else
+			exec env -u SSH_ORIGINAL_COMMAND -u SSH_CONNECTION -u SSH_CLIENT -u SSH_AUTH_SOCK "$CODEX_BIN" "${CODEX_ARGS[@]}" < "$d/prompt" > "$d/ot" 2>&1
+		fi
+	) &
 	pid=$!
+	leader=$pid agent_live=1
+	lst=$(proc_start "$pid"); wst=$(proc_start "$$")
+	if [ -z "$lst" ] || [ -z "$wst" ] || ! { printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$pid" "$lst" "${bin##*/}" "$$" "$wst" "${0##*/}" > "$d/run.pid.$$" \
+	     && mv -f "$d/run.pid.$$" "$d/run.pid"; }; then
+		rm -f "$d/run.pid.$$"; fail "cannot record the run for crash recovery" 5
+	fi
+	echo go >&4; exec 4>&-
 	( sleep "$RUN_TIMEOUT"; : > "$d/to"; kill -s KILL -- "-$pid" ) >/dev/null 2>&1 < /dev/null &
 	wd=$!
 	wait "$pid"; rc=$?
-	kill -s KILL -- "-$wd" >/dev/null 2>&1
+	kill -s KILL -- "-$wd" >/dev/null 2>&1; wd=
 	kill -s KILL -- "-$pid" >/dev/null 2>&1    # stragglers of the agent's process group
+	agent_live=0
 	( sleep 5; kill -s KILL -- "-$rd" ) >/dev/null 2>&1 < /dev/null &
 	gd=$!
 	wait "$rd"
-	kill -s KILL -- "-$gd" >/dev/null 2>&1
+	kill -s KILL -- "-$gd" >/dev/null 2>&1; gd=; rd=
 	timedout=0
 	if [ -f "$d/to" ] && [ "$rc" -eq 137 ]; then timedout=1; rc=124; fi
 	committed=0

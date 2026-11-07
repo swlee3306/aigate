@@ -68,6 +68,9 @@ authorized_keys를 `agent` 홈이 아니라 root 소유 파일에 두는 이유:
    ```
    결과로 `refs/orch/<task>/head`가 생기고 `hello.txt`가 든 커밋 한 개가 있어야 한다.
 
+## Crash recovery (같은 작업의 남은 실행 정리)
+오케스트레이터(orchd)가 에이전트 실행 중 죽거나 재시작되면 `run`의 에이전트 프로세스 그룹이 `RUN_TIMEOUT`까지 남고, 복구가 같은 단계를 다시 실행하면 같은 작업 폴더에서 에이전트가 둘이 된다. 이를 막으려고 `run`은 에이전트를 띄우기 **전에** 프로세스 그룹 리더 pid, 시작 시각, 에이전트 바이너리 이름, 래퍼 pid를 `/srv/aigate/work/<task>/run.pid`(600, 원자적 쓰기)에 적고 정상 종료(또는 SIGTERM/HUP)하면 지운다. 같은 작업의 `run`과 `prepare`는 시작할 때 `run.pid`를 읽어 남은 실행을 정리한다: 이전 래퍼에 TERM, 그 프로세스 그룹에 TERM(최대 5초 대기) 후 KILL, `reaped previous agent run (pid N)`을 stderr에 한 줄 남긴다. **pid가 숫자이고 1보다 크며, 살아 있고, 시작 시각이 기록과 같고, 자기 프로세스 그룹의 리더이며, 명령줄에 기록된 이름이 있을 때만** 죽인다(재사용된 pid는 건드리지 않음). 읽을 수 없거나 낡은 파일은 지우기만 한다. 다른 작업 폴더는 건드리지 않는다. `run`은 `run.lock`(mkdir 잠금, 소유자 pid+시작 시각)을 잡고, 정리 뒤에도 살아 있는 다른 실행이 잠금을 쥐고 있으면 종료 코드 5로 거부한다. **적용하려면 `install.sh --apply`로 래퍼를 agent-vm에 다시 설치해야 한다**(설치 전에 시작된 실행은 `run.pid`가 없어 정리되지 않는다).
+
 ## 되돌리기
 agent-vm에서(관리자 키로): `sudo rm /etc/ssh/sshd_config.d/aigate-agent.conf && sudo sshd -t && sudo systemctl reload ssh` 하면 `agent`가 다시 홈의 authorized_keys를 쓴다. 래퍼와 설정은 `*.pre-agent-runner`가 있으면 그것으로 복원한다.
 
