@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"aigate/internal/orch/store"
 )
@@ -152,11 +153,13 @@ func (m *Machine) advance(ctx context.Context, t store.Task) error {
 // attempt limit, then failed. It never produces passed.
 func (m *Machine) stepFailed(ctx context.Context, t store.Task, cause error) error {
 	text := cause.Error()
+	// tasks.error_text is cleared once a retry succeeds, so keep a short cause in the event history too
+	why := noteCause(text)
 	if t.Attempts+1 >= m.maxAttempts {
 		return m.transition(ctx, t, StateFailed,
-			fmt.Sprintf("%s failed after %d attempts", t.State, t.Attempts+1), store.TransitionOpts{ErrorText: text})
+			fmt.Sprintf("%s failed after %d attempts: %s", t.State, t.Attempts+1, why), store.TransitionOpts{ErrorText: text})
 	}
-	return m.transition(ctx, t, StateError, fmt.Sprintf("%s failed (attempt %d)", t.State, t.Attempts+1),
+	return m.transition(ctx, t, StateError, fmt.Sprintf("%s failed (attempt %d): %s", t.State, t.Attempts+1, why),
 		store.TransitionOpts{ErrorText: text, RetryState: t.State})
 }
 
@@ -234,4 +237,13 @@ func (m *Machine) Reject(ctx context.Context, approvalID int64) error {
 		m.onTransition(before, before.State, StateFailed, "approval rejected")
 	}
 	return nil
+}
+
+// noteCause shortens an error to one line of at most 300 bytes for an event note.
+func noteCause(text string) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if len(text) > 300 {
+		text = text[:300] + "…"
+	}
+	return text
 }

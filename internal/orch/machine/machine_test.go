@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -520,5 +521,41 @@ func TestConcurrentWorkersRunEachStepOnce(t *testing.T) {
 	}
 	if len(runs) != tasks*5 {
 		t.Fatalf("ran %d distinct steps, want %d", len(runs), tasks*5)
+	}
+}
+
+// The cause of a failed attempt must stay in the event history: tasks.error_text is
+// cleared when a retry succeeds, and a cause that only lives there is lost.
+func TestErrorCauseIsKeptInEventNotes(t *testing.T) {
+	first := true
+	steps := happySteps()
+	steps[1] = fakeStep{StateAgentRunning, func(context.Context, store.Task) (Outcome, error) {
+		if first {
+			first = false
+			return Outcome{}, errors.New("ssh connection failed (exit 255):\n  Connection timed out " + strings.Repeat("x", 500))
+		}
+		return Outcome{Next: StateCollecting}, nil
+	}}
+	m, s, _ := setup(t, steps)
+	id := create(t, s)
+	drain(t, m)
+	if state(t, s, id) != StateDone {
+		t.Fatalf("state=%s", state(t, s, id))
+	}
+	evs, err := s.Events(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var note string
+	for _, e := range evs {
+		if e.To == StateError {
+			note = e.Note
+		}
+	}
+	if !strings.Contains(note, "failed (attempt 1): ssh connection failed (exit 255): Connection timed out") {
+		t.Fatalf("event note lost the cause: %q", note)
+	}
+	if strings.Contains(note, "\n") || len(note) > 400 {
+		t.Fatalf("note must be one short line: %d bytes %q", len(note), note)
 	}
 }
