@@ -27,6 +27,24 @@ type Pruner interface {
 	Prune(ctx context.Context) (PruneResult, error)
 }
 
+// PreRestorePruner is the optional pre-restore variant. Cinder's quota counts
+// volumes AND snapshots, so with the quota full the restore fails at `create
+// volume` (HTTP 413) before the post-restore prune could free anything.
+// TestVM calls PrunePreRestore after DeleteServer and before
+// CreateVolumeFromSnapshot, when the test VM's server is deliberately absent.
+// It is best effort: it can never fail a restore.
+//
+// Server-absent mode (used only here) requires ALL of: `server list
+// --all-projects` succeeds, contains at least one server, and contains no
+// server named exactly the test VM; there is then no boot volume. Otherwise
+// it returns an error and deletes nothing. A failed `server show` alone never
+// enters this mode. Every other guard of Prune still applies, each re-read
+// right before deletion. The old boot volume (its server is gone, only a
+// stale attachment remains) becomes a candidate like any other restore volume.
+type PreRestorePruner interface {
+	PrunePreRestore(ctx context.Context) (PruneResult, error)
+}
+
 // pruneNameRE is the driver's own naming pattern: the current
 // <vm>-root-YYYYMMDD-HHMMSS-xxxx and the legacy <vm>-root-HHMMSS. Never the
 // golden <vm>-root.
@@ -53,6 +71,17 @@ type pruneState struct {
 // failures become Warnings; an error means the cloud state could not be
 // judged and nothing was deleted. It does nothing unless PruneRestoreVolumes.
 func (o *OpenStackCLI) Prune(ctx context.Context) (PruneResult, error) {
+	return o.prune(ctx, false)
+}
+
+// PrunePreRestore is Prune in server-absent mode, for the window right after
+// the test VM's server was deleted (see PreRestorePruner). Prune's own
+// behavior, including its fail-safe for a missing server, is unchanged.
+func (o *OpenStackCLI) PrunePreRestore(ctx context.Context) (PruneResult, error) {
+	return o.prune(ctx, true)
+}
+
+func (o *OpenStackCLI) prune(ctx context.Context, absent bool) (PruneResult, error) {
 	var res PruneResult
 	if !o.PruneRestoreVolumes {
 		return res, nil
@@ -60,6 +89,11 @@ func (o *OpenStackCLI) Prune(ctx context.Context) (PruneResult, error) {
 	max := o.MaxPrune
 	if max <= 0 {
 		max = 5
+	}
+	if absent { // judge the cloud once up front: an untrusted server list is an error, not per-volume warnings
+		if _, err := o.pruneState(ctx, true); err != nil {
+			return res, fmt.Errorf("prune (server absent): %w", err)
+		}
 	}
 	out, err := o.run(ctx, "volume", "list", "-f", "value", "-c", "ID", "-c", "Name")
 	if err != nil {
@@ -82,7 +116,7 @@ func (o *OpenStackCLI) Prune(ctx context.Context) (PruneResult, error) {
 			continue
 		}
 		attempts++
-		done, why, err := o.pruneOne(ctx, c.id)
+		done, why, err := o.pruneOne(ctx, c.id, absent)
 		switch {
 		case err != nil:
 			res.Warnings = append(res.Warnings, fmt.Sprintf("%s %s: %v", c.name, c.id, err))
@@ -101,8 +135,8 @@ func (o *OpenStackCLI) Prune(ctx context.Context) (PruneResult, error) {
 }
 
 // pruneOne deletes one volume. It returns (deleted, skipReason, error).
-func (o *OpenStackCLI) pruneOne(ctx context.Context, id string) (bool, string, error) {
-	vi, stale, skip, err := o.evaluate(ctx, id)
+func (o *OpenStackCLI) pruneOne(ctx context.Context, id string, absent bool) (bool, string, error) {
+	vi, stale, skip, err := o.evaluate(ctx, id, absent)
 	if err != nil || skip != "" {
 		return false, skip, err
 	}
@@ -122,7 +156,7 @@ func (o *OpenStackCLI) pruneOne(ctx context.Context, id string) (bool, string, e
 		wctx, cancel := context.WithTimeout(ctx, time.Minute)
 		defer cancel()
 		for {
-			if vi, stale, skip, err = o.evaluate(wctx, id); err != nil || skip != "" {
+			if vi, stale, skip, err = o.evaluate(wctx, id, absent); err != nil || skip != "" {
 				return false, skip, err
 			}
 			if len(vi.Atts) == 0 && vi.Status == "available" {
@@ -162,11 +196,12 @@ func (o *OpenStackCLI) mark(set *map[string]bool, id string, on bool) {
 	}
 }
 
-// evaluate re-reads the cloud and judges volume id against guards 1-4. skip
+// evaluate re-reads the cloud and judges volume id against guards 1-4 (in
+// server-absent mode there is no boot volume to compare with). skip
 // is non-empty when the volume must stay; stale lists attachments to servers
 // that no longer exist (all attachments are stale when skip is empty).
-func (o *OpenStackCLI) evaluate(ctx context.Context, id string) (vi volumeInfo, stale []attachment, skip string, err error) {
-	st, err := o.pruneState(ctx)
+func (o *OpenStackCLI) evaluate(ctx context.Context, id string, absent bool) (vi volumeInfo, stale []attachment, skip string, err error) {
+	st, err := o.pruneState(ctx, absent)
 	if err != nil {
 		return vi, nil, "", err
 	}
@@ -193,32 +228,56 @@ func (o *OpenStackCLI) evaluate(ctx context.Context, id string) (vi volumeInfo, 
 	return vi, stale, "", nil
 }
 
-func (o *OpenStackCLI) pruneState(ctx context.Context) (pruneState, error) {
+func (o *OpenStackCLI) pruneState(ctx context.Context, absent bool) (pruneState, error) {
 	st := pruneState{boot: map[string]bool{}, servers: map[string]bool{}, origins: map[string]bool{}}
 	vm := o.vm()
-	myID, err := o.run(ctx, "server", "show", vm, "-f", "value", "-c", "id")
-	if err != nil || myID == "" {
-		return st, fmt.Errorf("cannot determine %s's boot volume: server show failed", vm)
-	}
-	out, err := o.run(ctx, "server", "show", vm, "-f", "json", "-c", "volumes_attached")
-	if err != nil {
-		return st, err
-	}
-	ids, err := parseVolumesAttached(out)
-	if err != nil || len(ids) == 0 {
-		return st, fmt.Errorf("cannot determine %s's boot volume: %v", vm, errOr(err, "none attached"))
-	}
-	for _, i := range ids {
-		st.boot[i] = true
-	}
-	if out, err = o.run(ctx, "server", "list", "--all-projects", "-f", "value", "-c", "ID"); err != nil {
-		return st, err
-	}
-	for _, l := range strings.Fields(out) {
-		st.servers[l] = true
-	}
-	if !st.servers[myID] { // the list must at least contain the server we just made
-		return st, errors.New("server list does not contain the test VM: not trusting it")
+	var out string
+	var err error
+	if absent {
+		if out, err = o.run(ctx, "server", "list", "--all-projects", "-f", "value", "-c", "ID", "-c", "Name"); err != nil {
+			return st, err
+		}
+		for _, l := range strings.Split(out, "\n") {
+			f := strings.Fields(l)
+			if len(f) == 0 {
+				continue
+			}
+			if !uuidRE.MatchString(f[0]) {
+				return st, fmt.Errorf("unexpected server list line %q: not trusting it", l)
+			}
+			if len(f) > 1 && strings.Join(f[1:], " ") == vm {
+				return st, fmt.Errorf("server %s still exists: not in server-absent mode", vm)
+			}
+			st.servers[f[0]] = true
+		}
+		if len(st.servers) == 0 { // an empty list is more likely a broken read than an empty cloud
+			return st, errors.New("server list is empty: not trusting it")
+		}
+	} else {
+		myID, err := o.run(ctx, "server", "show", vm, "-f", "value", "-c", "id")
+		if err != nil || myID == "" {
+			return st, fmt.Errorf("cannot determine %s's boot volume: server show failed", vm)
+		}
+		out, err := o.run(ctx, "server", "show", vm, "-f", "json", "-c", "volumes_attached")
+		if err != nil {
+			return st, err
+		}
+		ids, err := parseVolumesAttached(out)
+		if err != nil || len(ids) == 0 {
+			return st, fmt.Errorf("cannot determine %s's boot volume: %v", vm, errOr(err, "none attached"))
+		}
+		for _, i := range ids {
+			st.boot[i] = true
+		}
+		if out, err = o.run(ctx, "server", "list", "--all-projects", "-f", "value", "-c", "ID"); err != nil {
+			return st, err
+		}
+		for _, l := range strings.Fields(out) {
+			st.servers[l] = true
+		}
+		if !st.servers[myID] { // the list must at least contain the server we just made
+			return st, errors.New("server list does not contain the test VM: not trusting it")
+		}
 	}
 	if out, err = o.run(ctx, "volume", "snapshot", "list", "--all-projects", "-f", "value", "-c", "ID"); err != nil {
 		return st, err

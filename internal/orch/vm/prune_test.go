@@ -25,6 +25,7 @@ type sCloud struct {
 	seq     int
 	log     []string
 	fail    map[string]bool // key prefix of a command that fails
+	quota   int             // >0: volumes + snapshots may not exceed it (create volume then fails with 413)
 }
 
 func newSCloud() *sCloud {
@@ -83,7 +84,10 @@ func (c *sCloud) run(ctx context.Context, argv []string) ([]byte, error) {
 		return b, nil
 	case has("server list"):
 		var ids []string
-		for id := range c.servers {
+		for id, name := range c.servers {
+			if strings.Contains(cmd, "-c Name") {
+				id += " " + name
+			}
 			ids = append(ids, id)
 		}
 		return []byte(strings.Join(ids, "\n")), nil
@@ -162,6 +166,9 @@ func (c *sCloud) run(ctx context.Context, argv []string) ([]byte, error) {
 		}
 		return nil, nil
 	case has("volume create --snapshot test-vm-clean"):
+		if c.quota > 0 && len(c.vols)+len(c.snaps) >= c.quota {
+			return nil, errors.New("HTTP 413 VolumeLimitExceeded")
+		}
 		c.addVol(a[6], "available")
 		return nil, nil
 	case has("server create"):
@@ -437,6 +444,7 @@ func TestTwoRestoresLeaveOneNonGoldenNonOriginVolume(t *testing.T) {
 	c := newSCloud()
 	golden := c.addVol("test-vm-root", "available")
 	c.snaps[c.uid()] = golden.id
+	c.servers[c.uid()] = "agent-vm" // the real cloud always has other servers; an empty list is distrusted
 	o := &OpenStackCLI{Prefix: []string{"os"}, Run: c.run, PruneRestoreVolumes: true, PollInterval: time.Millisecond,
 		Probe: func(context.Context) error { return nil }}
 	now := time.Date(2026, 11, 6, 10, 0, 0, 0, time.UTC)
@@ -510,6 +518,243 @@ func TestPruneRereadsBeforeDelete(t *testing.T) {
 		res, err := o.Prune(context.Background())
 		if err != nil || len(res.Deleted) != 0 || c.vols[v.id] == nil || c.deleted("volume delete") {
 			t.Fatalf("%s: %+v %v", change, res, err)
+		}
+	}
+}
+
+// ---- pre-restore prune (server absent mode) ----
+
+// absentScene: the server was just deleted (its boot volume keeps a stale
+// attachment), another server exists, the golden volume is a snapshot origin.
+func absentScene(t *testing.T) (*sCloud, *OpenStackCLI, *sVol, *sVol) {
+	c, o, golden, cur := scene(t)
+	if _, err := c.run(context.Background(), []string{"os", "server", "delete", "--wait", "test-vm"}); err != nil {
+		t.Fatal(err)
+	}
+	c.servers[c.uid()] = "agent-vm"
+	return c, o, golden, cur
+}
+
+func TestPrunePreRestoreDeletesStaleOldVolumes(t *testing.T) {
+	c, o, golden, cur := absentScene(t)
+	old := c.addVol("test-vm-root-20261101-100000-bbbb", "available")
+	stale(c, old)
+	res, err := o.PrunePreRestore(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the previous boot volume (stale attachment only) goes too: it is no longer booted
+	if len(res.Deleted) != 2 || c.vols[old.id] != nil || c.vols[cur.id] != nil || c.vols[golden.id] == nil {
+		t.Fatalf("%+v left %s", res, c.names())
+	}
+}
+
+func TestPrunePreRestoreKeepsGuardedVolumes(t *testing.T) {
+	c, o, golden, _ := absentScene(t)
+	origin := c.addVol("test-vm-root-20261101-100000-bbbb", "available")
+	c.snaps[c.uid()] = origin.id
+	live := c.addVol("test-vm-root-20261102-100000-bbbb", "in-use")
+	other := c.serverNamed("agent-vm")
+	live.atts = [][2]string{{c.uid(), other}}
+	odd := c.addVol("test-vm-root-20261103-100000-BBBB", "available")
+	res, err := o.PrunePreRestore(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []*sVol{origin, live, golden, odd} {
+		if c.vols[v.id] == nil {
+			t.Fatalf("%s deleted: %+v", v.name, res)
+		}
+	}
+	if c.deleted("attachment delete "+live.atts[0][0]) || c.deleted("volume delete "+live.id) {
+		t.Fatalf("touched the live volume: %v", c.log)
+	}
+}
+
+func TestPrunePreRestoreCapStillApplies(t *testing.T) {
+	c, o, _, _ := absentScene(t)
+	for i := 0; i < 8; i++ {
+		c.addVol(fmt.Sprintf("test-vm-root-2026110%d-100000-aaaa", i+1), "available")
+	}
+	o.MaxPrune = 3
+	res, _ := o.PrunePreRestore(context.Background())
+	if len(res.Deleted) != 3 {
+		t.Fatalf("deleted %d", len(res.Deleted))
+	}
+}
+
+func TestPrunePreRestoreUntrustedServerListDeletesNothing(t *testing.T) {
+	for _, mode := range []string{"empty", "unreadable", "has-test-vm", "show-fails-only-is-not-absent"} {
+		c, o, _, _ := absentScene(t)
+		c.addVol("test-vm-root-20261101-100000-bbbb", "available")
+		switch mode {
+		case "empty":
+			c.servers = map[string]string{}
+		case "unreadable":
+			c.fail["server list"] = true
+		case "has-test-vm":
+			c.servers[c.uid()] = "test-vm"
+		case "show-fails-only-is-not-absent":
+			// the server list is fine and has agent-vm only: absent mode is legitimate here,
+			// but the post-restore Prune (which needs `server show`) must still delete nothing
+			c.fail["server show test-vm"] = true
+			n := len(c.vols)
+			res, err := o.Prune(context.Background())
+			if len(res.Deleted) != 0 || len(c.vols) != n || len(res.Warnings) == 0 {
+				t.Fatalf("post-restore Prune with failing server show: %+v %v", res, err)
+			}
+			continue
+		}
+		n := len(c.vols)
+		res, err := o.PrunePreRestore(context.Background())
+		if err == nil || len(res.Deleted) != 0 || len(c.vols) != n || c.deleted("volume delete") || c.deleted("attachment delete") {
+			t.Fatalf("%s: %+v %v", mode, res, err)
+		}
+	}
+	// a server whose name merely contains the VM name is not the test VM
+	c, o, _, _ := absentScene(t)
+	c.servers[c.uid()] = "test-vm-2"
+	if _, err := o.PrunePreRestore(context.Background()); err != nil {
+		t.Fatalf("test-vm-2 treated as the test VM: %v", err)
+	}
+}
+
+func TestPrunePreRestoreDefaultOff(t *testing.T) {
+	c, o, _, _ := absentScene(t)
+	c.addVol("test-vm-root-20261101-100000-bbbb", "available")
+	o.PruneRestoreVolumes = false
+	n := len(c.log)
+	res, err := o.PrunePreRestore(context.Background())
+	if err != nil || len(res.Deleted) != 0 || len(c.log) != n {
+		t.Fatalf("%+v %v", res, err)
+	}
+}
+
+type prePrunerCloud struct {
+	prunerCloud
+	preErr   error
+	prePanic bool
+	preRes   PruneResult
+	order    []string
+}
+
+func (p *prePrunerCloud) DeleteServer(ctx context.Context, s string) error {
+	p.order = append(p.order, "DeleteServer")
+	return p.fakeCloud.DeleteServer(ctx, s)
+}
+func (p *prePrunerCloud) CreateVolumeFromSnapshot(ctx context.Context, snap, v string) error {
+	p.order = append(p.order, "CreateVolume")
+	return p.fakeCloud.CreateVolumeFromSnapshot(ctx, snap, v)
+}
+func (p *prePrunerCloud) PrunePreRestore(context.Context) (PruneResult, error) {
+	p.order = append(p.order, "PrePrune")
+	if p.prePanic {
+		panic("pre oops")
+	}
+	return p.preRes, p.preErr
+}
+
+func TestFailingPrePruneNeverFailsRestore(t *testing.T) {
+	now := time.Date(2026, 11, 6, 10, 0, 0, 0, time.UTC)
+	c := &prePrunerCloud{preErr: errors.New("pre boom"), preRes: PruneResult{Deleted: []string{"a 1"}, Skipped: []string{"b 2: x"}, Warnings: []string{"w"}}}
+	c.res = PruneResult{Deleted: []string{"c 3"}}
+	v := newTestVM(c, &now)
+	v.PruneRestoreVolumes = true
+	if err := v.Restore(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(c.order, ","); got != "DeleteServer,PrePrune,CreateVolume" {
+		t.Fatalf("order %s", got)
+	}
+	rec, _ := v.LastRestore()
+	if rec.Err != "" || strings.Join(rec.Pruned, "|") != "a 1|c 3" || len(rec.PruneSkipped) != 1 ||
+		!strings.Contains(strings.Join(rec.PruneWarnings, "|"), "pre boom") || !strings.Contains(strings.Join(rec.PruneWarnings, "|"), "w") {
+		t.Fatalf("%+v", rec)
+	}
+	c.prePanic = true
+	now = now.Add(time.Hour)
+	if err := v.Restore(context.Background()); err != nil {
+		t.Fatalf("panicking pre-prune failed the restore: %v", err)
+	}
+	if rec, _ := v.LastRestore(); !strings.Contains(strings.Join(rec.PruneWarnings, "|"), "panicked") {
+		t.Fatalf("%+v", rec)
+	}
+	// the pre-prune result is kept even when the restore itself fails afterwards
+	c.failAt = "CreateVolumeFromSnapshot"
+	c.prePanic = false
+	now = now.Add(time.Hour)
+	if v.Restore(context.Background()) == nil {
+		t.Fatal("expected failure")
+	}
+	if rec, _ := v.LastRestore(); rec.Err == "" || len(rec.Pruned) != 1 {
+		t.Fatalf("%+v", rec)
+	}
+	// option off: no pre-prune
+	c.order, c.failAt = nil, ""
+	v.PruneRestoreVolumes = false
+	now = now.Add(time.Hour)
+	if err := v.Restore(context.Background()); err != nil || strings.Contains(strings.Join(c.order, ","), "PrePrune") {
+		t.Fatalf("%v %v", err, c.order)
+	}
+}
+
+// Cinder's quota counts volumes and snapshots: with the quota full, the new
+// volume can only be created if the old ones were pruned first.
+func TestQuotaFullRestoreSucceedsOnlyBecausePrunedFirst(t *testing.T) {
+	c := newSCloud()
+	golden := c.addVol("test-vm-root", "available")
+	c.snaps[c.uid()] = golden.id
+	prev := c.addVol("test-vm-root-20261105-100000-aaaa", "in-use")
+	sid := c.uid()
+	c.servers[sid] = "test-vm"
+	c.servers[c.uid()] = "agent-vm"
+	c.bootOf["test-vm"] = prev.id
+	prev.atts = [][2]string{{c.uid(), sid}}
+	old := c.addVol("test-vm-root-20261101-100000-bbbb", "available")
+	stale(c, old)
+	c.quota = len(c.vols) + len(c.snaps) // full
+	o := &OpenStackCLI{Prefix: []string{"os"}, Run: c.run, PollInterval: time.Millisecond, Probe: func(context.Context) error { return nil }}
+	now := time.Date(2026, 11, 6, 10, 0, 0, 0, time.UTC)
+	v := newTestVM(o, &now)
+	if err := v.Restore(context.Background()); err == nil || !strings.Contains(err.Error(), "413") {
+		t.Fatalf("without prune the restore should hit the quota: %v", err)
+	}
+	// reset: same cloud, server gone after the failed attempt; recreate the scene and enable prune
+	c2 := newSCloud()
+	g2 := c2.addVol("test-vm-root", "available")
+	c2.snaps[c2.uid()] = g2.id
+	p2 := c2.addVol("test-vm-root-20261105-100000-aaaa", "in-use")
+	s2 := c2.uid()
+	c2.servers[s2] = "test-vm"
+	c2.servers[c2.uid()] = "agent-vm"
+	c2.bootOf["test-vm"] = p2.id
+	p2.atts = [][2]string{{c2.uid(), s2}}
+	o2c := c2.addVol("test-vm-root-20261101-100000-bbbb", "available")
+	stale(c2, o2c)
+	c2.quota = len(c2.vols) + len(c2.snaps)
+	o2 := &OpenStackCLI{Prefix: []string{"os"}, Run: c2.run, PruneRestoreVolumes: true, PollInterval: time.Millisecond, Probe: func(context.Context) error { return nil }}
+	v2 := newTestVM(o2, &now)
+	v2.PruneRestoreVolumes = true
+	if err := v2.Restore(context.Background()); err != nil {
+		t.Fatalf("restore with pre-prune: %v", err)
+	}
+	rec, _ := v2.LastRestore()
+	if len(rec.Pruned) < 2 || c2.vols[g2.id] == nil || len(rec.PruneWarnings) != 0 {
+		t.Fatalf("%+v left %s", rec, c2.names())
+	}
+}
+
+func TestAllowListStillRefusesOtherVerbsWithServerListNames(t *testing.T) {
+	_, o, _, _ := scene(t)
+	for _, a := range [][]string{
+		{"server", "list", "--all-projects", "-f", "value", "-c", "Name"},
+		{"server", "list", "-f", "value", "-c", "ID", "-c", "Name"},
+		{"server", "list", "--all-projects", "-f", "value", "-c", "ID", "-c", "Name", "--long"},
+		{"server", "delete", "test-vm"},
+		{"volume", "delete", "00000000-0000-4000-8000-00000000abcd"},
+	} {
+		if _, err := o.run(context.Background(), a...); err == nil {
+			t.Errorf("%v was run", a)
 		}
 	}
 }

@@ -37,7 +37,10 @@ type RestoreRecord struct {
 	Err      string // empty on success
 	// Pruned lists old restore volumes deleted after this restore; a
 	// PruneWarning is a tolerated prune problem (never a restore failure).
+	// It also holds what the pre-restore prune deleted, and PruneSkipped
+	// the volumes either prune left alone.
 	Pruned        []string
+	PruneSkipped  []string
 	PruneWarnings []string
 }
 
@@ -58,9 +61,11 @@ type TestVM struct {
 	// digits from crypto/rand); tests replace it.
 	Suffix func() string
 	// PruneRestoreVolumes (default false) deletes the volumes of earlier
-	// restores after a successful restore, through Cloud if it is a Pruner,
-	// under the guards in the package doc. A failure only adds a warning to
-	// the restore record.
+	// restores, through Cloud if it is a Pruner / PreRestorePruner, under the
+	// guards in the package doc: once after DeleteServer and before the new
+	// volume is created (the quota counts snapshots too, so a full quota would
+	// otherwise fail the create), and once after a successful restore. A
+	// failure only adds a warning to the restore record.
 	PruneRestoreVolumes bool
 
 	mu       sync.Mutex
@@ -99,8 +104,9 @@ func (t *TestVM) now() time.Time {
 // Restore recreates the VM from its clean snapshot (see infra/snapshot.sh):
 // delete the server (volume kept), create a new volume from the snapshot, boot
 // the server from it, wait until ssh answers, all within RestoreTimeout. Any
-// failure marks the VM unusable until a later Restore succeeds. The old volume
-// is deleted only when PruneRestoreVolumes is set (after success, guarded);
+// failure marks the VM unusable until a later Restore succeeds. Old restore volumes
+// are deleted only when PruneRestoreVolumes is set (guarded, before the new
+// volume is created and again after success);
 // otherwise PruneCandidates lists it for manual deletion.
 func (t *TestVM) Restore(ctx context.Context) error {
 	t.mu.Lock()
@@ -129,8 +135,9 @@ func (t *TestVM) Restore(ctx context.Context) error {
 	volume := fmt.Sprintf("%s-root-%s-%s", t.name(), start.Format("20060102-150405"), t.suffix())
 	rctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	err := t.restore(rctx, snap, volume)
-	rec := RestoreRecord{At: start, Duration: t.now().Sub(start), Volume: volume}
+	var rec RestoreRecord
+	err := t.restore(rctx, snap, volume, &rec)
+	rec.At, rec.Duration, rec.Volume = start, t.now().Sub(start), volume
 	rec.Slow = rec.Duration > slow
 	if err != nil {
 		rec.Err = err.Error()
@@ -163,16 +170,44 @@ func (t *TestVM) prune(ctx context.Context, rec *RestoreRecord) {
 		}
 	}()
 	res, err := p.Prune(pctx)
-	rec.Pruned = res.Deleted
+	rec.merge(res, err, "prune")
+}
+
+func (rec *RestoreRecord) merge(res PruneResult, err error, what string) {
+	rec.Pruned = append(rec.Pruned, res.Deleted...)
+	rec.PruneSkipped = append(rec.PruneSkipped, res.Skipped...)
 	rec.PruneWarnings = append(rec.PruneWarnings, res.Warnings...)
 	if err != nil {
-		rec.PruneWarnings = append(rec.PruneWarnings, "prune failed: "+err.Error())
+		rec.PruneWarnings = append(rec.PruneWarnings, what+" failed: "+err.Error())
 	}
 }
 
-func (t *TestVM) restore(ctx context.Context, snap, volume string) error {
+// prePrune runs between DeleteServer and CreateVolumeFromSnapshot, when the
+// server is absent on purpose, with its own 5-minute bound. Best effort: it
+// recovers panics and can never fail the restore. A cloud that cannot
+// pre-prune is skipped silently (the post-restore prune warns about it).
+func (t *TestVM) prePrune(ctx context.Context, rec *RestoreRecord) {
+	p, ok := t.Cloud.(PreRestorePruner)
+	if !ok {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			rec.PruneWarnings = append(rec.PruneWarnings, fmt.Sprintf("pre-restore prune panicked: %v", r))
+		}
+	}()
+	pctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	res, err := p.PrunePreRestore(pctx)
+	rec.merge(res, err, "pre-restore prune")
+}
+
+func (t *TestVM) restore(ctx context.Context, snap, volume string, rec *RestoreRecord) error {
 	if err := t.Cloud.DeleteServer(ctx, t.name()); err != nil {
 		return fmt.Errorf("delete server: %w", err)
+	}
+	if t.PruneRestoreVolumes {
+		t.prePrune(ctx, rec)
 	}
 	t.created = append(t.created, volume) // recorded first: a half-made volume is a prune candidate too
 	if err := t.Cloud.CreateVolumeFromSnapshot(ctx, snap, volume); err != nil {

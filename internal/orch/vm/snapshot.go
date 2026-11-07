@@ -17,7 +17,7 @@ import (
 // Every command is checked against a strict allow-list of verbs, limited to
 // the test VM's own resources by name, before it runs. The only delete verbs
 // besides `server delete` are `volume delete <id>` and `volume attachment
-// delete <id>`, and they run only inside Prune (see prune.go), only for ids
+// delete <id>`, and they run only inside Prune or PrunePreRestore (see prune.go), only for ids
 // that Prune re-read and verified a moment before, and only when
 // PruneRestoreVolumes is set (default off).
 //
@@ -115,6 +115,7 @@ func (o *OpenStackCLI) allowed(args []string) error {
 	// read-only verbs for Prune
 	case is("server", "show", vm, "-f", "json", "-c", "volumes_attached"):
 	case is("server", "list", "--all-projects", "-f", "value", "-c", "ID"):
+	case is("server", "list", "--all-projects", "-f", "value", "-c", "ID", "-c", "Name"): // pre-restore prune
 	case is("volume", "snapshot", "list", "--all-projects", "-f", "value", "-c", "ID"):
 	case is("volume", "snapshot", "show", "*", "-f", "value", "-c", "volume_id") && uuidRE.MatchString(args[3]):
 	case is("volume", "show", "*", "-f", "json", "-c", "name", "-c", "status", "-c", "attachments") && uuidRE.MatchString(args[2]):
