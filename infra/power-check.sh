@@ -2,6 +2,8 @@
 # power-check.sh : after powering the home servers back on, verify that everything came back by itself.
 # Read-only. Exit 0 if no FAIL (WARN is allowed), 1 otherwise.
 K=${AIGATE_ADMIN_KEY:-$HOME/.ssh/aigate_admin_ed25519}
+# orch-vm only accepts ssh from fixed LAN addresses (the Mac gets a new DHCP address now and then), so go through the homeserver (allowed source)
+orchssh() { ssh -i "$K" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10 -o ProxyCommand="ssh -o BatchMode=yes openstack-host -W %h:%p" ubuntu@192.168.1.200 "$@"; }
 fail=0; ok() { echo "ok    $*"; }; warn() { echo "WARN  $*"; }; bad() { echo "FAIL  $*"; fail=1; }
 OSC='openstack --os-cloud exporter-internal'
 echo "== homeserver (openstack-host)"
@@ -16,8 +18,8 @@ if ssh -o BatchMode=yes -o ConnectTimeout=8 openstack-host true 2>/dev/null; the
   ssh openstack-host "$OSC compute service list -f value -c Binary -c State" | grep -qv up && bad "a compute service is down" || ok "nova services up"
 else bad "homeserver not reachable"; fi
 echo "== orch-vm"
-if ssh -i "$K" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=8 ubuntu@192.168.1.200 true 2>/dev/null; then
-  ssh -i "$K" -o IdentitiesOnly=yes -o BatchMode=yes ubuntu@192.168.1.200 'systemctl is-active orchd >/dev/null && echo "ok    orchd service active ($(systemctl show orchd -p NRestarts --value) restarts)" || echo "FAIL  orchd service not active"; sudo -u orch /home/orch/bin/orch --socket /home/orch/orchd/run/orchd.sock list 2>&1 | awk "NR>1{print \$2}" | sort | uniq -c | tr "\n" " " | sed "s/^/ok    tasks in DB: /"; echo; sudo nft list ruleset 2>/dev/null | grep -c "policy drop" | sed "s/^/ok    nft default-drop chains loaded: /"' | tee /dev/stderr | grep -q '^FAIL' && fail=1
+if orchssh true 2>/dev/null; then
+  orchssh 'systemctl is-active orchd >/dev/null && echo "ok    orchd service active ($(systemctl show orchd -p NRestarts --value) restarts)" || echo "FAIL  orchd service not active"; sudo -u orch /home/orch/bin/orch --socket /home/orch/orchd/run/orchd.sock list 2>&1 | awk "NR>1{print \$2}" | sort | uniq -c | tr "\n" " " | sed "s/^/ok    tasks in DB: /"; echo; sudo nft list ruleset 2>/dev/null | grep -c "policy drop" | sed "s/^/ok    nft default-drop chains loaded: /"' | tee /dev/stderr | grep -q '^FAIL' && fail=1
 else bad "orch-vm not reachable"; fi
 echo "== gpu-pc (gpu-server)"
 if ssh -o BatchMode=yes -o ConnectTimeout=8 gpu-server true 2>/dev/null; then
