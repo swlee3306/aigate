@@ -54,10 +54,8 @@ type RestoreRecord struct {
 // for an earlier background prune), delete_server, quota_ok (the quota had
 // room, so the pre-restore prune was skipped) or quota_check (it had not, or
 // could not be read) followed by pre_prune, create_volume, create_server,
-// wait_ssh, and post_prune (synchronous), or prune_deferred (duration ~0: the
-// background prune was only marked pending, it starts when the gate has
-// finished, see TestVM.GateFinished) and later post_prune_bg (added to the
-// record when that prune finishes).
+// wait_ssh, and post_prune (synchronous) or post_prune_bg (added to the
+// record when the background prune finishes).
 type Phase struct {
 	Name string
 	Dur  time.Duration
@@ -85,9 +83,7 @@ type TestVM struct {
 	// guards in the package doc: after DeleteServer and before the new volume
 	// is created (the quota counts snapshots too, so a full quota would
 	// otherwise fail the create), or, when the QuotaGate shows room, after the
-	// restore in the background, started by GateFinished (not at restore
-	// time, so it does not compete with the gate for CPU). A failure only adds
-	// a warning to the record.
+	// restore in the background. A failure only adds a warning to the record.
 	PruneRestoreVolumes bool
 	// OnPrune, when set, receives the result of every background prune (the
 	// one that follows a restore whose pre-prune the quota gate skipped), from
@@ -101,8 +97,7 @@ type TestVM struct {
 
 	pruneMu ctxMutex // at most one prune of any kind at a time
 	bgMu    sync.Mutex
-	bgDone  chan struct{} // closed when the latest started background prune has finished and reported
-	pending *pendingPrune // a background prune marked at restore time, not started yet (under bgMu)
+	bgDone  chan struct{} // closed when the latest background prune has finished and reported
 
 	mu       sync.Mutex
 	broken   error // set by a failed restore, cleared by a successful one
@@ -110,13 +105,6 @@ type TestVM struct {
 	created  []string
 	active   string
 	restores int
-}
-
-// pendingPrune identifies the restore record a deferred background prune
-// merges its result into.
-type pendingPrune struct {
-	idx    int
-	volume string
 }
 
 func (t *TestVM) name() string {
@@ -151,15 +139,8 @@ func (t *TestVM) now() time.Time {
 // are deleted only when PruneRestoreVolumes is set (guarded): before the new
 // volume is created, unless the quota gate shows room for this restore and the
 // next, in which case after success in a background goroutine that the next
-// Restore waits for. Otherwise PruneCandidates lists them for manual deletion. That background
-// prune is only marked pending by Restore (phase prune_deferred) and started by
-// GateFinished; if it was never started, the next Restore starts it itself
-// before deleting the server.
+// Restore waits for. Otherwise PruneCandidates lists them for manual deletion.
 func (t *TestVM) Restore(ctx context.Context) error {
-	// Safety net: a pending prune whose GateFinished never came (the caller
-	// crashed) is started now, before this restore deletes the server, and
-	// waited for below like any in-flight prune.
-	t.startPending()
 	// Before the lock: the background prune needs t.mu to merge its result.
 	wait := t.waitBackgroundPrune(ctx)
 	t.mu.Lock()
@@ -213,7 +194,6 @@ func (t *TestVM) Restore(ctx context.Context) error {
 			// Nothing was pruned before the restore: do it now, off the critical path.
 			if _, ok := t.Cloud.(Pruner); ok {
 				background = true
-				rec.Phases = append(rec.Phases, Phase{Name: "prune_deferred"})
 			} else {
 				rec.PruneWarnings = append(rec.PruneWarnings, "prune requested but the cloud cannot prune")
 			}
@@ -225,29 +205,9 @@ func (t *TestVM) Restore(ctx context.Context) error {
 	}
 	t.history = append(t.history, rec)
 	if background {
-		t.bgMu.Lock()
-		t.pending = &pendingPrune{idx: len(t.history) - 1, volume: volume}
-		t.bgMu.Unlock()
+		t.startBackgroundPrune(len(t.history)-1, volume)
 	}
 	return nil
-}
-
-// GateFinished starts the background prune that the last Restore left
-// pending. The orchestrator calls it once the gate is done (on every exit
-// path), so the prune's CPU-bound CLI processes do not compete with the gate.
-// With nothing pending (prune off, quota tight, failed restore, already
-// started) it does nothing; calling it twice starts the prune once.
-func (t *TestVM) GateFinished() { t.startPending() }
-
-// startPending starts the pending background prune, if any, exactly once.
-func (t *TestVM) startPending() {
-	t.bgMu.Lock()
-	p := t.pending
-	t.pending = nil
-	t.bgMu.Unlock()
-	if p != nil {
-		t.startBackgroundPrune(p.idx, p.volume)
-	}
 }
 
 // ctxMutex is a mutex whose waiters give up with their context.
@@ -302,10 +262,10 @@ func (t *TestVM) waitBackgroundPrune(ctx context.Context) *Phase {
 	return ph
 }
 
-// startBackgroundPrune prunes in its own goroutine and context (not the
-// task's, bounded to 5 minutes), serialized with every other prune. It merges
-// the outcome into history[idx] (checked by volume name), reports it through
-// OnPrune and only then closes bgDone. It takes no lock but bgMu.
+// startBackgroundPrune prunes after a restore in its own goroutine and context
+// (not the task's, bounded to 5 minutes), serialized with every other prune.
+// It merges the outcome into history[idx] (checked by volume name), reports it
+// through OnPrune and only then closes bgDone. Called with t.mu held.
 func (t *TestVM) startBackgroundPrune(idx int, volume string) {
 	p := t.Cloud.(Pruner)
 	done := make(chan struct{})
