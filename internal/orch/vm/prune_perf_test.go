@@ -136,6 +136,7 @@ func TestQuotaOKSkipsPrePruneAndPrunesInBackground(t *testing.T) {
 	if err := v.Restore(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	v.GateFinished() // the deferred prune starts only now
 	var res PruneResult
 	select {
 	case res = <-ch:
@@ -337,6 +338,7 @@ func TestRestoreReturnsBeforeSlowBackgroundPruneCompletes(t *testing.T) {
 	if v.Usable() != nil {
 		t.Fatal("VM not usable after restore")
 	}
+	v.GateFinished()
 	<-c.started
 	close(c.block)
 	if err := recv(t, done, "OnPrune"); err != nil {
@@ -357,6 +359,7 @@ func TestNextRestoreWaitsForBackgroundPrune(t *testing.T) {
 	if err := v.Restore(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	v.GateFinished()
 	<-c.started
 	second := make(chan error, 1)
 	go func() { second <- v.Restore(context.Background()) }()
@@ -376,6 +379,7 @@ func TestNextRestoreWaitsForBackgroundPrune(t *testing.T) {
 	if err := <-second; err != nil {
 		t.Fatal(err)
 	}
+	v.GateFinished() // the second restore's own prune
 	recv(t, done, "first OnPrune")
 	// the second restore's own background prune (block is closed) also finishes
 	recv(t, done, "second OnPrune")
@@ -391,6 +395,7 @@ func TestWaitTimeoutProceedsWithWarningAndPrunesStillNeverOverlap(t *testing.T) 
 	if err := v.Restore(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	v.GateFinished()
 	<-c.started
 	c.mu.Lock()
 	c.fits = false // the second restore must pre-prune, which needs the same lock
@@ -424,6 +429,7 @@ func TestBackgroundPrunePanicDoesNotCrash(t *testing.T) {
 	if err := v.Restore(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	v.GateFinished()
 	err := recv(t, done, "OnPrune")
 	if err == nil || !strings.Contains(err.Error(), "panicked") {
 		t.Fatalf("err %v", err)
@@ -436,6 +442,7 @@ func TestBackgroundPrunePanicDoesNotCrash(t *testing.T) {
 	if err := v.Restore(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	v.GateFinished()
 	recv(t, done, "second OnPrune")
 }
 
@@ -447,6 +454,7 @@ func TestPanickingOnPruneCallbackDoesNotCrash(t *testing.T) {
 	if err := v.Restore(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	v.GateFinished()
 	<-called
 	if err := v.Restore(context.Background()); err != nil { // would block 2 min if done was never closed
 		t.Fatal(err)
@@ -460,6 +468,7 @@ func TestTaskContextCancelDoesNotCancelBackgroundPrune(t *testing.T) {
 	if err := v.Restore(ctx); err != nil {
 		t.Fatal(err)
 	}
+	v.GateFinished()
 	<-c.started
 	cancel()
 	time.Sleep(30 * time.Millisecond)
@@ -632,3 +641,145 @@ func TestPruneStateAnyParallelFailureAbortsAndDeletesNothing(t *testing.T) {
 }
 
 func goroutineCount() int { return runtime.NumGoroutine() }
+
+// ---- deferred start: the background prune waits for GateFinished ----
+
+func TestBackgroundPruneDoesNotStartBeforeGateFinished(t *testing.T) {
+	c := &bgCloud{fits: true, started: make(chan struct{}, 4)}
+	v, done := newBG(c)
+	if err := v.Restore(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rec, _ := v.LastRestore()
+	if !strings.HasSuffix(phaseNames(rec.Phases), "wait_ssh,prune_deferred") {
+		t.Fatalf("phases %s", phaseNames(rec.Phases))
+	}
+	for _, p := range rec.Phases {
+		if p.Name == "prune_deferred" && p.Dur != 0 {
+			t.Fatalf("prune_deferred took %v", p.Dur)
+		}
+	}
+	// Restore has returned: everything it would start has been started. A
+	// start would have sent on c.started (buffered) before touching the lock.
+	select {
+	case <-c.started:
+		t.Fatal("the prune started before GateFinished")
+	default:
+	}
+	c.mu.Lock()
+	n := c.prunes
+	c.mu.Unlock()
+	v.bgMu.Lock()
+	started := v.bgDone != nil // set synchronously by every start, so no timing involved
+	pending := v.pending != nil
+	v.bgMu.Unlock()
+	if n != 0 || len(done) != 0 || started || !pending {
+		t.Fatalf("prune ran early or is not pending: prunes %d started %v pending %v", n, started, pending)
+	}
+	v.GateFinished()
+	<-c.started
+	if err := recv(t, done, "OnPrune"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGateFinishedStartsThePruneExactlyOnce(t *testing.T) {
+	c := &bgCloud{fits: true, started: make(chan struct{}, 4)}
+	v, done := newBG(c)
+	if err := v.Restore(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	v.GateFinished()
+	v.GateFinished()
+	go v.GateFinished()
+	recv(t, done, "OnPrune")
+	// a second report would arrive on done; give a stray goroutine no chance
+	// to hide by asking the next restore to wait for everything in flight.
+	if err := v.Restore(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	n := c.prunes
+	c.mu.Unlock()
+	if n != 1 || len(done) != 0 {
+		t.Fatalf("prunes %d, extra reports %d", n, len(done))
+	}
+}
+
+func TestGateFinishedWithNothingPendingIsANoOp(t *testing.T) {
+	c := &bgCloud{fits: true}
+	v, done := newBG(c)
+	v.GateFinished() // before any restore
+	var zero TestVM
+	zero.GateFinished()
+	v.PruneRestoreVolumes = false
+	if err := v.Restore(context.Background()); err != nil { // prune off: nothing pending
+		t.Fatal(err)
+	}
+	v.GateFinished()
+	rec, _ := v.LastRestore()
+	if strings.Contains(phaseNames(rec.Phases), "prune_deferred") {
+		t.Fatalf("phases %s", phaseNames(rec.Phases))
+	}
+	if c.prunes != 0 || len(done) != 0 || v.bgDone != nil {
+		t.Fatal("GateFinished started something")
+	}
+}
+
+func TestQuotaTightPrunesBeforeAndGateFinishedDoesNothing(t *testing.T) {
+	c := &bgCloud{fits: false}
+	v, done := newBG(c)
+	if err := v.Restore(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	v.GateFinished()
+	rec, _ := v.LastRestore()
+	if strings.Contains(phaseNames(rec.Phases), "prune_deferred") || c.prunes != 0 || len(done) != 0 {
+		t.Fatalf("phases %s prunes %d", phaseNames(rec.Phases), c.prunes)
+	}
+}
+
+// If verify crashed before GateFinished, the next Restore starts the pending
+// prune itself, before it deletes the server, and waits for it.
+func TestNextRestoreStartsAPendingPruneThatNeverStarted(t *testing.T) {
+	c := &bgCloud{fits: true, block: make(chan struct{}), started: make(chan struct{}, 4)}
+	v, done := newBG(c)
+	if err := v.Restore(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// no GateFinished: the "crash"
+	second := make(chan error, 1)
+	go func() { second <- v.Restore(context.Background()) }()
+	<-c.started // the second restore started the prune
+	select {
+	case <-second:
+		t.Fatal("the restore finished while the prune it started is in flight")
+	default:
+	}
+	c.mu.Lock()
+	n := c.deletes
+	c.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("server deleted (%d) while the started prune was in flight", n)
+	}
+	close(c.block)
+	if err := <-second; err != nil {
+		t.Fatal(err)
+	}
+	if err := recv(t, done, "OnPrune"); err != nil {
+		t.Fatal(err)
+	}
+	rec := v.History()[0]
+	if !strings.Contains(phaseNames(rec.Phases), "post_prune_bg") {
+		t.Fatalf("first record has no prune result: %s", phaseNames(rec.Phases))
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.prunes != 1 || c.max != 1 {
+		t.Fatalf("prunes %d max concurrent %d", c.prunes, c.max)
+	}
+	// order: the prune ran before the second DeleteServer
+	if strings.Join(c.order, ",") != "DeleteServer,Prune,DeleteServer" {
+		t.Fatalf("order %v", c.order)
+	}
+}

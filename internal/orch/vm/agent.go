@@ -29,7 +29,10 @@
 // `quota show --usage`) whether gigabytes headroom >= 2 x the snapshot size
 // and volumes headroom >= 2. If so the pre-prune is skipped (phase quota_ok)
 // and the post-restore Prune runs in a background goroutine with its own
-// 5-minute context; the next Restore waits (PruneWait, default 2 min) for it
+// 5-minute context that is started only when the gate has finished
+// (GateFinished, phase prune_deferred), so it does not compete with the gate
+// for CPU on a 1-vCPU orch-vm; the next Restore starts a never-started one
+// itself and waits (PruneWait, default 2 min) for it
 // before deleting the server, and pruneMu keeps any two prunes from
 // overlapping. If the quota is tight or unreadable, the pre-prune runs as
 // before and no post-restore prune follows. TestVM.OnPrune reports background

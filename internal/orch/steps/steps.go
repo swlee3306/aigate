@@ -55,6 +55,14 @@ type restoreReporter interface {
 	LastRestore() (vm.RestoreRecord, bool)
 }
 
+// gateFinisher is optionally implemented by a TestDriver (*vm.TestVM does):
+// verify calls GateFinished once the gate is done, on every exit path after a
+// restore, so the background prune starts only then and does not compete with
+// the gate for CPU.
+type gateFinisher interface {
+	GateFinished()
+}
+
 // TestDriver is what the steps need from the test VM (*vm.TestVM).
 type TestDriver interface {
 	Restore(ctx context.Context) error
@@ -337,6 +345,11 @@ func (p *Provider) verify(ctx context.Context, t store.Task) (machine.Outcome, e
 		}
 		if ok {
 			restoreRec = &rec
+		}
+		// Right after a successful restore (so also when Executor fails, the
+		// gate errors or panics): start the deferred background prune.
+		if gf, isGF := p.cfg.Test.(gateFinisher); isGF {
+			defer gf.GateFinished()
 		}
 	}
 	ex, err := p.cfg.Test.Executor()
