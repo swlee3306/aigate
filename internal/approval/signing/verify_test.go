@@ -469,3 +469,31 @@ func TestWebAuthnSignerWithBadKey(t *testing.T) {
 		wantErr(t, Verify(Registry{Signers: []Signer{s}}, msg, sig, fixedOpts), ErrBadSignature)
 	}
 }
+
+// The wire form of a signature (API request bodies, CLI) is pinned: renaming a
+// field silently drops it on decode.
+func TestSignatureJSONShape(t *testing.T) {
+	ssh := Signature{Signer: "alice", Alg: TypeSSHEd25519, Sig: "S"}
+	b, err := json.Marshal(ssh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(b), `{"signer":"alice","alg":"ssh-ed25519","sig":"S"}`; got != want {
+		t.Fatalf("ssh shape\n got %s\nwant %s", got, want)
+	}
+	wa := Signature{Signer: "phone", Alg: TypeWebAuthnES256, Sig: "D",
+		WebAuthn: &WebAuthnData{AuthenticatorData: "A", ClientDataJSON: "C"}}
+	b, err = json.Marshal(wa)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"signer":"phone","alg":"webauthn-es256","sig":"D","webauthn":{"authenticator_data":"A","client_data_json":"C"}}`
+	if string(b) != want {
+		t.Fatalf("webauthn shape\n got %s\nwant %s", b, want)
+	}
+	var back Signature
+	if err := json.Unmarshal([]byte(want), &back); err != nil || back.WebAuthn == nil ||
+		back.WebAuthn.ClientDataJSON != "C" || back.Signer != "phone" || back.Sig != "D" {
+		t.Fatalf("round trip: %+v %v", back, err)
+	}
+}

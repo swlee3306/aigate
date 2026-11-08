@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -479,45 +480,86 @@ func TestGrantRefusedInSignedMode(t *testing.T) {
 
 func TestGrantSignedIdempotentAndConcurrent(t *testing.T) {
 	alice := newSSHSigner(t, "alice")
+	phone := newFakeAuthenticator(t)
 	p := useRegistry(t, nil)
-	s := newStore(t)
-	// A legacy entry for the triple is upgraded in place, not duplicated.
-	if err := s.Grant(tRepo, tBase, tHashA, t0); err != nil {
+	// A legacy entry for the triple is upgraded in place, not duplicated
+	// (checked on a separate store below).
+	legacy := newStore(t)
+	if err := legacy.Grant(tRepo, tBase, tHashA, t0); err != nil {
 		t.Fatal(err)
 	}
-	writeRegistry(t, p, []signing.Signer{alice.signer})
+	writeRegistry(t, p, []signing.Signer{alice.signer, phone.signer(t, "phone")})
 
-	msg := msgFor(tRepo, tBase, tHashA)
-	later := msg
-	later.Issued = tNow.Add(time.Minute)
-	sigs := []signing.Signature{alice.sign(t, msg), alice.sign(t, later)}
-	msgs := []signing.Message{msg, later}
+	// Concurrency: n writers grant n distinct triples while dup more writers
+	// grant the first triple again, all released together. Without the flock
+	// in update, read-modify-write races lose entries.
+	s := newStore(t)
+	const n, dup = 24, 6
+	hash := func(i int) string { return fmt.Sprintf("%016x", i+1) }
+	type job struct {
+		msg signing.Message
+		sig signing.Signature
+	}
+	var jobs []job
+	for i := 0; i < n; i++ {
+		m := msgFor(tRepo, tBase, hash(i))
+		jobs = append(jobs, job{m, phone.assert(t, "phone", m)})
+	}
+	for k := 0; k < dup; k++ {
+		m := msgFor(tRepo, tBase, hash(0))
+		m.Issued = tNow.Add(time.Duration(k+1) * time.Second) // a different signature each time
+		jobs = append(jobs, job{m, phone.assert(t, "phone", m)})
+	}
+	start := make(chan struct{})
 	var wg sync.WaitGroup
-	for i := 0; i < 2; i++ {
+	for _, j := range jobs {
 		wg.Add(1)
-		go func(i int) {
+		go func(j job) {
 			defer wg.Done()
-			if err := s.GrantSigned(msgs[i], sigs[i], tNow, verifyOpts); err != nil {
+			<-start
+			if err := s.GrantSigned(j.msg, j.sig, tNow, verifyOpts); err != nil {
 				t.Error(err)
 			}
-		}(i)
+		}(j)
 	}
+	close(start)
 	wg.Wait()
-	// Same triple again with a fresh signature: still one entry (keyed by the
-	// triple, never by the signature).
-	if err := s.GrantSigned(msg, alice.sign(t, msg), tNow, verifyOpts); err != nil {
-		t.Fatal(err)
-	}
 	f := readRaw(t, s)
-	if len(f.Approvals) != 1 {
-		t.Fatalf("want 1 entry, got %d: %+v", len(f.Approvals), f.Approvals)
+	if len(f.Approvals) != n {
+		t.Fatalf("want %d entries, got %d", n, len(f.Approvals))
 	}
-	if f.Approvals[0]["sig"] == "" || f.Approvals[0]["message"] == nil {
-		t.Fatalf("entry not signed: %+v", f.Approvals[0])
+	seen := map[string]int{}
+	for _, e := range f.Approvals {
+		seen[e["hash"].(string)]++
+		if e["sig"] == "" || e["message"] == nil {
+			t.Fatalf("entry not signed: %+v", e)
+		}
 	}
-	if !s.Valid(tRepo, tBase, tHashA) {
+	for i := 0; i < n; i++ {
+		if seen[hash(i)] != 1 {
+			t.Fatalf("triple %d appears %d times", i, seen[hash(i)])
+		}
+		if !s.Valid(tRepo, tBase, hash(i)) {
+			t.Fatalf("triple %d not valid", i)
+		}
+	}
+
+	// Legacy upgrade, then the same triple again with a fresh SSH signature:
+	// still one entry (keyed by the triple, never by the signature).
+	msg := msgFor(tRepo, tBase, tHashA)
+	for k := 0; k < 2; k++ {
+		if err := legacy.GrantSigned(msg, alice.sign(t, msg), tNow, verifyOpts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lf := readRaw(t, legacy)
+	if len(lf.Approvals) != 1 || lf.Approvals[0]["sig"] == "" || lf.Approvals[0]["message"] == nil {
+		t.Fatalf("legacy upgrade: %+v", lf.Approvals)
+	}
+	if !legacy.Valid(tRepo, tBase, tHashA) {
 		t.Fatal("must be valid")
 	}
+	s = legacy
 
 	// Freshness is enforced against the passed now, and errors are sentinels.
 	msgB := msgFor(tRepo, tBase, tHashB)
@@ -536,5 +578,28 @@ func TestGrantSignedIdempotentAndConcurrent(t *testing.T) {
 	}
 	if len(readRaw(t, s).Approvals) != 2 {
 		t.Fatal("want 2 entries")
+	}
+}
+
+func TestSignedModeAndNotSignedModeSentinel(t *testing.T) {
+	alice := newSSHSigner(t, "alice")
+	p := useRegistry(t, nil)
+	if signed, err := SignedMode(); signed || err != nil {
+		t.Fatalf("absent registry: signed=%v err=%v", signed, err)
+	}
+	s := newStore(t)
+	msg := msgFor(tRepo, tBase, tHashA)
+	if err := s.GrantSigned(msg, alice.sign(t, msg), tNow, verifyOpts); !errors.Is(err, ErrNotSignedMode) {
+		t.Fatalf("legacy GrantSigned: %v", err)
+	}
+	writeRegistry(t, p, []signing.Signer{alice.signer})
+	if signed, err := SignedMode(); !signed || err != nil {
+		t.Fatalf("registry present: signed=%v err=%v", signed, err)
+	}
+	if err := os.Chmod(p, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if signed, err := SignedMode(); !signed || !errors.Is(err, ErrRegistryUnavailable) {
+		t.Fatalf("loose registry must fail closed: signed=%v err=%v", signed, err)
 	}
 }

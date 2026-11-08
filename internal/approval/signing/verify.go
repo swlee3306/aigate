@@ -24,13 +24,18 @@ const defaultMaxAge = 5 * time.Minute
 // requests. Sig is an armored SSHSIG for ssh-ed25519, or the base64url (no
 // padding) DER ECDSA signature for webauthn-es256.
 type Signature struct {
-	Signer, Alg, Sig string
-	WebAuthn         *WebAuthnData
+	Signer   string        `json:"signer"`
+	Alg      string        `json:"alg"`
+	Sig      string        `json:"sig"`
+	WebAuthn *WebAuthnData `json:"webauthn,omitempty"`
 }
 
 // WebAuthnData holds the assertion's other signed parts, base64url without
 // padding.
-type WebAuthnData struct{ AuthenticatorData, ClientDataJSON string }
+type WebAuthnData struct {
+	AuthenticatorData string `json:"authenticator_data"`
+	ClientDataJSON    string `json:"client_data_json"`
+}
 
 // VerifyOptions controls the freshness check. WebAuthn RPID and Origin are
 // not options: they come from the signer entry (R8).

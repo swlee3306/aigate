@@ -29,6 +29,10 @@ var ErrSignatureRequired = errors.New("서명 필수 모드에서는 서명된 �
 // wrapped detail to users (CF1).
 var ErrRegistryUnavailable = errors.New("서명자 목록을 신뢰할 수 없어 승인을 처리할 수 없습니다")
 
+// ErrNotSignedMode is returned by GrantSigned when no signers registry exists
+// (legacy mode): signed approvals cannot be verified there.
+var ErrNotSignedMode = errors.New("서명자 목록이 없어 서명 승인을 검증할 수 없습니다(서명 필수 모드가 아님)")
+
 const fileVersion = 1
 
 // isTerminal is a seam so the positive TTY path is testable.
@@ -93,6 +97,14 @@ func registryMode() (reg signing.Registry, signed bool, err error) {
 		return signing.Registry{}, true, fmt.Errorf("%w: %w", ErrRegistryUnavailable, err)
 	}
 	return reg, true, nil
+}
+
+// SignedMode reports whether signed-only mode is on. signed is false only when
+// the registry is absent; a registry that cannot be trusted reports signed ==
+// true with an error wrapping ErrRegistryUnavailable (fail closed).
+func SignedMode() (signed bool, err error) {
+	_, signed, err = registryMode()
+	return signed, err
 }
 
 type fileData struct {
@@ -192,7 +204,7 @@ func (s Store) GrantSigned(msg signing.Message, sig signing.Signature, now time.
 		return err
 	}
 	if !signed {
-		return errors.New("approval: 서명자 목록이 없어 서명 승인을 검증할 수 없습니다")
+		return ErrNotSignedMode
 	}
 	o.Now, o.SkipFreshness = now, false
 	if err := signing.Verify(reg, msg, sig, o); err != nil {
