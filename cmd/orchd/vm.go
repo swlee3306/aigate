@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -168,7 +169,7 @@ func (v *vmFlags) provider(st *store.Store, dbPath string) (api.StepProvider, er
 	if _, err := remote.NewSSH(sshCfg); err != nil { // validates host, user, paths early
 		return nil, fmt.Errorf("test VM: %w", err)
 	}
-	cloud := &vm.OpenStackCLI{Prefix: strings.Fields(v.CloudCmd), Probe: tcpProbe(v.TestHost), Snapshot: v.TestSnapshot,
+	cloud := &vm.OpenStackCLI{Prefix: strings.Fields(v.CloudCmd), Probe: sshBannerProbe(v.TestHost), Snapshot: v.TestSnapshot,
 		PruneRestoreVolumes: v.PruneRestoreVolumes, MaxPrune: v.PruneMax}
 	test := &vm.TestVM{Cloud: cloud, SSH: sshCfg, Snapshot: v.TestSnapshot, PruneRestoreVolumes: v.PruneRestoreVolumes,
 		OnPrune: pruneLogger(os.Stderr)}
@@ -225,20 +226,44 @@ func pruneLogger(w io.Writer) func(vm.PruneResult, error) {
 	}
 }
 
-// tcpProbe checks that something answers on the ssh port. It deliberately
-// does not authenticate: the executor does that on first use.
-func tcpProbe(host string) func(ctx context.Context) error {
+// sshBannerProbe checks that sshd answers on the ssh port WITH its protocol
+// banner. A bare TCP connect is not enough: right after a restore the port can
+// accept connections before sshd sends its banner, and the executor's first ssh
+// then fails with "Connection timed out during banner exchange" (seen live:
+// task 2, three restores in a row). It still does not authenticate and does
+// not check host keys: the executor does that on first use.
+func sshBannerProbe(host string) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
 		h := host
 		if !strings.Contains(h, ":") || strings.Count(h, ":") > 1 {
 			h = net.JoinHostPort(h, "22")
 		}
-		c, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "tcp", h)
-		if err != nil {
-			return err
-		}
-		return c.Close()
+		return probeBanner(ctx, h, 5*time.Second, 5*time.Second)
 	}
+}
+
+// probeBanner dials addr and requires the first line to start with "SSH-".
+func probeBanner(ctx context.Context, addr string, dialTimeout, readTimeout time.Duration) error {
+	c, err := (&net.Dialer{Timeout: dialTimeout}).DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	deadline := time.Now().Add(readTimeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	if err := c.SetReadDeadline(deadline); err != nil {
+		return err
+	}
+	line, err := bufio.NewReaderSize(io.LimitReader(c, 255), 256).ReadString('\n')
+	if err != nil && line == "" {
+		return fmt.Errorf("no ssh banner from %s: %w", addr, err)
+	}
+	if !strings.HasPrefix(line, "SSH-") {
+		return fmt.Errorf("%s answers but not with an ssh banner", addr)
+	}
+	return nil
 }
 
 func splitList(s string) []string {
