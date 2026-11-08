@@ -360,7 +360,13 @@ func approveSigned(ctx context.Context, c *client, id string, d api.ApprovalDeta
 	default:
 		return refuseSigned(stderr, "알 수 없는 종류 %q 입니다.", d.Kind)
 	}
-	fmt.Fprintf(stdout, "hash: %s\n무엇을 허용하나요: %s\n", d.Hash, textsafe.Escape(d.Meaning))
+	// For a publish entry the verified line is the action derived above; the
+	// server's meaning is shown only as its unverified description.
+	meaningLabel := "무엇을 허용하나요"
+	if d.Kind == store.KindPublishOutsideAllowlist {
+		meaningLabel = "서버 설명(검증 안 됨)"
+	}
+	fmt.Fprintf(stdout, "hash: %s\n%s: %s\n", d.Hash, meaningLabel, textsafe.Escape(d.Meaning))
 
 	signer := so.Signer
 	if signer == "" {

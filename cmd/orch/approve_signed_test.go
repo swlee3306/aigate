@@ -176,7 +176,7 @@ func TestApproveSignedFlow(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("approve %d out %q err %q", code, out, errS)
 		}
-		for _, want := range []string{"BEGIN HASHED DIFF", "+line2", "hash: " + d.Hash, d.Meaning, "aigate-approval-v1", "mac", "verifying", tRepoPath} {
+		for _, want := range []string{"BEGIN HASHED DIFF", "+line2", "hash: " + d.Hash, "무엇을 허용하나요: " + d.Meaning, "aigate-approval-v1", "mac", "verifying", tRepoPath} {
 			if !strings.Contains(out, want) {
 				t.Errorf("output lacks %q:\n%s", want, out)
 			}
@@ -221,6 +221,11 @@ func TestApproveSignedFlow(t *testing.T) {
 		}
 		if !strings.Contains(out, d.Meaning) || !strings.Contains(out, d.Hash) || !strings.Contains(out, "행위: "+publish.KindPushBranch) {
 			t.Fatalf("meaning/hash not shown:\n%s", out)
+		}
+		// Task 15 minor: the server's meaning is labelled unverified for a
+		// publish entry (the derived action above is the verified line).
+		if !strings.Contains(out, "서버 설명(검증 안 됨): "+d.Meaning) || strings.Contains(out, "무엇을 허용하나요") {
+			t.Fatalf("publish meaning not labelled as unverified:\n%s", out)
 		}
 		if f.count() != 1 || s.grantCount() != 1 || s.grants[0]["signer"] != "backup" {
 			t.Fatalf("signed %d grants %v", f.count(), s.grants)
