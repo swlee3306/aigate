@@ -9,12 +9,16 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"aigate/internal/approval"
 	"aigate/internal/approval/signing"
 	"aigate/internal/gate"
 	"aigate/internal/ledger"
+	"aigate/internal/orch/approvals"
+	"aigate/internal/orch/publish"
+	"aigate/internal/orch/steps"
 	"aigate/internal/orch/store"
 )
 
@@ -76,35 +80,83 @@ func grantErr(err error) *httpError {
 // request's principal ("session" or "token").
 func viaOf(*http.Request) string { return "socket" }
 
+// grantable is what checkCurrent found current: the prepared diff for
+// protected_modified, or the publish action whose hash the entry binds.
+type grantable struct {
+	diff   *gate.Protected
+	action string
+}
+
+// publishAction returns the publish action whose hash (approvals.PublishHash
+// of this task and head) equals the entry's, trying the real action kinds and
+// the policy-change pseudo action for the policy in force (the same derivation
+// as `orch approve`). "" means no known action matches.
+func publishAction(a store.Approval, t store.Task, policyHash func() string) string {
+	kinds := []string{publish.KindPushBranch, publish.KindDraftPR, publish.KindNotify}
+	if policyHash != nil {
+		if ph := policyHash(); ph != "" {
+			kinds = append(kinds, steps.PolicyChangeKind(ph))
+		}
+	}
+	for _, k := range kinds {
+		if approvals.PublishHash(t.ID, t.HeadSHA, k) == a.Hash {
+			return k
+		}
+	}
+	return ""
+}
+
 // checkCurrent refuses an entry that cannot be granted now: destructive,
-// not pending, a task that no longer waits, or a base/head/diff hash that is
-// not the task's current one. For protected_modified it returns the prepared
-// diff (nil for other kinds).
-func checkCurrent(a store.Approval, t store.Task) (*gate.Protected, *httpError) {
+// not pending, a task that no longer waits, or a hash that is not current for
+// the task (base/head changed, a different diff hash, or a publish hash that
+// no known action of this task and head produces).
+func checkCurrent(a store.Approval, t store.Task, policyHash func() string) (grantable, *httpError) {
 	switch {
 	case a.Kind == store.KindDestructiveBlocked:
-		return nil, errDestructive
+		return grantable{}, errDestructive
 	case a.Status != store.ApprovalPending:
-		return nil, errEntryNotPend
+		return grantable{}, errEntryNotPend
 	case t.State != store.StateNeedsApproval:
-		return nil, errTaskNotWaiting
+		return grantable{}, errTaskNotWaiting
 	case a.Head == "" || t.Base != a.Base || t.HeadSHA != a.Head:
-		return nil, errHashChanged
+		return grantable{}, errHashChanged
 	}
-	if a.Kind != store.KindProtectedModified {
-		// publish_outside_allowlist: the hash is a function of (task, head,
-		// action), so an unchanged head keeps it current.
-		return nil, nil
+	switch a.Kind {
+	case store.KindPublishOutsideAllowlist:
+		action := publishAction(a, t, policyHash)
+		if action == "" {
+			return grantable{}, errHashChanged
+		}
+		return grantable{action: action}, nil
+	case store.KindProtectedModified:
+	default:
+		return grantable{}, errHashChanged
 	}
 	p, err := gate.Prepare(gate.Options{Repo: t.Repo, Base: t.Base, Head: t.HeadSHA})
 	if err != nil {
 		log.Printf("orchd: approval %d: cannot rebuild diff: %v", a.ID, err)
-		return nil, errHashChanged
+		return grantable{}, errHashChanged
 	}
 	if p.Base != a.Base || p.Head != a.Head || p.Diff.Hash != a.Hash {
-		return nil, errHashChanged
+		return grantable{}, errHashChanged
 	}
-	return &p, nil
+	return grantable{diff: &p}, nil
+}
+
+// actionText names a publish action for the meaning text.
+func actionText(action string) string {
+	switch action {
+	case publish.KindPushBranch:
+		return "작업 브랜치를 원격 저장소로 push(push_branch)"
+	case publish.KindDraftPR:
+		return "초안 PR 만들기(draft_pr)"
+	case publish.KindNotify:
+		return "알림 보내기(notify)"
+	}
+	if ph, ok := strings.CutPrefix(action, steps.PolicyChangeKind("")); ok {
+		return "작업 시작 뒤 바뀐 정책(정책 해시 " + short12(ph) + ")으로 게시를 계속하기"
+	}
+	return action
 }
 
 // messageFor rebuilds the canonical message for entry a of task t. Every field
@@ -135,20 +187,24 @@ func parseIssued(s string) (time.Time, bool) {
 
 // meaningOf answers "무엇을 허용하나요?" from server values only (never the
 // agent-influenced reason text).
-func meaningOf(a store.Approval, t store.Task, p *gate.Protected, files int) string {
+func meaningOf(a store.Approval, t store.Task, g grantable, files int) string {
 	switch a.Kind {
 	case store.KindProtectedModified:
 		n := ""
-		if p != nil {
+		if g.diff != nil {
 			n = fmt.Sprintf(" %d개", files)
 		}
 		return fmt.Sprintf("작업 #%d의 변경(base %s → head %s) 가운데 보호 파일%s의 수정을 허용합니다. "+
 			"승인은 diff 해시 %s 에만 묶이며, 내용이 조금이라도 바뀌면 다시 승인해야 합니다.",
 			t.ID, short12(a.Base), short12(a.Head), n, a.Hash)
 	case store.KindPublishOutsideAllowlist:
-		return fmt.Sprintf("작업 #%d의 head %s 에 대해 허용 목록 밖의 게시 행위 하나를 허용합니다. "+
+		if g.action == "" {
+			return fmt.Sprintf("작업 #%d의 head %s 에 대한 게시 행위 승인 항목이지만, 해시 %s 와 맞는 게시 행위가 없어 승인할 수 없습니다.",
+				t.ID, short12(a.Head), a.Hash)
+		}
+		return fmt.Sprintf("작업 #%d의 head %s 에 대해 허용 목록 밖의 게시 행위 하나, %s 를 허용합니다. "+
 			"승인은 게시 해시 %s 에만 묶이며, head나 행위가 바뀌면 다시 승인해야 합니다.",
-			t.ID, short12(a.Head), a.Hash)
+			t.ID, short12(a.Head), actionText(g.action), a.Hash)
 	case store.KindDestructiveBlocked:
 		return "기록 전용 항목입니다. 파괴적인 변경은 승인할 수 없습니다."
 	}
@@ -165,7 +221,7 @@ func short12(s string) string {
 // fillSigning adds the signing view to an approval detail. Read-only: it never
 // writes anything. The message (and its digest and hashed text) is present
 // only when the entry can be granted now.
-func fillSigning(det *ApprovalDetail, a store.Approval, t store.Task, now time.Time) {
+func fillSigning(det *ApprovalDetail, a store.Approval, t store.Task, now time.Time, policyHash func() string) {
 	signed, err := approval.SignedMode()
 	if err != nil {
 		log.Printf("orchd: approval detail: signers registry unavailable: %v", err)
@@ -173,12 +229,13 @@ func fillSigning(det *ApprovalDetail, a store.Approval, t store.Task, now time.T
 	det.RequiresSignature = signed
 	issued := now.UTC().Truncate(time.Second)
 	det.Issued = issued.Format(time.RFC3339)
-	p, herr := checkCurrent(a, t)
+	g, herr := checkCurrent(a, t, policyHash)
 	det.ProtectedFiles = []string{} // always an array, like the diff view
-	if p != nil {
-		det.HashedText, det.Truncated, det.ProtectedFiles = protectedView(*p)
+	if g.diff != nil {
+		det.HashedText, det.Truncated, det.ProtectedFiles = protectedView(*g.diff)
 	}
-	det.Meaning = meaningOf(a, t, p, len(det.ProtectedFiles))
+	det.Action = g.action
+	det.Meaning = meaningOf(a, t, g, len(det.ProtectedFiles))
 	if herr != nil {
 		return
 	}
@@ -229,7 +286,7 @@ func (h *handler) grantSigned(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	if _, herr := checkCurrent(a, t); herr != nil {
+	if _, herr := checkCurrent(a, t, h.policyHash); herr != nil {
 		writeErr(w, herr)
 		return
 	}
@@ -268,8 +325,16 @@ func (h *handler) grantSigned(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, grantErr(err))
 		return
 	}
-	// The grant is recorded and the signer is a verified registry id. The
-	// ledger event follows; if it fails the grant still stands.
+	v, err := h.judgeGranted(ctx, a, t)
+	if err != nil {
+		// No approval_granted event: the entry was not resolved by this
+		// request (e.g. a concurrent grant won, or the task moved on).
+		writeErr(w, err)
+		return
+	}
+	// The grant is recorded, the signer is a verified registry id and the
+	// entry is approved. The ledger event follows; if it fails the grant and
+	// the transition still stand.
 	if home, err := gate.Home(h.grants.Home); err != nil {
 		log.Printf("orchd: approval %d granted but ledger home unknown: %v", a.ID, err)
 	} else if err := ledger.Append(gate.LedgerPath(home, msg.Repo), "approval_granted", msg.Repo, map[string]any{
@@ -277,11 +342,6 @@ func (h *handler) grantSigned(w http.ResponseWriter, r *http.Request) {
 		"signer": req.Signer, "alg": req.Alg, "via": viaOf(r),
 	}, time.Now().UTC()); err != nil {
 		log.Printf("orchd: approval %d granted but the ledger append failed: %v", a.ID, err)
-	}
-	v, err := h.judgeGranted(ctx, a, t)
-	if err != nil {
-		writeErr(w, err)
-		return
 	}
 	writeJSON(w, http.StatusOK, v)
 }

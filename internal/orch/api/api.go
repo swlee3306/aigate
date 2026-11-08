@@ -446,14 +446,17 @@ type ApprovalDetail struct {
 	// Digest (hex SHA-256 of Message) and HashedText are empty when the entry
 	// cannot be granted now. HashedText/ProtectedFiles/Truncated are the diff
 	// view's protected part (protected_modified only).
-	Message           string   `json:"message"`
-	Digest            string   `json:"digest"`
-	HashedText        string   `json:"hashed_text"`
-	ProtectedFiles    []string `json:"protected_files"`
-	Truncated         bool     `json:"truncated"`
-	Meaning           string   `json:"meaning"`
-	RequiresSignature bool     `json:"requires_signature"`
-	Issued            string   `json:"issued"`
+	Message        string   `json:"message"`
+	Digest         string   `json:"digest"`
+	HashedText     string   `json:"hashed_text"`
+	ProtectedFiles []string `json:"protected_files"`
+	Truncated      bool     `json:"truncated"`
+	Meaning        string   `json:"meaning"`
+	// Action is the publish action a publish_outside_allowlist entry allows
+	// (derived from its hash; empty when none matches or for other kinds).
+	Action            string `json:"action,omitempty"`
+	RequiresSignature bool   `json:"requires_signature"`
+	Issued            string `json:"issued"`
 }
 
 func (h *handler) approvalGet(w http.ResponseWriter, r *http.Request) {
@@ -480,7 +483,7 @@ func (h *handler) approvalGet(w http.ResponseWriter, r *http.Request) {
 	if h.policyHash != nil {
 		det.PolicyHash = h.policyHash()
 	}
-	fillSigning(&det, a, t, time.Now())
+	fillSigning(&det, a, t, time.Now(), h.policyHash)
 	writeJSON(w, 200, det)
 }
 

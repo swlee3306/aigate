@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -583,5 +584,155 @@ func TestGrantCodesSurviveEnvelope(t *testing.T) {
 	// grant is a v1-only route.
 	if code, _ := f.e.do(t, "POST", "/approvals/"+strconv.FormatInt(aid, 10)+"/grant", "{}"); code != http.StatusNotFound {
 		t.Fatalf("legacy grant route %d", code)
+	}
+}
+
+// publishTask parks a task (base..a fresh head) with one publish entry whose
+// hash is approvals.PublishHash for action (or hash, when not empty).
+func (f *grantFixture) publishTask(t *testing.T, action, hash string) (tid, aid int64) {
+	t.Helper()
+	ctx := context.Background()
+	base := git(t, f.e.repo, "rev-parse", "HEAD")
+	head := commitChange(t, f.e, "src/p.txt", "p"+strconv.FormatInt(time.Now().UnixNano(), 10)+"\n")
+	tid, err := f.e.st.CreateTask(ctx, store.Task{Repo: f.e.repo, Base: base, Prompt: "p", Class: "docs", Agent: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.e.st.SetHeadSHA(ctx, tid, head); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.e.st.Transition(ctx, tid, store.StateQueued, store.StateNeedsApproval, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if hash == "" {
+		hash = approvals.PublishHash(tid, head, action)
+	}
+	aid, err = f.e.st.AddApproval(ctx, store.Approval{TaskID: tid, Kind: store.KindPublishOutsideAllowlist,
+		Hash: hash, Base: base, Head: head, Reason: "r"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tid, aid
+}
+
+func (f *grantFixture) detail(t *testing.T, aid int64) ApprovalDetail {
+	t.Helper()
+	code, b := f.e.do(t, "GET", "/api/v1/approvals/"+strconv.FormatInt(aid, 10), "")
+	var d ApprovalDetail
+	if code != 200 || json.Unmarshal(b, &d) != nil {
+		t.Fatalf("detail %d %s", code, b)
+	}
+	return d
+}
+
+const testPolicyHash = "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+
+func TestGrantPublishActions(t *testing.T) {
+	f := newGrantFixture(t)
+	f.e.d.handler.policyHash = func() string { return testPolicyHash }
+	for _, tc := range []struct{ action, wantAction, inMeaning string }{
+		{"push_branch", "push_branch", "push_branch"},
+		{"draft_pr", "draft_pr", "draft_pr"},
+		{"policy_changed:" + testPolicyHash, "policy_changed:" + testPolicyHash, "바뀐 정책"},
+	} {
+		tid, aid := f.publishTask(t, tc.action, "")
+		d := f.detail(t, aid)
+		if d.Action != tc.wantAction || !strings.Contains(d.Meaning, tc.inMeaning) || d.Message == "" {
+			t.Fatalf("%s: detail action %q meaning %q message %q", tc.action, d.Action, d.Meaning, d.Message)
+		}
+		if d.Message != f.message(t, aid, mustIssued(t, d.Issued)).Text() {
+			t.Fatalf("%s: message %q", tc.action, d.Message)
+		}
+		code, b := f.post(t, aid, map[string]any{"signer": "alice", "alg": signing.TypeSSHEd25519,
+			"sig": f.alice.signText(t, d.Message), "issued": d.Issued})
+		if code != 200 {
+			t.Fatalf("%s: grant %d %s", tc.action, code, b)
+		}
+		if s := state(t, f.e, tid); s != store.StateVerifying {
+			t.Fatalf("%s: task %s", tc.action, s)
+		}
+	}
+}
+
+func mustIssued(t *testing.T, s string) time.Time {
+	t.Helper()
+	ts, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ts.UTC()
+}
+
+// A publish entry whose hash no known action of this task and head produces
+// is refused before the signature, even with a valid one.
+func TestGrantPublishUnknownHash409(t *testing.T) {
+	f := newGrantFixture(t)
+	f.e.d.handler.policyHash = func() string { return testPolicyHash }
+	tid, aid := f.publishTask(t, "", strings.Repeat("d", 64))
+	d := f.detail(t, aid)
+	if d.Action != "" || d.Message != "" || d.Meaning == "" {
+		t.Fatalf("detail %+v", d)
+	}
+	issued := nowSec()
+	m := f.message(t, aid, issued) // valid signature over the entry's own message
+	code, b := f.post(t, aid, f.body(f.alice.signText(t, m.Text()), issued))
+	wantEnvelope(t, code, b, http.StatusConflict, "hash_changed")
+	f.unchanged(t, tid, aid)
+	// A policy-change entry for a policy that is no longer in force is stale too.
+	tid2, aid2 := f.publishTask(t, "policy_changed:"+strings.Repeat("1", 64), "")
+	m2 := f.message(t, aid2, issued)
+	code, b = f.post(t, aid2, f.body(f.alice.signText(t, m2.Text()), issued))
+	wantEnvelope(t, code, b, http.StatusConflict, "hash_changed")
+	f.unchanged(t, tid2, aid2)
+}
+
+// Only the request that resolves the entry logs approval_granted: concurrent
+// grants of one entry and a later repeat leave exactly one event.
+func TestGrantLedgerOnlyForResolvingRequest(t *testing.T) {
+	f := newGrantFixture(t)
+	_, aid, _ := f.protectedTask(t, "line1\nCHANGED\n")
+	issued := nowSec()
+	body := f.body(f.alice.signText(t, f.message(t, aid, issued).Text()), issued)
+	const n = 8
+	codes := make(chan int, n)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			b, _ := json.Marshal(body)
+			req, _ := http.NewRequest("POST", "http://orchd/api/v1/approvals/"+strconv.FormatInt(aid, 10)+"/grant", strings.NewReader(string(b)))
+			resp, err := f.e.client.Do(req)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			resp.Body.Close()
+			codes <- resp.StatusCode
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(codes)
+	ok := 0
+	for c := range codes {
+		switch c {
+		case 200:
+			ok++
+		case http.StatusConflict:
+		default:
+			t.Fatalf("status %d", c)
+		}
+	}
+	if ok != 1 {
+		t.Fatalf("%d successful grants", ok)
+	}
+	code, b := f.post(t, aid, body)
+	wantEnvelope(t, code, b, http.StatusConflict, "not_pending")
+	evs, err := ledger.Events(gate.LedgerPath(f.home, f.rid))
+	if err != nil || len(evs) != 1 || evs[0].Type != "approval_granted" {
+		t.Fatalf("ledger %v: %d events %+v", err, len(evs), evs)
 	}
 }
