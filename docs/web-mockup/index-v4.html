@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>orch 웹 화면 목업 v4</title>
+<style>
+:root {
+  --bg: #060a0a; --surface: #0d1414; --raised: #151f1f; --raised-2: #1b2828; --line: #1e2b2b;
+  --text: #e9f0ee; --muted: #a7b6b3; --faint: #849694;
+  --accent: #4fcf86; --accent-bg: rgba(79,207,134,.13);
+  --amber: #efb35e; --amber-bg: #2a2010; --amber-line: #6b4f1a;
+  --red: #ff8f86; --red-bg: rgba(255,143,134,.12); --blue: #86bcff; --blue-bg: rgba(134,188,255,.12);
+  --focus: #ffd479;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard", "Noto Sans KR", sans-serif;
+}
+* { box-sizing: border-box; }
+html { color-scheme: dark; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 var(--sans); }
+body { min-height: 100vh; }
+a { color: var(--blue); text-decoration: none; } a:hover { text-decoration: underline; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 8px; }
+.skip { position: absolute; left: -999px; } .skip:focus { left: 8px; top: 8px; background: var(--raised); padding: 8px 12px; z-index: 9; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.shell { display: grid; grid-template-columns: 220px 1fr; gap: 12px; padding: 12px; min-height: 100vh; }
+.panel { background: var(--surface); border-radius: 16px; }
+.rail { padding: 16px 10px; position: sticky; top: 12px; height: calc(100vh - 24px); display: flex; flex-direction: column; }
+.brand { font-weight: 650; font-size: 16px; letter-spacing: .01em; padding: 2px 10px 18px; }
+.rail a.nav { display: flex; align-items: center; gap: 12px; padding: 9px 10px; border-radius: 12px; color: var(--muted); margin-bottom: 2px; transition: background .18s, color .18s; }
+.rail a.nav:hover { background: var(--raised); color: var(--text); text-decoration: none; }
+.rail a.nav svg { width: 18px; height: 18px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.rail a.nav[aria-current="page"] { background: var(--raised-2); color: var(--text); font-weight: 600; }
+.rail a.nav[aria-current="page"] svg { stroke: var(--accent); }
+.badge { margin-left: auto; background: var(--amber-bg); color: var(--amber); border-radius: 10px; padding: 0 8px; font-size: 12px; font-weight: 650; }
+.rail-sep { height: 1px; background: var(--line); margin: 10px 8px; }
+.rail-foot { margin-top: auto; color: var(--faint); font-size: 12px; padding: 8px 10px; }
+.stage { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.top { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px; }
+.crumb { color: var(--muted); } .crumb b { color: var(--text); font-weight: 600; }
+.pills { display: flex; align-items: center; gap: 8px; }
+.pill { border-radius: 999px; padding: 3px 12px; color: var(--muted); font-size: 12px; background: var(--raised); display: inline-flex; gap: 7px; align-items: center; border: 0; font-family: inherit; }
+.pill.live { color: var(--accent); background: var(--accent-bg); font-weight: 600; } .pill.live::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.pill.live.paused { color: var(--amber); background: var(--amber-bg); } .pill.live.paused::before { border-radius: 2px; }
+.pausebtn { cursor: pointer; transition: background .18s; } .pausebtn:hover { background: var(--raised-2); }
+.avatar { width: 30px; height: 30px; border-radius: 50%; background: var(--raised-2); display: grid; place-items: center; font-weight: 600; font-size: 13px; }
+.banner { background: var(--blue-bg); border-radius: 12px; padding: 7px 14px; color: #c3dcff; font-size: 13px; }
+.ws { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 12px; align-items: start; }
+.canvas { padding: 22px; background-image: radial-gradient(rgba(255,255,255,.055) 1px, transparent 1px); background-size: 22px 22px; }
+.insp { padding: 18px; position: sticky; top: 12px; }
+h1 { font-size: 20px; font-weight: 650; margin: 0 0 2px; } .lead { color: var(--muted); margin: 0 0 18px; }
+h2 { font-size: 13px; margin: 0; color: var(--muted); font-weight: 600; }
+.sec { margin-top: 18px; } .sec > h2 { margin-bottom: 8px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 1px 10px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.chip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.c-done { color: var(--accent); background: var(--accent-bg); } .c-fail { color: var(--red); background: var(--red-bg); } .c-fail::before { border-radius: 2px; }
+.c-wait { color: var(--amber); background: var(--amber-bg); } .c-wait::before { border-radius: 2px; transform: rotate(45deg); } .c-run { color: var(--blue); background: var(--blue-bg); }
+.tag { background: var(--raised-2); border-radius: 6px; padding: 0 7px; font-size: 12px; color: var(--muted); } .tag.prot { color: var(--amber); }
+.mono { font-family: var(--mono); font-size: 12.5px; }
+/* attention line: the one thing a person must do */
+.todo { display: flex; align-items: center; justify-content: space-between; gap: 12px; background: var(--amber-bg); border-radius: 14px; padding: 12px 16px; margin-bottom: 16px; }
+.todo b { color: var(--amber); } .todo a { white-space: nowrap; }
+/* pipeline */
+.svgwrap { overflow: auto; border-radius: 14px; } .zoomer { transform-origin: 0 0; transition: transform .15s; } .zoomer svg { display: block; width: 100%; max-width: 820px; margin: 0 auto; height: auto; min-width: 560px; }
+.nd { cursor: pointer; } .nd .box { fill: #111a1a; stroke: #1f2c2c; } .nd.ok .box { fill: #0f2018; stroke: #1d4430; } .nd.bad .box { fill: #1f1211; stroke: #46221e; } .nd.gate .box { fill: #2a2010; stroke: #6b4f1a; }
+.nd:hover .box { stroke: #4d6666; } .nd.sel .box, .nd:focus-visible .box { stroke: #cfe8df; stroke-width: 2; } .nd:focus-visible { outline: none; }
+.nd .ico { fill: #1a2626; } .nd.gate .ico { fill: #3a2c14; } .nd text { fill: var(--text); } .nd .t { font-size: 14px; font-weight: 600; } .nd .s { font-size: 12px; fill: var(--muted); } .nd .m { font-size: 13px; fill: var(--muted); font-weight: 500; } .nd .one { font-size: 30px; font-weight: 700; fill: var(--amber); }
+.chipt rect { fill: rgba(79,207,134,.15); } .chipt text { fill: var(--accent); font-size: 11px; font-weight: 600; }
+.edge { fill: none; stroke-width: 1.6; } .e-n { stroke: #3d5252; } .e-ok { stroke: #2f7a52; } .e-bad { stroke: #a04a43; stroke-dasharray: 5 4; } .e-wait { stroke: #e0a85a; stroke-dasharray: 2 4; stroke-width: 2; filter: url(#glow); }
+.pl rect { fill: #0b1111; } .pl text { fill: var(--muted); font-size: 12px; } .pl.wait text { fill: var(--amber); } .pl.bad text { fill: #ffb0aa; }
+.nt { fill: var(--muted); font-size: 12px; }
+.toolbar { display: flex; justify-content: center; margin-top: 10px; }
+.tb { display: inline-flex; align-items: center; gap: 4px; padding: 4px 6px; border-radius: 12px; background: var(--raised); }
+.tb button { background: transparent; border: 0; color: var(--text); width: 32px; height: 32px; border-radius: 10px; cursor: pointer; font-size: 16px; transition: background .18s; } .tb button:hover { background: var(--raised-2); } .tb span { min-width: 48px; text-align: center; color: var(--muted); }
+/* tables & cards */
+.card { border-radius: 14px; background: var(--raised); }
+.card-h { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; }
+.tscroll { overflow-x: auto; } table { width: 100%; border-collapse: collapse; }
+th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12px; padding: 8px 14px; } td { padding: 12px 14px; border-top: 1px solid var(--line); }
+#task-rows tr { cursor: pointer; } tbody tr:hover, tbody tr.sel { background: var(--raised-2); }
+.rowbtn { all: unset; cursor: pointer; color: var(--muted); max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; border-radius: 6px; transition: color .18s; } .rowbtn:hover { color: var(--text); } .rowbtn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.ell { color: var(--muted); }
+.filters { display: flex; gap: 8px; flex-wrap: wrap; padding: 0 14px 12px; }
+.filters input { flex: 1; min-width: 180px; background: var(--bg); border: 0; border-radius: 12px; color: var(--text); padding: 8px 12px; font: inherit; }
+.btn { background: var(--raised-2); border: 0; color: var(--text); border-radius: 12px; padding: 6px 12px; font: inherit; cursor: pointer; transition: background .18s; } .btn:hover { background: #243434; } .btn[aria-pressed="true"] { background: #2a4a3a; }
+dl { margin: 0; display: grid; grid-template-columns: 84px 1fr; gap: 8px 10px; } dt { color: var(--muted); } dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.bars { display: grid; gap: 8px; } .bar-r { display: grid; grid-template-columns: 76px 1fr 64px; gap: 8px; align-items: center; } .bar-t { height: 6px; border-radius: 4px; background: var(--raised-2); overflow: hidden; } .bar-f { height: 100%; border-radius: 4px; background: var(--accent); }
+.rows { list-style: none; margin: 0; padding: 0; } .rows li { display: flex; justify-content: space-between; gap: 8px; padding: 9px 0; border-top: 1px solid var(--line); } .rows li:first-child { border: 0; }
+.guard { display: grid; gap: 12px; } .guard > div { display: flex; justify-content: space-between; gap: 10px; align-items: center; } .guard small { display: block; color: var(--muted); }
+.sw { width: 34px; height: 20px; border-radius: 12px; background: var(--accent); position: relative; flex: none; } .sw::after { content: ""; position: absolute; right: 3px; top: 3px; width: 14px; height: 14px; border-radius: 50%; background: #04120a; }
+/* approval: raised surface, label in accent, no halo */
+.ask { background: var(--amber-bg); border-radius: 14px; padding: 16px 18px; margin-bottom: 14px; }
+.ask .k { color: var(--amber); font-weight: 650; }
+.cmd { position: relative; background: var(--bg); border-radius: 12px; padding: 10px 12px; margin-top: 12px; } .cmd code { font-family: var(--mono); font-size: 12px; word-break: break-all; color: #cfe6e2; display: block; padding-right: 64px; } .cmd .btn { position: absolute; right: 8px; top: 8px; padding: 2px 10px; font-size: 12px; }
+.note { color: var(--muted); font-size: 12.5px; margin: 8px 0 0; }
+.diff { font-family: var(--mono); font-size: 12.5px; margin: 0; padding: 4px 0 10px; overflow-x: auto; } .diff div { padding: 0 16px; white-space: pre; } .add { background: rgba(79,207,134,.16); color: #c6f3d9; } .hunk { color: var(--blue); }
+.files { list-style: none; margin: 0; padding: 0; } .files li { display: flex; justify-content: space-between; padding: 8px 10px; border-radius: 10px; } .files li[aria-current="true"] { background: var(--raised-2); }
+.mini { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 4px 0 16px; } .mini .st { padding: 4px 12px; border-radius: 10px; background: var(--raised); font-size: 12px; color: var(--muted); } .mini .st.on { background: #1f3a2d; color: var(--text); } .mini i { color: var(--faint); font-style: normal; }
+.view { display: none; } .view.on { display: block; }
+@media (pointer: coarse) { .btn, .pausebtn, .tb button { min-height: 44px; min-width: 44px; } .rail a.nav { min-height: 44px; } .rowbtn { padding: 10px 0; } }
+@media (prefers-reduced-motion: no-preference) { .e-wait { animation: dash 1.8s linear infinite; } @keyframes dash { to { stroke-dashoffset: -12; } } }
+@media (max-width: 1500px) and (min-width: 761px) {
+  .shell { grid-template-columns: 68px 1fr; } .rail { padding: 14px 8px; align-items: center; } .rail .lb, .rail-foot { display: none; } .brand { padding: 2px 0 14px; font-size: 13px; } .rail nav { width: 100%; }
+  .rail a.nav { justify-content: center; padding: 10px 0; position: relative; } .rail .badge { position: absolute; top: 2px; right: 6px; padding: 0 6px; font-size: 11px; } .ws { grid-template-columns: minmax(0, 1fr) 300px; }
+}
+@media (max-width: 1000px) { .ws { grid-template-columns: 1fr; } .insp { position: static; } }
+@media (max-width: 760px) { .shell { grid-template-columns: 1fr; padding: 10px; } .rail { position: static; height: auto; } .rail-foot, .rail-sep { display: none; } .rail nav { display: flex; flex-wrap: wrap; gap: 4px; } .hide-m { display: none; } .canvas { padding: 14px; } .top { flex-wrap: wrap; } }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">본문으로 건너뛰기</a>
+<div class="shell">
+  <aside class="rail panel">
+    <div class="brand">orch</div>
+    <nav aria-label="주 메뉴">
+      <a class="nav" href="#/overview" data-nav="overview"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 12h4c3 0 3-6 6-6M11 12c3 0 3 6 6 6"/></svg><span class="lb">개요</span></a>
+      <a class="nav" href="#/tasks" data-nav="tasks"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg><span class="lb">작업</span></a>
+      <a class="nav" href="#/approvals" data-nav="approvals"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.2 8-8 9-4.8-1-8-4.5-8-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></svg><span class="lb">승인</span><span class="badge" aria-label="대기 1건">1</span></a>
+      <div class="rail-sep"></div>
+      <a class="nav" href="#" onclick="return false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l-4 5 4 5M17 7l4 5-4 5M14 4l-4 16"/></svg><span class="lb">GitLab ↗</span></a>
+      <a class="nav" href="#" onclick="return false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg><span class="lb">정책</span></a>
+    </nav>
+    <div class="rail-foot">읽기 전용 · Tailscale 안에서만<br>orch-vm 100.64.0.21</div>
+  </aside>
+  <div class="stage">
+    <header class="top panel">
+      <div class="crumb" id="crumb"></div>
+      <div class="pills"><span class="pill">읽기 전용</span><span class="pill live" id="livepill"><span id="livetxt">실시간 · 12:31:08 갱신</span></span><button class="pill pausebtn" id="pausebtn" aria-pressed="false" aria-label="실시간 갱신 일시정지">일시정지</button><span class="sr" role="status" aria-atomic="true" id="livestatus"></span><span class="avatar" aria-label="사용자">상</span></div>
+    </header>
+    <div class="banner" role="note">목업 v4입니다. 작업·시간·상태 수는 2026-11-08 실제 값이고, 승인 대기 항목과 변경 내용은 설명용 예시입니다.</div>
+    <main id="main" tabindex="-1">
+
+    <section class="view" id="v-overview" aria-labelledby="h-overview">
+      <div class="ws">
+        <div class="panel canvas">
+          <h1 id="h-overview">개요</h1>
+          <p class="lead">작업 38건 중 36건 완료, 2건 실패.</p>
+          <div class="todo" role="status"><span><b>사람이 볼 것 1건</b> · 작업 #5 정책 변경 승인 (예시)</span><a href="#/approvals">승인 보기 →</a></div>
+          <div class="svgwrap"><div class="zoomer" id="zoomer">
+<svg viewBox="0 0 800 770" role="group" aria-label="작업 파이프라인. 대기, 준비, 에이전트, 수집, 검증을 거쳐 판정에 따라 게시, 승인 관문, 실패로 갑니다. 각 노드는 버튼입니다.">
+  <defs>
+    <filter id="glow" filterUnits="userSpaceOnUse" x="0" y="0" width="800" height="770"><feGaussianBlur stdDeviation="2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5L0 10z" fill="#7d9290"/></marker>
+    <symbol id="i-q" viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h9" fill="none" stroke="#cfe3df" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-prep" viewBox="0 0 24 24"><path d="M12 3l8 4v10l-8 4-8-4V7z M4 7l8 4 8-4 M12 11v10" fill="none" stroke="#cfe3df" stroke-width="1.8" stroke-linejoin="round"/></symbol>
+    <symbol id="i-bot" viewBox="0 0 24 24"><rect x="4" y="8" width="16" height="11" rx="3" fill="none" stroke="#cfe3df" stroke-width="1.8"/><path d="M12 8V4M9 13h.01M15 13h.01" stroke="#cfe3df" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-dl" viewBox="0 0 24 24"><path d="M12 4v11M7 11l5 5 5-5M5 20h14" fill="none" stroke="#cfe3df" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-chk" viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 4.5-3.2 8-8 9-4.8-1-8-4.5-8-9V6z M8.5 12l2.5 2.5 4.5-5" fill="none" stroke="#cfe3df" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="#ffc9c4" stroke-width="2.2" stroke-linecap="round"/></symbol>
+    <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 20V9M7 13l5-5 5 5M5 4h14" fill="none" stroke="#cfe3df" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2.5" fill="none" stroke="#ffe3b8" stroke-width="1.8"/><path d="M8 11V8a4 4 0 018 0v3" fill="none" stroke="#ffe3b8" stroke-width="1.8"/></symbol>
+  </defs>
+  <!-- chain -->
+  <path class="edge e-n" d="M400 80V106" marker-end="url(#ah)"/><path class="edge e-n" d="M400 172V198" marker-end="url(#ah)"/><path class="edge e-n" d="M400 264V290" marker-end="url(#ah)"/><path class="edge e-n" d="M400 356V382" marker-end="url(#ah)"/>
+  <g class="nd" tabindex="0" role="button" aria-pressed="false" data-node="queued" aria-label="대기, 0건"><rect class="box" x="290" y="16" width="220" height="64" rx="14"/><rect class="ico" x="304" y="34" width="28" height="28" rx="9"/><use href="#i-q" x="310" y="40" width="16" height="16"/><text class="t" x="344" y="44">대기</text><text class="s" x="344" y="62">queued</text><text class="m" x="496" y="53" text-anchor="end">0건</text></g>
+  <g class="nd" tabindex="0" role="button" aria-pressed="false" data-node="preparing" aria-label="준비, 평균 2초"><rect class="box" x="290" y="108" width="220" height="64" rx="14"/><rect class="ico" x="304" y="126" width="28" height="28" rx="9"/><use href="#i-prep" x="310" y="132" width="16" height="16"/><text class="t" x="344" y="136">준비</text><text class="s" x="344" y="154">preparing</text><text class="m" x="496" y="145" text-anchor="end">2초</text></g>
+  <g class="nd" tabindex="0" role="button" aria-pressed="false" data-node="agent" aria-label="에이전트, 평균 25초"><rect class="box" x="290" y="200" width="220" height="64" rx="14"/><rect class="ico" x="304" y="218" width="28" height="28" rx="9"/><use href="#i-bot" x="310" y="224" width="16" height="16"/><text class="t" x="344" y="228">에이전트</text><text class="s" x="344" y="246">agent_running</text><text class="m" x="496" y="237" text-anchor="end">25초</text></g>
+  <g class="nd" tabindex="0" role="button" aria-pressed="false" data-node="collect" aria-label="수집, 평균 1초"><rect class="box" x="290" y="292" width="220" height="64" rx="14"/><rect class="ico" x="304" y="310" width="28" height="28" rx="9"/><use href="#i-dl" x="310" y="316" width="16" height="16"/><text class="t" x="344" y="320">수집</text><text class="s" x="344" y="338">collecting</text><text class="m" x="496" y="329" text-anchor="end">1초</text></g>
+  <g class="nd" tabindex="0" role="button" aria-pressed="false" data-node="verify" aria-label="검증, 평균 134초, base 캐시"><rect class="box" x="270" y="384" width="260" height="64" rx="14"/><rect class="ico" x="284" y="402" width="28" height="28" rx="9"/><use href="#i-chk" x="290" y="408" width="16" height="16"/><text class="t" x="324" y="420">검증</text><text class="s" x="324" y="438">복원 + 게이트</text><g class="chipt"><rect x="400" y="396" width="66" height="20" rx="10"/><text x="433" y="410" text-anchor="middle">base 캐시</text></g><text class="m" x="516" y="421" text-anchor="end">134초</text></g>
+  <!-- branches -->
+  <path class="edge e-bad" d="M330 448C330 520 140 500 140 556" marker-end="url(#ah)"/><g class="pl bad"><rect x="190" y="486" width="92" height="22" rx="11"/><text x="236" y="501" text-anchor="middle">✕ 판정 실패</text></g>
+  <path class="edge e-ok" d="M400 448V556" marker-end="url(#ah)"/><g class="pl"><rect x="358" y="490" width="84" height="22" rx="11"/><text x="400" y="505" text-anchor="middle">✓ 판정 ok</text></g>
+  <path class="edge e-wait" d="M470 448C470 520 670 500 670 544" marker-end="url(#ah)"/><g class="pl wait"><rect x="548" y="486" width="124" height="22" rx="11"/><text x="610" y="501" text-anchor="middle">⏸ 보호 파일 수정</text></g>
+  <g class="nd bad" tabindex="0" role="button" aria-pressed="false" data-node="failed" aria-label="실패 2건"><rect class="box" x="40" y="560" width="200" height="72" rx="14"/><rect class="ico" x="54" y="578" width="28" height="28" rx="9"/><use href="#i-x" x="60" y="584" width="16" height="16"/><text class="t" x="94" y="588">실패</text><text class="s" x="94" y="606">#3 판정 · #37 게시</text><text class="m" x="226" y="597" text-anchor="end">2건</text></g>
+  <g class="nd ok" tabindex="0" role="button" aria-pressed="false" data-node="publish" aria-label="게시, 평균 3초"><rect class="box" x="300" y="560" width="200" height="72" rx="14"/><rect class="ico" x="314" y="578" width="28" height="28" rx="9"/><use href="#i-up" x="320" y="584" width="16" height="16"/><text class="t" x="354" y="588">게시</text><text class="s" x="354" y="606">push_branch</text><text class="m" x="486" y="597" text-anchor="end">3초</text></g>
+  <g class="nd gate" tabindex="0" role="button" aria-pressed="false" data-node="gate" aria-label="승인 관문, 대기 1건"><rect class="box" x="560" y="548" width="220" height="104" rx="16"/><rect class="ico" x="576" y="566" width="30" height="30" rx="9"/><use href="#i-lock" x="583" y="573" width="16" height="16"/><text class="t" x="620" y="586">승인 대기</text><text class="s" x="620" y="604">터미널에서 승인</text><text class="one" x="578" y="636">1건</text></g>
+  <path class="edge e-ok" d="M400 632V686" marker-end="url(#ah)"/>
+  <g class="nd ok" tabindex="0" role="button" aria-pressed="false" data-node="done" aria-label="완료 36건"><rect class="box" x="300" y="690" width="200" height="56" rx="14"/><text class="t" x="320" y="714">완료</text><text class="s" x="320" y="732">orch/N 브랜치</text><text class="m" x="486" y="723" text-anchor="end">36건</text></g>
+  <text class="nt" x="140" y="656" text-anchor="middle">인프라 오류로 멈춘 건은</text><text class="nt" x="140" y="672" text-anchor="middle">orch retry 로 검증부터 재개</text>
+  <text class="nt" x="670" y="672" text-anchor="middle">승인하면 검증을 다시 돌린 뒤 게시</text>
+</svg>
+          </div></div>
+          <div class="toolbar"><div class="tb" role="group" aria-label="보기 도구"><button id="zo" aria-label="축소">−</button><span id="zv">100%</span><button id="zi" aria-label="확대">+</button><button id="zf" aria-label="원래 크기">⤢</button></div></div>
+          <p class="note">선 모양으로도 구분합니다: 실선=정상, 점선=사람 필요, 파선=실패.</p>
+        </div>
+        <aside class="panel insp" aria-live="polite" id="insp-over"></aside>
+      </div>
+    </section>
+
+    <section class="view" id="v-tasks" aria-labelledby="h-tasks">
+      <div class="ws">
+        <div class="panel canvas">
+          <h1 id="h-tasks">작업</h1><p class="lead">큐와 지난 작업. 항목을 고르면 오른쪽에 요약이 나옵니다.</p>
+          <div class="card">
+            <div class="card-h"><h2>최근 작업</h2></div>
+            <div class="filters"><input type="search" aria-label="작업 검색" placeholder="프롬프트·저장소·번호로 찾기"><button class="btn" aria-pressed="true">전체 38</button><button class="btn" aria-pressed="false">승인 대기 1</button><button class="btn" aria-pressed="false">실패 2</button></div>
+            <div class="tscroll"><table><caption class="sr">작업 목록</caption>
+              <thead><tr><th scope="col">#</th><th scope="col">상태</th><th scope="col">저장소</th><th scope="col" class="hide-m">프롬프트</th><th scope="col">검증</th></tr></thead>
+              <tbody id="task-rows">
+                <tr class="sel" data-t="38"><td class="mono"><a href="#/tasks/38">#38</a></td><td><span class="chip c-done">완료</span></td><td>sample-app</td><td class="ell hide-m"><button class="rowbtn" aria-pressed="true" data-pick="38">테스트 파일 추가 (첫 실제 GitLab push)</button></td><td class="mono">140초 · 캐시</td></tr>
+                <tr data-t="37"><td class="mono"><a href="#/tasks/38">#37</a></td><td><span class="chip c-fail">실패</span></td><td>sample-app</td><td class="ell hide-m"><button class="rowbtn" aria-pressed="false" data-pick="37">게시 실패: 배포 키 쓰기 권한 없음</button></td><td class="mono">210초</td></tr>
+                <tr data-t="36"><td class="mono"><a href="#/tasks/38">#36</a></td><td><span class="chip c-done">완료</span></td><td>sample-app</td><td class="ell hide-m"><button class="rowbtn" aria-pressed="false" data-pick="36">테스트 파일 추가 (base 캐시 시험)</button></td><td class="mono">134초 · 캐시</td></tr>
+                <tr data-t="5"><td class="mono"><a href="#/tasks/38">#5</a></td><td><span class="chip c-wait">승인 대기</span> <span class="tag">예시</span></td><td>toy</td><td class="ell hide-m"><button class="rowbtn" aria-pressed="false" data-pick="5">calc_fourth_test.go — 정책 변경 확인 필요</button></td><td class="mono">재시도 1/3</td></tr>
+                <tr data-t="2"><td class="mono"><a href="#/tasks/38">#2</a></td><td><span class="chip c-done">완료</span></td><td>toy</td><td class="ell hide-m"><button class="rowbtn" aria-pressed="false" data-pick="2">calc_test.go 단언 추가 — 승인 2건</button></td><td class="mono">사람 승인</td></tr>
+                <tr data-t="3"><td class="mono"><a href="#/tasks/38">#3</a></td><td><span class="chip c-fail">실패</span></td><td>toy</td><td class="ell hide-m"><button class="rowbtn" aria-pressed="false" data-pick="3">의도한 회귀 시험 — behavior_failure</button></td><td class="mono">판정 실패</td></tr>
+              </tbody>
+            </table></div>
+          </div>
+        </div>
+        <aside class="panel insp" id="insp-tasks" aria-live="polite"></aside>
+      </div>
+    </section>
+
+    <section class="view" id="v-task" aria-labelledby="h-task">
+      <div class="ws">
+        <div class="panel canvas">
+          <h1 id="h-task">작업 #38 <span class="chip c-done" style="vertical-align:middle">완료</span></h1>
+          <p class="lead">sample-app · claude · base <span class="mono">0e2db75</span> → head <span class="mono">828f1ed</span></p>
+          <div class="mini" aria-label="이 작업이 지나간 단계"><span class="st on">대기</span><i>›</i><span class="st on">준비</span><i>›</i><span class="st on">에이전트</span><i>›</i><span class="st on">수집</span><i>›</i><span class="st on">검증</span><i>›</i><span class="st on">게시</span><i>›</i><span class="st on">완료</span></div>
+          <div class="card"><div class="card-h"><h2>시간 흐름</h2><span class="mono" style="color:var(--faint)">총 184초</span></div>
+            <div style="padding:2px 16px 12px" class="bars">
+              <div class="bar-r"><span>대기</span><div class="bar-t"><div class="bar-f" style="width:1%"></div></div><span class="mono">0.2초</span></div>
+              <div class="bar-r"><span>준비</span><div class="bar-t"><div class="bar-f" style="width:2%"></div></div><span class="mono">2.0초</span></div>
+              <div class="bar-r"><span>에이전트</span><div class="bar-t"><div class="bar-f" style="width:17%"></div></div><span class="mono">25초</span></div>
+              <div class="bar-r"><span>수집</span><div class="bar-t"><div class="bar-f" style="width:1%"></div></div><span class="mono">1.3초</span></div>
+              <div class="bar-r"><span>검증</span><div class="bar-t"><div class="bar-f" style="width:96%"></div></div><span class="mono">140초</span></div>
+              <div class="bar-r"><span>게시</span><div class="bar-t"><div class="bar-f" style="width:2%"></div></div><span class="mono">3.0초</span></div>
+            </div>
+            <p class="note" style="padding:0 16px 14px">검증 140초 = 복원 55초 + 게이트 85초 (base 0초 캐시, head 81초)</p>
+          </div>
+        </div>
+        <aside class="panel insp"><h2>요약</h2><div class="sec"><dl>
+          <dt>판정</dt><dd><span class="chip c-done">ok</span></dd><dt>정책</dt><dd class="mono">6d045b884724 · L1</dd>
+          <dt>게시</dt><dd>push_branch → <a href="#" onclick="return false">orch/38 ↗</a> <span class="tag">삭제됨</span></dd>
+          <dt>프롬프트</dt><dd>Go 서비스에서 테스트 없는 작은 순수 함수 하나를 골라 새 테스트 파일을 추가…</dd></dl></div></aside>
+      </div>
+    </section>
+
+    <section class="view" id="v-approvals" aria-labelledby="h-approvals">
+      <div class="ws">
+        <div class="panel canvas">
+          <h1 id="h-approvals">승인</h1><p class="lead">사람이 확인해야 하는 항목. 이 화면은 보기만 하고, 승인은 터미널에서 합니다.</p>
+          <div class="ask" role="group" aria-label="승인 대기 항목 예시">
+            <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap"><div><span class="chip c-wait">승인 대기</span> <span class="k" style="margin-left:8px">항목 3 · 작업 #5</span> <span class="tag">예시</span></div><span class="mono" style="color:var(--muted)">publish_outside_allowlist</span></div>
+            <p style="margin:12px 0 0"><b>무엇을 허용하나요?</b> 작업이 시작된 뒤 정책이 바뀌었습니다 (<span class="mono">078b17… → 6d045b…</span>). 이 head <span class="mono">2517063</span>를 현재 정책으로 <b>로컬 저장소에 push</b>하는 것을 한 번만 허용합니다.</p>
+            <div class="cmd"><button class="btn" data-copy>복사</button><code id="cmd1">ssh -t -i ~/.ssh/aigate_admin_ed25519 -o IdentitiesOnly=yes ubuntu@192.168.1.200 'sudo -u orch -H /home/orch/bin/orch --socket /home/orch/orchd/run/orchd.sock --gate-home /home/orch/orchd/gate-home approve 3'</code></div>
+            <p class="note">명령에는 <b>항목 ID 3</b>을 씁니다 (작업 번호 #5가 아닙니다).</p>
+          </div>
+          <div class="card"><div class="card-h"><h2>지난 승인</h2></div>
+            <div class="tscroll"><table><caption class="sr">지난 승인 목록</caption><thead><tr><th scope="col">항목</th><th scope="col">작업</th><th scope="col">종류</th><th scope="col" class="hide-m">이유</th><th scope="col">상태</th></tr></thead>
+            <tbody><tr><td class="mono">2</td><td class="mono"><a href="#/tasks/38">#2</a></td><td>정책 변경 게시</td><td class="ell hide-m">policy changed since the task started</td><td><span class="chip c-done">승인됨</span></td></tr>
+            <tr><td class="mono">1</td><td class="mono"><a href="#/diff">#2</a></td><td>보호 파일 수정</td><td class="ell hide-m">tests/**, calc_test.go 변경 · <a href="#/diff">변경 보기 →</a></td><td><span class="chip c-done">승인됨</span></td></tr></tbody></table></div>
+          </div>
+        </div>
+        <aside class="panel insp"><h2>확인할 것</h2><div class="sec"><ul class="rows"><li><span>정책이 의도한 대로 바뀌었나</span><span class="chip c-wait">확인</span></li><li><span>게시 대상이 로컬인가 (GitLab 아님)</span><span class="chip c-done">로컬</span></li><li><span>승인은 이 head·정책 해시에만 유효</span><span class="tag">1회</span></li></ul></div>
+          <div class="sec"><h2>가드레일</h2><div class="guard sec"><div><span>허용 목록<small>push_branch만</small></span><span class="mono">L1</span></div><div><span>하한선(Floor)<small>force push·main 직접 push 금지</small></span><span class="sw" role="img" aria-label="켜짐"></span></div></div></div></aside>
+      </div>
+    </section>
+
+    <section class="view" id="v-diff" aria-labelledby="h-diff">
+      <div class="ws">
+        <div class="panel canvas">
+          <h1 id="h-diff">변경 보기 <span class="tag">예시</span></h1><p class="lead">작업 #2 · 승인 항목 1 · 보호 파일 수정 · diff 해시 <span class="mono">8b74e4c71f42</span></p>
+          <div class="ask"><b>요약</b> 보호 파일 1개에 단언 3줄이 추가되었습니다 (+3 −0). 다른 파일은 바뀌지 않았습니다. 승인하면 이 diff 해시에만 유효합니다.</div>
+          <div class="card"><div class="card-h"><h2 class="mono" style="color:var(--text)">calc_test.go</h2><span class="mono" style="color:var(--accent)">+3</span></div>
+            <pre class="diff" aria-label="calc_test.go 변경 내용"><div class="hunk">@@ -9,4 +9,7 @@ func TestSum(t *testing.T) {</div><div>    if got := Sum([]int{1, 2, 3}); got != 6 {</div><div>        t.Fatalf("Sum() = %d, want 6", got)</div><div>    }</div><div class="add">+   if got := Sum([]int{4}); got != 4 {</div><div class="add">+       t.Fatalf("Sum() = %d, want 4", got)</div><div class="add">+   }</div></pre></div>
+        </div>
+        <aside class="panel insp"><h2>변경 파일 1</h2><div class="sec"><ul class="files"><li aria-current="true"><span class="mono">calc_test.go</span><span class="tag prot">보호</span></li></ul></div></aside>
+      </div>
+    </section>
+    </main>
+  </div>
+</div>
+<script>
+const views = { overview: ['v-overview', '개요'], tasks: ['v-tasks', '작업'], task: ['v-task', '작업 / #38'], approvals: ['v-approvals', '승인'], diff: ['v-diff', '승인 / 변경 보기'] };
+function route() {
+  const h = location.hash.replace(/^#\//, '') || 'overview';
+  const key = h.startsWith('tasks/') ? 'task' : h in views ? h : 'overview';
+  document.querySelectorAll('.view').forEach(v => v.classList.toggle('on', v.id === views[key][0]));
+  const nav = key === 'task' ? 'tasks' : key === 'diff' ? 'approvals' : key;
+  document.querySelectorAll('[data-nav]').forEach(a => a.dataset.nav === nav ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current'));
+  document.getElementById('crumb').innerHTML = 'orch <span aria-hidden="true">/</span> <b>' + views[key][1] + '</b>';
+  document.title = views[key][1] + ' · orch 콘솔 목업 v4';
+}
+addEventListener('hashchange', route); route();
+
+const tone = { ok: 'c-done', bad: 'c-fail', wait: 'c-wait', run: 'c-run' };
+const nodes = {
+  queued: { t: '대기', k: 'queued', chip: ['run', '비어 있음'], d: '큐에서 차례를 기다리는 작업입니다. 지금은 없습니다.', bars: [], recent: [] },
+  preparing: { t: '준비', k: 'preparing', chip: ['ok', '평균 2초'], d: '에이전트 VM에 base 커밋을 번들로 전달합니다.', bars: [['준비', 2, '2초']], recent: ['#38 2.0초', '#36 2.1초', '#35 2.0초'] },
+  agent: { t: '에이전트', k: 'agent_running', chip: ['ok', '평균 25초'], d: 'Claude/Codex가 격리된 VM에서 작업하고 커밋합니다.', bars: [['에이전트', 17, '25초']], recent: ['#38 25초', '#36 26초', '#35 21초'] },
+  collect: { t: '수집', k: 'collecting', chip: ['ok', '평균 1초'], d: '에이전트가 만든 커밋을 크기 제한 안에서 가져옵니다.', bars: [['수집', 1, '1초']], recent: ['#38 1.3초', '#36 0.8초', '#35 1.3초'] },
+  verify: { t: '검증', k: 'verifying', chip: ['ok', '평균 134초'], d: '테스트 VM을 스냅샷에서 복원하고 게이트가 base와 head를 비교합니다. 같은 base는 base 결과를 재사용합니다.', bars: [['복원', 40, '55초'], ['게이트 head', 60, '81초'], ['게이트 base', 0, '0초 캐시']], recent: ['#38 140초', '#36 134초', '#35 134초'] },
+  publish: { t: '게시', k: 'publishing', chip: ['ok', '평균 3초'], d: '정책이 허용한 행위만 실행합니다. 지금은 push_branch만 허용되고, sample-app는 GitLab으로, 나머지는 로컬 저장소로 갑니다.', bars: [['게시', 2, '3초']], recent: ['#38 3.0초 → GitLab', '#36 0.1초 → 로컬', '#35 0.1초 → 로컬'], guard: true },
+  gate: { t: '승인 대기', k: 'needs_approval', chip: ['wait', '1건 (예시)'], d: '보호 파일 수정이나 정책 변경 같은 건은 사람이 터미널에서 승인해야 다음으로 갑니다.', bars: [], recent: ['항목 3 · 작업 #5 · 정책 변경'], guard: true },
+  failed: { t: '실패', k: 'failed', chip: ['bad', '2건'], d: '판정 실패는 새로 제출합니다. 인프라 오류로 멈춘 작업은 orch retry로 검증부터 재개합니다.', bars: [], recent: ['#37 게시: 배포 키 쓰기 권한 없음', '#3 판정 behavior_failure'] },
+  done: { t: '완료', k: 'done', chip: ['ok', '36건'], d: '검증과 게시가 끝난 작업입니다. orch/<번호> 브랜치로 확인합니다.', bars: [], recent: ['#38 → GitLab orch/38', '#36', '#35'] },
+};
+function guardHtml() {
+  return '<div class="sec"><h2>정책 가드레일</h2><div class="guard sec"><div><span>자율 단계<small>sample-app·toy</small></span><span class="mono">L1</span></div><div><span>허용 목록<small>push_branch</small></span><span class="sw" role="img" aria-label="켜짐"></span></div><div><span>하한선 Floor<small>force push·main 직접 push 금지</small></span><span class="sw" role="img" aria-label="켜짐"></span></div><div><span>base 결과 재사용<small>TTL 24시간</small></span><span class="sw" role="img" aria-label="켜짐"></span></div></div></div>';
+}
+function inspect(id) {
+  const n = nodes[id]; const el = document.getElementById('insp-over');
+  document.querySelectorAll('.nd').forEach(g => { const on = g.dataset.node === id; g.classList.toggle('sel', on); g.setAttribute('aria-pressed', on ? 'true' : 'false'); });
+  el.innerHTML = '<h2>' + n.t + ' <span class="mono" style="color:var(--faint)">' + n.k + '</span></h2>' +
+    '<div class="sec"><span class="chip ' + tone[n.chip[0]] + '">' + n.chip[1] + '</span><p class="note" style="margin-top:10px">' + n.d + '</p></div>' +
+    (n.bars.length ? '<div class="sec"><h2>시간 분포</h2><div class="bars">' + n.bars.map(b => '<div class="bar-r"><span>' + b[0] + '</span><div class="bar-t"><div class="bar-f" style="width:' + b[1] + '%"></div></div><span class="mono">' + b[2] + '</span></div>').join('') + '</div></div>' : '') +
+    (n.recent.length ? '<div class="sec"><h2>최근 작업</h2><ul class="rows">' + n.recent.map(r => '<li><span>' + r + '</span></li>').join('') + '</ul></div>' : '') +
+    (n.guard ? guardHtml() : '');
+}
+document.querySelectorAll('.nd').forEach(g => {
+  g.addEventListener('click', () => inspect(g.dataset.node));
+  g.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); inspect(g.dataset.node); } });
+});
+function inspectNone() {
+  document.querySelectorAll('.nd').forEach(g => { g.classList.remove('sel'); g.setAttribute('aria-pressed', 'false'); });
+  document.getElementById('insp-over').innerHTML = '<h2>파이프라인</h2><p class="note">단계를 누르면 평균 시간, 시간 분포, 최근 작업이 나옵니다.</p>' + guardHtml();
+}
+inspectNone();
+
+let z = 1; const zr = () => { const e = document.getElementById('zoomer'); e.style.transform = 'scale(' + z + ')'; e.style.width = (100 / z) + '%'; document.getElementById('zv').textContent = Math.round(z * 100) + '%'; };
+document.getElementById('zi').onclick = () => { z = Math.min(1.4, +(z + .1).toFixed(2)); zr(); };
+document.getElementById('zo').onclick = () => { z = Math.max(.7, +(z - .1).toFixed(2)); zr(); };
+document.getElementById('zf').onclick = () => { z = 1; zr(); };
+
+const tasks = {
+  38: ['작업 #38', 'c-done', '완료', 'sample-app', '총 184초 · 검증 140초(캐시)', 'push_branch → GitLab orch/38 (삭제됨)'],
+  37: ['작업 #37', 'c-fail', '실패', 'sample-app', '게시 단계에서 실패 (재시도 불가)', '배포 키 쓰기 권한 없음 → 38로 재제출'],
+  36: ['작업 #36', 'c-done', '완료', 'sample-app', '검증 134초(캐시)', 'push_branch → 로컬'],
+  5: ['작업 #5', 'c-wait', '승인 대기', 'toy', '재시도 1/3', '정책 변경 승인 필요 (항목 3)'],
+  2: ['작업 #2', 'c-done', '완료', 'toy', '사람 승인 2건', '보호 파일 + 정책 변경 승인'],
+  3: ['작업 #3', 'c-fail', '실패', 'toy', '의도한 회귀 시험', '판정 behavior_failure'],
+};
+function pickTask(id) {
+  const t = tasks[id];
+  document.querySelectorAll('#task-rows tr').forEach(r => r.classList.toggle('sel', r.dataset.t === String(id)));
+  document.querySelectorAll('.rowbtn').forEach(b => b.setAttribute('aria-pressed', b.dataset.pick === String(id) ? 'true' : 'false'));
+  document.getElementById('insp-tasks').innerHTML = '<h2>' + t[0] + '</h2><div class="sec"><span class="chip ' + t[1] + '">' + t[2] + '</span></div><div class="sec"><dl><dt>저장소</dt><dd>' + t[3] + '</dd><dt>시간</dt><dd>' + t[4] + '</dd><dt>게시</dt><dd>' + t[5] + '</dd></dl></div><div class="sec"><a href="#/tasks/38">상세 보기 →</a></div>';
+}
+document.querySelectorAll('#task-rows tr').forEach(r => r.addEventListener('click', e => { if (e.target.tagName !== 'A') pickTask(r.dataset.t); }));
+document.querySelectorAll('.rowbtn').forEach(b => b.addEventListener('click', () => pickTask(b.dataset.pick)));
+pickTask(38);
+
+let paused = false, last = new Date(); const pad = n => String(n).padStart(2, '0'), hm = d => pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+function liveRender() {
+  const pill = document.getElementById('livepill'), t = document.getElementById('livetxt'), b = document.getElementById('pausebtn');
+  pill.classList.toggle('paused', paused); b.setAttribute('aria-pressed', paused ? 'true' : 'false'); b.textContent = paused ? '다시 시작' : '일시정지';
+  t.textContent = paused ? '일시정지 · 마지막 ' + hm(last) : '실시간 · ' + hm(last) + ' 갱신';
+  document.getElementById('livestatus').textContent = paused ? '실시간 갱신 일시정지됨' : '실시간 갱신 중';
+}
+document.getElementById('pausebtn').addEventListener('click', () => { paused = !paused; liveRender(); });
+setInterval(() => { if (!paused) { last = new Date(); liveRender(); } }, 5000); liveRender();
+
+document.querySelectorAll('[data-copy]').forEach(b => b.addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText(document.getElementById('cmd1').textContent); b.textContent = '복사됨'; } catch (e) { b.textContent = '직접 선택'; }
+  setTimeout(() => b.textContent = '복사', 1500);
+}));
+</script>
+</body>
+</html>

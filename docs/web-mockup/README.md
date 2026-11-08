@@ -6,7 +6,8 @@
 |---|---|
 | `index.html` | v1: GitLab식 목록 + 개요만 Qolly식 흐름도 |
 | `index-v2.html` | v2: 전체를 Qolly 스타일 3단(메뉴 / 점 격자 캔버스 / 인스펙터)으로 통일 |
-| `index-v3.html` | v3: v2 + ui-ux-pro-max 검토 반영(아래). **현재 기준안** |
+| `index-v3.html` | v3: v2 + ui-ux-pro-max 검토 반영(아래) |
+| `index-v4.html` | v4: v3 + Stageshow 절제 규칙 반영(아래). **현재 기준안** |
 
 브라우저에서 파일을 바로 연다(`#/overview`, `#/tasks`, `#/tasks/38`, `#/approvals`, `#/diff`).
 작업 목록·시간·상태 수는 2026-11-08 실제 값, 승인 대기 1건과 변경 내용은 설명용 예시다.
@@ -35,6 +36,21 @@
 
 ## 대비 계산(WCAG 2.x, v3 기준)
 패널 위 본문 15.86 · 보조 글자 9.34 · 약한 글자 6.03 · 상태 칩 6.65~7.43 · 링크 9.22 · 노드 보조(유리 8.56, 결과 노드 가장 밝은 지점 5.03) · diff 추가 11.63 · 연결선(비텍스트) 6.04~8.59(기준 3:1).
+
+## v3 → v4 (Stageshow 규칙으로 점검)
+스킬: <https://benji.org/stageshow> (`benjitaylor/skills`, 커밋 299140f). `npx`를 실행하지 않고 저장소를 읽은 뒤 `stageshow/` 폴더를 `~/.claude/skills/stageshow`로 복사해 설치했다. 이 스킬은 마케팅용 "가짜 UI 일러스트·데모"를 만드는 규칙이라, 동작하는 콘솔에는 **원칙만** 적용했다(React 부품·촬영 스크립트는 쓰지 않음).
+
+| 어긴 규칙(craft.md) | 고친 것 |
+|---|---|
+| One number gets to be big (큰 숫자 12개) | 큰 숫자는 승인 대기 "1건" 하나. 나머지 노드는 한 줄 지표 |
+| Flat: 노드 8개가 같은 무게 | 중심 = 승인 대기 노드(더 크고 밝은 면). 나머지는 조용한 회색 |
+| No invented logo (`o` 색 상자) | 글자 워드마크 `orch` |
+| A gradient or glow serves the story or goes | 글로우는 "사람 필요" 경로 하나에만. 알약·스위치·막대·카드 글로우 제거, 배경 그라디언트 제거 |
+| Say it once (통계 카드와 노드가 같은 수 반복) | 통계 카드 삭제. 한 줄 요약 + 사람이 볼 것 1건 |
+| No dead corners / Space follows the story | 흐름도를 세로 트리로 바꿔 캔버스를 채움 |
+| The hero isn't outlined to point at it | 승인 카드의 테두리·글로우 제거(면과 글자 색으로만). 개요 첫 화면은 아무것도 선택하지 않음 |
+| No redundant tonal borders | 카드 테두리 제거(면 차이로 구분) |
+| Sentence case, one weight step | 대문자·자간 제목 제거 |
 
 ## 아직 확인하지 못한 것
 - 모바일 폭(375/768px)을 화면으로 확인하지 못함(CSS만 있음).
