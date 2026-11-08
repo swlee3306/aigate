@@ -69,6 +69,10 @@ func (localTest) Executor() (gate.Executor, error) { return &gate.LocalExecutor{
 // e2eBaseCache, when a test sets it, is handed to the steps of the next newE2E*.
 var e2eBaseCache *steps.BaseCache
 
+// e2eAPIConfig, when a test sets it, adjusts the daemon config of the next
+// newE2E* (e.g. to turn the HTTP listener on).
+var e2eAPIConfig func(*api.Config)
+
 type e2e struct {
 	t          *testing.T
 	st         *store.Store
@@ -78,6 +82,7 @@ type e2e struct {
 	base       string
 	head       string
 	policyPath string
+	httpAddr   string // the daemon's HTTP listener, when e2eAPIConfig enabled it
 	cleanups   []func()
 }
 
@@ -135,6 +140,9 @@ func newE2EPolicy(t *testing.T, files map[string]string, pub steps.Publisher, li
 	if live != nil {
 		acfg.PolicyHash = func() string { return live.Current().Hash() }
 	}
+	if e2eAPIConfig != nil {
+		e2eAPIConfig(&acfg)
+	}
 	d, err := api.NewDaemon(acfg, st, p)
 	if err != nil {
 		t.Fatal(err)
@@ -143,6 +151,9 @@ func newE2EPolicy(t *testing.T, files map[string]string, pub steps.Publisher, li
 	done := make(chan error, 1)
 	go func() { done <- d.Run(ctx) }()
 	<-d.Ready()
+	if a := d.HTTPAddr(); a != nil {
+		e.httpAddr = a.String()
+	}
 	t.Cleanup(func() { cancel(); <-done })
 	return e
 }
