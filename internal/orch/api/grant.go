@@ -75,10 +75,15 @@ func grantErr(err error) *httpError {
 	return errInternal
 }
 
-// viaOf names the path a write came in on, for the ledger. Only the local
-// socket exists so far; Task 17 (sessions and tokens) replaces this with the
-// request's principal ("session" or "token").
-func viaOf(*http.Request) string { return "socket" }
+// viaOf names the path a write came in on, for the ledger: the principal's
+// kind (socket, session or token). Every route sits behind authenticate, so a
+// missing principal is a wiring bug and is recorded as "unknown".
+func viaOf(r *http.Request) string {
+	if p, ok := PrincipalFrom(r.Context()); ok {
+		return p.Kind
+	}
+	return "unknown"
+}
 
 // grantable is what checkCurrent found current: the prepared diff for
 // protected_modified, or the publish action whose hash the entry binds.

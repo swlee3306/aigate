@@ -149,3 +149,20 @@ func TestFullVMFlagsBuildProvider(t *testing.T) {
 		t.Fatal("empty flags must keep the placeholder")
 	}
 }
+
+func TestSocketUIDFlag(t *testing.T) {
+	var u uidList
+	for _, v := range []string{"0", "1001"} {
+		if err := u.Set(v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(u) != 2 || u[0] != 0 || u[1] != 1001 {
+		t.Fatalf("%v", u)
+	}
+	for _, bad := range []string{"", "-1", "orch", "4294967296"} {
+		if err := u.Set(bad); err == nil {
+			t.Fatalf("%q accepted", bad)
+		}
+	}
+}

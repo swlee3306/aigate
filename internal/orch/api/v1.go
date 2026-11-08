@@ -9,23 +9,26 @@ import (
 
 const v1Prefix = "/api/v1"
 
-// mountV1 exposes the task and approval handlers under /api/v1. The handlers
+// mountV1 exposes the task and approval handlers under /api/v1. Every route is
+// already behind authenticate; mutating routes also need the write tier
+// (requireWrite). The grant's authority is the signature it carries, but a
+// browser session still needs its CSRF header to reach it. The handlers
 // are the legacy ones; v1Wrap (applied in ServeHTTP to every /api/v1 path,
 // including paths the mux itself rejects) renders their errors as the v1
 // envelope {"error":{"code","message"}}.
 func (h *handler) mountV1(mux *http.ServeMux) {
-	mux.HandleFunc("POST "+v1Prefix+"/tasks", h.submit)
+	mux.HandleFunc("POST "+v1Prefix+"/tasks", h.requireWrite(h.submit))
 	mux.HandleFunc("GET "+v1Prefix+"/tasks", h.list)
 	mux.HandleFunc("GET "+v1Prefix+"/tasks/{id}", h.get)
 	mux.HandleFunc("GET "+v1Prefix+"/tasks/{id}/events", h.events)
-	mux.HandleFunc("POST "+v1Prefix+"/tasks/{id}/cancel", h.cancel)
-	mux.HandleFunc("POST "+v1Prefix+"/tasks/{id}/retry", h.retry)
+	mux.HandleFunc("POST "+v1Prefix+"/tasks/{id}/cancel", h.requireWrite(h.cancel))
+	mux.HandleFunc("POST "+v1Prefix+"/tasks/{id}/retry", h.requireWrite(h.retry))
 	mux.HandleFunc("GET "+v1Prefix+"/tasks/{id}/report", h.report)
 	mux.HandleFunc("GET "+v1Prefix+"/tasks/{id}/diff", h.diff)
 	mux.HandleFunc("GET "+v1Prefix+"/approvals", h.approvals)
 	mux.HandleFunc("GET "+v1Prefix+"/approvals/{id}", h.approvalGet)
-	mux.HandleFunc("POST "+v1Prefix+"/approvals/{id}/reverify", h.reverify)
-	mux.HandleFunc("POST "+v1Prefix+"/approvals/{id}/grant", h.grantSigned)
+	mux.HandleFunc("POST "+v1Prefix+"/approvals/{id}/reverify", h.requireWrite(h.reverify))
+	mux.HandleFunc("POST "+v1Prefix+"/approvals/{id}/grant", h.requireWrite(h.grantSigned))
 	mux.HandleFunc("GET "+v1Prefix+"/stages", h.stages)
 	mux.HandleFunc("GET "+v1Prefix+"/overview", h.overview)
 	mux.HandleFunc("GET "+v1Prefix+"/projects", h.projects)

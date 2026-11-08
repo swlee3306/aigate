@@ -1,7 +1,10 @@
-// Package api is the local control surface of orchd: a small JSON API served
-// over a unix socket. There is no authentication beyond the socket file mode
-// (0600, owned by the orchd user) and the 0700 directory around it; anyone who
-// can open the socket can submit and cancel tasks. Do not expose it elsewhere.
+// Package api is the control surface of orchd: a JSON API served over a unix
+// socket (and, from Task 21, a loopback HTTP listener). Every request except
+// GET /api/v1/healthz is authenticated before any handler runs (auth.go): a
+// socket peer must have an allowlisted uid (Config.SocketUIDs; empty = the
+// daemon's own uid) on top of the socket file mode (0600) and its 0700
+// directory; an HTTP caller needs a bearer token or a session cookie. Writes
+// need the write tier (socket, token, or session + CSRF header).
 //
 // Approvals: socket access alone can never GRANT one. The authority is a grant
 // in the approvals file (the one the gate reads): in legacy mode written by a
@@ -17,6 +20,8 @@
 package api
 
 import (
+	"bytes"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +33,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -137,10 +143,20 @@ type handler struct {
 	// policy and ops supply the /policy and /ops views (nil: empty object).
 	policy func() PolicyView
 	ops    func() OpsView
+	// socketUIDs is the socket peer allowlist; auth resolves HTTP credentials
+	// (nil: every HTTP request is unauthenticated).
+	socketUIDs map[uint32]bool
+	auth       Authenticator
+	// root routes the unauthenticated endpoints and sends everything else
+	// through authenticate to mux.
+	root *http.ServeMux
+	// idemMu serialises keyed submits (one orchd per database, see lockDB),
+	// so a key never yields two tasks.
+	idemMu sync.Mutex
 }
 
 func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome string) (*handler, error) {
-	h := &handler{st: st, m: m, grants: approvals.Grants{Home: gateHome}}
+	h := &handler{st: st, m: m, grants: approvals.Grants{Home: gateHome}, socketUIDs: socketUIDSet(nil)}
 	for _, r := range allowed {
 		if !filepath.IsAbs(r) || filepath.Clean(r) != r {
 			return nil, fmt.Errorf("allowed repo root %q must be an absolute clean path", r)
@@ -151,25 +167,30 @@ func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome 
 		h.roots = append(h.roots, r)
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /tasks", h.submit)
+	mux.HandleFunc("POST /tasks", h.requireWrite(h.submit))
 	mux.HandleFunc("GET /tasks", h.list)
 	mux.HandleFunc("GET /tasks/{id}", h.get)
-	mux.HandleFunc("POST /tasks/{id}/cancel", h.cancel)
-	mux.HandleFunc("POST /tasks/{id}/retry", h.retry)
+	mux.HandleFunc("POST /tasks/{id}/cancel", h.requireWrite(h.cancel))
+	mux.HandleFunc("POST /tasks/{id}/retry", h.requireWrite(h.retry))
 	mux.HandleFunc("GET /approvals", h.approvals)
 	mux.HandleFunc("GET /approvals/{id}", h.approvalGet)
-	mux.HandleFunc("POST /approvals/{id}/reverify", h.reverify)
+	mux.HandleFunc("POST /approvals/{id}/reverify", h.requireWrite(h.reverify))
 	h.mountV1(mux)
 	h.mux = mux
+	h.root = http.NewServeMux()
+	h.root.HandleFunc("GET "+v1Prefix+"/healthz", healthz)
+	h.root.Handle("/", h.authenticate(mux))
 	return h, nil
 }
 
+// ServeHTTP authenticates every request except GET /api/v1/healthz before it
+// reaches a handler (see authenticate); mutating routes add requireWrite.
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if isV1Path(r.URL.Path) {
-		v1Wrap(h.mux).ServeHTTP(w, r)
+		v1Wrap(h.root).ServeHTTP(w, r)
 		return
 	}
-	h.mux.ServeHTTP(&jsonErrors{ResponseWriter: w}, r)
+	h.root.ServeHTTP(&jsonErrors{ResponseWriter: w}, r)
 }
 
 // jsonErrors turns the mux's plain-text 404/405 into the JSON error shape.
@@ -222,29 +243,39 @@ func writeErr(w http.ResponseWriter, err error) {
 	writeJSON(w, he.code, body)
 }
 
+// submit creates a task. With an Idempotency-Key (scoped to the principal)
+// the same key and byte-identical body within IdempotencyTTL replay the task
+// first created (200, Idempotent-Replay: true, the task's current view); the
+// same key with another body is 409 idempotency_conflict.
 func (h *handler) submit(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, MaxBodyBytes)
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	var req submitRequest
-	if err := dec.Decode(&req); err != nil {
-		var mbe *http.MaxBytesError
-		switch {
-		case errors.As(err, &mbe):
-			writeErr(w, &httpError{code: http.StatusRequestEntityTooLarge, msg: "요청이 너무 큽니다"})
-		case errors.Is(err, io.EOF):
-			writeErr(w, bad("요청 본문이 비어 있습니다"))
-		default:
-			writeErr(w, bad("잘못된 JSON: %v", err))
-		}
+	key, err := idempotencyKey(r)
+	if err != nil {
+		writeErr(w, err)
 		return
 	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+	r.Body = http.MaxBytesReader(w, r.Body, MaxBodyBytes)
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
 			writeErr(w, &httpError{code: http.StatusRequestEntityTooLarge, msg: "요청이 너무 큽니다"})
 			return
 		}
+		writeErr(w, bad("요청 본문을 읽을 수 없습니다"))
+		return
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var req submitRequest
+	if err := dec.Decode(&req); err != nil {
+		if errors.Is(err, io.EOF) {
+			writeErr(w, bad("요청 본문이 비어 있습니다"))
+		} else {
+			writeErr(w, bad("잘못된 JSON: %v", err))
+		}
+		return
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		writeErr(w, bad("JSON 뒤에 불필요한 데이터가 있습니다"))
 		return
 	}
@@ -253,17 +284,84 @@ func (h *handler) submit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	if key == "" {
+		h.createAndRespond(w, r, t)
+		return
+	}
+	p, ok := PrincipalFrom(r.Context())
+	if !ok {
+		writeErr(w, errUnauthenticated)
+		return
+	}
+	scoped, bh := scopedIdemKey(p, key), bodyHash(raw)
+	h.idemMu.Lock()
+	defer h.idemMu.Unlock()
+	if done, err := h.replay(w, r, scoped, bh); done || err != nil {
+		if err != nil {
+			writeErr(w, err)
+		}
+		return
+	}
 	id, err := h.st.CreateTask(r.Context(), t)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
+	// Under idemMu only another process (which lockDB rules out) or an expiry
+	// race can make Put fail with ErrKeyExists. Retry once when the key turns
+	// out to have expired meanwhile (CF6); a live key from elsewhere wins.
+	for attempt := 0; ; attempt++ {
+		err = h.st.PutIdempotent(r.Context(), scoped, bh, id, IdempotencyTTL)
+		if !errors.Is(err, store.ErrKeyExists) || attempt == 1 {
+			break
+		}
+		if done, rerr := h.replay(w, r, scoped, bh); done || rerr != nil {
+			if rerr != nil {
+				writeErr(w, rerr)
+			}
+			log.Printf("orchd: idempotency key raced; task %d was created but not recorded", id)
+			return
+		}
+	}
+	if err != nil {
+		log.Printf("orchd: idempotency key for task %d not recorded: %v", id, err)
+	}
+	h.respondTask(w, r, id, http.StatusCreated, false)
+}
+
+// replay answers from a live idempotency record: done=true when it wrote the
+// response (replay or conflict), false when the key is unknown.
+func (h *handler) replay(w http.ResponseWriter, r *http.Request, scoped, bh string) (bool, error) {
+	id, stored, ok, err := h.st.GetIdempotent(r.Context(), scoped)
+	if err != nil || !ok {
+		return false, err
+	}
+	if subtle.ConstantTimeCompare([]byte(stored), []byte(bh)) != 1 {
+		return false, errIdemConflict
+	}
+	h.respondTask(w, r, id, http.StatusOK, true)
+	return true, nil
+}
+
+func (h *handler) createAndRespond(w http.ResponseWriter, r *http.Request, t store.Task) {
+	id, err := h.st.CreateTask(r.Context(), t)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	h.respondTask(w, r, id, http.StatusCreated, false)
+}
+
+func (h *handler) respondTask(w http.ResponseWriter, r *http.Request, id int64, status int, replay bool) {
 	got, err := h.st.GetTask(r.Context(), id)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, viewOf(got))
+	if replay {
+		w.Header().Set("Idempotent-Replay", "true")
+	}
+	writeJSON(w, status, viewOf(got))
 }
 
 // validate checks a submit request and returns the task to store. Repo is

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -26,6 +27,19 @@ type stringList []string
 
 func (s *stringList) String() string     { return fmt.Sprint(*s) }
 func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
+
+// uidList is a repeatable numeric uid flag.
+type uidList []uint32
+
+func (u *uidList) String() string { return fmt.Sprint(*u) }
+func (u *uidList) Set(v string) error {
+	n, err := strconv.ParseUint(v, 10, 32)
+	if err != nil {
+		return fmt.Errorf("uid %q is not a number", v)
+	}
+	*u = append(*u, uint32(n))
+	return nil
+}
 
 // placeholderSteps is used when no VM flags are given. Every
 // step reports an infrastructure error, so a task retries and ends in failed.
@@ -65,6 +79,8 @@ func run(args []string) int {
 	fs.StringVar(&cfg.Socket, "socket", envOr("ORCHD_SOCKET", "/run/orchd/orchd.sock"), "unix socket path")
 	fs.IntVar(&cfg.Concurrency, "concurrency", 1, "tasks run in parallel")
 	fs.Var(&repos, "allow-repo", "repository root tasks may use (repeatable; none = refuse all)")
+	var socketUIDs uidList
+	fs.Var(&socketUIDs, "socket-uid", "uid allowed to use the socket (repeatable; none = only orchd's own uid)")
 	var vf vmFlags
 	vf.register(fs)
 	policyPath := fs.String("policy", envOr("ORCHD_POLICY", ""), "policy.yml (autonomy levels, allowlist, limits); re-read when each task starts")
@@ -72,6 +88,7 @@ func run(args []string) int {
 		return 2
 	}
 	cfg.AllowedRepos = repos
+	cfg.SocketUIDs = socketUIDs
 	if *policyPath != "" {
 		live, err := applyPolicy(fs, *policyPath, &cfg, &vf)
 		if err != nil {

@@ -38,6 +38,14 @@ type Config struct {
 	// both endpoints answer an empty object).
 	Policy func() PolicyView
 	Ops    func() OpsView
+	// SocketUIDs are the uids whose processes may use the unix socket (read
+	// and general write), checked with the kernel's peer credentials on every
+	// connection. Empty or nil means the daemon process's own uid only; root
+	// is not implied.
+	SocketUIDs []uint32
+	// Auth resolves HTTP bearer tokens and session cookies (nil: the store's
+	// sessions table, StoreAuthenticator).
+	Auth Authenticator
 }
 
 // StepProvider supplies the steps the machine runs.
@@ -82,6 +90,11 @@ func NewDaemon(cfg Config, st *store.Store, p StepProvider) (*Daemon, error) {
 	h.policyHash = cfg.PolicyHash
 	h.reportDir = cfg.ReportDir
 	h.policy, h.ops = cfg.Policy, cfg.Ops
+	h.socketUIDs = socketUIDSet(cfg.SocketUIDs)
+	h.auth = cfg.Auth
+	if h.auth == nil {
+		h.auth = &StoreAuthenticator{St: st}
+	}
 	return &Daemon{cfg: cfg, st: st, m: m, handler: h, ready: make(chan struct{})}, nil
 }
 
@@ -110,7 +123,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		ln.Close()
 		return fmt.Errorf("recover: %w", err)
 	}
-	srv := &http.Server{Handler: d.handler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second}
+	srv := &http.Server{Handler: d.handler, ConnContext: ConnContext, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second}
 	var wg sync.WaitGroup
 	for i := 0; i < d.cfg.Concurrency; i++ {
 		wg.Add(1)
