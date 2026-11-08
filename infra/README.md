@@ -91,7 +91,7 @@ orchd의 HTTP 리스너(루프백)를 `tailscale serve`로 tailnet에 HTTPS(443)
 3. **[사용자 승인]** `sh infra/orch-web-serve.sh 8808`(계획) → `sh infra/orch-web-serve.sh 8808 --apply`. 끝에 `tailscale serve status`를 출력한다.
 4. **[사용자 직접]** Tailscale 관리 콘솔에서 이 tailnet의 HTTPS 인증서를 켠다(MagicDNS와 HTTPS Certificates). 스크립트가 대신하지 않는다.
 5. **[사용자 직접, 컷오버]** 첫 키 등록(패스키 등록 대기 항목은 `/home/orch/orchd/state/signers.pending.json`에 있고 `sudo orch admin signers pending`으로 본다): `sudo orch admin signers add --id <ID> --key ~/.ssh/id_ed25519.pub`. 이 명령이 `/etc/aigate/signers.json`을 만들며 **그 순간부터 서명된 승인만 유효한 모드**가 된다.
-6. 확인: `sudo orch admin signers list`, 시작 로그(`HTTP listener on ...`, `socket uids allowed`, `approvals: mode ...`), 브라우저에서 `https://<FQDN>/` 접속, `tailscale serve status`에 Funnel이 없는지.
+6. 확인: `sudo orch admin signers list`, 시작 로그(`HTTP listener on ...`, `socket uids allowed`, `orchd: config: approvals: mode legacy|signed`, 시작 때 한 번만 찍힘), 브라우저에서 `https://<FQDN>/` 접속, `tailscale serve status`에 Funnel이 없는지.
 
 ### 롤백
 - 서명 필수 모드 해제: `sudo rm /etc/aigate/signers.json`(레거시 모드로 복귀. 레지스트리는 승인 검사(`Store.Valid`)마다 읽으므로 코드상 다음 검사부터 적용되고 재시작은 선택이다. 같은 이유로 손상되었거나 신뢰할 수 없는(소유자·권한 이상) `signers.json`은 즉시 fail-closed가 된다. 둘 다 코드 읽기 기준이며 실서버에서는 미확인).
