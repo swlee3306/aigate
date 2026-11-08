@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"aigate/internal/approval/signing"
 	"aigate/internal/orch/api"
 	"aigate/internal/orch/steps"
 	"aigate/internal/orch/store"
@@ -194,5 +195,64 @@ func TestWebAuthnFlags(t *testing.T) {
 	}
 	if api.DefaultPendingFile != "/var/lib/orchd/signers.pending.json" {
 		t.Fatalf("default %q", api.DefaultPendingFile)
+	}
+}
+
+func TestListenerFlags(t *testing.T) {
+	web := []string{"--rp-id", "console.example.test", "--origin", "https://console.example.test"}
+	for _, args := range [][]string{
+		{"--http-listen", "127.0.0.1:8808"},                                                         // no origin, rp-id, host
+		append([]string{"--http-listen", "127.0.0.1:8808"}, web...),                                 // no allowed host
+		append([]string{"--http-listen", "127.0.0.1:8808", "--allowed-host", "other.test"}, web...), // origin host unlisted
+		append([]string{"--http-listen", "0.0.0.0:8808", "--allowed-host", "console.example.test"}, web...),
+		append([]string{"--http-listen", ":8808", "--allowed-host", "console.example.test"}, web...),
+		append([]string{"--http-listen", "[::]:8808", "--allowed-host", "console.example.test"}, web...),
+		append([]string{"--http-listen", "10.0.0.5:8808", "--allowed-host", "console.example.test"}, web...),
+		append([]string{"--http-listen", "127.0.0.1:8808", "--allowed-host", "https://console.example.test"}, web...),
+		{"--report-dir", "reports"},
+		{"--report-dir", "/var/lib/orchd/../reports"},
+		{"--signers-file", "signers.json"},
+		{"--signers-file", "/etc/aigate/../signers.json"},
+		{"--session-ttl", "1m"},
+		{"--session-ttl", "25h"},
+		{"--socket-uid", "4294967295"},
+	} {
+		db := filepath.Join(t.TempDir(), "never", "o.db")
+		if code := run(append(args, "--db", db)); code != 2 {
+			t.Errorf("%v: exit %d, want 2", args, code)
+		}
+		if _, err := os.Stat(filepath.Dir(db)); !os.IsNotExist(err) {
+			t.Errorf("%v: database directory created before the flags were checked", args)
+		}
+	}
+	ok := api.Config{HTTPListen: "127.0.0.1:8808", AllowedHosts: []string{"console.example.test"},
+		RPID: "console.example.test", Origin: "https://console.example.test", SessionTTL: api.SessionIdleTTL}
+	if err := checkListenerFlags(ok, "/var/lib/orchd/reports", "/etc/aigate/signers.json"); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkListenerFlags(api.Config{}, "", "/etc/aigate/signers.json"); err != nil {
+		t.Fatalf("listener off: %v", err)
+	}
+}
+
+func TestSignersFileFlagSetsRegistryPath(t *testing.T) {
+	old := signing.RegistryPath()
+	t.Cleanup(func() { signing.SetRegistryPath(old) })
+	// Absent under a root-owned directory: legacy mode.
+	absent := "/usr/aigate-absent-for-test/signers.json"
+	if mode := applySignersFile(absent); signing.RegistryPath() != absent || !strings.Contains(mode, "legacy") {
+		t.Fatalf("absent: path %q mode %q", signing.RegistryPath(), mode)
+	}
+	p := filepath.Join(t.TempDir(), "signers.json")
+	// Absent under a directory root does not own: fail closed (R16).
+	if mode := applySignersFile(p); signing.RegistryPath() != p || !strings.Contains(mode, "FAIL CLOSED") {
+		t.Fatalf("absent in untrusted dir: path %q mode %q", signing.RegistryPath(), mode)
+	}
+	// A registry the daemon cannot trust (not root-owned) is signed mode, fail closed.
+	if err := os.WriteFile(p, []byte(`{"version":1,"signers":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if mode := applySignersFile(p); !strings.Contains(mode, "FAIL CLOSED") {
+		t.Fatalf("untrusted: mode %q", mode)
 	}
 }

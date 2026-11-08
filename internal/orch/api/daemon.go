@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"syscall"
 	"time"
@@ -40,8 +42,8 @@ type Config struct {
 	Ops    func() OpsView
 	// SocketUIDs are the uids whose processes may use the unix socket (read
 	// and general write), checked with the kernel's peer credentials on every
-	// connection. Empty or nil means the daemon process's own uid only; root
-	// is not implied.
+	// connection. The daemon process's own uid is always added (CF9); root is
+	// not implied. 4294967295 (the "-1" uid) is refused.
 	SocketUIDs []uint32
 	// Auth resolves HTTP bearer tokens and session cookies (nil: the store's
 	// sessions table, StoreAuthenticator).
@@ -54,7 +56,26 @@ type Config struct {
 	// PendingFile is the pending passkey enrollment file (R18; empty:
 	// DefaultPendingFile, the default of `orch admin signers --pending-file`).
 	PendingFile string
+	// HTTPListen is the loopback address of the HTTP listener ("" = off),
+	// e.g. 127.0.0.1:8808. Only 127.0.0.0/8 and ::1 are accepted
+	// (ResolveLoopbackListen); it must be reached only through
+	// `tailscale serve`. It requires RPID, Origin and AllowedHosts.
+	HTTPListen string
+	// AllowedHosts is the Host header allowlist of the HTTP listener (port
+	// ignored, case-insensitive); it must include Origin's host.
+	AllowedHosts []string
+	// SessionTTL is the idle expiry of a browser session (0: SessionIdleTTL;
+	// MinSessionTTL..MaxSessionTTL). The absolute cap SessionMaxLifetime stays.
+	SessionTTL time.Duration
 }
+
+const (
+	// purgeEvery is how often expired sessions, challenges and idempotency
+	// keys are deleted (also once at startup; CF8/CF13).
+	purgeEvery = 5 * time.Minute
+	// shutdownTimeout bounds the drain of in-flight requests at shutdown.
+	shutdownTimeout = 5 * time.Second
+)
 
 // StepProvider supplies the steps the machine runs.
 type StepProvider interface {
@@ -69,6 +90,20 @@ type Daemon struct {
 	handler *handler
 	ready   chan struct{}
 
+	// HTTP listener (httpBind "" = off): the resolved loopback address, the
+	// Host allowlist, the auth rate limiter and the bound address once Run
+	// listens.
+	httpBind     string
+	allowedHosts map[string]bool
+	limiter      *rateLimiter
+	httpAddr     net.Addr
+
+	// purgeEvery/shutdownTimeout are the constants above; tests shorten them.
+	// purgeHook, when set, sees every purge result (tests).
+	purgeEvery      time.Duration
+	shutdownTimeout time.Duration
+	purgeHook       func(n int64, err error)
+
 	// tickMu/paused exist only so tests can stop the worker loop deterministically
 	// (see pauseWorkers in the test files); production never sets paused.
 	tickMu sync.RWMutex
@@ -81,6 +116,16 @@ func NewDaemon(cfg Config, st *store.Store, p StepProvider) (*Daemon, error) {
 		return nil, errors.New("socket path is required")
 	}
 	if err := ValidateWebAuthnConfig(cfg.RPID, cfg.Origin); err != nil {
+		return nil, err
+	}
+	bind, hosts, err := ValidateHTTPConfig(context.Background(), cfg.HTTPListen, cfg.AllowedHosts, cfg.RPID, cfg.Origin)
+	if err != nil {
+		return nil, err
+	}
+	if err := ValidateSessionTTL(cfg.SessionTTL); err != nil {
+		return nil, err
+	}
+	if err := ValidateSocketUIDs(cfg.SocketUIDs); err != nil {
 		return nil, err
 	}
 	if cfg.Concurrency < 1 {
@@ -107,19 +152,107 @@ func NewDaemon(cfg Config, st *store.Store, p StepProvider) (*Daemon, error) {
 	if cfg.PendingFile != "" {
 		h.pendingFile = cfg.PendingFile
 	}
-	if h.auth == nil {
-		h.auth = &StoreAuthenticator{St: st}
+	if cfg.SessionTTL > 0 {
+		h.sessionTTL = cfg.SessionTTL
 	}
-	return &Daemon{cfg: cfg, st: st, m: m, handler: h, ready: make(chan struct{})}, nil
+	if h.auth == nil {
+		h.auth = &StoreAuthenticator{St: st, IdleTTL: h.sessionTTL}
+	}
+	log.Printf("orchd: socket uids allowed: %v", sortedUIDs(h.socketUIDs))
+	return &Daemon{cfg: cfg, st: st, m: m, handler: h, ready: make(chan struct{}),
+		httpBind: bind, allowedHosts: hosts,
+		limiter:    newRateLimiter(DefaultAuthRatePerKey, DefaultAuthRateGlobal, DefaultRateKeys),
+		purgeEvery: purgeEvery, shutdownTimeout: shutdownTimeout}, nil
+}
+
+// ValidateSocketUIDs refuses uids no process can have: 4294967295 is (uid_t)-1,
+// the "no change" value of setuid/chown.
+func ValidateSocketUIDs(uids []uint32) error {
+	for _, u := range uids {
+		if u == math.MaxUint32 {
+			return fmt.Errorf("--socket-uid %d는 올바른 uid가 아닙니다", u)
+		}
+	}
+	return nil
+}
+
+func sortedUIDs(set map[uint32]bool) []uint32 {
+	out := make([]uint32, 0, len(set))
+	for u := range set {
+		out = append(out, u)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+// HTTPAddr is the bound address of the HTTP listener (nil when it is off or
+// before Ready).
+func (d *Daemon) HTTPAddr() net.Addr { return d.httpAddr }
+
+// httpHandler is the handler stack of the HTTP listener (see secure.go for the
+// order). The socket serves socketHandler.
+func (d *Daemon) httpHandler() http.Handler {
+	var h http.Handler = d.handler
+	h = rateLimit(d.limiter, h)
+	h = jsonOnly(h)
+	h = limitBody(MaxBodyBytes, h)
+	h = originCheck(d.cfg.Origin, h)
+	h = noCORS(h)
+	h = hostCheck(d.allowedHosts, h)
+	return secureHeaders(h)
+}
+
+// socketHandler keeps the socket as it was (trusted by peer uid): only the
+// body cap is added.
+func (d *Daemon) socketHandler() http.Handler { return limitBody(MaxBodyBytes, d.handler) }
+
+// purge deletes expired auth rows once.
+func (d *Daemon) purge(ctx context.Context) {
+	n, err := d.st.PurgeExpired(ctx)
+	if err != nil && ctx.Err() == nil {
+		log.Printf("orchd: purge expired sessions/challenges: %v", err)
+	}
+	if d.purgeHook != nil {
+		d.purgeHook(n, err)
+	}
+}
+
+// purgeLoop purges every purgeEvery until ctx ends.
+func (d *Daemon) purgeLoop(ctx context.Context) {
+	t := time.NewTicker(d.purgeEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			d.purge(ctx)
+		}
+	}
+}
+
+// listenLoopback binds the resolved HTTP address and double-checks that the
+// kernel bound a loopback address.
+func listenLoopback(addr string) (net.Listener, error) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP 리스너를 열 수 없습니다(%s): %w", addr, err)
+	}
+	if ta, ok := ln.Addr().(*net.TCPAddr); !ok || !ta.IP.IsLoopback() {
+		ln.Close()
+		return nil, fmt.Errorf("HTTP 리스너가 루프백이 아닌 주소 %s에 바인딩되어 닫았습니다", ln.Addr())
+	}
+	return ln, nil
 }
 
 // Ready is closed once the socket is listening and recovery is done.
 func (d *Daemon) Ready() <-chan struct{} { return d.ready }
 
-// Run serves until ctx is cancelled. On cancel the HTTP server drains and the
-// workers stop; a step that was running sees its context cancelled, its result
-// is dropped and its claim stays, so Recover re-runs it at the next start (it
-// counts as one attempt).
+// Run serves until ctx is cancelled. On cancel both listeners stop accepting,
+// in-flight requests drain (up to shutdownTimeout, then their connections are
+// closed) and the workers stop; a step that was running sees its context
+// cancelled, its result is dropped and its claim stays, so Recover re-runs it
+// at the next start (it counts as one attempt).
 func (d *Daemon) Run(ctx context.Context) error {
 	ln, err := listenUnix(d.cfg.Socket)
 	if err != nil {
@@ -138,14 +271,40 @@ func (d *Daemon) Run(ctx context.Context) error {
 		ln.Close()
 		return fmt.Errorf("recover: %w", err)
 	}
-	srv := &http.Server{Handler: d.handler, ConnContext: ConnContext, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second}
+	// Expired auth rows go before any listener answers, then periodically.
+	d.purge(ctx)
+	var hln net.Listener
+	if d.httpBind != "" {
+		if hln, err = listenLoopback(d.httpBind); err != nil {
+			ln.Close()
+			return err
+		}
+		d.httpAddr = hln.Addr()
+		log.Printf("orchd: HTTP listener on %s (allowed hosts %v, origin %s); reach it only through tailscale serve",
+			hln.Addr(), sortedKeys(d.allowedHosts), d.cfg.Origin)
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	servers := []*http.Server{{Handler: d.socketHandler(), ConnContext: ConnContext,
+		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second}}
+	listeners := []net.Listener{ln}
+	if hln != nil {
+		servers = append(servers, &http.Server{Handler: d.httpHandler(), ConnContext: ConnContext,
+			ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 2 * time.Minute,
+			IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 64 << 10})
+		listeners = append(listeners, hln)
+	}
 	var wg sync.WaitGroup
 	for i := 0; i < d.cfg.Concurrency; i++ {
 		wg.Add(1)
 		go func() { defer wg.Done(); d.work(ctx) }()
 	}
-	serveErr := make(chan error, 1)
-	go func() { serveErr <- srv.Serve(ln) }()
+	wg.Add(1)
+	go func() { defer wg.Done(); d.purgeLoop(ctx) }()
+	serveErr := make(chan error, len(servers))
+	for i, srv := range servers {
+		go func(srv *http.Server, l net.Listener) { serveErr <- srv.Serve(l) }(srv, listeners[i])
+	}
 	close(d.ready)
 
 	var runErr error
@@ -153,10 +312,23 @@ func (d *Daemon) Run(ctx context.Context) error {
 	case <-ctx.Done():
 	case runErr = <-serveErr:
 	}
-	sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = srv.Shutdown(sctx)
-	_ = ln.Close() // Shutdown may race Serve; make sure the socket file goes
+	cancel()
+	sctx, scancel := context.WithTimeout(context.Background(), d.shutdownTimeout)
+	defer scancel()
+	var sw sync.WaitGroup
+	for _, srv := range servers {
+		sw.Add(1)
+		go func(srv *http.Server) {
+			defer sw.Done()
+			if err := srv.Shutdown(sctx); err != nil {
+				_ = srv.Close() // deadline passed: drop the remaining connections
+			}
+		}(srv)
+	}
+	sw.Wait()
+	for _, l := range listeners {
+		_ = l.Close() // Shutdown may race Serve; make sure the socket file goes
+	}
 	wg.Wait()
 	if errors.Is(runErr, http.ErrServerClosed) {
 		runErr = nil

@@ -33,8 +33,9 @@ type Principal struct {
 }
 
 const (
-	// SessionCookieName carries the raw browser session token.
-	SessionCookieName = "orch_session"
+	// SessionCookieName carries the raw browser session token. The __Host-
+	// prefix makes the browser insist on Secure, Path=/ and no Domain (CF16).
+	SessionCookieName = "__Host-orch_session"
 	// CSRFHeader carries the session's CSRF token on every write (design 7).
 	CSRFHeader = "X-Orch-CSRF"
 
@@ -68,6 +69,9 @@ type Authenticator interface {
 type StoreAuthenticator struct {
 	St  *store.Store
 	Now func() time.Time // nil: time.Now (tests move it)
+	// IdleTTL is the sliding idle expiry of a browser session (0:
+	// SessionIdleTTL; --session-ttl).
+	IdleTTL time.Duration
 }
 
 func (a *StoreAuthenticator) now() time.Time {
@@ -123,7 +127,11 @@ func (a *StoreAuthenticator) Session(ctx context.Context, raw string) (Principal
 	// The store applies the cap with its own reading of now, so the stored
 	// expiry never passes CreatedAt+SessionMaxLifetime (lookup already
 	// refused a session at or past it).
-	if err := a.St.TouchSessionCapped(ctx, raw, SessionIdleTTL, s.CreatedAt.Add(SessionMaxLifetime)); err != nil {
+	idle := a.IdleTTL
+	if idle <= 0 {
+		idle = SessionIdleTTL
+	}
+	if err := a.St.TouchSessionCapped(ctx, raw, idle, s.CreatedAt.Add(SessionMaxLifetime)); err != nil {
 		return Principal{}, nil, false
 	}
 	return Principal{ID: s.Principal, Kind: KindSession}, &s, true
@@ -190,15 +198,12 @@ var (
 	errIdemConflict    = apiErr(http.StatusConflict, "idempotency_conflict", "같은 Idempotency-Key로 다른 요청이 이미 처리되었습니다")
 )
 
-// socketUIDSet builds the socket allowlist. Empty means the daemon's own uid
-// only.
+// socketUIDSet builds the socket allowlist: the given uids plus, always, the
+// daemon's own uid (CF9: the list adds to it, never replaces it).
 func socketUIDSet(uids []uint32) map[uint32]bool {
-	set := map[uint32]bool{}
+	set := map[uint32]bool{uint32(os.Getuid()): true}
 	for _, u := range uids {
 		set[u] = true
-	}
-	if len(set) == 0 {
-		set[uint32(os.Getuid())] = true
 	}
 	return set
 }

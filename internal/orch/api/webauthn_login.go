@@ -27,7 +27,7 @@ import (
 //	POST /api/v1/auth/webauthn/login/begin {"signer"}   unauthenticated
 //	    -> 200 {"challenge_id","expires","options":{PublicKeyCredentialRequestOptionsJSON}}
 //	POST /api/v1/auth/webauthn/login/finish {"challenge_id","credential"}   unauthenticated
-//	    -> 200 {"csrf","expires","signer"} + Set-Cookie orch_session (HttpOnly; Secure; SameSite=Strict)
+//	    -> 200 {"csrf","expires","signer"} + Set-Cookie __Host-orch_session (HttpOnly; Secure; SameSite=Strict)
 //	GET  /api/v1/auth/session                       session or token (socket too)
 //	    -> 200 {"principal","kind","expires"?,"csrf"?}
 //	POST /api/v1/auth/logout                        write tier (session: X-Orch-CSRF)
@@ -58,7 +58,7 @@ import (
 // the idle-expiry touch (R17-5) this writes only auth bookkeeping, no domain
 // state.
 //
-// Errors are fixed codes and texts (CF1): bad_request, too_large,
+// Errors are fixed codes and texts (CF1): bad_request, body_too_large,
 // webauthn_unconfigured, busy, bad_challenge, bad_assertion,
 // signers_unavailable. Rate limits, Origin/Host and JSON-only checks are the
 // HTTP middleware's (Task 21).
@@ -273,7 +273,7 @@ func (h *handler) webauthnLoginFinish(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, errInternal)
 		return
 	}
-	s, err := h.st.CreateSession(ctx, tok, csrf, signer.ID, KindSession, SessionIdleTTL)
+	s, err := h.st.CreateSession(ctx, tok, csrf, signer.ID, KindSession, h.sessionTTL)
 	if err != nil {
 		log.Printf("orchd: passkey login: create session: %v", err)
 		writeErr(w, errInternal)

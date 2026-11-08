@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"aigate/internal/approval/signing"
 	"aigate/internal/orch/api"
 	"aigate/internal/orch/approvals"
 	"aigate/internal/orch/machine"
@@ -36,6 +37,9 @@ func (u *uidList) Set(v string) error {
 	n, err := strconv.ParseUint(v, 10, 32)
 	if err != nil {
 		return fmt.Errorf("uid %q is not a number", v)
+	}
+	if err := api.ValidateSocketUIDs([]uint32{uint32(n)}); err != nil {
+		return err
 	}
 	*u = append(*u, uint32(n))
 	return nil
@@ -80,10 +84,15 @@ func run(args []string) int {
 	fs.IntVar(&cfg.Concurrency, "concurrency", 1, "tasks run in parallel")
 	fs.Var(&repos, "allow-repo", "repository root tasks may use (repeatable; none = refuse all)")
 	var socketUIDs uidList
-	fs.Var(&socketUIDs, "socket-uid", "uid allowed to use the socket (repeatable; none = only orchd's own uid)")
+	fs.Var(&socketUIDs, "socket-uid", "extra uid allowed to use the socket (repeatable; orchd's own uid is always allowed; add 0 for sudo orch)")
 	fs.StringVar(&cfg.RPID, "rp-id", "", "WebAuthn relying party ID: the web console's host name (passkey enrollment; empty = off)")
 	fs.StringVar(&cfg.Origin, "origin", "", "exact web console origin, https://host[:port] under --rp-id (http://localhost only for development)")
 	fs.StringVar(&cfg.PendingFile, "pending-file", api.DefaultPendingFile, "pending passkey enrollments (orch admin signers pending / add --pending)")
+	fs.StringVar(&cfg.HTTPListen, "http-listen", "", "loopback address of the web console listener, e.g. 127.0.0.1:8808 (empty = off; reach it only through tailscale serve)")
+	var allowedHosts stringList
+	fs.Var(&allowedHosts, "allowed-host", "Host header the HTTP listener accepts (repeatable; must include the --origin host)")
+	fs.DurationVar(&cfg.SessionTTL, "session-ttl", api.SessionIdleTTL, "idle expiry of a browser session (5m..24h; the absolute cap stays 24h)")
+	signersFile := fs.String("signers-file", signing.DefaultRegistryPath, "signers registry (root-owned); present = signed approvals only")
 	var vf vmFlags
 	vf.register(fs)
 	policyPath := fs.String("policy", envOr("ORCHD_POLICY", ""), "policy.yml (autonomy levels, allowlist, limits); re-read when each task starts")
@@ -92,10 +101,17 @@ func run(args []string) int {
 	}
 	cfg.AllowedRepos = repos
 	cfg.SocketUIDs = socketUIDs
+	cfg.AllowedHosts = allowedHosts
 	if err := checkWebAuthnFlags(cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "orchd:", err)
 		return 2
 	}
+	// Refuse before touching the database or opening any listener.
+	if err := checkListenerFlags(cfg, vf.ReportDir, *signersFile); err != nil {
+		fmt.Fprintln(os.Stderr, "orchd:", err)
+		return 2
+	}
+	log.Print("orchd: config: approvals: ", applySignersFile(*signersFile))
 	if *policyPath != "" {
 		live, err := applyPolicy(fs, *policyPath, &cfg, &vf)
 		if err != nil {
@@ -257,4 +273,39 @@ func checkWebAuthnFlags(cfg api.Config) error {
 		return fmt.Errorf("--pending-file %q must be an absolute clean path", cfg.PendingFile)
 	}
 	return nil
+}
+
+// checkListenerFlags validates the HTTP listener combination (--http-listen
+// needs --origin, --rp-id and an --allowed-host including the origin's host;
+// loopback only), --session-ttl, --report-dir and --signers-file.
+func checkListenerFlags(cfg api.Config, reportDir, signersFile string) error {
+	if _, _, err := api.ValidateHTTPConfig(context.Background(), cfg.HTTPListen, cfg.AllowedHosts, cfg.RPID, cfg.Origin); err != nil {
+		return err
+	}
+	if err := api.ValidateSessionTTL(cfg.SessionTTL); err != nil {
+		return err
+	}
+	if reportDir != "" && (!filepath.IsAbs(reportDir) || filepath.Clean(reportDir) != reportDir) {
+		return fmt.Errorf("--report-dir %q는 정리된 절대 경로여야 합니다", reportDir)
+	}
+	if !filepath.IsAbs(signersFile) || filepath.Clean(signersFile) != signersFile {
+		return fmt.Errorf("--signers-file %q는 정리된 절대 경로여야 합니다", signersFile)
+	}
+	return nil
+}
+
+// applySignersFile makes path the process-wide signers registry (R7: the
+// daemon and every approvals check in this process read the same file) and
+// describes the approval mode it puts in force.
+func applySignersFile(path string) string {
+	signing.SetRegistryPath(path)
+	reg, err := signing.LoadRegistry(path, signing.DefaultOptions)
+	switch {
+	case err == nil:
+		return fmt.Sprintf("mode signed (%d signers in %s)", len(reg.Signers), path)
+	case errors.Is(err, signing.ErrRegistryAbsent):
+		return fmt.Sprintf("mode legacy (no signers registry at %s)", path)
+	default:
+		return fmt.Sprintf("mode signed, FAIL CLOSED: registry %s is not trusted (%v); every signed approval is refused", path, err)
+	}
 }

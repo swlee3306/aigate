@@ -45,7 +45,7 @@ var (
 	errTaskNotWaiting = apiErr(http.StatusConflict, "not_pending", "작업이 승인 대기 상태가 아닙니다. 변경 없음")
 	errHashChanged    = apiErr(http.StatusConflict, "hash_changed", "작업의 현재 base·head·diff 해시가 이 항목과 다릅니다. 변경 없음")
 	errBadBody        = apiErr(http.StatusBadRequest, "bad_request", "요청 본문이 올바른 JSON이 아닙니다")
-	errBodyTooLarge   = apiErr(http.StatusRequestEntityTooLarge, "too_large", "요청이 너무 큽니다")
+	errBodyTooLarge   = apiErr(http.StatusRequestEntityTooLarge, "body_too_large", "요청 본문이 너무 큽니다")
 	errInvalidMessage = apiErr(http.StatusBadRequest, "invalid_message", "서명 메시지를 만들 수 없습니다(issued는 초 단위 UTC RFC 3339여야 합니다)")
 	errBadSignature   = apiErr(http.StatusForbidden, "bad_signature", "서명이 올바르지 않습니다")
 	errUnknownSigner  = apiErr(http.StatusForbidden, "unknown_signer", "등록되지 않은 서명자입니다")

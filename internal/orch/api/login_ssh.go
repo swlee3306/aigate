@@ -56,7 +56,7 @@ var (
 	errLoginBadRequest  = apiErr(http.StatusBadRequest, "bad_request", "요청 본문이 올바르지 않습니다({\"signer\": 서명자 ID})")
 	errLoginBadSigner   = apiErr(http.StatusBadRequest, "bad_request", "서명자 ID 형식이 올바르지 않습니다")
 	errLoginTokenBody   = apiErr(http.StatusBadRequest, "bad_request", "요청 본문이 올바르지 않습니다({\"challenge_id\", \"sig\"})")
-	errLoginTooLarge    = apiErr(http.StatusRequestEntityTooLarge, "too_large", "요청이 너무 큽니다")
+	errLoginTooLarge    = apiErr(http.StatusRequestEntityTooLarge, "body_too_large", "요청 본문이 너무 큽니다")
 	errBadChallenge     = apiErr(http.StatusUnauthorized, "bad_challenge", "로그인 챌린지가 없거나 만료되었거나 이미 사용되었습니다. 처음부터 다시 로그인하세요")
 	errLoginBadSig      = apiErr(http.StatusUnauthorized, "bad_signature", "로그인 서명이 올바르지 않습니다")
 	errLoginBusy        = apiErr(http.StatusServiceUnavailable, "busy", "진행 중인 로그인 요청이 너무 많습니다. 잠시 뒤 다시 시도하세요")

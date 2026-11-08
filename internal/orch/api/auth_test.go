@@ -231,10 +231,28 @@ func TestSocketPeerCredFailureRefused(t *testing.T) {
 	}
 }
 
-func TestSocketForeignUIDRefusedRealCreds(t *testing.T) {
+// CF9: the list adds to the daemon's own uid, never replaces it. With real
+// peer credentials only the daemon's uid is available, so foreign-uid refusal
+// is covered by the seam tests (TestSocketForeignUIDRefused).
+func TestSocketUIDsAlwaysIncludeSelf(t *testing.T) {
 	e := newEnv(t, noSteps{}, 1, func(c *Config) { c.SocketUIDs = []uint32{uint32(os.Getuid()) + 1} })
-	if code, b := e.do(t, "GET", "/api/v1/tasks", ""); code != http.StatusForbidden || v1Code(b) != "forbidden_uid" {
-		t.Fatalf("unlisted real uid: %d %s", code, b)
+	if code, b := e.do(t, "GET", "/api/v1/tasks", ""); code != 200 {
+		t.Fatalf("own uid not listed but must be admitted: %d %s", code, b)
+	}
+	set := socketUIDSet([]uint32{7})
+	if len(set) != 2 || !set[7] || !set[uint32(os.Getuid())] {
+		t.Fatalf("set %v", set)
+	}
+	if set := socketUIDSet(nil); len(set) != 1 || !set[uint32(os.Getuid())] {
+		t.Fatalf("empty list %v", set)
+	}
+	st, err := store.Open(filepath.Join(shortDir(t), "o.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := NewDaemon(Config{Socket: "/tmp/x.sock", SocketUIDs: []uint32{4294967295}}, st, noSteps{}); err == nil {
+		t.Fatal("uid 4294967295 accepted")
 	}
 }
 

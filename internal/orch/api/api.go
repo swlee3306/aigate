@@ -1,12 +1,13 @@
 // Package api is the control surface of orchd: a JSON API served over a unix
-// socket (and, from Task 21, a loopback HTTP listener). Every request except
+// socket and, when Config.HTTPListen is set, a loopback HTTP listener behind
+// `tailscale serve` with the security middleware of secure.go. Every request except
 // GET /api/v1/healthz, the SSH login POSTs /api/v1/auth/challenge and
 // /api/v1/auth/token (login_ssh.go) and the passkey registration POSTs
 // /api/v1/auth/webauthn/register/{begin,finish} (webauthn_register.go, gated
 // by a one-time code from the socket-only /api/v1/admin/enroll) is
 // authenticated before any handler runs
 // (auth.go): a
-// socket peer must have an allowlisted uid (Config.SocketUIDs; empty = the
+// socket peer must have an allowlisted uid (Config.SocketUIDs, always plus the
 // daemon's own uid) on top of the socket file mode (0600) and its 0700
 // directory; an HTTP caller needs a bearer token or a session cookie. Writes
 // need the write tier (socket, token, or session + CSRF header).
@@ -174,6 +175,9 @@ type handler struct {
 	// non-signers.
 	webauthnLoginCap int
 	credKey          []byte
+	// sessionTTL is the idle expiry a new browser session gets
+	// (Config.SessionTTL, default SessionIdleTTL).
+	sessionTTL time.Duration
 }
 
 func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome string) (*handler, error) {
@@ -183,6 +187,7 @@ func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome 
 	h.pendingFile = DefaultPendingFile
 	h.webauthnLoginCap = DefaultWebAuthnLoginChallengeCap
 	h.credKey = newCredKey()
+	h.sessionTTL = SessionIdleTTL
 	for _, r := range allowed {
 		if !filepath.IsAbs(r) || filepath.Clean(r) != r {
 			return nil, fmt.Errorf("allowed repo root %q must be an absolute clean path", r)
@@ -228,6 +233,8 @@ func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome 
 // /api/v1/auth/signers and the two passkey login POSTs
 // (/api/v1/auth/webauthn/login/*) before it reaches a handler (see authenticate); mutating routes add requireWrite.
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Every API response is private and current: never cached (Task 21).
+	w.Header().Set("Cache-Control", "no-store")
 	if isV1Path(r.URL.Path) {
 		v1Wrap(h.root).ServeHTTP(w, r)
 		return
@@ -278,6 +285,9 @@ func writeErr(w http.ResponseWriter, err error) {
 		log.Printf("orchd: internal error: %v", err)
 		he = &httpError{code: http.StatusInternalServerError, msg: "내부 오류"}
 	}
+	if he.code == http.StatusUnauthorized {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+	}
 	body := map[string]string{"error": he.msg}
 	if he.v1Code != "" {
 		body["code"] = he.v1Code
@@ -300,7 +310,7 @@ func (h *handler) submit(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
-			writeErr(w, &httpError{code: http.StatusRequestEntityTooLarge, msg: "요청이 너무 큽니다"})
+			writeErr(w, errBodyTooLarge)
 			return
 		}
 		writeErr(w, bad("요청 본문을 읽을 수 없습니다"))
