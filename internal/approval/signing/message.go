@@ -1,6 +1,7 @@
 // Package signing defines what an approval signature covers: a canonical,
-// strictly parseable text message. It is a leaf package (no internal imports; registry.go
-// uses golang.org/x/crypto/ssh) so that internal/approval can import it.
+// strictly parseable text message. Its only internal import is the stdlib-only
+// internal/webauthn (registry.go and sshsig.go use golang.org/x/crypto/ssh), so
+// internal/approval can import it.
 package signing
 
 import (
