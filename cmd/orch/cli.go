@@ -29,8 +29,8 @@ const usage = `사용법: orch [--socket PATH] [--json] <명령>
   cancel ID                                                         작업 취소
   retry ID                                                          인프라 오류로 실패한(failed) 작업을 실패한 단계부터 다시 시도(최대 3회)
   approvals                                                         승인 대기 목록
-  approve ID                                                        승인(사람이 터미널에서 직접, TTY 필요)
-  reverify ID                                                       이미 승인한 항목의 재검증 요청(승인 기록이 있어야 함)
+  approve ITEM                                                      승인(사람이 터미널에서 직접, TTY 필요). ITEM은 approvals의 ID 열(승인 항목 번호, 작업 번호 아님)
+  reverify ITEM                                                     이미 승인한 항목의 재검증 요청(승인 기록이 있어야 함). ITEM은 approvals의 ID 열
 
 ` + policyUsage + `
 
@@ -135,11 +135,17 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	idArg := func() (string, error) {
+		// approve and reverify take an APPROVAL ITEM id (the ID column of `orch approvals`),
+		// every other command takes a TASK id: say which, it is an easy mix-up.
+		what := "작업 ID"
+		if cmd == "approve" || cmd == "reverify" {
+			what = "승인 항목 ID(`orch approvals`의 ID 열, 작업 번호가 아님)"
+		}
 		if sub.NArg() != 1 {
-			return "", fmt.Errorf("%s에는 작업 ID 하나가 필요합니다", cmd)
+			return "", fmt.Errorf("%s에는 %s 하나가 필요합니다", cmd, what)
 		}
 		if n, err := strconv.ParseInt(sub.Arg(0), 10, 64); err != nil || n <= 0 {
-			return "", fmt.Errorf("작업 ID가 올바르지 않습니다: %s", sub.Arg(0))
+			return "", fmt.Errorf("%s가 올바르지 않습니다: %s", what, sub.Arg(0))
 		}
 		return sub.Arg(0), nil
 	}
