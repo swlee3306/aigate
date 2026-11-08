@@ -1,0 +1,26 @@
+{
+  "hash": "3273763058ed7862",
+  "hashed_text": "diff --git a/pytest.ini b/pytest.ini\nnew file mode 100644\nindex 0000000000000000000000000000000000000000..eea2c180278f7b2bc64449bc2dce8d07e3856af1\n--- /dev/null\n+++ b/pytest.ini\n@@ -0,0 +1 @@\n+[pytest]\ndiff --git a/tests/spec.txt b/tests/spec.txt\nindex c0d0fb45c382919737f8d0c20aaf57cf89b74af8..f64fff0cd766ea575a5951ef10a1c064e43fc05d 100644\n--- a/tests/spec.txt\n+++ b/tests/spec.txt\n@@ -2 +2,2 @@ line1\n-line2\n+\u003cscript\u003ealert(1)\u003c/script\u003e\n+esc \u001b[31mred\u001b[0m bidi ‮evil\nA pytest.ini\n",
+  "truncated": false,
+  "protected_files": [
+    "pytest.ini",
+    "tests/spec.txt"
+  ],
+  "files": [
+    {
+      "path": "pytest.ini",
+      "added": 1,
+      "deleted": 0
+    },
+    {
+      "path": "src/a.txt",
+      "added": 2,
+      "deleted": 0
+    },
+    {
+      "path": "tests/spec.txt",
+      "added": 2,
+      "deleted": 1
+    }
+  ]
+}

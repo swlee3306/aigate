@@ -138,3 +138,30 @@ button.pill { color: var(--muted); cursor: pointer; }
   .stg { gap: 6px; flex-wrap: nowrap; }
   .brand { padding-bottom: 8px; }
 }
+
+/* tasks, task detail and diff views (task 24) */
+.bar-r { grid-template-columns: minmax(56px, 76px) 1fr minmax(64px, auto); }
+.bar-f { min-width: 2px; }
+.block { font-family: var(--mono); font-size: 12.5px; background: var(--bg); border-radius: 12px; padding: 8px 0; max-height: 360px; overflow: auto; }
+.block > div { padding: 0 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.block > .btn { margin: 6px 14px; }
+.diff { background: var(--bg); border-radius: 12px; max-height: 70vh; overflow: auto; }
+.diff .btn { margin: 6px 16px; }
+.diff .del { background: rgba(255,143,134,.14); color: #ffd0cb; }
+.diff .meta { color: var(--faint); }
+.files .filebtn { all: unset; box-sizing: border-box; display: flex; flex-direction: column; gap: 2px; width: 100%; padding: 8px 10px; border-radius: 10px; cursor: pointer; color: var(--muted); }
+.files .filebtn:hover { background: var(--raised); color: var(--text); }
+.files .filebtn[aria-pressed="true"] { background: var(--raised-2); color: var(--text); box-shadow: inset 3px 0 0 var(--accent); }
+.files .filebtn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.files li { padding: 0; display: block; }
+.fname { overflow-wrap: anywhere; }
+.fmeta { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; }
+.trunc { background: var(--amber-bg); border: 1px solid var(--amber-line); border-radius: 12px; padding: 12px 16px; margin-bottom: 14px; color: var(--amber); font-size: 15px; }
+.trunc small { color: var(--muted); font-size: 12.5px; }
+td .rowbtn { max-width: 120px; }
+.filters .btn.more, .btn.more { margin-top: 6px; }
+.tscroll td.ell { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+a.btn { display: inline-block; text-decoration: none; }
+.ws > * { min-width: 0; }
+@media (max-width: 1000px) { .ws { grid-template-columns: minmax(0, 1fr); } }
+.chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }

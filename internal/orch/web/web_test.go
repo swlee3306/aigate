@@ -43,7 +43,7 @@ func staticFiles(t *testing.T) map[string][]byte {
 
 func TestWebAssetsEmbedded(t *testing.T) {
 	files := staticFiles(t)
-	for _, need := range []string{"index.html", "app.js", "api.js", "render.js", "router.js", "style.css"} {
+	for _, need := range []string{"index.html", "app.js", "api.js", "render.js", "router.js", "style.css", "views/tasks.js", "views/task.js", "views/diff.js"} {
 		if len(files[need]) == 0 {
 			t.Errorf("static/%s is missing or empty", need)
 		}
@@ -165,7 +165,7 @@ func TestNoForbiddenSinksInStaticJS(t *testing.T) {
 			t.Errorf("static/%s passes a string to a timer", name)
 		}
 	}
-	if n < 4 {
+	if n < 8 {
 		t.Fatalf("only %d scripts scanned", n)
 	}
 }

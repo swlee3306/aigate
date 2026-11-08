@@ -37,9 +37,14 @@ export class Element extends Node {
     this.tagName = tag.toUpperCase();
     this.attrs = new Map();
     this.listeners = {};
+    this.style = {}; // CSSOM stand-in: tests read style.width etc.
   }
   get children() { return this.childNodes.filter((c) => c.nodeType === 1); }
-  setAttribute(k, v) { this.attrs.set(k, String(v)); }
+  setAttribute(k, v) {
+    // CSP forbids inline styles: any setAttribute('style') is a bug.
+    if (String(k).toLowerCase() === 'style') throw new Error('setAttribute(style) is forbidden');
+    this.attrs.set(k, String(v));
+  }
   getAttribute(k) { return this.attrs.has(k) ? this.attrs.get(k) : null; }
   hasAttribute(k) { return this.attrs.has(k); }
   removeAttribute(k) { this.attrs.delete(k); }

@@ -356,3 +356,175 @@ export function formatLive(state, lastUpdated, failures) {
   if (failures > 0) return '갱신 실패, 다시 시도 중' + (t ? ' · 마지막 성공 ' + t : '');
   return t ? '실시간 · ' + t + ' 갱신' : '갱신 대기 중';
 }
+
+// --- text safety -------------------------------------------------------
+// Everything from the server (prompts, paths, diff lines, notes) is hostile.
+// textContent already prevents markup injection; these helpers also stop
+// terminal escapes, bidi/zero-width tricks and unbounded lengths from
+// reaching the page by replacing them with VISIBLE placeholders.
+
+// bidi controls, zero-width characters, BOM, line/paragraph separators
+const INVISIBLE_RE = /[\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g;
+const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f]/g;
+
+// sanitize makes s safe to show. opts.keepTab keeps U+0009 (diff/pre blocks),
+// opts.keepNewline keeps U+000A (multi-line blocks); otherwise both become
+// visible symbols. Carriage returns always become a visible symbol.
+export function sanitize(s, opts) {
+  opts = opts || {};
+  s = typeof s === 'string' ? s : s === null || s === undefined ? '' : String(s);
+  return s
+    .replace(CONTROL_RE, (c) => {
+      const cp = c.codePointAt(0);
+      if (cp === 0x09 && opts.keepTab) return c;
+      if (cp === 0x0a) return opts.keepNewline ? c : '⏎';
+      if (cp === 0x7f) return '␡';
+      if (cp >= 0x80) return '�';
+      return String.fromCodePoint(0x2400 + cp); // C0 control pictures (ESC -> U+241B)
+    })
+    .replace(INVISIBLE_RE, (c) => '⟨U+' + c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0') + '⟩');
+}
+
+// clip cuts s to at most max UTF-16 units without splitting a surrogate pair
+// and says how much was dropped.
+export function clip(s, max) {
+  if (s.length <= max) return { text: s, dropped: 0 };
+  let end = max;
+  const c = s.charCodeAt(end - 1);
+  if (c >= 0xd800 && c <= 0xdbff) end--;
+  return { text: s.slice(0, end), dropped: s.length - end };
+}
+
+// inline: one line of display text (labels, table cells).
+export function inline(s, max) {
+  const c = clip(sanitize(s), max || 200);
+  return c.dropped ? c.text + '…' : c.text;
+}
+
+export const MAX_LINE = 500;
+
+// capLine sanitizes one line of a block and caps its length with a marker.
+export function capLine(s, max) {
+  const c = clip(sanitize(s, { keepTab: true }), max || MAX_LINE);
+  return c.dropped ? c.text + ' …(+' + c.dropped + '자)' : c.text;
+}
+
+// splitLines splits text on \n (CRLF counts as one break). At most `limit`
+// lines are materialised; total is the full line count.
+export function splitLines(text, limit) {
+  text = typeof text === 'string' ? text : '';
+  const lines = [];
+  let pos = 0;
+  let total = 0;
+  while (pos <= text.length) {
+    let nl = text.indexOf('\n', pos);
+    if (nl < 0) nl = text.length;
+    total++;
+    if (lines.length < limit) {
+      let end = nl;
+      if (end > pos && text.charCodeAt(end - 1) === 13) end--;
+      lines.push(text.slice(pos, end));
+    }
+    pos = nl + 1;
+  }
+  if (text.endsWith('\n')) total--; // a trailing newline ends the last line
+  return { lines: lines.slice(0, Math.min(lines.length, total)), total };
+}
+
+// chunked renders items in chunks of `size` into container and adds a
+// "더 보기" button that appends the next chunk, so unbounded data is never
+// rendered at once. render(item, index) returns a node.
+export function chunked(container, items, size, render, label) {
+  let shown = 0;
+  let more = null;
+  const step = () => {
+    const end = Math.min(items.length, shown + size);
+    const nodes = [];
+    for (; shown < end; shown++) nodes.push(render(items[shown], shown));
+    if (more) container.removeChild(more);
+    more = null;
+    for (const n of nodes) container.appendChild(n);
+    if (shown < items.length) {
+      more = el('button', { type: 'button', class: 'btn more', on: { click: step } },
+        '더 보기 (' + (label || '항목') + ' ' + (items.length - shown) + '개 남음)');
+      container.appendChild(more);
+    }
+  };
+  step();
+  return container;
+}
+
+// --- shared view helpers -------------------------------------------------
+
+const STATE_CLASS = {
+  queued: 'c-idle', preparing: 'c-run', agent_running: 'c-run', collecting: 'c-run', verifying: 'c-run',
+  needs_approval: 'c-wait', passed: 'c-done', publishing: 'c-run', done: 'c-done', failed: 'c-fail',
+  cancelled: 'c-idle', error: 'c-fail',
+};
+
+const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+
+// stateLabel: the Korean label of a known state, else sanitized raw text.
+export function stateLabel(state) {
+  return typeof state === 'string' && has(STATE_LABELS, state) ? STATE_LABELS[state] : inline(state, 40) || '?';
+}
+
+// stateChip: text AND color. The class comes only from a fixed table; an
+// unknown (hostile) state is shown as sanitized text with the neutral class.
+export function stateChip(state) {
+  const known = typeof state === 'string' && has(STATE_LABELS, state);
+  return el('span', { class: ['chip', known ? STATE_CLASS[state] : 'c-idle'] },
+    known ? STATE_LABELS[state] : inline(state, 40) || '?');
+}
+
+// idOf returns the id as a string when it is a valid numeric id, else null.
+// Views build `#/tasks/<id>` only from its result.
+export function idOf(x) {
+  const s = typeof x === 'number' && Number.isSafeInteger(x) ? String(x) : typeof x === 'string' ? x : '';
+  return ID_RE.test(s) && Number(s) > 0 ? s : null;
+}
+
+export function formatTime(iso) {
+  const d = new Date(iso);
+  if (typeof iso !== 'string' || Number.isNaN(d.getTime())) return '-';
+  const p = (n) => String(n).padStart(2, '0');
+  return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+// errorText: FIXED text chosen by status; the server's message (which can
+// echo agent or git output) is never shown.
+export function errorText(err) {
+  const st = err && typeof err.status === 'number' ? err.status : 0;
+  if (st === 404) return '찾을 수 없습니다. 없는 항목이거나 삭제되었습니다.';
+  if (st === 409) return '아직 볼 수 없는 상태입니다. 작업이 진행되면 다시 확인하세요.';
+  if (st === 413) return '내용이 너무 커서 웹에서 볼 수 없습니다.';
+  if (st === 429) return '요청이 많아 잠시 쉬는 중입니다. 잠시 후 다시 시도하세요.';
+  if (st === 403) return '이 내용을 볼 권한이 없습니다.';
+  if (st === 0) return '서버에 연결하지 못했습니다.';
+  return '서버에서 오류가 발생했습니다.';
+}
+
+export function errorPane(err, backHref, backLabel) {
+  return el('div', { class: ['panel', 'canvas'] }, [
+    el('h1', { 'data-focus-key': 'err' }, '불러오지 못했습니다'),
+    el('p', { class: 'lead', role: 'alert' }, errorText(err)),
+    backHref ? el('a', { href: backHref }, backLabel || '← 돌아가기') : null,
+  ]);
+}
+
+// textBlock: a bounded, read-only block of text lines (white-space: pre): the first
+// `chunk` lines now, "더 보기" for the rest, and a note when the text was
+// cut before even loading all lines. The caller supplies raw text.
+export function textBlock(text, label, opts) {
+  opts = opts || {};
+  const { lines, total } = splitLines(text, opts.maxLines || 5000);
+  if (typeof text !== 'string' || text === '') return el('p', { class: 'note' }, '(비어 있음)');
+  const pre = el('div', { class: 'block', role: 'region', tabindex: '0', 'aria-label': label });
+  chunked(pre, lines, opts.chunk || 200, (l) => el('div', {}, capLine(l) || ' '), '줄');
+  return el('div', {}, [
+    pre,
+    total > lines.length
+      ? el('p', { class: 'note' }, '너무 길어 처음 ' + lines.length + '줄까지만 불러왔습니다 (전체 ' + total + '줄).')
+      : null,
+  ]);
+}

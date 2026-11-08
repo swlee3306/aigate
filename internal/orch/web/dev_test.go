@@ -1,8 +1,10 @@
 package web_test
 
 import (
+	stdjson "encoding/json"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -26,6 +28,16 @@ func TestDevServer(t *testing.T) {
 		port = "18808"
 	}
 	loggedOut := os.Getenv("ORCH_WEB_LOGGEDOUT") != ""
+	// Task views use the golden fixtures (marshalled from the real API types by
+	// api.TestWebFixturesGolden) plus a hostile row, so what is looked at is
+	// what the JS tests check.
+	fixture := func(name string) []byte {
+		b, err := os.ReadFile(filepath.Join("test", "fixtures", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
 	json := func(w http.ResponseWriter, s string) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
@@ -52,6 +64,28 @@ func TestDevServer(t *testing.T) {
 		json(w, `{"total":38,"by_state":{"done":36,"failed":2,"needs_approval":1},"pending_approvals":1,
 "stage_avg":{"queued":0.2,"preparing":2,"agent_running":25,"collecting":1.3,"verifying":134,"publishing":3},
 "todo":[{"kind":"approval","task":5,"approval":9,"text":"작업 #5 승인 대기: 정책 변경 <img src=x onerror=alert(1)>"}]}`)
+	})
+	serve := func(w http.ResponseWriter, b []byte) { json(w, string(b)) }
+	mux.HandleFunc("/api/v1/tasks", func(w http.ResponseWriter, r *http.Request) {
+		var rows []map[string]any
+		if err := stdjson.Unmarshal(fixture("tasks.json"), &rows); err != nil {
+			t.Fatal(err)
+		}
+		hostile := "<img src=x onerror=alert(1)> \x1b[31mred\u202eevil\u0000"
+		rows = append(rows, map[string]any{"id": 40, "repo": hostile, "base": "main", "prompt": hostile, "class": "docs",
+			"agent": "claude", "state": hostile, "attempts": 1, "created_at": "2026-11-09T11:00:00Z", "updated_at": "2026-11-09T11:00:00Z"})
+		b, _ := stdjson.Marshal(rows)
+		serve(w, b)
+	})
+	mux.HandleFunc("/api/v1/tasks/38/events", func(w http.ResponseWriter, r *http.Request) { serve(w, fixture("events.json")) })
+	mux.HandleFunc("/api/v1/tasks/38/diff", func(w http.ResponseWriter, r *http.Request) { serve(w, fixture("diff.json")) })
+	mux.HandleFunc("/api/v1/tasks/37/events", func(w http.ResponseWriter, r *http.Request) { serve(w, fixture("events.json")) })
+	mux.HandleFunc("/api/v1/tasks/37/diff", func(w http.ResponseWriter, r *http.Request) { serve(w, fixture("diff-truncated.json")) })
+	mux.HandleFunc("/api/v1/tasks/38/report", func(w http.ResponseWriter, r *http.Request) {
+		json(w, `{"verdict":"weakened","note":"<script>alert(1)</script> \u001b[31m","checks":[{"id":"unit","ok":true}]}`)
+	})
+	mux.HandleFunc("/api/v1/approvals", func(w http.ResponseWriter, r *http.Request) {
+		json(w, `[{"id":9,"task_id":38,"kind":"protected","status":"pending","reason":"tests/** 변경 <b>x</b>"}]`)
 	})
 	console := web.Handler()
 	srv := &http.Server{Addr: "127.0.0.1:" + port, ReadHeaderTimeout: 5 * time.Second,

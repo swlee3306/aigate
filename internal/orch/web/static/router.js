@@ -1,14 +1,13 @@
 // router.js: hash routes and the view registry. It has no DOM access so views
 // (loaded by app.js) can import it without a cycle with app.js.
 //
-// Routes: #/overview  #/tasks  #/tasks/ID  #/approvals  #/diff/ID[/...]
+// Routes: #/overview  #/tasks  #/tasks/ID  #/approvals  #/diff/ID
 // View names: overview, tasks, task, approvals, diff, login (and notfound).
 
 import { ID_RE } from './render.js';
 
 const views = new Map();
 const NAME_RE = /^[a-z][a-z-]{0,31}$/;
-const SEG_RE = /^[A-Za-z0-9._-]{1,200}$/;
 
 // registerView(name, fn): fn(ctx) renders into ctx.root (see app.js for ctx).
 // Registering again replaces the earlier view.
@@ -49,9 +48,8 @@ export function parseRoute(hash) {
       if (rest.length === 0) return { name: 'tasks', params: [] };
       return rest.length === 1 && ID_RE.test(rest[0]) ? { name: 'task', params: [rest[0]] } : bad;
     case 'diff':
-      return rest.length >= 1 && ID_RE.test(rest[0]) && rest.every((s) => SEG_RE.test(s) && s !== '.' && s !== '..')
-        ? { name: 'diff', params: rest }
-        : bad;
+      // The file shown is view state (a button), never part of the URL.
+      return rest.length === 1 && ID_RE.test(rest[0]) ? { name: 'diff', params: rest } : bad;
     default:
       return bad;
   }
