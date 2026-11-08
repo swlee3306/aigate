@@ -42,6 +42,7 @@ type vmFlags struct {
 	// live is the policy in force (nil without --policy); limits come from it.
 	live                                                                       *policy.Live
 	PublishAllow, GitRemote, GitLabURL, GitLabProject, GitLabTarget, TokenFile string
+	GitSSHKey, GitSSHKnownHosts                                                string
 }
 
 func (v *vmFlags) register(fs *flag.FlagSet) {
@@ -68,10 +69,12 @@ func (v *vmFlags) register(fs *flag.FlagSet) {
 	s(&v.ReportDir, "report-dir", "", "directory for verification reports (default <db dir>/reports)")
 	s(&v.GateHome, "gate-home", "", "gate home for approvals and ledger (default <db dir>/gate-home)")
 	sf(&v.PublishAllow, "publish-allow", "", "comma separated publish actions that may run without a human (push_branch,draft_pr,notify); empty = every action waits for approval")
-	sf(&v.GitRemote, "git-remote", "", "where push_branch pushes refs/heads/orch/<task>: absolute path or https URL without credentials")
+	sf(&v.GitRemote, "git-remote", "", "where push_branch pushes refs/heads/orch/<task>: absolute path, https URL or ssh://git@host/group/project.git (no credentials in the URL)")
 	sf(&v.GitLabURL, "gitlab-url", "", "GitLab base URL for draft merge requests")
 	sf(&v.GitLabProject, "gitlab-project", "", "GitLab project id or path")
 	sf(&v.GitLabTarget, "gitlab-target", "main", "target branch of the draft merge request")
+	sf(&v.GitSSHKey, "git-ssh-key", "", "0600 deploy key used for an ssh:// --git-remote")
+	sf(&v.GitSSHKnownHosts, "git-ssh-known-hosts", "", "known_hosts file pinning the ssh:// git server")
 	sf(&v.TokenFile, "gitlab-token-file", "", "0600 file holding the GitLab write token (never printed)")
 	fs.DurationVar(&v.AgentTimeout, "agent-timeout", steps.DefaultAgentTimeout, "limit of one agent run")
 	fs.BoolVar(&v.RestoreEachJob, "restore-each-job", true, "restore the test VM before every verification")
@@ -122,7 +125,7 @@ func (v *vmFlags) validate() error {
 
 // publishConfigured reports whether any publishing flag is set.
 func (v *vmFlags) publishConfigured() bool {
-	for _, x := range []string{v.GitRemote, v.GitLabURL, v.TokenFile, v.PublishAllow} {
+	for _, x := range []string{v.GitRemote, v.GitLabURL, v.TokenFile, v.PublishAllow, v.GitSSHKey, v.GitSSHKnownHosts} {
 		if x != "" {
 			return true
 		}
@@ -193,7 +196,7 @@ func (v *vmFlags) provider(st *store.Store, dbPath string) (api.StepProvider, er
 		cfg.Publisher = steps.LocalOnlyPublisher{}
 	}
 	if v.publishConfigured() {
-		pcfg := publish.Config{Remote: v.GitRemote, TokenFile: v.TokenFile,
+		pcfg := publish.Config{Remote: v.GitRemote, TokenFile: v.TokenFile, SSHKeyFile: v.GitSSHKey, SSHKnownHosts: v.GitSSHKnownHosts,
 			Allow:  policy.NewAllowlist(splitList(v.PublishAllow)...),
 			GitLab: publish.GitLab{BaseURL: v.GitLabURL, Project: v.GitLabProject, TargetBranch: v.GitLabTarget},
 			Grants: approvals.Grants{Home: gateHome},

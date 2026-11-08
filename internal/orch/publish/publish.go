@@ -111,7 +111,11 @@ type Config struct {
 	// TokenFile is the 0600 file holding the GitLab write token. Required
 	// for an https remote and for draft_pr.
 	TokenFile string
-	Notifier  Notifier
+	// SSHKeyFile and SSHKnownHosts serve an ssh:// remote: the 0600 private
+	// key (a repository deploy key) and a known_hosts file pinning the server.
+	// Host keys are always checked strictly; no agent, no config files.
+	SSHKeyFile, SSHKnownHosts string
+	Notifier                  Notifier
 	// Grants, when set, lets a human-approved action (publish_outside_allowlist)
 	// run once for the exact head it was approved for.
 	Grants approvals.Grants
@@ -173,6 +177,13 @@ func New(cfg Config) (*Publisher, error) {
 		if _, err := ReadToken(cfg.TokenFile); err != nil {
 			return nil, err
 		}
+	}
+	if strings.HasPrefix(cfg.Remote, "ssh://") {
+		if err := checkSSHFiles(cfg.SSHKeyFile, cfg.SSHKnownHosts); err != nil {
+			return nil, err
+		}
+	} else if cfg.SSHKeyFile != "" || cfg.SSHKnownHosts != "" {
+		return nil, errors.New("publish: ssh key settings given but the remote is not an ssh:// URL")
 	}
 	return p, nil
 }
@@ -334,13 +345,31 @@ func checkRemote(r string) error {
 			return errors.New("publish: remote URL must not have a query or fragment")
 		}
 		return nil
+	case strings.HasPrefix(r, "ssh://"):
+		u, err := url.Parse(r)
+		if err != nil || u.Host == "" || u.Hostname() == "" {
+			return fmt.Errorf("publish: invalid remote URL")
+		}
+		if u.User == nil || u.User.Username() == "" {
+			return errors.New("publish: an ssh:// remote needs a user (ssh://git@host/group/project.git)")
+		}
+		if _, hasPw := u.User.Password(); hasPw {
+			return errors.New("publish: remote URL must not contain credentials")
+		}
+		if u.RawQuery != "" || u.Fragment != "" || strings.HasPrefix(u.Hostname(), "-") || strings.HasPrefix(u.User.Username(), "-") {
+			return errors.New("publish: remote URL must not have a query, fragment or option-like parts")
+		}
+		if u.Path == "" || u.Path == "/" {
+			return errors.New("publish: remote URL needs a repository path")
+		}
+		return nil
 	case filepath.IsAbs(r):
 		if strings.ContainsAny(r, "\n\r\x00") {
 			return errors.New("publish: invalid remote path")
 		}
 		return nil
 	}
-	return errors.New("publish: remote must be an absolute local path or an https:// URL")
+	return errors.New("publish: remote must be an absolute local path, an https:// URL or an ssh:// URL")
 }
 
 func checkAPIBase(b string) error {
@@ -419,7 +448,10 @@ func (p *Publisher) push(ctx context.Context, a Action) error {
 	env := []string{
 		"PATH=" + os.Getenv("PATH"), "HOME=" + home, "LC_ALL=C",
 		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0",
-		"GIT_ALLOW_PROTOCOL=file:https",
+		"GIT_ALLOW_PROTOCOL=file:https:ssh",
+	}
+	if strings.HasPrefix(p.cfg.Remote, "ssh://") {
+		env = append(env, "GIT_SSH_COMMAND="+sshCommand(p.cfg.SSHKeyFile, p.cfg.SSHKnownHosts))
 	}
 	token := ""
 	if strings.HasPrefix(p.cfg.Remote, "https://") {
@@ -515,4 +547,47 @@ type fileRecorder string
 
 func (f fileRecorder) Record(typ string, payload map[string]any) error {
 	return ledger.Append(string(f), typ, policy.OrchRepo, payload, time.Now().UTC())
+}
+
+// sshSafe reports whether a path can sit inside the GIT_SSH_COMMAND string.
+func sshSafe(s string) bool {
+	return filepath.IsAbs(s) && !strings.ContainsAny(s, " \t'\"\\$`;&|<>(){}*?[]!#~\n\r\x00")
+}
+
+// sshCommand is the only ssh git may run for an ssh:// remote: this key only,
+// the pinned host key only, never an agent, config file, proxy or prompt.
+func sshCommand(key, knownHosts string) string {
+	return "ssh -F /dev/null -i " + key + " -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes" +
+		" -o StrictHostKeyChecking=yes -o UserKnownHostsFile=" + knownHosts + " -o GlobalKnownHostsFile=/dev/null" +
+		" -o ForwardAgent=no -o ForwardX11=no -o ClearAllForwardings=yes -o ProxyCommand=none -o ControlMaster=no -o ConnectTimeout=20"
+}
+
+// checkSSHFiles validates the key (0600, owned by us) and the known_hosts file
+// (a regular file nobody else can write).
+func checkSSHFiles(key, knownHosts string) error {
+	if key == "" || knownHosts == "" {
+		return errors.New("publish: an ssh:// remote needs an ssh key file and a known_hosts file")
+	}
+	for _, f := range []string{key, knownHosts} {
+		if !sshSafe(f) {
+			return fmt.Errorf("publish: ssh file path %q must be absolute without special characters", f)
+		}
+	}
+	check := func(path string, forbidden os.FileMode, what string) error {
+		fi, err := os.Lstat(path)
+		if err != nil || !fi.Mode().IsRegular() {
+			return fmt.Errorf("publish: %s %s is missing or not a regular file", what, path)
+		}
+		if fi.Mode().Perm()&forbidden != 0 {
+			return fmt.Errorf("publish: %s %s has mode %04o, too open", what, path, fi.Mode().Perm())
+		}
+		if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Getuid() {
+			return fmt.Errorf("publish: %s %s is not owned by the current user", what, path)
+		}
+		return nil
+	}
+	if err := check(key, 0o077, "ssh key"); err != nil {
+		return err
+	}
+	return check(knownHosts, 0o022, "known_hosts")
 }
