@@ -34,6 +34,10 @@ type Config struct {
 	// PolicyHash returns the hash of the policy in force (nil without a
 	// policy). `orch approve` uses it to recognise a policy-change approval.
 	PolicyHash func() string
+	// Policy and Ops supply the read-only /policy and /ops views (nil:
+	// both endpoints answer an empty object).
+	Policy func() PolicyView
+	Ops    func() OpsView
 }
 
 // StepProvider supplies the steps the machine runs.
@@ -77,6 +81,7 @@ func NewDaemon(cfg Config, st *store.Store, p StepProvider) (*Daemon, error) {
 	}
 	h.policyHash = cfg.PolicyHash
 	h.reportDir = cfg.ReportDir
+	h.policy, h.ops = cfg.Policy, cfg.Ops
 	return &Daemon{cfg: cfg, st: st, m: m, handler: h, ready: make(chan struct{})}, nil
 }
 

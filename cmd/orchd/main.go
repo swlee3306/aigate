@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"aigate/internal/orch/api"
 	"aigate/internal/orch/approvals"
@@ -132,6 +133,8 @@ func run(args []string) int {
 	for _, l := range vf.describe(cfg.DB, cfg.Concurrency) {
 		log.Print("orchd: config: ", l)
 	}
+	cfg.Policy = policySupplier(vf.live, vf.baseCacheDir != "")
+	cfg.Ops = opsSupplier(buildID(), time.Now(), cfg.PolicyHash, vf.restoreRecord, vf.baseCacheDir)
 	d, err := api.NewDaemon(cfg, st, provider)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "orchd:", err)

@@ -121,6 +121,9 @@ type handler struct {
 	policyHash func() string
 	// reportDir confines the report endpoint (empty: nothing is served).
 	reportDir string
+	// policy and ops supply the /policy and /ops views (nil: empty object).
+	policy func() PolicyView
+	ops    func() OpsView
 }
 
 func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome string) (*handler, error) {

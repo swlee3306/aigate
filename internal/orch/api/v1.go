@@ -27,6 +27,9 @@ func (h *handler) mountV1(mux *http.ServeMux) {
 	mux.HandleFunc("POST "+v1Prefix+"/approvals/{id}/reverify", h.reverify)
 	mux.HandleFunc("GET "+v1Prefix+"/stages", h.stages)
 	mux.HandleFunc("GET "+v1Prefix+"/overview", h.overview)
+	mux.HandleFunc("GET "+v1Prefix+"/projects", h.projects)
+	mux.HandleFunc("GET "+v1Prefix+"/policy", h.policyView)
+	mux.HandleFunc("GET "+v1Prefix+"/ops", h.opsView)
 }
 
 // v1Wrap serves next with errors rewritten into the v1 envelope.

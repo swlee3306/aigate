@@ -85,3 +85,7 @@ func (a Allowlist) Permit(kind string) error {
 	}
 	return nil
 }
+
+// FloorWords returns a copy of the substrings the hard floor denies, for
+// display (the read-only policy view).
+func FloorWords() []string { return append([]string(nil), floorWords...) }
