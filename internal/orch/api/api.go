@@ -3,13 +3,17 @@
 // (0600, owned by the orchd user) and the 0700 directory around it; anyone who
 // can open the socket can submit and cancel tasks. Do not expose it elsewhere.
 //
-// Approvals: the socket can never GRANT one. The authority is the grant a human
-// writes into the approvals file (the one the gate reads) from a real terminal
-// with `orch approve`. POST /approvals/{id}/reverify only asks the daemon to
-// re-judge: the daemon itself checks that the approvals file holds a grant for
-// exactly that entry's (repo, base, hash) and, if it does not, changes nothing.
-// So anything with socket access can trigger a re-judge, never a grant.
-// destructive_blocked and superseded entries can never be reverified.
+// Approvals: socket access alone can never GRANT one. The authority is a grant
+// in the approvals file (the one the gate reads): in legacy mode written by a
+// human from a real terminal with `orch approve`; in signed-only mode (signers
+// registry present) a signed entry that the daemon AND the gate verify against
+// the root-owned registry. POST /api/v1/approvals/{id}/grant (grant.go) records
+// such an entry only when the submitted signature verifies over the message the
+// server rebuilt for the entry, so a caller without a signer key changes
+// nothing. POST /approvals/{id}/reverify only asks the daemon to re-judge: the
+// daemon itself checks that the approvals file holds a grant for exactly that
+// entry's (repo, base, hash) and, if it does not, changes nothing.
+// destructive_blocked and superseded entries can never be granted or reverified.
 package api
 
 import (
@@ -101,12 +105,21 @@ type submitRequest struct {
 type httpError struct {
 	code int
 	msg  string
+	// v1Code, when set, is the envelope's machine-readable code instead of the
+	// one derived from the status (codeOf).
+	v1Code string
+}
+
+// apiErr is an error with a fixed v1 envelope code. msg must be a fixed text:
+// never the Error() of a signing, registry or approval error (CF1).
+func apiErr(status int, v1Code, msg string) *httpError {
+	return &httpError{code: status, msg: msg, v1Code: v1Code}
 }
 
 func (e *httpError) Error() string { return e.msg }
 
 func bad(format string, a ...any) *httpError {
-	return &httpError{http.StatusBadRequest, fmt.Sprintf(format, a...)}
+	return &httpError{code: http.StatusBadRequest, msg: fmt.Sprintf(format, a...)}
 }
 
 // handler serves the API. roots are resolved (symlink-free) absolute paths.
@@ -200,9 +213,13 @@ func writeErr(w http.ResponseWriter, err error) {
 	var he *httpError
 	if !errors.As(err, &he) {
 		log.Printf("orchd: internal error: %v", err)
-		he = &httpError{http.StatusInternalServerError, "내부 오류"}
+		he = &httpError{code: http.StatusInternalServerError, msg: "내부 오류"}
 	}
-	writeJSON(w, he.code, map[string]string{"error": he.msg})
+	body := map[string]string{"error": he.msg}
+	if he.v1Code != "" {
+		body["code"] = he.v1Code
+	}
+	writeJSON(w, he.code, body)
 }
 
 func (h *handler) submit(w http.ResponseWriter, r *http.Request) {
@@ -214,7 +231,7 @@ func (h *handler) submit(w http.ResponseWriter, r *http.Request) {
 		var mbe *http.MaxBytesError
 		switch {
 		case errors.As(err, &mbe):
-			writeErr(w, &httpError{http.StatusRequestEntityTooLarge, "요청이 너무 큽니다"})
+			writeErr(w, &httpError{code: http.StatusRequestEntityTooLarge, msg: "요청이 너무 큽니다"})
 		case errors.Is(err, io.EOF):
 			writeErr(w, bad("요청 본문이 비어 있습니다"))
 		default:
@@ -225,7 +242,7 @@ func (h *handler) submit(w http.ResponseWriter, r *http.Request) {
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
-			writeErr(w, &httpError{http.StatusRequestEntityTooLarge, "요청이 너무 큽니다"})
+			writeErr(w, &httpError{code: http.StatusRequestEntityTooLarge, msg: "요청이 너무 큽니다"})
 			return
 		}
 		writeErr(w, bad("JSON 뒤에 불필요한 데이터가 있습니다"))
@@ -277,17 +294,17 @@ func (h *handler) validate(req submitRequest) (store.Task, error) {
 		return t, bad("repo 경로는 정리된 형태여야 합니다(.., 중복 /, 끝의 / 금지)")
 	}
 	if len(h.roots) == 0 {
-		return t, &httpError{http.StatusForbidden, "허용된 저장소 루트가 없습니다(orchd --allow-repo 설정 필요)"}
+		return t, &httpError{code: http.StatusForbidden, msg: "허용된 저장소 루트가 없습니다(orchd --allow-repo 설정 필요)"}
 	}
 	real, err := filepath.EvalSymlinks(repo)
 	if err != nil {
 		if !h.underRoot(repo) {
-			return t, &httpError{http.StatusForbidden, "허용된 저장소 루트 밖의 경로입니다"}
+			return t, &httpError{code: http.StatusForbidden, msg: "허용된 저장소 루트 밖의 경로입니다"}
 		}
 		return t, bad("저장소 경로가 없습니다")
 	}
 	if !h.underRoot(real) {
-		return t, &httpError{http.StatusForbidden, "허용된 저장소 루트 밖의 경로입니다"}
+		return t, &httpError{code: http.StatusForbidden, msg: "허용된 저장소 루트 밖의 경로입니다"}
 	}
 	if fi, err := os.Stat(real); err != nil || !fi.IsDir() {
 		return t, bad("저장소 경로가 디렉터리가 아닙니다")
@@ -344,7 +361,7 @@ func (h *handler) get(w http.ResponseWriter, r *http.Request) {
 	}
 	t, err := h.st.GetTask(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
-		writeErr(w, &httpError{404, "작업을 찾을 수 없습니다"})
+		writeErr(w, &httpError{code: 404, msg: "작업을 찾을 수 없습니다"})
 		return
 	}
 	if err != nil {
@@ -362,10 +379,10 @@ func (h *handler) cancel(w http.ResponseWriter, r *http.Request) {
 	}
 	switch err := h.m.Cancel(r.Context(), id); {
 	case errors.Is(err, store.ErrNotFound):
-		writeErr(w, &httpError{404, "작업을 찾을 수 없습니다"})
+		writeErr(w, &httpError{code: 404, msg: "작업을 찾을 수 없습니다"})
 		return
 	case errors.Is(err, machine.ErrTerminal):
-		writeErr(w, &httpError{409, "이미 끝난 작업입니다"})
+		writeErr(w, &httpError{code: 409, msg: "이미 끝난 작업입니다"})
 		return
 	case err != nil:
 		writeErr(w, err)
@@ -390,11 +407,11 @@ func (h *handler) retry(w http.ResponseWriter, r *http.Request) {
 	var nr *machine.NotRetryableError
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		writeErr(w, &httpError{404, "작업을 찾을 수 없습니다"})
+		writeErr(w, &httpError{code: 404, msg: "작업을 찾을 수 없습니다"})
 	case errors.As(err, &nr):
-		writeErr(w, &httpError{409, nr.Reason})
+		writeErr(w, &httpError{code: 409, msg: nr.Reason})
 	case errors.Is(err, store.ErrStateMismatch):
-		writeErr(w, &httpError{409, "작업 상태가 방금 바뀌어 다시 시도하지 않았습니다. 변경 없음"})
+		writeErr(w, &httpError{code: 409, msg: "작업 상태가 방금 바뀌어 다시 시도하지 않았습니다. 변경 없음"})
 	case err != nil:
 		writeErr(w, err)
 	default:
@@ -423,6 +440,20 @@ type ApprovalDetail struct {
 	// PolicyHash is the policy in force now. The CLI never trusts it by
 	// itself: it only uses it to rebuild the entry's hash and compare.
 	PolicyHash string `json:"policy_hash,omitempty"`
+
+	// Signing view (grant.go fillSigning). Message is the canonical text to
+	// sign, built by the server from the entry and the task with Issued; it,
+	// Digest (hex SHA-256 of Message) and HashedText are empty when the entry
+	// cannot be granted now. HashedText/ProtectedFiles/Truncated are the diff
+	// view's protected part (protected_modified only).
+	Message           string   `json:"message"`
+	Digest            string   `json:"digest"`
+	HashedText        string   `json:"hashed_text"`
+	ProtectedFiles    []string `json:"protected_files"`
+	Truncated         bool     `json:"truncated"`
+	Meaning           string   `json:"meaning"`
+	RequiresSignature bool     `json:"requires_signature"`
+	Issued            string   `json:"issued"`
 }
 
 func (h *handler) approvalGet(w http.ResponseWriter, r *http.Request) {
@@ -433,7 +464,7 @@ func (h *handler) approvalGet(w http.ResponseWriter, r *http.Request) {
 	}
 	a, err := h.st.GetApproval(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
-		writeErr(w, &httpError{404, "승인 항목을 찾을 수 없습니다"})
+		writeErr(w, &httpError{code: 404, msg: "승인 항목을 찾을 수 없습니다"})
 		return
 	}
 	if err != nil {
@@ -449,6 +480,7 @@ func (h *handler) approvalGet(w http.ResponseWriter, r *http.Request) {
 	if h.policyHash != nil {
 		det.PolicyHash = h.policyHash()
 	}
+	fillSigning(&det, a, t, time.Now())
 	writeJSON(w, 200, det)
 }
 
@@ -468,7 +500,7 @@ func (h *handler) reverify(w http.ResponseWriter, r *http.Request) {
 	}
 	a, err := h.st.GetApproval(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
-		writeErr(w, &httpError{404, "승인 항목을 찾을 수 없습니다"})
+		writeErr(w, &httpError{code: 404, msg: "승인 항목을 찾을 수 없습니다"})
 		return
 	}
 	if err != nil {
@@ -477,10 +509,10 @@ func (h *handler) reverify(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case a.Kind == store.KindDestructiveBlocked:
-		writeErr(w, &httpError{403, "destructive_blocked 항목은 승인할 수 없습니다"})
+		writeErr(w, &httpError{code: 403, msg: "destructive_blocked 항목은 승인할 수 없습니다"})
 		return
 	case a.Status != store.ApprovalPending:
-		writeErr(w, &httpError{409, "대기 중인 항목이 아닙니다(상태: " + a.Status + ")"})
+		writeErr(w, &httpError{code: 409, msg: "대기 중인 항목이 아닙니다(상태: " + a.Status + ")"})
 		return
 	}
 	t, err := h.st.GetTask(r.Context(), a.TaskID)
@@ -490,26 +522,13 @@ func (h *handler) reverify(w http.ResponseWriter, r *http.Request) {
 	}
 	// The entry must still describe the task as it is now.
 	if t.State != store.StateNeedsApproval || t.Base != a.Base || t.HeadSHA != a.Head {
-		writeErr(w, &httpError{409, "작업의 현재 상태·base·head와 이 항목이 맞지 않습니다. 변경 없음"})
+		writeErr(w, &httpError{code: 409, msg: "작업의 현재 상태·base·head와 이 항목이 맞지 않습니다. 변경 없음"})
 		return
 	}
-	ok, err := h.grants.Granted(t.Repo, a)
+	v, err := h.judgeGranted(r.Context(), a, t)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	if !ok {
-		writeErr(w, &httpError{409, "승인 기록(grant)이 없습니다. 사람이 터미널에서 `orch approve`로 승인해야 합니다. 변경 없음"})
-		return
-	}
-	if err := h.m.Approve(r.Context(), id); err != nil {
-		writeErr(w, err)
-		return
-	}
-	t, err = h.st.GetTask(r.Context(), a.TaskID)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, 200, viewOf(t))
+	writeJSON(w, 200, v)
 }

@@ -25,6 +25,7 @@ func (h *handler) mountV1(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+v1Prefix+"/approvals", h.approvals)
 	mux.HandleFunc("GET "+v1Prefix+"/approvals/{id}", h.approvalGet)
 	mux.HandleFunc("POST "+v1Prefix+"/approvals/{id}/reverify", h.reverify)
+	mux.HandleFunc("POST "+v1Prefix+"/approvals/{id}/grant", h.grantSigned)
 	mux.HandleFunc("GET "+v1Prefix+"/stages", h.stages)
 	mux.HandleFunc("GET "+v1Prefix+"/overview", h.overview)
 	mux.HandleFunc("GET "+v1Prefix+"/projects", h.projects)
@@ -103,14 +104,18 @@ func (e *envWriter) finish() {
 	}
 	h := e.ResponseWriter.Header()
 	h.Del("Content-Length")
-	msg := ""
+	msg, code := "", ""
 	if strings.HasPrefix(h.Get("Content-Type"), "application/json") {
 		var flat struct {
 			Error string `json:"error"`
+			Code  string `json:"code"`
 		}
 		if json.Unmarshal(e.buf.Bytes(), &flat) == nil {
-			msg = flat.Error
+			msg, code = flat.Error, flat.Code
 		}
+	}
+	if code == "" {
+		code = codeOf(e.status)
 	}
 	if msg == "" {
 		switch e.status {
@@ -122,5 +127,5 @@ func (e *envWriter) finish() {
 			msg = "요청을 처리할 수 없습니다"
 		}
 	}
-	writeV1Err(e.ResponseWriter, e.status, codeOf(e.status), msg)
+	writeV1Err(e.ResponseWriter, e.status, code, msg)
 }

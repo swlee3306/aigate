@@ -47,7 +47,7 @@ func (h *handler) diff(w http.ResponseWriter, r *http.Request) {
 	}
 	t, err := h.st.GetTask(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
-		writeErr(w, &httpError{404, "작업을 찾을 수 없습니다"})
+		writeErr(w, &httpError{code: 404, msg: "작업을 찾을 수 없습니다"})
 		return
 	}
 	if err != nil {
@@ -55,12 +55,12 @@ func (h *handler) diff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if t.HeadSHA == "" {
-		writeErr(w, &httpError{http.StatusConflict, "작업에 아직 head 커밋이 없습니다"})
+		writeErr(w, &httpError{code: http.StatusConflict, msg: "작업에 아직 head 커밋이 없습니다"})
 		return
 	}
 	p, err := gate.Prepare(gate.Options{Repo: t.Repo, Base: t.Base, Head: t.HeadSHA})
 	if err != nil {
-		writeErr(w, &httpError{http.StatusConflict, "diff를 만들 수 없습니다: " + err.Error()})
+		writeErr(w, &httpError{code: http.StatusConflict, msg: "diff를 만들 수 없습니다: " + err.Error()})
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
@@ -70,12 +70,20 @@ func (h *handler) diff(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	text, truncated := capUTF8(p.Diff.HashedText(), maxDiffBytes)
-	// Everything that needs approval: changed protected files and new guarded
-	// files (the latter only show up as trailing "A <path>" lines of the text,
-	// which truncation cuts first).
+	text, truncated, prot := protectedView(p)
+	writeJSON(w, http.StatusOK, DiffView{Hash: p.Diff.Hash, HashedText: text, Truncated: truncated,
+		ProtectedFiles: prot, Files: files})
+}
+
+// protectedView is what a human approves for p: the hashed text (capped at
+// maxDiffBytes) and the sorted list of everything that needs approval, changed
+// protected files and new guarded files (the latter only show up as trailing
+// "A <path>" lines of the text, which truncation cuts first). The diff and the
+// approval detail endpoints both use it.
+func protectedView(p gate.Protected) (text string, truncated bool, prot []string) {
+	text, truncated = capUTF8(p.Diff.HashedText(), maxDiffBytes)
 	seen := map[string]bool{}
-	prot := []string{}
+	prot = []string{}
 	for _, f := range append(p.Diff.Changed(), p.AddedGuarded...) {
 		if !seen[f] {
 			seen[f] = true
@@ -83,8 +91,7 @@ func (h *handler) diff(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	sort.Strings(prot)
-	writeJSON(w, http.StatusOK, DiffView{Hash: p.Diff.Hash, HashedText: text, Truncated: truncated,
-		ProtectedFiles: prot, Files: files})
+	return text, truncated, prot
 }
 
 // capUTF8 cuts s to at most max bytes on a rune boundary.

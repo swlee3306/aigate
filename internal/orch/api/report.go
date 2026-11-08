@@ -27,14 +27,14 @@ func (h *handler) report(w http.ResponseWriter, r *http.Request) {
 	}
 	t, err := h.st.GetTask(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
-		writeErr(w, &httpError{404, "작업을 찾을 수 없습니다"})
+		writeErr(w, &httpError{code: 404, msg: "작업을 찾을 수 없습니다"})
 		return
 	}
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	notFound := &httpError{404, "보고서를 찾을 수 없습니다"}
+	notFound := &httpError{code: 404, msg: "보고서를 찾을 수 없습니다"}
 	if h.reportDir == "" || t.ReportPath == "" || !filepath.IsAbs(t.ReportPath) {
 		writeErr(w, notFound)
 		return
@@ -66,7 +66,7 @@ func (h *handler) report(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(b) > maxReportBytes {
-		writeErr(w, &httpError{http.StatusRequestEntityTooLarge, "보고서가 너무 큽니다"})
+		writeErr(w, &httpError{code: http.StatusRequestEntityTooLarge, msg: "보고서가 너무 큽니다"})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

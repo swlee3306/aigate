@@ -72,7 +72,7 @@ func (h *handler) events(w http.ResponseWriter, r *http.Request) {
 	}
 	t, err := h.st.GetTask(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
-		writeErr(w, &httpError{404, "작업을 찾을 수 없습니다"})
+		writeErr(w, &httpError{code: 404, msg: "작업을 찾을 수 없습니다"})
 		return
 	}
 	if err != nil {
