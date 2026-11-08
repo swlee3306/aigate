@@ -1,6 +1,8 @@
 // Package api is the control surface of orchd: a JSON API served over a unix
 // socket (and, from Task 21, a loopback HTTP listener). Every request except
-// GET /api/v1/healthz is authenticated before any handler runs (auth.go): a
+// GET /api/v1/healthz and the SSH login POSTs /api/v1/auth/challenge and
+// /api/v1/auth/token (login_ssh.go) is authenticated before any handler runs
+// (auth.go): a
 // socket peer must have an allowlisted uid (Config.SocketUIDs; empty = the
 // daemon's own uid) on top of the socket file mode (0600) and its 0700
 // directory; an HTTP caller needs a bearer token or a session cookie. Writes
@@ -153,10 +155,15 @@ type handler struct {
 	// idemMu serialises keyed submits (one orchd per database, see lockDB),
 	// so a key never yields two tasks.
 	idemMu sync.Mutex
+	// now is the login clock (challenge issue/expiry, failure window); nil
+	// means time.Now. loginFails limits failed SSH logins per signer id.
+	now        func() time.Time
+	loginFails *failLimiter
 }
 
 func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome string) (*handler, error) {
 	h := &handler{st: st, m: m, grants: approvals.Grants{Home: gateHome}, socketUIDs: socketUIDSet(nil)}
+	h.loginFails = newFailLimiter(h.clock)
 	for _, r := range allowed {
 		if !filepath.IsAbs(r) || filepath.Clean(r) != r {
 			return nil, fmt.Errorf("allowed repo root %q must be an absolute clean path", r)
@@ -178,12 +185,18 @@ func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome 
 	h.mountV1(mux)
 	h.mux = mux
 	h.root = http.NewServeMux()
+	// The only unauthenticated routes: healthz and the SSH challenge login
+	// (login_ssh.go). Everything else, other methods on these paths
+	// included, goes through authenticate.
 	h.root.HandleFunc("GET "+v1Prefix+"/healthz", healthz)
+	h.root.HandleFunc("POST "+v1Prefix+"/auth/challenge", h.authChallenge)
+	h.root.HandleFunc("POST "+v1Prefix+"/auth/token", h.authToken)
 	h.root.Handle("/", h.authenticate(mux))
 	return h, nil
 }
 
-// ServeHTTP authenticates every request except GET /api/v1/healthz before it
+// ServeHTTP authenticates every request except GET /api/v1/healthz and the two
+// SSH login POSTs (/api/v1/auth/challenge, /api/v1/auth/token) before it
 // reaches a handler (see authenticate); mutating routes add requireWrite.
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if isV1Path(r.URL.Path) {

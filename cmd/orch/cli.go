@@ -20,7 +20,10 @@ import (
 
 const defaultSocket = "/run/orchd/orchd.sock"
 
-const usage = `사용법: orch [--socket PATH | --server URL [--token-file PATH]] [--json] <명령>
+const usage = `사용법: orch [--socket PATH | --server URL [--token-file PATH] [--sign-key KEY] [--signer ID]] [--json] <명령>
+
+  login [--server URL] [--token-file PATH] [--sign-key KEY] [--signer ID]
+                                                                    SSH 키 챌린지로 로그인해 15분 토큰을 --token-file(0600)에 저장
 
   submit --repo R --base B --prompt P --class C --agent claude|codex   작업 제출
   list                                                              작업 목록
@@ -38,18 +41,44 @@ const usage = `사용법: orch [--socket PATH | --server URL [--token-file PATH]
 
 소켓: --socket 또는 ORCHD_SOCKET (기본 ` + defaultSocket + `)
 원격: --server https://주소 (소켓과 함께 쓸 수 없음), 토큰은 --token-file(기본 ~/.config/orch/token, 권한 0600)
+      토큰이 없거나 만료되면 KEY(기본 ~/.ssh/id_ed25519)와 ID(--signer, AIGATE_SIGNER 또는 마지막 login)로 자동 로그인
 승인 기록 위치: --gate-home 또는 ORCH_GATE_HOME (orchd의 --gate-home과 같아야 함)`
 
 type client struct {
-	hc    *http.Client
-	base  string                 // scheme://host, no API prefix
-	token func() (string, error) // remote mode only
-	err   error                  // construction error, reported by call
+	hc     *http.Client
+	base   string                 // scheme://host, no API prefix
+	remote bool                   // HTTPS server (newRemoteClient), not the socket
+	token  func() (string, error) // remote mode only
+	// relogin, when set, gets a fresh token after a 401; call retries the
+	// request once with it (never more).
+	relogin func() (string, error)
+	err     error // construction error, reported by call
 }
 
 // call returns the raw body; a non-2xx answer becomes an error with the
-// server's message. Paths are relative to /api/v1.
+// server's message. Paths are relative to /api/v1. In remote mode a 401 is
+// answered by one login (relogin) and one retry.
 func (c *client) call(method, path string, body any) ([]byte, error) {
+	tok := ""
+	if c.err == nil && c.token != nil {
+		var err error
+		if tok, err = c.token(); err != nil {
+			return nil, err
+		}
+	}
+	b, err := c.send(method, path, body, tok)
+	var ae *apiError
+	if c.relogin != nil && errors.As(err, &ae) && ae.Status == http.StatusUnauthorized {
+		if tok, err = c.relogin(); err != nil {
+			return nil, err
+		}
+		return c.send(method, path, body, tok)
+	}
+	return b, err
+}
+
+// send makes one request; tok, when not empty, is sent as the bearer token.
+func (c *client) send(method, path string, body any, tok string) ([]byte, error) {
 	if c.err != nil {
 		return nil, c.err
 	}
@@ -62,16 +91,12 @@ func (c *client) call(method, path string, body any) ([]byte, error) {
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if c.token != nil {
-		tok, err := c.token()
-		if err != nil {
-			return nil, err
-		}
+	if tok != "" {
 		req.Header.Set("Authorization", "Bearer "+tok)
 	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		if c.token != nil {
+		if c.remote {
 			return nil, fmt.Errorf("orchd 서버에 연결할 수 없습니다: %w", unwrapDial(err))
 		}
 		return nil, fmt.Errorf("orchd에 연결할 수 없습니다: %w", unwrapDial(err))
@@ -148,6 +173,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	tokenFile := fs.String("token-file", "", "")
 	asJSON := fs.Bool("json", false, "")
 	gateHomeFlag := fs.String("gate-home", "", "")
+	var lo loginOpts
+	fs.StringVar(&lo.KeyPath, "sign-key", "", "")
+	fs.StringVar(&lo.Signer, "signer", "", "")
 	if err := fs.Parse(args); err != nil || fs.NArg() == 0 {
 		fmt.Fprintln(stderr, usage)
 		return 2
@@ -159,6 +187,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if cmd == "admin" {
 		return cmdAdmin(rest, stdout, stderr)
+	}
+	if cmd == "login" {
+		return cmdLogin(rest, *server, *tokenFile, lo, stdout, stderr)
 	}
 	var c *client
 	if *server != "" {
@@ -172,7 +203,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		if tf == "" {
 			tf = defaultTokenFile()
 		}
-		c = newRemoteClient(*server, tokenSource(tf))
+		al := &autoLogin{path: tf, read: tokenSource(tf), opts: lo, stderr: stderr}
+		c = newRemoteClient(*server, al.token)
+		al.c = c
+		c.relogin = al.relogin
 	} else {
 		c = newClient(*sock)
 	}
@@ -191,8 +225,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	var so signOpts
 	if cmd == "approve" {
-		sub.StringVar(&so.KeyPath, "sign-key", "", "")
-		sub.StringVar(&so.Signer, "signer", "", "")
+		sub.StringVar(&so.KeyPath, "sign-key", lo.KeyPath, "")
+		sub.StringVar(&so.Signer, "signer", lo.Signer, "")
 	}
 	fail := func(err error) int { fmt.Fprintln(stderr, "오류:", errText(err)); return 1 }
 	if err := sub.Parse(rest); err != nil {

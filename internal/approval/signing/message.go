@@ -16,6 +16,14 @@ import (
 // NamespaceApproval is the SSH signature namespace for approval signatures.
 const NamespaceApproval = "aigate-approval"
 
+// NamespaceLogin is the SSH signature namespace for login challenges (the
+// orchd bearer-token login). It must differ from NamespaceApproval so a login
+// signature can never stand in for an approval, and vice versa.
+const NamespaceLogin = "aigate-login"
+
+// ValidSignerID reports whether id has the registry's signer id format.
+func ValidSignerID(id string) bool { return idRE.MatchString(id) }
+
 // Approval kinds. They must equal store.KindProtectedModified and
 // store.KindPublishOutsideAllowlist (checked by a test elsewhere).
 const (

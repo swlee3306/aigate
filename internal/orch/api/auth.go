@@ -284,7 +284,7 @@ func (h *handler) requireWrite(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// healthz is the only unauthenticated endpoint; it reveals nothing.
+// healthz is unauthenticated (like the two SSH login POSTs); it reveals nothing.
 func healthz(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
