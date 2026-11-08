@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>orch 웹 화면 목업</title>
+<style>
+:root {
+  --bg: #0a0e0f; --surface: #121819; --surface-2: #182123; --border: #26343a;
+  --text: #e8eeed; --muted: #a3b3b1; --faint: #7d8e8c;
+  --green: #4cc27a; --green-bg: #12301f; --teal: #35b3ae; --teal-bg: #0f2f2e;
+  --blue: #7db4ff; --blue-bg: #0e2a40; --amber: #f0b45a; --amber-bg: #3a2a0d;
+  --red: #ff8b82; --red-bg: #3b1816; --focus: #ffd479;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard", "Noto Sans KR", sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 var(--sans); }
+a { color: var(--blue); text-decoration: none; } a:hover { text-decoration: underline; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+.skip { position: absolute; left: -999px; } .skip:focus { left: 8px; top: 8px; background: var(--surface-2); padding: 8px 12px; z-index: 9; }
+.app { display: grid; grid-template-columns: 232px 1fr; min-height: 100vh; }
+aside { background: var(--surface); border-right: 1px solid var(--border); padding: 16px 12px; position: sticky; top: 0; height: 100vh; }
+.brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 16px; font-weight: 650; font-size: 15px; }
+.logo { width: 26px; height: 26px; border-radius: 7px; background: linear-gradient(135deg, var(--green), var(--teal)); display: grid; place-items: center; color: #04140b; font-weight: 800; }
+nav a { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border-radius: 8px; color: var(--text); margin-bottom: 2px; }
+nav a:hover { background: var(--surface-2); text-decoration: none; }
+nav a[aria-current="page"] { background: #1d3a3a; font-weight: 600; }
+.nav-h { color: var(--faint); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; padding: 14px 10px 6px; }
+.count { background: var(--amber-bg); color: var(--amber); border-radius: 10px; padding: 0 8px; font-size: 12px; font-weight: 600; }
+.side-foot { position: absolute; bottom: 14px; left: 12px; right: 12px; color: var(--faint); font-size: 12px; }
+main { min-width: 0; }
+.top { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 24px; border-bottom: 1px solid var(--border); background: var(--bg); position: sticky; top: 0; z-index: 2; }
+.crumb { color: var(--muted); } .crumb b { color: var(--text); font-weight: 600; }
+.pill-ro { border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; color: var(--muted); font-size: 12px; }
+.page { padding: 24px; max-width: 1180px; }
+h1 { font-size: 20px; margin: 0 0 4px; } .sub { color: var(--muted); margin: 0 0 20px; }
+h2 { font-size: 14px; margin: 0; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+.card-h { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.stat { padding: 14px 16px; } .stat .n { font-size: 26px; font-weight: 700; line-height: 1.1; } .stat .l { color: var(--muted); font-size: 12px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 1px 10px; font-size: 12px; font-weight: 600; white-space: nowrap; border: 1px solid transparent; }
+.chip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.c-done { color: var(--green); background: var(--green-bg); } .c-fail { color: var(--red); background: var(--red-bg); }
+.c-wait { color: var(--amber); background: var(--amber-bg); } .c-run { color: var(--blue); background: var(--blue-bg); }
+.c-fail::before { border-radius: 2px; } .c-wait::before { border-radius: 2px; transform: rotate(45deg); }
+.tag { border: 1px solid var(--border); border-radius: 6px; padding: 0 7px; font-size: 12px; color: var(--muted); }
+.tag.prot { color: var(--amber); border-color: #5b4515; }
+.mono { font-family: var(--mono); font-size: 12.5px; }
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12px; padding: 10px 16px; border-bottom: 1px solid var(--border); }
+td { padding: 11px 16px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+tbody tr:last-child td { border-bottom: 0; } tbody tr:hover { background: var(--surface-2); }
+.ell { max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.filters { display: flex; gap: 8px; flex-wrap: wrap; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.filters input { flex: 1; min-width: 200px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 7px 12px; font: inherit; }
+.btn { background: var(--surface-2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 6px 12px; font: inherit; cursor: pointer; }
+.btn:hover { border-color: var(--teal); } .btn[aria-pressed="true"] { background: #1d3a3a; border-color: var(--teal); }
+/* pipeline */
+.pipe { padding: 12px; overflow-x: auto; } .pipe svg { min-width: 860px; width: 100%; height: auto; display: block; }
+.node rect { fill: #0f2230; stroke: #24485f; } .node.ok rect { fill: #0f2a1d; stroke: #25583b; } .node.gate rect { fill: #33260c; stroke: #6a4f17; } .node.bad rect { fill: #321512; stroke: #6a2a25; }
+.node text { fill: var(--text); } .node .t { font-size: 13px; font-weight: 650; } .node .s { font-size: 11px; fill: var(--muted); } .node .big { font-size: 22px; font-weight: 700; }
+.edge { fill: none; stroke-width: 2; } .e-ok { stroke: #3ca56a; } .e-bad { stroke: #d96c63; stroke-dasharray: 5 4; } .e-wait { stroke: #d9a24a; stroke-dasharray: 2 4; }
+.lbl { font-size: 11px; fill: var(--muted); } .lbl-bg { fill: var(--bg); }
+@media (prefers-reduced-motion: no-preference) { .e-ok { stroke-dasharray: 7 7; animation: flow 1.6s linear infinite; } @keyframes flow { to { stroke-dashoffset: -14; } } }
+/* detail */
+.grid2 { display: grid; grid-template-columns: 1fr 340px; gap: 16px; } .grid2 > * { min-width: 0; }
+dl { margin: 0; padding: 12px 16px; display: grid; grid-template-columns: 96px 1fr; gap: 8px 12px; } dt { color: var(--muted); } dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.tl { list-style: none; margin: 0; padding: 8px 16px 14px; } .tl li { display: grid; grid-template-columns: 22px 110px 1fr 60px; gap: 8px; align-items: center; padding: 6px 0; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--green); margin-left: 6px; } .dot.sq { border-radius: 2px; background: var(--red); }
+.bar { height: 6px; border-radius: 3px; background: var(--teal); min-width: 3px; } .barwrap { background: var(--surface-2); border-radius: 3px; }
+.note { color: var(--muted); font-size: 12.5px; padding: 0 16px 14px 16px; }
+.callout { border: 1px solid #5b4515; background: var(--amber-bg); border-radius: 10px; padding: 12px 14px; margin-bottom: 16px; }
+.cmd { position: relative; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 10px 0 0; }
+.cmd code { font-family: var(--mono); font-size: 12px; word-break: break-all; color: #cfe3e0; display: block; padding-right: 64px; }
+.cmd .btn { position: absolute; right: 8px; top: 8px; padding: 2px 10px; font-size: 12px; }
+/* diff */
+.diff { font-family: var(--mono); font-size: 12.5px; margin: 0; padding: 8px 0; overflow-x: auto; }
+.diff div { padding: 0 16px; white-space: pre; } .add { background: #0f2a1a; color: #b9efcf; } .del { background: #331513; color: #ffc9c4; } .hunk { color: var(--blue); background: var(--blue-bg); }
+.files { list-style: none; margin: 0; padding: 6px 0; } .files li { display: flex; justify-content: space-between; gap: 8px; padding: 7px 16px; } .files li[aria-current="true"] { background: #1d3a3a; }
+.banner { background: var(--blue-bg); border: 1px solid #1d4a73; border-radius: 10px; padding: 8px 14px; margin-bottom: 16px; color: #b9d7ff; font-size: 13px; }
+.view { display: none; } .view.on { display: block; }
+@media (max-width: 860px) {
+  .app { grid-template-columns: 1fr; } aside { position: static; height: auto; } .side-foot { display: none; }
+  nav { display: flex; flex-wrap: wrap; gap: 4px; } .nav-h { display: none; } .grid2 { grid-template-columns: 1fr; }
+  .page { padding: 16px; } .top { padding: 10px 16px; } .hide-m { display: none; }
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#content">본문으로 건너뛰기</a>
+<div class="app">
+<aside>
+  <div class="brand"><span class="logo" aria-hidden="true">o</span> orch 콘솔</div>
+  <nav aria-label="주 메뉴">
+    <div class="nav-h">운영</div>
+    <a href="#/overview" data-nav="overview">개요</a>
+    <a href="#/tasks" data-nav="tasks">작업 <span class="hide-m mono" style="color:var(--faint)">38</span></a>
+    <a href="#/approvals" data-nav="approvals">승인 <span class="count" aria-label="대기 1건">1</span></a>
+    <div class="nav-h">연결</div>
+    <a href="#" onclick="return false">GitLab 저장소 ↗</a>
+    <a href="#" onclick="return false">정책 보기</a>
+  </nav>
+  <div class="side-foot">읽기 전용 · Tailscale 안에서만<br>orch-vm 100.64.0.21</div>
+</aside>
+<main>
+  <div class="top">
+    <div class="crumb" id="crumb"></div>
+    <span class="pill-ro" title="이 화면은 상태를 바꾸지 않습니다. 승인은 터미널에서 합니다.">읽기 전용</span>
+  </div>
+  <div class="page" id="content" tabindex="-1">
+    <div class="banner" role="note">목업입니다. 작업 목록·시간·상태 수는 2026-11-08 실제 값이고, 승인 대기 항목과 변경 내용은 화면 설명용 예시입니다.</div>
+
+    <!-- 개요 -->
+    <section class="view" id="v-overview" aria-labelledby="h-overview">
+      <h1 id="h-overview">개요</h1>
+      <p class="sub">지금 어디까지 왔는지, 사람이 해야 할 일이 있는지를 한눈에 봅니다.</p>
+      <div class="stats">
+        <div class="card stat"><div class="n">38</div><div class="l">전체 작업</div></div>
+        <div class="card stat"><div class="n" style="color:var(--green)">36</div><div class="l">완료</div></div>
+        <div class="card stat"><div class="n" style="color:var(--amber)">1</div><div class="l">승인 대기 (예시)</div></div>
+        <div class="card stat"><div class="n" style="color:var(--red)">2</div><div class="l">실패</div></div>
+        <div class="card stat"><div class="n">160<small style="font-size:14px;color:var(--muted)">초</small></div><div class="l">같은 base 작업 자체 시간</div></div>
+      </div>
+      <div class="card">
+        <div class="card-h"><h2>작업이 지나가는 길</h2><span class="mono" style="color:var(--faint)">최근 3건 평균 시간 · 선 위 글자는 분기 조건</span></div>
+        <div class="pipe">
+<svg viewBox="0 0 1000 370" role="img" aria-label="파이프라인: 대기, 준비, 에이전트, 수집, 검증을 거쳐 판정이 ok이면 게시 후 완료, 승인이 필요하면 승인 관문, 판정 실패면 실패로 갑니다. 인프라 오류는 재시도로 검증 단계로 돌아갑니다.">
+  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#7d8e8c"/></marker></defs>
+  <!-- row 1 -->
+  <path class="edge e-ok" d="M150 70H178" marker-end="url(#ah)"/><path class="edge e-ok" d="M318 70H346" marker-end="url(#ah)"/><path class="edge e-ok" d="M486 70H514" marker-end="url(#ah)"/><path class="edge e-ok" d="M654 70H682" marker-end="url(#ah)"/>
+  <g class="node"><rect x="10" y="30" width="140" height="80" rx="12"/><text class="t" x="26" y="58">대기</text><text class="s" x="26" y="76">queued</text><text class="big" x="26" y="100">0</text></g>
+  <g class="node"><rect x="178" y="30" width="140" height="80" rx="12"/><text class="t" x="194" y="58">준비</text><text class="s" x="194" y="76">preparing</text><text class="big" x="194" y="100">2초</text></g>
+  <g class="node"><rect x="346" y="30" width="140" height="80" rx="12"/><text class="t" x="362" y="58">에이전트</text><text class="s" x="362" y="76">agent_running</text><text class="big" x="362" y="100">25초</text></g>
+  <g class="node"><rect x="514" y="30" width="140" height="80" rx="12"/><text class="t" x="530" y="58">수집</text><text class="s" x="530" y="76">collecting</text><text class="big" x="530" y="100">1초</text></g>
+  <g class="node"><rect x="682" y="30" width="170" height="80" rx="12"/><text class="t" x="698" y="58">검증 (복원+게이트)</text><text class="s" x="698" y="76">verifying · base 캐시</text><text class="big" x="698" y="100">134초</text></g>
+  <!-- exits of verifying -->
+  <path class="edge e-bad" d="M700 110V150H575V200" marker-end="url(#ah)"/>
+  <rect class="lbl-bg" x="592" y="140" width="96" height="20"/><text class="lbl" x="640" y="154" text-anchor="middle">✕ 판정 실패</text>
+  <path class="edge e-ok" d="M765 110V200" marker-end="url(#ah)"/>
+  <rect class="lbl-bg" x="725" y="150" width="80" height="20"/><text class="lbl" x="765" y="164" text-anchor="middle">✓ 판정 ok</text>
+  <path class="edge e-wait" d="M830 110V130H925V200" marker-end="url(#ah)"/>
+  <rect class="lbl-bg" x="866" y="120" width="118" height="20"/><text class="lbl" x="925" y="134" text-anchor="middle">⏸ 보호 파일 수정</text>
+  <!-- row 2 -->
+  <g class="node bad"><rect x="500" y="200" width="150" height="80" rx="12"/><text class="t" x="516" y="228">실패</text><text class="s" x="516" y="246">#3 판정 · #37 게시</text><text class="big" x="516" y="270">2건</text></g>
+  <g class="node ok"><rect x="690" y="200" width="150" height="80" rx="12"/><text class="t" x="706" y="228">게시</text><text class="s" x="706" y="246">push_branch</text><text class="big" x="706" y="270">3초</text></g>
+  <g class="node gate"><rect x="858" y="200" width="132" height="80" rx="12"/><text class="t" x="872" y="228">승인 관문</text><text class="s" x="872" y="246">터미널에서 승인</text><text class="big" x="872" y="270">1건</text></g>
+  <path class="edge e-ok" d="M765 280V310" marker-end="url(#ah)"/>
+  <g class="node ok"><rect x="690" y="310" width="150" height="46" rx="12"/><text class="t" x="706" y="330">완료</text><text class="s" x="706" y="347">36건 · orch/N 브랜치</text></g>
+  <text class="lbl" x="924" y="304" text-anchor="middle">승인하면 검증을 다시 돌린 뒤 게시</text>
+  <text class="lbl" x="575" y="304" text-anchor="middle">인프라 오류 실패는</text><text class="lbl" x="575" y="320" text-anchor="middle">orch retry 로 검증부터 재개</text>
+</svg>
+        </div>
+        <p class="note">선 모양으로도 구분합니다: 실선=정상, 점선=사람 필요(승인), 파선=실패. 색에만 의존하지 않습니다.</p>
+      </div>
+    </section>
+
+    <!-- 작업 목록 -->
+    <section class="view" id="v-tasks" aria-labelledby="h-tasks">
+      <h1 id="h-tasks">작업</h1>
+      <p class="sub">큐와 지난 작업. 행을 누르면 상세로 갑니다.</p>
+      <div class="card">
+        <div class="filters">
+          <input type="search" aria-label="작업 검색" placeholder="프롬프트·저장소·번호로 찾기">
+          <button class="btn" aria-pressed="true">전체 38</button><button class="btn" aria-pressed="false">승인 대기 1</button><button class="btn" aria-pressed="false">실패 2</button><button class="btn" aria-pressed="false">진행 중 0</button>
+        </div>
+        <table>
+          <caption class="skip">작업 목록</caption>
+          <thead><tr><th scope="col">#</th><th scope="col">상태</th><th scope="col">저장소</th><th scope="col" class="hide-m">프롬프트</th><th scope="col">검증</th><th scope="col" class="hide-m">GitLab</th></tr></thead>
+          <tbody>
+            <tr><td class="mono"><a href="#/tasks/38">#38</a></td><td><span class="chip c-done">완료</span></td><td>sample-app</td><td class="ell hide-m">테스트 파일 추가 (첫 실제 GitLab push)</td><td class="mono">140초 · base 캐시</td><td class="hide-m"><a href="#" onclick="return false">orch/38 ↗</a> <span class="tag">삭제됨</span></td></tr>
+            <tr><td class="mono"><a href="#/tasks/37">#37</a></td><td><span class="chip c-fail">실패</span></td><td>sample-app</td><td class="ell hide-m">게시 단계 실패: 배포 키에 쓰기 권한 없음</td><td class="mono">210초</td><td class="hide-m">—</td></tr>
+            <tr><td class="mono"><a href="#/tasks/36">#36</a></td><td><span class="chip c-done">완료</span></td><td>sample-app</td><td class="ell hide-m">테스트 파일 추가 (base 캐시 시험)</td><td class="mono">134초 · base 캐시</td><td class="hide-m">로컬</td></tr>
+            <tr><td class="mono"><a href="#/tasks/5">#5</a></td><td><span class="chip c-wait">승인 대기</span> <span class="tag">예시</span></td><td>toy</td><td class="ell hide-m">calc_fourth_test.go 추가 — 정책 변경 확인 필요</td><td class="mono">재시도 1/3</td><td class="hide-m">로컬</td></tr>
+            <tr><td class="mono"><a href="#/tasks/2">#2</a></td><td><span class="chip c-done">완료</span></td><td>toy</td><td class="ell hide-m">calc_test.go 단언 추가 — 보호 파일 + 정책 변경 승인 2건</td><td class="mono">사람 승인</td><td class="hide-m">로컬</td></tr>
+            <tr><td class="mono"><a href="#/tasks/3">#3</a></td><td><span class="chip c-fail">실패</span></td><td>toy</td><td class="ell hide-m">의도한 회귀 시험 — 판정 behavior_failure</td><td class="mono">판정 실패</td><td class="hide-m">—</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 작업 상세 -->
+    <section class="view" id="v-task" aria-labelledby="h-task">
+      <h1 id="h-task">작업 #38 <span class="chip c-done" style="vertical-align:middle">완료</span></h1>
+      <p class="sub">sample-app · claude · base <span class="mono">0e2db75</span> → head <span class="mono">828f1ed</span></p>
+      <div class="grid2">
+        <div class="card">
+          <div class="card-h"><h2>시간 흐름</h2><span class="mono" style="color:var(--faint)">총 184초</span></div>
+          <ol class="tl" aria-label="단계별 소요 시간">
+            <li><span class="dot"></span><span>대기</span><span class="barwrap"><div class="bar" style="width:1%"></div></span><span class="mono">0.2초</span></li>
+            <li><span class="dot"></span><span>준비</span><span class="barwrap"><div class="bar" style="width:2%"></div></span><span class="mono">2.0초</span></li>
+            <li><span class="dot"></span><span>에이전트</span><span class="barwrap"><div class="bar" style="width:17%"></div></span><span class="mono">25초</span></li>
+            <li><span class="dot"></span><span>수집</span><span class="barwrap"><div class="bar" style="width:1%"></div></span><span class="mono">1.3초</span></li>
+            <li><span class="dot"></span><span>검증</span><span class="barwrap"><div class="bar" style="width:96%"></div></span><span class="mono">140초</span></li>
+            <li><span class="dot"></span><span>게시</span><span class="barwrap"><div class="bar" style="width:2%"></div></span><span class="mono">3.0초</span></li>
+          </ol>
+          <p class="note">검증 140초 = 복원 55초 + 게이트 85초(base <b>0초: 캐시</b>, head 81초)</p>
+        </div>
+        <div class="card">
+          <div class="card-h"><h2>요약</h2></div>
+          <dl>
+            <dt>판정</dt><dd><span class="chip c-done">ok</span></dd>
+            <dt>정책</dt><dd class="mono">6d045b884724 · L1</dd>
+            <dt>게시</dt><dd>push_branch → <a href="#" onclick="return false">orch/38 ↗</a> <span class="tag">GitLab에서 삭제됨</span></dd>
+            <dt>프롬프트</dt><dd>Go 서비스에서 테스트 없는 작은 순수 함수 하나를 골라 새 테스트 파일을 추가…</dd>
+          </dl>
+        </div>
+      </div>
+    </section>
+
+    <!-- 승인 -->
+    <section class="view" id="v-approvals" aria-labelledby="h-approvals">
+      <h1 id="h-approvals">승인</h1>
+      <p class="sub">사람이 확인해야 하는 항목. 이 화면은 보기만 하고, 승인은 터미널에서 합니다.</p>
+      <div class="callout" role="group" aria-label="승인 대기 항목 예시">
+        <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap">
+          <div><span class="chip c-wait">승인 대기</span> <b style="margin-left:8px">항목 3 · 작업 #5</b> <span class="tag">예시</span></div>
+          <span class="mono" style="color:var(--muted)">종류 publish_outside_allowlist</span>
+        </div>
+        <p style="margin:10px 0 0"><b>무엇을 허용하나요?</b> 작업이 시작된 뒤 정책이 바뀌었습니다(<span class="mono">078b17… → 6d045b…</span>). 이 head <span class="mono">2517063</span>를 현재 정책으로 <b>로컬 저장소에 push</b>하는 것을 한 번만 허용합니다.</p>
+        <p style="margin:6px 0 0;color:var(--muted)">확인할 것: 정책이 의도한 대로 바뀌었는가 · 게시 대상이 로컬인가(GitLab 아님)</p>
+        <div class="cmd"><button class="btn" data-copy>복사</button><code id="cmd1">ssh -t -i ~/.ssh/aigate_admin_ed25519 -o IdentitiesOnly=yes ubuntu@192.168.1.200 'sudo -u orch -H /home/orch/bin/orch --socket /home/orch/orchd/run/orchd.sock --gate-home /home/orch/orchd/gate-home approve 3'</code></div>
+        <p class="note" style="padding:8px 0 0">승인 항목 ID는 <b>3</b>, 작업 번호는 <b>#5</b>입니다. 명령에는 항목 ID를 씁니다.</p>
+      </div>
+      <div class="card">
+        <div class="card-h"><h2>지난 승인</h2></div>
+        <table>
+          <caption class="skip">지난 승인 목록</caption>
+          <thead><tr><th scope="col">항목</th><th scope="col">작업</th><th scope="col">종류</th><th scope="col" class="hide-m">이유</th><th scope="col">상태</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">2</td><td class="mono"><a href="#/tasks/2">#2</a></td><td>정책 변경 게시</td><td class="ell hide-m">policy changed since the task started</td><td><span class="chip c-done">승인됨</span></td></tr>
+            <tr><td class="mono">1</td><td class="mono"><a href="#/tasks/2">#2</a></td><td>보호 파일 수정</td><td class="ell hide-m">tests/**, calc_test.go 변경</td><td><span class="chip c-done">승인됨</span></td></tr>
+          </tbody>
+        </table>
+        <p class="note" style="padding-top:12px"><a href="#/diff">보호 파일 변경 보기 예시 →</a></p>
+      </div>
+    </section>
+
+    <!-- 변경 보기 -->
+    <section class="view" id="v-diff" aria-labelledby="h-diff">
+      <h1 id="h-diff">변경 보기 <span class="tag">예시</span></h1>
+      <p class="sub">작업 #2 · 승인 항목 1 · 보호 파일 수정 · diff 해시 <span class="mono">8b74e4c71f42</span></p>
+      <div class="callout"><b>요약</b> 보호 파일 1개에 단언 3줄이 추가되었습니다 (+3 −0). 다른 파일은 바뀌지 않았습니다. 승인하면 이 diff 해시에만 유효합니다.</div>
+      <div class="grid2" style="grid-template-columns:260px 1fr">
+        <div class="card">
+          <div class="card-h"><h2>변경 파일 1</h2></div>
+          <ul class="files"><li aria-current="true"><span class="mono">calc_test.go</span><span class="tag prot">보호</span></li></ul>
+        </div>
+        <div class="card">
+          <div class="card-h"><h2 class="mono">calc_test.go</h2><span class="mono" style="color:var(--green)">+3</span></div>
+          <pre class="diff" aria-label="calc_test.go의 변경 내용"><div class="hunk">@@ -9,4 +9,7 @@ func TestSum(t *testing.T) {</div><div>    if got := Sum([]int{1, 2, 3}); got != 6 {</div><div>        t.Fatalf("Sum() = %d, want 6", got)</div><div>    }</div><div class="add">+   if got := Sum([]int{4}); got != 4 {</div><div class="add">+       t.Fatalf("Sum() = %d, want 4", got)</div><div class="add">+   }</div></pre>
+        </div>
+      </div>
+    </section>
+  </div>
+</main>
+</div>
+<script>
+const views = { overview: ['v-overview', '개요'], tasks: ['v-tasks', '작업'], task: ['v-task', '작업 / #38'], approvals: ['v-approvals', '승인'], diff: ['v-diff', '승인 / 변경 보기'] };
+function route() {
+  const h = location.hash.replace(/^#\//, '') || 'overview';
+  let key = h.startsWith('tasks/') ? 'task' : h in views ? h : 'overview';
+  document.querySelectorAll('.view').forEach(v => v.classList.toggle('on', v.id === views[key][0]));
+  const nav = key === 'task' ? 'tasks' : key === 'diff' ? 'approvals' : key;
+  document.querySelectorAll('[data-nav]').forEach(a => a.dataset.nav === nav ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current'));
+  document.getElementById('crumb').innerHTML = 'orch <span aria-hidden="true">/</span> <b>' + views[key][1] + '</b>';
+  document.title = views[key][1] + ' · orch 콘솔 목업';
+}
+addEventListener('hashchange', route); route();
+document.querySelectorAll('[data-copy]').forEach(b => b.addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText(document.getElementById('cmd1').textContent); b.textContent = '복사됨'; } catch (e) { b.textContent = '직접 선택'; }
+  setTimeout(() => b.textContent = '복사', 1500);
+}));
+</script>
+</body>
+</html>
