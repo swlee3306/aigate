@@ -11,6 +11,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -369,7 +370,11 @@ func TestRejectsOversizedFile(t *testing.T) {
 func TestRegistryPathProcessWide(t *testing.T) {
 	old := RegistryPath()
 	t.Cleanup(func() { SetRegistryPath(old) })
-	if DefaultRegistryPath != "/etc/aigate/signers.json" {
+	want := "/etc/aigate/signers.json"
+	if runtime.GOOS == "darwin" {
+		want = "/private/etc/aigate/signers.json"
+	}
+	if DefaultRegistryPath != want {
 		t.Fatal(DefaultRegistryPath)
 	}
 	SetRegistryPath("/x/y.json")
@@ -444,4 +449,27 @@ func TestAbsentRequiresTrustedParent(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustFail(t, filepath.Join(d, "dangling", "aigate", "signers.json"), ownOpts())
+}
+
+// The loader refuses a symlink as the nearest existing ancestor of a missing
+// registry (R16). The default path must therefore not run through a symlinked
+// directory on this OS (macOS: /etc -> private/etc), or a machine without a
+// registry would fail closed instead of running in legacy mode.
+func TestDefaultPathAncestorsAreRealDirs(t *testing.T) {
+	for d := filepath.Dir(DefaultRegistryPath); ; d = filepath.Dir(d) {
+		fi, err := os.Lstat(d)
+		if err == nil {
+			if !fi.IsDir() {
+				t.Fatalf("%s is not a real directory (mode %v)", d, fi.Mode())
+			}
+			if d == "/" {
+				return
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		if d == "/" {
+			return
+		}
+	}
 }
