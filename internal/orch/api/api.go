@@ -117,6 +117,8 @@ type handler struct {
 	mux   *http.ServeMux
 	// grants reads the approvals file the gate reads (reverify only).
 	grants approvals.Grants
+	// policyHash reports the policy in force (nil: none).
+	policyHash func() string
 }
 
 func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome string) (*handler, error) {
@@ -408,6 +410,9 @@ type ApprovalDetail struct {
 	ApprovalView
 	Repo      string `json:"repo"`
 	TaskState string `json:"task_state"`
+	// PolicyHash is the policy in force now. The CLI never trusts it by
+	// itself: it only uses it to rebuild the entry's hash and compare.
+	PolicyHash string `json:"policy_hash,omitempty"`
 }
 
 func (h *handler) approvalGet(w http.ResponseWriter, r *http.Request) {
@@ -430,7 +435,11 @@ func (h *handler) approvalGet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, 200, ApprovalDetail{ApprovalView: approvalView(a), Repo: t.Repo, TaskState: string(t.State)})
+	det := ApprovalDetail{ApprovalView: approvalView(a), Repo: t.Repo, TaskState: string(t.State)}
+	if h.policyHash != nil {
+		det.PolicyHash = h.policyHash()
+	}
+	writeJSON(w, 200, det)
 }
 
 func approvalView(a store.Approval) ApprovalView {

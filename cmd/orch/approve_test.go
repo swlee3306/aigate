@@ -45,10 +45,16 @@ func put(t *testing.T, repo, name, content string) {
 const toyYAML = "version: 1\nprotected:\n  - \"tests/**\"\n  - \".aigate.yml\"\nchecks:\n" +
 	"  - id: unit\n    adapter: exit-code\n    command: [\"sh\", \"-c\", \"test -f ok.flag\"]\n    timeout: 20s\n"
 
-type fakeAgent struct{ head string }
+type fakeAgent struct {
+	head  string
+	onRun func() // optional: runs while the agent "works" (between prepare and publish)
+}
 
 func (fakeAgent) Prepare(context.Context, string, string, string) error { return nil }
-func (fakeAgent) Run(context.Context, string, string, string, time.Duration) (vm.RunResult, error) {
+func (f fakeAgent) Run(context.Context, string, string, string, time.Duration) (vm.RunResult, error) {
+	if f.onRun != nil {
+		f.onRun()
+	}
 	return vm.RunResult{}, nil
 }
 func (f fakeAgent) Collect(context.Context, string, string, string) (string, int, error) {
@@ -61,19 +67,27 @@ func (localTest) Restore(context.Context) error    { return nil }
 func (localTest) Executor() (gate.Executor, error) { return &gate.LocalExecutor{}, nil }
 
 type e2e struct {
-	t        *testing.T
-	st       *store.Store
-	sock     string
-	home     string // gate home
-	repo     string
-	base     string
-	head     string
-	cleanups []func()
+	t          *testing.T
+	st         *store.Store
+	sock       string
+	home       string // gate home
+	repo       string
+	base       string
+	head       string
+	policyPath string
+	cleanups   []func()
 }
 
 // newE2E runs a real daemon with the real steps and the real gate (local
 // executor) over a toy repo whose agent commit changes the given files.
 func newE2E(t *testing.T, files map[string]string, pub steps.Publisher) *e2e {
+	t.Helper()
+	return newE2EPolicy(t, files, pub, nil, nil)
+}
+
+// newE2EPolicy is newE2E with a live policy in force; onRun runs while the
+// agent works, so a test can change the policy file mid-task.
+func newE2EPolicy(t *testing.T, files map[string]string, pub steps.Publisher, live *policy.Live, onRun func()) *e2e {
 	t.Helper()
 	dir, _ := os.MkdirTemp("/tmp", "orche2e")
 	t.Cleanup(func() { os.RemoveAll(dir) })
@@ -104,15 +118,20 @@ func newE2E(t *testing.T, files map[string]string, pub steps.Publisher) *e2e {
 	e.st = st
 	t.Cleanup(func() { st.Close() })
 	cfg := steps.DefaultConfig()
-	cfg.Agent, cfg.Test = fakeAgent{head: e.head}, localTest{}
+	cfg.Agent, cfg.Test = fakeAgent{head: e.head, onRun: onRun}, localTest{}
+	cfg.Policy = live
 	cfg.ReportDir, cfg.GateHome = filepath.Join(dir, "reports"), e.home
 	cfg.Publisher = pub
 	p, err := steps.NewProvider(st, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := api.NewDaemon(api.Config{Socket: e.sock, AllowedRepos: []string{filepath.Join(dir, "repos")},
-		GateHome: e.home, PollInterval: 20 * time.Millisecond}, st, p)
+	acfg := api.Config{Socket: e.sock, AllowedRepos: []string{filepath.Join(dir, "repos")},
+		GateHome: e.home, PollInterval: 20 * time.Millisecond}
+	if live != nil {
+		acfg.PolicyHash = func() string { return live.Current().Hash() }
+	}
+	d, err := api.NewDaemon(acfg, st, p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -371,3 +390,8 @@ func (l *lazyPublisher) Publish(ctx context.Context, t store.Task) error {
 	return l.get().Publish(ctx, t)
 }
 func (l *lazyPublisher) PublishNote() string { return l.get().PublishNote() }
+func (l *lazyPublisher) Plan() []string      { return l.get().Plan() }
+func (l *lazyPublisher) Granted(t store.Task, kind string) bool {
+	return l.get().Granted(t, kind)
+}
+func (l *lazyPublisher) Permit(kind string) error { return l.get().Permit(kind) }

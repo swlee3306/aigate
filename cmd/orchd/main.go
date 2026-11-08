@@ -78,6 +78,7 @@ func run(args []string) int {
 			return 2
 		}
 		vf.live = live
+		cfg.PolicyHash = func() string { return live.Current().Hash() }
 		if err := checkStateDirWritable(live.Current().StatePath()); err != nil {
 			fmt.Fprintln(os.Stderr, "orchd: warning:", err)
 		}

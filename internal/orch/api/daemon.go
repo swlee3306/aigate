@@ -28,6 +28,9 @@ type Config struct {
 	// GateHome is the gate's home whose .aigate/approvals.json holds the
 	// human grants (empty: the gate's default, AIGATE_HOME or the user home).
 	GateHome string
+	// PolicyHash returns the hash of the policy in force (nil without a
+	// policy). `orch approve` uses it to recognise a policy-change approval.
+	PolicyHash func() string
 }
 
 // StepProvider supplies the steps the machine runs.
@@ -69,6 +72,7 @@ func NewDaemon(cfg Config, st *store.Store, p StepProvider) (*Daemon, error) {
 	if err != nil {
 		return nil, err
 	}
+	h.policyHash = cfg.PolicyHash
 	return &Daemon{cfg: cfg, st: st, m: m, handler: h, ready: make(chan struct{})}, nil
 }
 

@@ -20,6 +20,7 @@ import (
 	"aigate/internal/orch/api"
 	"aigate/internal/orch/approvals"
 	"aigate/internal/orch/publish"
+	"aigate/internal/orch/steps"
 	"aigate/internal/orch/store"
 )
 
@@ -132,6 +133,10 @@ func cmdApprove(c *client, id, gateHomeFlag string, stdout, stderr io.Writer) in
 			if approvals.PublishHash(d.TaskID, d.Head, k) == d.Hash {
 				action = k
 			}
+		}
+		if action == "" && d.PolicyHash != "" &&
+			approvals.PublishHash(d.TaskID, d.Head, steps.PolicyChangeKind(d.PolicyHash)) == d.Hash {
+			action = steps.PolicyChangeKind(d.PolicyHash)
 		}
 		if action == "" {
 			fmt.Fprintln(stderr, "orch: approve 거부: 이 항목의 해시가 알려진 게시 행위와 맞지 않습니다. 승인은 기록하지 않음")
