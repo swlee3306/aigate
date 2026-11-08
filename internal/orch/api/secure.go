@@ -219,13 +219,29 @@ func isJSONType(vals []string) bool {
 // rateLimit throttles /api/v1/auth/* (login, registration, session, logout):
 // per key, then globally (429 rate_limited with Retry-After). Other routes are
 // not limited: they need a credential, and the console polls them.
-func rateLimit(l *rateLimiter, next http.Handler) http.Handler {
+//
+// credKey, when not nil, recognises a request that carries a live session or
+// bearer token and returns a key derived from that credential (CF21). Such a
+// request is limited on that key only and skips the global ceiling: a local
+// process that invents Tailscale-User-Login values can drain the global bucket
+// (and could drain the admin's own header key by sending the admin's login),
+// but it cannot lock a logged-in admin out of /auth/session or /auth/signers.
+func rateLimit(l *rateLimiter, credKey func(*http.Request) (string, bool), next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, v1Prefix+"/auth/") {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if ok, wait := l.allow(rateKey(r)); !ok {
+		key, global := "", true
+		if credKey != nil {
+			if k, ok := credKey(r); ok {
+				key, global = k, false
+			}
+		}
+		if global {
+			key = rateKey(r)
+		}
+		if ok, wait := l.allow(key, global); !ok {
 			secs := int(math.Ceil(wait.Seconds()))
 			if secs < 1 {
 				secs = 1
@@ -319,9 +335,10 @@ func (l *rateLimiter) bucket(key string, now time.Time) *rateBucket {
 	return b
 }
 
-// allow takes one token from key's bucket and from the global bucket, or
-// neither; on refusal it returns how long to wait.
-func (l *rateLimiter) allow(key string) (bool, time.Duration) {
+// allow takes one token from key's bucket and, when global is true, from the
+// global bucket, or none; on refusal it returns how long to wait. A
+// credentialed caller (global == false) neither needs nor takes a global token.
+func (l *rateLimiter) allow(key string, global bool) (bool, time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
@@ -331,11 +348,13 @@ func (l *rateLimiter) allow(key string) (bool, time.Duration) {
 	if b.tokens < 1 {
 		return false, l.wait(b, l.perKey)
 	}
-	if l.all.tokens < 1 {
+	if global && l.all.tokens < 1 {
 		return false, l.wait(&l.all, l.global)
 	}
 	b.tokens--
-	l.all.tokens--
+	if global {
+		l.all.tokens--
+	}
 	return true, 0
 }
 

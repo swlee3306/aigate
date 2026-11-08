@@ -195,7 +195,7 @@ func (d *Daemon) HTTPAddr() net.Addr { return d.httpAddr }
 // order). The socket serves socketHandler.
 func (d *Daemon) httpHandler() http.Handler {
 	h := splitWeb(d.handler, web.Handler())
-	h = rateLimit(d.limiter, h)
+	h = rateLimit(d.limiter, d.handler.credentialRateKey, h)
 	h = jsonOnly(h)
 	h = limitBody(MaxBodyBytes, h)
 	h = originCheck(d.cfg.Origin, h)

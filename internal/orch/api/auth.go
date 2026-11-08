@@ -137,6 +137,52 @@ func (a *StoreAuthenticator) Session(ctx context.Context, raw string) (Principal
 	return Principal{ID: s.Principal, Kind: KindSession}, &s, true
 }
 
+// Live reports whether raw is a live credential of kind (KindToken or
+// KindSession) without sliding a session's expiry. The rate limiter uses it
+// (credentialRateKey) before authentication runs.
+func (a *StoreAuthenticator) Live(ctx context.Context, raw, kind string) bool {
+	maxLife := TokenMaxLifetime
+	if kind == KindSession {
+		maxLife = SessionMaxLifetime
+	}
+	_, ok := a.lookup(ctx, raw, kind, maxLife)
+	return ok
+}
+
+// liveChecker is the optional side-effect-free check behind credentialRateKey;
+// an Authenticator without it gets no rate-limit exemption.
+type liveChecker interface {
+	Live(ctx context.Context, raw, kind string) bool
+}
+
+// credentialRateKey returns a rate-limit key for a request that carries a live
+// bearer token or session cookie (the same credential authenticate would use:
+// a present Authorization header wins and never falls back to the cookie). The
+// key is derived from the credential's hash, so it cannot be shared or drained
+// by callers who do not hold the credential (CF21).
+func (h *handler) credentialRateKey(r *http.Request) (string, bool) {
+	lc, ok := h.auth.(liveChecker)
+	if !ok {
+		return "", false
+	}
+	raw, kind := "", ""
+	if len(r.Header.Values("Authorization")) > 0 {
+		tok, found := bearerToken(r)
+		if !found {
+			return "", false
+		}
+		raw, kind = tok, KindToken
+	} else if c, err := r.Cookie(SessionCookieName); err == nil && c.Value != "" {
+		raw, kind = c.Value, KindSession
+	} else {
+		return "", false
+	}
+	if !lc.Live(r.Context(), raw, kind) {
+		return "", false
+	}
+	return "cred:" + store.HashSecret(raw), true
+}
+
 // Context plumbing.
 
 type ctxKey int

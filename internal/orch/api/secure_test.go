@@ -484,36 +484,36 @@ func TestRateLimiterPerKeyAndGlobal(t *testing.T) {
 	l := newRateLimiter(10, 25, 100)
 	l.now = func() time.Time { return now }
 	for i := 0; i < 10; i++ {
-		if ok, _ := l.allow("a"); !ok {
+		if ok, _ := l.allow("a", true); !ok {
 			t.Fatalf("a %d refused", i)
 		}
 	}
-	ok, wait := l.allow("a")
+	ok, wait := l.allow("a", true)
 	if ok || wait < 5*time.Second || wait > 6*time.Second {
 		t.Fatalf("a over: %v %v", ok, wait)
 	}
 	for i := 0; i < 10; i++ {
-		if ok, _ := l.allow("b"); !ok {
+		if ok, _ := l.allow("b", true); !ok {
 			t.Fatalf("b %d refused: keys are isolated", i)
 		}
 	}
 	for i := 0; i < 5; i++ {
-		if ok, _ := l.allow("c"); !ok {
+		if ok, _ := l.allow("c", true); !ok {
 			t.Fatalf("c %d refused", i)
 		}
 	}
 	// 25 taken in total: the global ceiling refuses c although c has tokens.
-	if ok, wait := l.allow("c"); ok || wait <= 0 || wait > 3*time.Second {
+	if ok, wait := l.allow("c", true); ok || wait <= 0 || wait > 3*time.Second {
 		t.Fatalf("global: %v %v", ok, wait)
 	}
-	if ok, _ := l.allow("fresh"); ok {
+	if ok, _ := l.allow("fresh", true); ok {
 		t.Fatal("a fresh key passed the global ceiling")
 	}
 	now = now.Add(6 * time.Second) // one token per key, 2.5 global
-	if ok, _ := l.allow("a"); !ok {
+	if ok, _ := l.allow("a", true); !ok {
 		t.Fatal("a not refilled")
 	}
-	if ok, _ := l.allow("a"); ok {
+	if ok, _ := l.allow("a", true); ok {
 		t.Fatal("a refilled twice")
 	}
 }
@@ -523,13 +523,13 @@ func TestRateLimiterBounded(t *testing.T) {
 	now := time.Unix(1_000_000, 0)
 	l.now = func() time.Time { return now }
 	for i := 0; i < 1000; i++ {
-		l.allow(fmt.Sprint("k", i))
+		l.allow(fmt.Sprint("k", i), true)
 		if n := l.size(); n > 8 || n != l.lru.Len() {
 			t.Fatalf("after %d keys: map %d lru %d", i+1, n, l.lru.Len())
 		}
 	}
 	// The most recent keys are the ones kept.
-	if ok, _ := l.allow("k999"); ok {
+	if ok, _ := l.allow("k999", true); ok {
 		t.Fatal("recent key forgotten")
 	}
 	if _, kept := l.keys["k0"]; kept {
@@ -920,5 +920,100 @@ func TestShutdownClosesBothListeners(t *testing.T) {
 	if c, err := net.Dial("unix", sock); err == nil {
 		c.Close()
 		t.Fatal("socket still accepts")
+	}
+}
+
+// drainGlobal freezes the limiter's clock and empties the global bucket, the
+// state a local process inventing Tailscale-User-Login values can reach.
+func drainGlobal(w *webEnv) {
+	l := w.d.limiter
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	frozen := time.Now()
+	l.now = func() time.Time { return frozen }
+	l.refill(&l.all, l.global, frozen)
+	l.all.tokens, l.all.last = 0, frozen
+}
+
+// CF21: a request carrying a live session or token is limited on a key derived
+// from that credential and skips the global auth ceiling, so an exhausted
+// global bucket cannot lock the admin out of /auth/session and /auth/signers.
+func TestValidCredentialBypassesGlobalAuthCeiling(t *testing.T) {
+	w := newWebEnv(t)
+	w.d.pauseWorkers()
+	tok, _ := w.newSession(t, "phone")
+	bearer := w.newToken(t, "alice")
+	drainGlobal(w)
+	sameOrigin := hdr{"Sec-Fetch-Site": "same-origin"}
+	refused := func(what, method, path, body string, h hdr) {
+		t.Helper()
+		code, hd, b := w.web(t, method, path, body, h)
+		if code != http.StatusTooManyRequests || v1Code(b) != "rate_limited" || hd.Get("Retry-After") == "" {
+			t.Fatalf("%s: %d %s", what, code, b)
+		}
+	}
+	allowed := func(what, method, path string, h hdr) {
+		t.Helper()
+		if code, _, b := w.web(t, method, path, "", h); code != http.StatusOK {
+			t.Fatalf("%s: %d %s", what, code, b)
+		}
+	}
+	// Without a live credential the global ceiling applies.
+	refused("anonymous challenge", "POST", "/api/v1/auth/challenge", `{"signer":"alice"}`, with(jsonCT, hdr{TailscaleUserHeader: "x1@example.com"}))
+	refused("anonymous signers", "GET", "/api/v1/auth/signers", "", hdr{TailscaleUserHeader: "x2@example.com"})
+	refused("garbage bearer", "GET", "/api/v1/auth/session", "", hdr{"Authorization": "Bearer nope"})
+	refused("garbage cookie", "GET", "/api/v1/auth/session", "", with(sameOrigin, hdr{"Cookie": cookie("nope")}))
+	refused("session id as bearer", "GET", "/api/v1/auth/session", "", hdr{"Authorization": "Bearer " + tok})
+	refused("token as cookie", "GET", "/api/v1/auth/session", "", with(sameOrigin, hdr{"Cookie": cookie(bearer)}))
+	// With one, the admin still gets in, whatever login header is sent.
+	sess := with(sameOrigin, hdr{"Cookie": cookie(tok), TailscaleUserHeader: "admin@example.com"})
+	allowed("session /auth/session", "GET", "/api/v1/auth/session", sess)
+	allowed("session /auth/signers", "GET", "/api/v1/auth/signers", sess)
+	allowed("token /auth/session", "GET", "/api/v1/auth/session", hdr{"Authorization": "Bearer " + bearer})
+	// Someone draining the admin's header key does not touch the credential's key.
+	for i := 0; i < DefaultAuthRatePerKey+2; i++ {
+		w.web(t, "GET", "/api/v1/auth/signers", "", hdr{TailscaleUserHeader: "admin@example.com"})
+	}
+	allowed("session after its header key was drained", "GET", "/api/v1/auth/signers", sess)
+	// The credential's own key is still limited per key: 3 used above.
+	for i := 3; i < DefaultAuthRatePerKey; i++ {
+		allowed(fmt.Sprintf("session request %d", i+1), "GET", "/api/v1/auth/signers", sess)
+	}
+	refused("session over its per-key limit", "GET", "/api/v1/auth/signers", "", sess)
+	// A credential that stops being live loses the exemption.
+	if err := w.st.DeleteSession(context.Background(), bearer); err != nil {
+		t.Fatal(err)
+	}
+	refused("deleted token", "GET", "/api/v1/auth/session", "", hdr{"Authorization": "Bearer " + bearer})
+}
+
+func TestRateLimiterCredentialKeySkipsGlobal(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	l := newRateLimiter(3, 4, 100)
+	l.now = func() time.Time { return now }
+	for i := 0; i < 2; i++ {
+		if ok, _ := l.allow(fmt.Sprint("anon", i), true); !ok {
+			t.Fatalf("anon %d refused", i)
+		}
+	}
+	// Credentialed requests neither need nor take global tokens.
+	for i := 0; i < 3; i++ {
+		if ok, _ := l.allow("cred:a", false); !ok {
+			t.Fatalf("credentialed %d refused", i)
+		}
+	}
+	if ok, wait := l.allow("cred:a", false); ok || wait <= 0 {
+		t.Fatalf("per-key limit not applied to a credentialed key: %v %v", ok, wait)
+	}
+	for i := 0; i < 2; i++ {
+		if ok, _ := l.allow(fmt.Sprint("anon-y", i), true); !ok {
+			t.Fatalf("anon-y %d refused: credentialed requests took global tokens", i)
+		}
+	}
+	if ok, _ := l.allow("anon-z", true); ok {
+		t.Fatal("global ceiling not applied")
+	}
+	if ok, _ := l.allow("cred:b", false); !ok {
+		t.Fatal("credentialed key refused by the exhausted global ceiling")
 	}
 }
