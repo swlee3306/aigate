@@ -519,15 +519,18 @@ func TestLoginChallengeCap(t *testing.T) {
 	}
 }
 
-// Only healthz and the two SSH login routes are reachable without
-// credentials; every other route (and other methods on the login paths)
-// needs them.
+// Only healthz, the two SSH login routes and the two passkey registration
+// routes (Task 19, gated by a socket-issued code) are reachable without
+// credentials; every other route (and other methods on these paths) needs
+// them.
 func TestOnlyHealthzAndLoginRoutesOpen(t *testing.T) {
 	f := newLoginFixture(t)
 	open := map[string]bool{
-		"GET /api/v1/healthz":         true,
-		"POST /api/v1/auth/challenge": true,
-		"POST /api/v1/auth/token":     true,
+		"GET /api/v1/healthz":                        true,
+		"POST /api/v1/auth/challenge":                true,
+		"POST /api/v1/auth/token":                    true,
+		"POST /api/v1/auth/webauthn/register/begin":  true,
+		"POST /api/v1/auth/webauthn/register/finish": true,
 	}
 	routes := []string{
 		"GET /api/v1/healthz", "POST /api/v1/auth/challenge", "POST /api/v1/auth/token",
@@ -541,6 +544,10 @@ func TestOnlyHealthzAndLoginRoutesOpen(t *testing.T) {
 		"GET /api/v1/overview", "GET /api/v1/projects", "GET /api/v1/policy", "GET /api/v1/ops",
 		"GET /api/v1/nope", "GET /tasks", "POST /tasks", "GET /approvals", "GET /", "GET /api/v1/auth",
 		"POST /api/v1/auth/challenge/", "POST /api/v1/auth/token/x",
+		"POST /api/v1/auth/webauthn/register/begin", "POST /api/v1/auth/webauthn/register/finish",
+		"GET /api/v1/auth/webauthn/register/begin", "PUT /api/v1/auth/webauthn/register/finish",
+		"POST /api/v1/auth/webauthn/register", "POST /api/v1/auth/webauthn/register/begin/",
+		"POST /api/v1/admin/enroll", "GET /api/v1/admin/enroll",
 	}
 	for _, rt := range routes {
 		method, path, _ := strings.Cut(rt, " ")

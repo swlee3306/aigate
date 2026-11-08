@@ -185,6 +185,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if cmd == "propose" || cmd == "policy" {
 		return localCmd(cmd, rest, *asJSON, *gateHomeFlag, stdout, stderr)
 	}
+	if cmd == "admin" && len(rest) > 0 && rest[0] == "enroll" {
+		// Socket only: enrollment codes are never issued over HTTPS.
+		if *server != "" {
+			fmt.Fprintln(stderr, "오류: admin enroll은 서버의 소켓에서만 실행합니다(--server와 함께 쓸 수 없음)")
+			return 2
+		}
+		return cmdAdminEnroll(newClient(*sock), rest[1:], stdout, stderr)
+	}
 	if cmd == "admin" {
 		return cmdAdmin(rest, stdout, stderr)
 	}

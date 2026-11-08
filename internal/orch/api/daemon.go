@@ -46,6 +46,14 @@ type Config struct {
 	// Auth resolves HTTP bearer tokens and session cookies (nil: the store's
 	// sessions table, StoreAuthenticator).
 	Auth Authenticator
+	// RPID and Origin are the WebAuthn relying party ID and the exact web
+	// console origin (ValidateWebAuthnConfig); both empty turns passkey
+	// enrollment off. They are recorded in every pending credential and
+	// copied into the signer entry at activation (R8).
+	RPID, Origin string
+	// PendingFile is the pending passkey enrollment file (R18; empty:
+	// DefaultPendingFile, the default of `orch admin signers --pending-file`).
+	PendingFile string
 }
 
 // StepProvider supplies the steps the machine runs.
@@ -72,6 +80,9 @@ func NewDaemon(cfg Config, st *store.Store, p StepProvider) (*Daemon, error) {
 	if cfg.Socket == "" {
 		return nil, errors.New("socket path is required")
 	}
+	if err := ValidateWebAuthnConfig(cfg.RPID, cfg.Origin); err != nil {
+		return nil, err
+	}
 	if cfg.Concurrency < 1 {
 		cfg.Concurrency = 1
 	}
@@ -92,6 +103,10 @@ func NewDaemon(cfg Config, st *store.Store, p StepProvider) (*Daemon, error) {
 	h.policy, h.ops = cfg.Policy, cfg.Ops
 	h.socketUIDs = socketUIDSet(cfg.SocketUIDs)
 	h.auth = cfg.Auth
+	h.rpID, h.origin = cfg.RPID, cfg.Origin
+	if cfg.PendingFile != "" {
+		h.pendingFile = cfg.PendingFile
+	}
 	if h.auth == nil {
 		h.auth = &StoreAuthenticator{St: st}
 	}

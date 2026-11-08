@@ -437,7 +437,7 @@ func TestWriteTierCoversEveryMutatingRoute(t *testing.T) {
 	tok, _ := e.newSession(t, "alice")
 	for _, p := range []string{
 		"/api/v1/tasks", "/api/v1/tasks/1/cancel", "/api/v1/tasks/1/retry",
-		"/api/v1/approvals/1/reverify", "/api/v1/approvals/1/grant",
+		"/api/v1/approvals/1/reverify", "/api/v1/approvals/1/grant", "/api/v1/admin/enroll",
 		"/tasks", "/tasks/1/cancel", "/tasks/1/retry", "/approvals/1/reverify",
 	} {
 		code, _, b := httpDo(t, srv, "POST", p, "{}", hdr{"Cookie": cookie(tok)})

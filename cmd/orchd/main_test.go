@@ -166,3 +166,33 @@ func TestSocketUIDFlag(t *testing.T) {
 		}
 	}
 }
+
+func TestWebAuthnFlags(t *testing.T) {
+	for _, args := range [][]string{
+		{"--rp-id", "console.example.test"},
+		{"--origin", "https://console.example.test"},
+		{"--rp-id", "console.example.test", "--origin", "https://evil.example.test"},
+		{"--rp-id", "https://console.example.test", "--origin", "https://console.example.test"},
+		{"--rp-id", "console.example.test", "--origin", "http://console.example.test"},
+		{"--pending-file", "relative.json"},
+		{"--pending-file", "/var/lib/orchd/../x.json"},
+	} {
+		db := filepath.Join(t.TempDir(), "never", "o.db")
+		if code := run(append(args, "--db", db)); code != 2 {
+			t.Errorf("%v: exit %d, want 2", args, code)
+		}
+		if _, err := os.Stat(filepath.Dir(db)); !os.IsNotExist(err) {
+			t.Errorf("%v: database directory created before the flags were checked", args)
+		}
+	}
+	ok := api.Config{RPID: "console.example.test", Origin: "https://console.example.test", PendingFile: api.DefaultPendingFile}
+	if err := checkWebAuthnFlags(ok); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkWebAuthnFlags(api.Config{PendingFile: api.DefaultPendingFile}); err != nil {
+		t.Fatalf("passkeys off: %v", err)
+	}
+	if api.DefaultPendingFile != "/var/lib/orchd/signers.pending.json" {
+		t.Fatalf("default %q", api.DefaultPendingFile)
+	}
+}

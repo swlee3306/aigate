@@ -81,6 +81,9 @@ func run(args []string) int {
 	fs.Var(&repos, "allow-repo", "repository root tasks may use (repeatable; none = refuse all)")
 	var socketUIDs uidList
 	fs.Var(&socketUIDs, "socket-uid", "uid allowed to use the socket (repeatable; none = only orchd's own uid)")
+	fs.StringVar(&cfg.RPID, "rp-id", "", "WebAuthn relying party ID: the web console's host name (passkey enrollment; empty = off)")
+	fs.StringVar(&cfg.Origin, "origin", "", "exact web console origin, https://host[:port] under --rp-id (http://localhost only for development)")
+	fs.StringVar(&cfg.PendingFile, "pending-file", api.DefaultPendingFile, "pending passkey enrollments (orch admin signers pending / add --pending)")
 	var vf vmFlags
 	vf.register(fs)
 	policyPath := fs.String("policy", envOr("ORCHD_POLICY", ""), "policy.yml (autonomy levels, allowlist, limits); re-read when each task starts")
@@ -89,6 +92,10 @@ func run(args []string) int {
 	}
 	cfg.AllowedRepos = repos
 	cfg.SocketUIDs = socketUIDs
+	if err := checkWebAuthnFlags(cfg); err != nil {
+		fmt.Fprintln(os.Stderr, "orchd:", err)
+		return 2
+	}
 	if *policyPath != "" {
 		live, err := applyPolicy(fs, *policyPath, &cfg, &vf)
 		if err != nil {
@@ -238,4 +245,16 @@ func checkStateDirWritable(statePath string) error {
 	}
 	f.Close()
 	return os.Remove(f.Name())
+}
+
+// checkWebAuthnFlags validates --rp-id, --origin and --pending-file before
+// anything is opened.
+func checkWebAuthnFlags(cfg api.Config) error {
+	if err := api.ValidateWebAuthnConfig(cfg.RPID, cfg.Origin); err != nil {
+		return err
+	}
+	if !filepath.IsAbs(cfg.PendingFile) || filepath.Clean(cfg.PendingFile) != cfg.PendingFile {
+		return fmt.Errorf("--pending-file %q must be an absolute clean path", cfg.PendingFile)
+	}
+	return nil
 }

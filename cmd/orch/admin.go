@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -47,6 +48,7 @@ const adminUsage = `관리(로컬, 쓰기는 root만):
                                                                          웹에서 등록한 대기 패스키 활성화(지문 확인 필수)
   admin signers remove  [--signers-file F] ID                            서명자 제거
   admin signers pending [--pending-file P]                               대기 중인 패스키 목록
+  admin enroll [--id ID] [--label L]                                     패스키 일회용 등록 코드 발급(서버 소켓에서만, 10분)
   서명자 목록 기본 위치: ` + signing.DefaultRegistryPath + `, 대기 목록 기본 위치: ` + defaultPendingFile
 
 // defaultPendingFile is where orchd records pending passkey enrollments (next
@@ -88,8 +90,64 @@ type registryOut struct {
 	Signers []signing.Signer `json:"signers"`
 }
 
+// enrollRefusals are fixed texts for /admin/enroll's error codes (CF1: the
+// server's message is never printed).
+var enrollRefusals = map[string]string{
+	"socket_only":           "등록 코드는 서버의 소켓으로만 발급합니다(--server 없이 서버에서 실행하세요)",
+	"forbidden_uid":         "이 사용자는 orchd 소켓을 쓸 수 없습니다(orchd의 --socket-uid 확인)",
+	"busy":                  "진행 중인 등록이 너무 많거나 대기 목록이 가득 찼습니다. 잠시 뒤 다시 시도하거나 대기 목록을 정리하세요",
+	"webauthn_unconfigured": "orchd에 패스키 설정(--rp-id, --origin)이 없습니다",
+	"id_taken":              "이미 쓰이는 ID입니다(서명자 목록 또는 대기 목록). 다른 --id를 주세요",
+	"bad_request":           "ID나 라벨 형식이 올바르지 않습니다(ID: 소문자·숫자·._-, 63자 이하 / 라벨: 64바이트 이하, 제어 문자 불가)",
+}
+
+var enrollCodeRE = regexp.MustCompile(`^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$`)
+
+// cmdAdminEnroll asks orchd over the unix socket (never the HTTPS client)
+// for a one-time passkey enrollment code and prints it with what to do next.
+func cmdAdminEnroll(c *client, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("enroll", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	id := fs.String("id", "", "")
+	label := fs.String("label", "", "")
+	if pos, err := parseInterleaved(fs, args); err != nil || len(pos) != 0 {
+		fmt.Fprintf(stderr, "오류: admin enroll [--id ID] [--label L]\n%s\n", adminUsage)
+		return 2
+	}
+	raw, err := c.call("POST", "/admin/enroll", map[string]string{"id": *id, "label": *label})
+	if err != nil {
+		var ae *apiError
+		if errors.As(err, &ae) {
+			if msg, ok := enrollRefusals[ae.Code]; ok {
+				fmt.Fprintln(stderr, "orch: admin enroll 거부:", msg)
+			} else {
+				fmt.Fprintf(stderr, "orch: admin enroll 거부: 서버가 거부했습니다(HTTP %d)\n", ae.Status)
+			}
+			return 1
+		}
+		fmt.Fprintln(stderr, "오류:", errText(err))
+		return 1
+	}
+	var r struct{ Code, ID, Label, Expires string }
+	if json.Unmarshal(raw, &r) != nil || !enrollCodeRE.MatchString(r.Code) || !signing.ValidSignerID(r.ID) {
+		fmt.Fprintln(stderr, "오류: 서버 응답이 올바르지 않습니다")
+		return 1
+	}
+	exp, err := time.Parse(time.RFC3339, r.Expires)
+	if err != nil {
+		fmt.Fprintln(stderr, "오류: 서버 응답이 올바르지 않습니다")
+		return 1
+	}
+	fmt.Fprintf(stdout, "패스키 등록 코드: %s\n", r.Code)
+	fmt.Fprintf(stdout, "  대기 ID: %s, 라벨: %s\n", r.ID, textsafe.Escape(r.Label))
+	fmt.Fprintf(stdout, "  %s까지(10분) 한 번만 쓸 수 있습니다.\n", exp.Local().Format(time.DateTime))
+	fmt.Fprintln(stdout, "웹 콘솔의 패스키 등록 화면에서 이 코드를 입력하세요. 등록한 패스키는 대기 목록에만 올라가고, 아직 로그인·승인에 쓸 수 없습니다.")
+	fmt.Fprintf(stdout, "활성화: `sudo orch admin signers pending`의 지문을 등록 화면의 지문과 직접 대조한 뒤\n  sudo orch admin signers add --pending %s --fingerprint <지문>\n", r.ID)
+	return 0
+}
+
 func cmdAdmin(args []string, stdout, stderr io.Writer) int {
-	if len(args) < 2 || args[0] != "signers" {
+	if len(args) < 2 || args[0] != "signers" { // "enroll" is routed by run (socket client)
 		fmt.Fprintln(stderr, adminUsage)
 		return 2
 	}
