@@ -50,7 +50,7 @@ func TestDevServer(t *testing.T) {
 			json(w, `{"error":{"code":"unauthenticated","message":"인증이 필요합니다"}}`)
 			return
 		}
-		json(w, `{"principal":"dev","kind":"session","csrf":"dev-csrf","expires":"2026-11-10T00:00:00Z"}`)
+		json(w, `{"principal":"phone","kind":"session","csrf":"dev-csrf","expires":"2026-11-10T00:00:00Z"}`)
 	})
 	mux.HandleFunc("/api/v1/stages", func(w http.ResponseWriter, r *http.Request) {
 		json(w, `[{"id":"design","name":"설계","status":"⬜","components":[],"next":"요구사항·설계서는 아직 Claude 세션에서 작성합니다 (W4에서 웹으로)"},
@@ -84,8 +84,31 @@ func TestDevServer(t *testing.T) {
 	mux.HandleFunc("/api/v1/tasks/38/report", func(w http.ResponseWriter, r *http.Request) {
 		json(w, `{"verdict":"weakened","note":"<script>alert(1)</script> \u001b[31m","checks":[{"id":"unit","ok":true}]}`)
 	})
+	// Approvals: the golden signed-mode details (9: complete, 10: truncated)
+	// and a passkey list for the login screen. Grants are refused (no real
+	// passkey here): the dev server never accepts a signature.
+	detail := func(name string, id int) []byte {
+		var d map[string]any
+		if err := stdjson.Unmarshal(fixture(name), &d); err != nil {
+			t.Fatal(err)
+		}
+		d["id"] = id
+		b, _ := stdjson.Marshal(d)
+		return b
+	}
 	mux.HandleFunc("/api/v1/approvals", func(w http.ResponseWriter, r *http.Request) {
-		json(w, `[{"id":9,"task_id":38,"kind":"protected","status":"pending","reason":"tests/** 변경 <b>x</b>"}]`)
+		json(w, `[{"id":9,"task_id":38,"kind":"protected_modified","hash":"3273763058ed7862","base":"1111111111111111111111111111111111111111","head":"89abcdef0123456789abcdef0123456789abcdef","status":"pending","reason":"r"},
+{"id":10,"task_id":38,"kind":"protected_modified","hash":"3273763058ed7862","base":"1111111111111111111111111111111111111111","head":"89abcdef0123456789abcdef0123456789abcdef","status":"pending","reason":"r"}]`)
+	})
+	mux.HandleFunc("/api/v1/approvals/9", func(w http.ResponseWriter, r *http.Request) { serve(w, detail("approval.json", 9)) })
+	mux.HandleFunc("/api/v1/approvals/10", func(w http.ResponseWriter, r *http.Request) { serve(w, detail("approval-truncated.json", 10)) })
+	mux.HandleFunc("/api/v1/approvals/9/grant", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(409)
+		json(w, `{"error":{"code":"hash_changed","message":"dev"}}`)
+	})
+	mux.HandleFunc("/api/v1/auth/signers", func(w http.ResponseWriter, r *http.Request) {
+		json(w, `{"signers":[{"id":"phone","credential_id":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8","label":"내 폰 <b>x</b>"},
+{"id":"mac.backup","credential_id":"HxwdHhscGxoZGBcWFRQTEhEQDw4NDAsKCQgHBgUEAwIBAA","label":"예비 키"}]}`)
 	})
 	console := web.Handler()
 	srv := &http.Server{Addr: "127.0.0.1:" + port, ReadHeaderTimeout: 5 * time.Second,

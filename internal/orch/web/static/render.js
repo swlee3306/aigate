@@ -15,7 +15,7 @@ const TAGS = new Set([
 ]);
 const PLAIN_ATTRS = new Set([
   'class', 'id', 'role', 'type', 'disabled', 'title', 'tabindex', 'for', 'name', 'value', 'href',
-  'hidden', 'scope', 'colspan', 'placeholder',
+  'hidden', 'scope', 'colspan', 'placeholder', 'maxlength', 'autocomplete', 'spellcheck', 'inputmode',
 ]);
 const PATTERN_ATTRS = [/^aria-[a-z]+$/, /^data-[a-z0-9-]+$/];
 // ID_RE: a numeric id (task, approval). Views must validate ids with it

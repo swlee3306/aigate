@@ -165,3 +165,24 @@ a.btn { display: inline-block; text-decoration: none; }
 .ws > * { min-width: 0; }
 @media (max-width: 1000px) { .ws { grid-template-columns: minmax(0, 1fr); } }
 .chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+
+/* approvals and login (Task 25) */
+.cards { display: grid; gap: 12px; }
+.appr .card-b { padding: 0 16px 16px; }
+.appr .q, .ask .k { color: var(--amber); font-weight: 650; margin: 0 0 4px; }
+.meaning { margin: 0 0 10px; overflow-wrap: anywhere; }
+.appr-main { font-size: 15px; }
+.pfiles { list-style: none; margin: 6px 0; padding: 0; display: grid; gap: 2px; } .pfiles li { overflow-wrap: anywhere; }
+pre.msg { font-family: var(--mono); font-size: 13px; background: var(--bg); border-radius: 12px; padding: 12px 14px; margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow: auto; }
+.mono.full { user-select: all; overflow-wrap: anywhere; color: var(--faint); }
+.not-recomputed { background: var(--raised); border-radius: 12px; padding: 10px 14px; color: var(--text); }
+.confirm { display: grid; gap: 10px; margin-top: 16px; padding: 16px; border-radius: 14px; background: var(--raised); }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.confirm input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--accent); }
+.confirm input[type="text"], .codein { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; color: var(--text); padding: 8px 12px; font: inherit; min-width: 0; max-width: 100%; }
+.btn.primary { background: var(--accent); color: #04120a; font-weight: 650; }
+.btn.primary:hover { background: #6fe0a0; }
+.btn[disabled], .btn[disabled]:hover { background: var(--raised-2); color: var(--faint); cursor: not-allowed; }
+.note.err { color: var(--red); } .note.ok { color: var(--accent); }
+.login { max-width: 640px; }
+.login .sec { display: grid; gap: 8px; margin-top: 22px; }

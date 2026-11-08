@@ -98,3 +98,24 @@ export function renderBootFailure(onRetry) {
     btn,
   ]);
 }
+
+// copyButton copies text to the clipboard (when the browser allows it) and
+// says whether it worked. The text is shown elsewhere on the page.
+export function copyButton(text) {
+  const btn = el('button', {
+    type: 'button', class: 'btn',
+    on: {
+      click: async () => {
+        const c = globalThis.navigator && globalThis.navigator.clipboard;
+        try {
+          if (!c) throw new Error('no clipboard');
+          await c.writeText(text);
+          clear(btn).append('복사됨');
+        } catch {
+          clear(btn).append('복사 안 됨');
+        }
+      },
+    },
+  }, '복사');
+  return btn;
+}

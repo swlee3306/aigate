@@ -1,0 +1,33 @@
+{
+  "_comment": "TEST-ONLY key. Produced by internal/orch/web/test/approvals.test.js (JS grant body builder); verified by internal/orch/api TestWebGrantRequestGolden.",
+  "authenticator": {
+    "signer": "phone",
+    "credential_id": "6pDJn0voTReExmwOCRsyceMbk5bYYaXfZrjBvZE7YvY",
+    "rp_id": "orch.example.test",
+    "origin": "https://orch.example.test",
+    "public_key": "BNuWlTTkQYadqSq0odMnFU4IPrUW6mjak5HxYE1dl2dXBu9U7YVJrNlIC0UeHaplidif76N7thF_pfiElQbLffI",
+    "private_key_pkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgOvMsxQGZ3Wkc885ICDHF_FHrM0DydORvjynLi5VJsjyhRANCAATblpU05EGGnakqtKHTJxVOCD61Fupo2pOR8WBNXZdnVwbvVO2FSazZSAtFHh2qZYnYn--je7YRf6X4hJUGy33y"
+  },
+  "detail": {
+    "id": 9,
+    "kind": "protected_modified",
+    "task_id": 38,
+    "base": "1111111111111111111111111111111111111111",
+    "hash": "3273763058ed7862",
+    "message": "aigate-approval-v1\nkind: protected_modified\nrepo: 0123456789ab\ntask: 38\nbase: 1111111111111111111111111111111111111111\nhash: 3273763058ed7862\nissued: 2026-11-09T10:04:05Z\n",
+    "digest": "740ef9941d502148723b8d8361faaf05a35485f44c13fc67f3c52da45f08239a",
+    "issued": "2026-11-09T10:04:05Z",
+    "requires_signature": true,
+    "truncated": false
+  },
+  "request": {
+    "signer": "phone",
+    "alg": "webauthn-es256",
+    "sig": "MEQCIGgTCknYj1ydDwomGyyrRreJL-yibM9H7ixaVtVug5sUAiBiWQtzpi86x5AopTH7KzHAeFGERYTUNi1NGTlza1ES4Q",
+    "issued": "2026-11-09T10:04:05Z",
+    "webauthn": {
+      "authenticator_data": "XUw6fg_K4MiEGyiyzD5i-92KOyGKGm3TFsYp6PUT6nkFAAAABw",
+      "client_data_json": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiZEE3NWxCMVFJVWh5TzQyRFlmcXZCYU5VaGZSTUVfeG44OFV0cEY4SUk1byIsIm9yaWdpbiI6Imh0dHBzOi8vb3JjaC5leGFtcGxlLnRlc3QiLCJjcm9zc09yaWdpbiI6ZmFsc2V9"
+    }
+  }
+}

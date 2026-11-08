@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -9,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"aigate/internal/approval/signing"
+	"aigate/internal/gate"
 	"aigate/internal/orch/store"
 )
 
@@ -106,6 +109,41 @@ func TestWebFixturesGolden(t *testing.T) {
 	if !trunc {
 		t.Fatal("setup: nothing cut")
 	}
+	full := v.HashedText
 	v.HashedText, v.Truncated = cut, true
 	checkFixture(t, "diff-truncated.json", v)
+
+	// GET /api/v1/approvals/{id} in signed mode (the approval screen). The
+	// repo id and commits of a temp repository change every run, so the
+	// stored values are fixed; the message, digest and meaning come from the
+	// real messageFor/meaningOf path (fillSigning minus the git lookups) and
+	// the hashed text from the real diff above.
+	det := fixtureApproval(t, full, false, v.ProtectedFiles, v.Hash)
+	checkFixture(t, "approval.json", det)
+	checkFixture(t, "approval-truncated.json", fixtureApproval(t, cut, true, v.ProtectedFiles, v.Hash))
+	checkFixture(t, "approvals.json", []ApprovalView{det.ApprovalView})
+}
+
+// fixtureApproval builds the signed-mode approval detail the server would
+// send for a protected_modified entry with fixed stored values.
+func fixtureApproval(t *testing.T, text string, truncated bool, prot []string, hash string) ApprovalDetail {
+	t.Helper()
+	issued := time.Date(2026, 11, 9, 10, 4, 5, 0, time.UTC)
+	a := store.Approval{ID: 9, TaskID: 38, Kind: store.KindProtectedModified, Hash: hash,
+		Base: "1111111111111111111111111111111111111111", Head: "89abcdef0123456789abcdef0123456789abcdef",
+		Reason: "보호 파일 변경 <b>tests/spec.txt</b>", Status: store.ApprovalPending,
+		CreatedAt: time.Date(2026, 11, 9, 10, 3, 2, 0, time.UTC)}
+	task := fixtureTask(38, store.StateNeedsApproval, "calc 테스트에 케이스를 추가하세요", time.Date(2026, 11, 9, 10, 0, 0, 0, time.UTC))
+	task.Base, task.HeadSHA = a.Base, a.Head
+	m := signing.Message{Kind: a.Kind, Repo: "0123456789ab", Task: task.ID, Base: a.Base, Hash: a.Hash, Issued: issued}
+	if err := m.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	det := ApprovalDetail{ApprovalView: approvalView(a), Repo: task.Repo, TaskState: string(task.State),
+		RequiresSignature: true, Issued: issued.Format(time.RFC3339), HashedText: text, Truncated: truncated,
+		ProtectedFiles: prot, Message: m.Text()}
+	d := m.Digest()
+	det.Digest = hex.EncodeToString(d[:])
+	det.Meaning = meaningOf(a, task, grantable{diff: &gate.Protected{}}, len(prot))
+	return det
 }

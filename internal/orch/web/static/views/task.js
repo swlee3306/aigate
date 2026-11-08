@@ -132,7 +132,7 @@ export function renderTask(data, extras) {
         el('b', {}, '사람의 승인을 기다리는 중'),
         ap && typeof ap.reason === 'string' ? ' · ' + inline(ap.reason, 160) : null,
       ]),
-      el('a', { href: '#/approvals', 'data-focus-key': 'to-approvals' }, '승인 화면으로 →'),
+      el('a', { href: ap && idOf(ap.id) ? '#/approvals/' + idOf(ap.id) : '#/approvals', 'data-focus-key': 'to-approvals' }, '승인 화면으로 →'),
     ])
     : null;
 

@@ -43,7 +43,7 @@ func staticFiles(t *testing.T) map[string][]byte {
 
 func TestWebAssetsEmbedded(t *testing.T) {
 	files := staticFiles(t)
-	for _, need := range []string{"index.html", "app.js", "api.js", "render.js", "router.js", "style.css", "views/tasks.js", "views/task.js", "views/diff.js"} {
+	for _, need := range []string{"index.html", "app.js", "api.js", "render.js", "router.js", "style.css", "views/tasks.js", "views/task.js", "views/diff.js", "views/approvals.js", "views/login.js", "webauthn.js"} {
 		if len(files[need]) == 0 {
 			t.Errorf("static/%s is missing or empty", need)
 		}
@@ -167,6 +167,23 @@ func TestNoForbiddenSinksInStaticJS(t *testing.T) {
 	}
 	if n < 8 {
 		t.Fatalf("only %d scripts scanned", n)
+	}
+}
+
+// TestSigningCodeNeverReadsClock: the signed `issued` is the server's
+// detail.issued; the signing and approval code must not read the clock.
+func TestSigningCodeNeverReadsClock(t *testing.T) {
+	files := staticFiles(t)
+	for _, name := range []string{"webauthn.js", "views/approvals.js"} {
+		b, ok := files[name]
+		if !ok {
+			t.Fatalf("static/%s missing", name)
+		}
+		for _, f := range []string{"Date.now", "new Date", "Date(", "performance.now"} {
+			if bytes.Contains(b, []byte(f)) {
+				t.Errorf("static/%s contains %q", name, f)
+			}
+		}
 	}
 }
 
