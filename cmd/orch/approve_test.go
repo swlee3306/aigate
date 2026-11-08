@@ -66,6 +66,9 @@ type localTest struct{}
 func (localTest) Restore(context.Context) error    { return nil }
 func (localTest) Executor() (gate.Executor, error) { return &gate.LocalExecutor{}, nil }
 
+// e2eBaseCache, when a test sets it, is handed to the steps of the next newE2E*.
+var e2eBaseCache *steps.BaseCache
+
 type e2e struct {
 	t          *testing.T
 	st         *store.Store
@@ -120,6 +123,7 @@ func newE2EPolicy(t *testing.T, files map[string]string, pub steps.Publisher, li
 	cfg := steps.DefaultConfig()
 	cfg.Agent, cfg.Test = fakeAgent{head: e.head, onRun: onRun}, localTest{}
 	cfg.Policy = live
+	cfg.BaseCache = e2eBaseCache
 	cfg.ReportDir, cfg.GateHome = filepath.Join(dir, "reports"), e.home
 	cfg.Publisher = pub
 	p, err := steps.NewProvider(st, cfg)

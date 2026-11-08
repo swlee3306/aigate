@@ -114,8 +114,11 @@ type GateFunc func(ctx context.Context, o gate.Options) (report.Report, error)
 
 // Config is everything the steps need.
 type Config struct {
-	Agent AgentDriver
-	Test  TestDriver
+	// BaseCache, when set, lets a task reuse clean base-commit check output
+	// from an earlier task on the same base (see BaseCache).
+	BaseCache *BaseCache
+	Agent     AgentDriver
+	Test      TestDriver
 	// AgentTimeout bounds one agent run (default DefaultAgentTimeout).
 	AgentTimeout time.Duration
 	// RestoreEachJob restores the test VM before every verification. The
@@ -344,6 +347,17 @@ func (p *Provider) verify(ctx context.Context, t store.Task) (machine.Outcome, e
 		return machine.Outcome{}, fmt.Errorf("test vm executor: %w", err)
 	}
 	defer ex.Close()
+	var cacheNote func() string
+	if bc := p.cfg.BaseCache; bc != nil {
+		if baseSHA, rerr := gitx.Resolve(t.Repo, t.Base); rerr == nil {
+			if repoID, _, ierr := gate.RepoID(t.Repo); ierr == nil {
+				bc2 := *bc
+				bc2.Scope = scopeOf(bc.Scope, p.cfg.Test)
+				ce := bc2.Wrap(ex, repoID, baseSHA)
+				ex, cacheNote = ce, ce.note
+			}
+		}
+	}
 	gateStart := p.now()
 	r, err := p.cfg.Gate(ctx, gate.Options{Repo: t.Repo, Base: t.Base, Head: t.HeadSHA,
 		TaskClass: t.Class, HomeDir: p.cfg.GateHome, Executor: ex})
@@ -398,6 +412,9 @@ func (p *Provider) verify(ctx context.Context, t store.Task) (machine.Outcome, e
 		return machine.Outcome{}, fmt.Errorf("gate returned unknown category %q", r.Category)
 	}
 	out.Note += timing
+	if cacheNote != nil {
+		out.Note += cacheNote()
+	}
 	return out, nil
 }
 

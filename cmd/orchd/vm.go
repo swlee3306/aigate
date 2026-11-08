@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -34,6 +35,8 @@ type vmFlags struct {
 	RestoreEachJob, AllowPublishWithoutRestore                 bool
 	PruneRestoreVolumes                                        bool
 	PruneMax                                                   int
+	BaseCache                                                  bool
+	BaseCacheTTL                                               time.Duration
 	ReportDir, GateHome                                        string
 	// Publishing (all optional; none given = local-only, nothing is pushed).
 	// live is the policy in force (nil without --policy); limits come from it.
@@ -75,6 +78,9 @@ func (v *vmFlags) register(fs *flag.FlagSet) {
 	fs.BoolVar(&v.PruneRestoreVolumes, "prune-restore-volumes", false,
 		"after a successful restore, delete the volumes earlier restores created (guarded: exact driver name, not the boot volume, not a snapshot origin, no live attachment)")
 	fs.IntVar(&v.PruneMax, "prune-max", 5, "most volumes --prune-restore-volumes deletes per restore")
+	fs.BoolVar(&v.BaseCache, "base-cache", true,
+		"reuse clean base-commit check output from earlier tasks on the same base (key: repo, base SHA, check request, gate build, test VM image)")
+	fs.DurationVar(&v.BaseCacheTTL, "base-cache-ttl", 24*time.Hour, "how long a cached base result stays valid")
 	fs.BoolVar(&v.AllowPublishWithoutRestore, "allow-publish-without-restore", false,
 		"allow --restore-each-job=false together with publishing (a check can then leave a process that forges the next task's results)")
 }
@@ -178,6 +184,9 @@ func (v *vmFlags) provider(st *store.Store, dbPath string) (api.StepProvider, er
 	cfg.AgentTimeout, cfg.RestoreEachJob = v.AgentTimeout, v.RestoreEachJob
 	cfg.ReportDir, cfg.GateHome = reportDir, gateHome
 	cfg.Policy = v.live
+	if v.BaseCache && v.BaseCacheTTL > 0 {
+		cfg.BaseCache = &steps.BaseCache{Dir: filepath.Join(gateHome, ".aigate", "base-cache"), TTL: v.BaseCacheTTL, Scope: buildID()}
+	}
 	if v.live != nil && !v.publishConfigured() {
 		// Nothing is published, but a policy still decides (and a human can
 		// only approve what the publisher plans): LocalOnlyPublisher plans nothing.
@@ -310,6 +319,7 @@ func (v *vmFlags) describe(db string, concurrency int) []string {
 		"database " + db,
 		fmt.Sprintf("concurrency %d, agent timeout %s", concurrency, v.AgentTimeout),
 		fmt.Sprintf("restore test VM before each job: %t", v.RestoreEachJob),
+		fmt.Sprintf("base result cache: %t (ttl %s)", v.BaseCache, v.BaseCacheTTL),
 		fmt.Sprintf("prune old restore volumes after a restore: %t (max %d per restore)", v.PruneRestoreVolumes, v.PruneMax),
 		"publish allowlist: " + allow + " (source: " + source + ")",
 	}
@@ -334,4 +344,26 @@ func (v *vmFlags) describe(db string, concurrency int) []string {
 		l = append(l, "no VM flags: placeholder steps (tasks end failed)")
 	}
 	return l
+}
+
+// buildID identifies this orchd build (VCS revision when stamped): a new gate
+// build never reuses cached base results of an older one.
+func buildID() string {
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		rev, dirty := "", ""
+		for _, s := range bi.Settings {
+			switch s.Key {
+			case "vcs.revision":
+				rev = s.Value
+			case "vcs.modified":
+				if s.Value == "true" {
+					dirty = "+dirty"
+				}
+			}
+		}
+		if rev != "" {
+			return rev + dirty
+		}
+	}
+	return "unstamped"
 }

@@ -132,6 +132,19 @@ func (t *TestVM) now() time.Time {
 	return time.Now()
 }
 
+// Identity names the image a restore produces; it is part of the base-result
+// cache key, so a different snapshot never reuses an older result.
+func (t *TestVM) Identity() string {
+	name, snap := t.Name, t.Snapshot
+	if name == "" {
+		name = "test-vm"
+	}
+	if snap == "" {
+		snap = name + "-clean"
+	}
+	return name + "/" + snap
+}
+
 // Restore recreates the VM from its clean snapshot (see infra/snapshot.sh):
 // delete the server (volume kept), create a new volume from the snapshot, boot
 // the server from it, wait until ssh answers, all within RestoreTimeout. Any
