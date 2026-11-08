@@ -213,7 +213,7 @@ func TestSignersPendingListAndActivate(t *testing.T) {
 	}
 	fakeEUID(t, 501) // listing pending needs no root
 	code, out, errS := admin("pending", "--pending-file", pf)
-	if code != 0 || !strings.Contains(out, "phone") || !strings.Contains(out, fp) || !strings.Contains(out, p.Origin) {
+	if code != 0 || !strings.Contains(out, "phone") || !strings.Contains(out, fp) || !strings.Contains(out, p.Origin) || !strings.Contains(out, p.RPID+" ") {
 		t.Fatalf("pending %d %q %q", code, out, errS)
 	}
 	fakeEUID(t, 0)
@@ -227,7 +227,8 @@ func TestSignersPendingListAndActivate(t *testing.T) {
 	if _, err := os.Stat(reg); !os.IsNotExist(err) {
 		t.Fatal("registry written on refusal")
 	}
-	if code, out, errS = admin("add", "--signers-file", reg, "--pending-file", pf, "--pending", "phone", "--fingerprint", fp); code != 0 {
+	if code, out, errS = admin("add", "--signers-file", reg, "--pending-file", pf, "--pending", "phone", "--fingerprint", fp); code != 0 ||
+		!strings.Contains(out, "rp_id: "+p.RPID) || !strings.Contains(out, "origin: "+p.Origin) {
 		t.Fatalf("activate %d %q %q", code, out, errS)
 	}
 	r, err := signing.LoadRegistry(reg, selfOwned())
@@ -300,5 +301,55 @@ func TestSignersRemoveRequiresRoot(t *testing.T) {
 	}
 	if mode(t, reg) != 0o644 {
 		t.Fatalf("mode %04o", mode(t, reg))
+	}
+}
+
+// M2: a FIFO as the pending file (or key file) is refused without blocking.
+func TestAdminReadRefusesFIFO(t *testing.T) {
+	fifo := filepath.Join(t.TempDir(), "fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("mkfifo: %v", err)
+	}
+	fakeEUID(t, 0)
+	_, reg := adminDir(t)
+	done := make(chan struct{})
+	var codes [2]int
+	go func() {
+		defer close(done)
+		codes[0], _, _ = admin("pending", "--pending-file", fifo)
+		codes[1], _, _ = admin("add", "--signers-file", reg, "--id", "mac", "--key", fifo)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reading a FIFO blocked")
+	}
+	if codes[0] == 0 || codes[1] == 0 {
+		t.Fatalf("FIFO accepted: %v", codes)
+	}
+}
+
+// M6: directories the writer creates are 0755 even under umask 077.
+func TestSignersAddCreatesReadableDirUnderStrictUmask(t *testing.T) {
+	fakeEUID(t, 0)
+	root, _ := filepath.EvalSymlinks(t.TempDir())
+	reg := filepath.Join(root, "etc", "aigate", "signers.json")
+	key, _ := edPub(t, "x")
+	old := syscall.Umask(0o077)
+	code, _, errS := admin("add", "--signers-file", reg, "--id", "mac", "--key", key)
+	syscall.Umask(old)
+	if code != 0 {
+		t.Fatalf("add %d %q", code, errS)
+	}
+	for _, d := range []string{filepath.Dir(reg), filepath.Dir(filepath.Dir(reg))} {
+		if m := mode(t, d); m != 0o755 {
+			t.Fatalf("%s mode %04o", d, m)
+		}
+	}
+	if m := mode(t, reg); m != 0o644 {
+		t.Fatalf("registry mode %04o", m)
+	}
+	if _, err := signing.LoadRegistry(reg, selfOwned()); err != nil {
+		t.Fatal(err)
 	}
 }

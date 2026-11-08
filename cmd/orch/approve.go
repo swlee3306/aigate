@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -84,7 +86,7 @@ func cmdApprove(c *client, id, gateHomeFlag string, so signOpts, stdout, stderr 
 	}
 	d, err := c.approvalDetail(id)
 	if err != nil {
-		fmt.Fprintln(stderr, "오류:", err)
+		fmt.Fprintln(stderr, "오류:", errText(err))
 		return 1
 	}
 	switch {
@@ -107,7 +109,7 @@ func cmdApprove(c *client, id, gateHomeFlag string, so signOpts, stdout, stderr 
 	}
 	home, err := gateHome(gateHomeFlag)
 	if err != nil {
-		fmt.Fprintln(stderr, "오류:", err)
+		fmt.Fprintln(stderr, "오류:", errText(err))
 		return 1
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -117,7 +119,7 @@ func cmdApprove(c *client, id, gateHomeFlag string, so signOpts, stdout, stderr 
 	case store.KindProtectedModified:
 		p, err := gate.Prepare(gate.Options{Repo: d.Repo, Base: d.Base, Head: d.Head})
 		if err != nil {
-			fmt.Fprintln(stderr, "오류:", err)
+			fmt.Fprintln(stderr, "오류:", errText(err))
 			return 1
 		}
 		// The hash being granted must be the one the pending entry waits for,
@@ -142,23 +144,14 @@ func cmdApprove(c *client, id, gateHomeFlag string, so signOpts, stdout, stderr 
 			return ui.ExitGateError
 		}
 	case store.KindPublishOutsideAllowlist:
-		action := ""
-		for _, k := range []string{publish.KindPushBranch, publish.KindDraftPR, publish.KindNotify} {
-			if approvals.PublishHash(d.TaskID, d.Head, k) == d.Hash {
-				action = k
-			}
-		}
-		if action == "" && d.PolicyHash != "" &&
-			approvals.PublishHash(d.TaskID, d.Head, steps.PolicyChangeKind(d.PolicyHash)) == d.Hash {
-			action = steps.PolicyChangeKind(d.PolicyHash)
-		}
+		action := deriveAction(d)
 		if action == "" {
 			fmt.Fprintln(stderr, "orch: approve 거부: 이 항목의 해시가 알려진 게시 행위와 맞지 않습니다. 승인은 기록하지 않음")
 			return ui.ExitGateError
 		}
 		repoID, _, err := gate.RepoID(d.Repo)
 		if err != nil {
-			fmt.Fprintln(stderr, "오류:", err)
+			fmt.Fprintln(stderr, "오류:", errText(err))
 			return 1
 		}
 		fmt.Fprintf(stdout, "작업 #%d 게시 행위 승인\n  행위: %s\n  base: %s\n  head: %s\n  사유: %s\n  hash: %s\n",
@@ -187,7 +180,7 @@ func cmdApprove(c *client, id, gateHomeFlag string, so signOpts, stdout, stderr 
 func reverify(c *client, id string, stdout, stderr io.Writer) int {
 	raw, err := c.call("POST", "/approvals/"+id+"/reverify", nil)
 	if err != nil {
-		fmt.Fprintln(stderr, "오류:", err)
+		fmt.Fprintln(stderr, "오류:", errText(err))
 		return 1
 	}
 	var v api.TaskView
@@ -216,6 +209,40 @@ func safeLine(s string) string {
 		return r
 	}, s)
 }
+
+// deriveAction rebuilds which publish action a publish_outside_allowlist
+// entry's hash binds, from the task, head and action kinds (and the policy in
+// force for the policy-change pseudo action). "" means none matches. The CLI
+// never trusts the server's action string by itself.
+func deriveAction(d api.ApprovalDetail) string {
+	action := ""
+	for _, k := range []string{publish.KindPushBranch, publish.KindDraftPR, publish.KindNotify} {
+		if approvals.PublishHash(d.TaskID, d.Head, k) == d.Hash {
+			action = k
+		}
+	}
+	if action == "" && d.PolicyHash != "" &&
+		approvals.PublishHash(d.TaskID, d.Head, steps.PolicyChangeKind(d.PolicyHash)) == d.Hash {
+		action = steps.PolicyChangeKind(d.PolicyHash)
+	}
+	return action
+}
+
+// repoIDOf is the repo id the server puts in the message for d.Repo: the
+// local gate.RepoID when the path is a repository here, otherwise the same
+// hash of the path string (the server stores the symlink-resolved top level,
+// which is what gate.RepoID hashes).
+func repoIDOf(repo string) string {
+	if id, _, err := gate.RepoID(repo); err == nil {
+		return id
+	}
+	sum := sha256.Sum256([]byte(repo))
+	return hex.EncodeToString(sum[:])[:12]
+}
+
+// errText is an error for the terminal: server-provided text may carry
+// control sequences, so it is escaped onto one line.
+func errText(err error) string { return textsafe.Escape(err.Error()) }
 
 // signOpts are `orch approve`'s signing flags.
 type signOpts struct {
@@ -288,6 +315,11 @@ func approveSigned(ctx context.Context, c *client, id string, d api.ApprovalDeta
 	if msg.Kind != d.Kind || msg.Hash != d.Hash || msg.Base != d.Base || msg.Task != d.TaskID || !msg.Issued.Equal(issued) {
 		return refuseSigned(stderr, "서버가 준 서명 메시지가 이 항목(종류·작업·base·해시)과 다릅니다.")
 	}
+	if got := repoIDOf(d.Repo); got != msg.Repo {
+		return refuseSigned(stderr, "서버가 준 서명 메시지의 저장소 id(%s)가 이 항목의 저장소 %s 의 id(%s)와 다릅니다.",
+			msg.Repo, textsafe.Escape(d.Repo), got)
+	}
+	fmt.Fprintf(stdout, "저장소: %s (id %s)\n", textsafe.Escape(d.Repo), msg.Repo)
 
 	switch d.Kind {
 	case store.KindProtectedModified:
@@ -314,10 +346,17 @@ func approveSigned(ctx context.Context, c *client, id string, d api.ApprovalDeta
 		}
 		fmt.Fprint(stdout, "the approval binds exactly this text (sha256 prefix = hash):\n", ui.BeginMark, d.HashedText, ui.EndMark)
 	case store.KindPublishOutsideAllowlist:
-		// No diff: the server's meaning (built from stored values only) and
-		// the hash are what is signed for.
+		// No diff: the action is re-derived from the hash here (as in the
+		// TTY flow) and must be the one the server names.
+		action := deriveAction(d)
+		if action == "" {
+			return refuseSigned(stderr, "이 항목의 해시가 알려진 게시 행위와 맞지 않습니다.")
+		}
+		if action != d.Action {
+			return refuseSigned(stderr, "서버가 말한 게시 행위(%s)가 해시로 다시 계산한 행위(%s)와 다릅니다.", textsafe.Escape(d.Action), action)
+		}
 		fmt.Fprintf(stdout, "작업 #%d 게시 행위 승인(서명)\n  행위: %s\n  base: %s\n  head: %s\n",
-			d.TaskID, textsafe.Escape(d.Action), d.Base, textsafe.Escape(d.Head))
+			d.TaskID, action, d.Base, textsafe.Escape(d.Head))
 	default:
 		return refuseSigned(stderr, "알 수 없는 종류 %q 입니다.", d.Kind)
 	}
@@ -353,7 +392,7 @@ func approveSigned(ctx context.Context, c *client, id string, d api.ApprovalDeta
 	if err != nil {
 		var ae *apiError
 		if !errors.As(err, &ae) {
-			fmt.Fprintln(stderr, "오류:", err) // transport error: local text, no server content
+			fmt.Fprintln(stderr, "오류:", errText(err)) // transport error: local text, no server content
 			return 1
 		}
 		text, ok := grantRefusals[ae.Code]

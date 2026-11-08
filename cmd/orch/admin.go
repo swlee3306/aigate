@@ -129,14 +129,14 @@ func cmdAdmin(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stdout, "대기 중인 패스키가 없습니다.")
 			return 0
 		}
-		fmt.Fprintf(stdout, "%-16s %-20s %-46s %-19s %s\n", "ID", "라벨", "지문", "등록", "origin")
+		fmt.Fprintf(stdout, "%-16s %-20s %-46s %-19s %-24s %s\n", "ID", "라벨", "지문", "등록", "rp_id", "origin")
 		for _, p := range ps {
 			fp, err := signing.Fingerprint(p.signer())
 			if err != nil {
 				fp = "(형식 오류: 활성화할 수 없음)"
 			}
-			fmt.Fprintf(stdout, "%-16s %-20s %-46s %-19s %s\n", textsafe.Escape(p.ID), textsafe.Escape(p.Label), fp,
-				p.Created.UTC().Format(time.DateTime), textsafe.Escape(p.Origin))
+			fmt.Fprintf(stdout, "%-16s %-20s %-46s %-19s %-24s %s\n", textsafe.Escape(p.ID), textsafe.Escape(p.Label), fp,
+				p.Created.UTC().Format(time.DateTime), textsafe.Escape(p.RPID), textsafe.Escape(p.Origin))
 		}
 		return 0
 	case "add":
@@ -322,6 +322,9 @@ func signersAdd(path string, s signing.Signer, stdout, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintf(stdout, "서명자 %s(%s) 등록: %s\n", s.ID, s.Type, fp)
+	if s.Type == signing.TypeWebAuthnES256 {
+		fmt.Fprintf(stdout, "  rp_id: %s\n  origin: %s\n", s.RPID, s.Origin)
+	}
 	return 0
 }
 
@@ -362,8 +365,23 @@ func writeRegistry(path string, signers []signing.Signer) error {
 	}
 	data = append(data, '\n')
 	dir := filepath.Dir(path)
+	// Directories created here get 0755 explicitly: MkdirAll's mode is
+	// masked by the umask, and a 0700 directory would hide the registry
+	// from orchd and the gate.
+	var created []string
+	for d := dir; ; d = filepath.Dir(d) {
+		if _, err := os.Lstat(d); err == nil || !errors.Is(err, os.ErrNotExist) || filepath.Dir(d) == d {
+			break
+		}
+		created = append(created, d)
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("서명자 목록 폴더를 만들 수 없습니다: %w", err)
+	}
+	for _, d := range created {
+		if err := os.Chmod(d, 0o755); err != nil {
+			return fmt.Errorf("서명자 목록 폴더 권한을 정할 수 없습니다: %w", err)
+		}
 	}
 	f, err := os.CreateTemp(dir, ".signers-*.tmp")
 	if err != nil {
@@ -441,8 +459,18 @@ func readPending(path string) ([]pendingCredential, error) {
 }
 
 // readSmall reads a regular file (no symlink) of at most max bytes.
+// It checks the path with Lstat before opening (a FIFO would block open),
+// opens with O_NOFOLLOW|O_NONBLOCK in case it was swapped meanwhile, and
+// requires the opened file to be the one checked.
 func readSmall(path string, max int64) ([]byte, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	li, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !li.Mode().IsRegular() {
+		return nil, errors.New("일반 파일이 아닙니다(심볼릭 링크·FIFO 등 불가)")
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -451,8 +479,8 @@ func readSmall(path string, max int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !fi.Mode().IsRegular() {
-		return nil, errors.New("일반 파일이 아닙니다")
+	if !fi.Mode().IsRegular() || !os.SameFile(li, fi) {
+		return nil, errors.New("파일이 확인 도중 바뀌었습니다")
 	}
 	b, err := io.ReadAll(io.LimitReader(f, max+1))
 	if err != nil {

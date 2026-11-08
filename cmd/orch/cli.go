@@ -194,9 +194,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		sub.StringVar(&so.KeyPath, "sign-key", "", "")
 		sub.StringVar(&so.Signer, "signer", "", "")
 	}
-	fail := func(err error) int { fmt.Fprintln(stderr, "오류:", err); return 1 }
+	fail := func(err error) int { fmt.Fprintln(stderr, "오류:", errText(err)); return 1 }
 	if err := sub.Parse(rest); err != nil {
-		fmt.Fprintln(stderr, "오류:", err)
+		fmt.Fprintln(stderr, "오류:", errText(err))
 		fmt.Fprintln(stderr, usage)
 		return 2
 	}

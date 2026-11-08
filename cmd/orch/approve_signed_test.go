@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -15,16 +17,26 @@ import (
 	"time"
 
 	"aigate/internal/approval/signing"
+	"aigate/internal/gate"
 	"aigate/internal/gitx"
 	"aigate/internal/orch/api"
+	"aigate/internal/orch/approvals"
+	"aigate/internal/orch/publish"
+	"aigate/internal/orch/steps"
 	"aigate/internal/orch/store"
 )
 
 const (
-	tBase = "0123456789abcdef0123456789abcdef01234567"
-	tHead = "89abcdef0123456789abcdef0123456789abcdef"
-	tRepo = "0123456789ab"
+	tBase     = "0123456789abcdef0123456789abcdef01234567"
+	tHead     = "89abcdef0123456789abcdef0123456789abcdef"
+	tRepoPath = "/srv/repos/proj" // not a repository here: its id is the hash of the path
 )
+
+// tRepo is the repo id the server would put in the message for tRepoPath.
+var tRepo = func() string {
+	sum := sha256.Sum256([]byte(tRepoPath))
+	return hex.EncodeToString(sum[:])[:12]
+}()
 
 // signedServer is a fake orchd for the signed flow: it serves one approval
 // detail and records grant requests, answering them with grantStatus/grantBody.
@@ -101,7 +113,7 @@ func protectedDetail(t *testing.T, hashed string) api.ApprovalDetail {
 	if err := m.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	d := api.ApprovalDetail{Repo: "/srv/repos/proj", TaskState: string(store.StateNeedsApproval)}
+	d := api.ApprovalDetail{Repo: tRepoPath, TaskState: string(store.StateNeedsApproval)}
 	d.ID, d.TaskID, d.Kind, d.Hash, d.Base, d.Head, d.Status = 1, 7, store.KindProtectedModified, hash, tBase, tHead, store.ApprovalPending
 	d.Message, d.HashedText, d.ProtectedFiles = m.Text(), hashed, []string{"tests/spec.txt"}
 	d.Meaning = "작업 #7의 보호 파일 1개의 수정을 허용합니다."
@@ -112,12 +124,12 @@ func protectedDetail(t *testing.T, hashed string) api.ApprovalDetail {
 func publishDetail(t *testing.T) api.ApprovalDetail {
 	t.Helper()
 	issued := time.Now().UTC().Truncate(time.Second)
-	hash := strings.Repeat("ab", 32)
+	hash := approvals.PublishHash(7, tHead, publish.KindPushBranch)
 	m := signing.Message{Kind: store.KindPublishOutsideAllowlist, Repo: tRepo, Task: 7, Base: tBase, Hash: hash, Issued: issued}
-	d := api.ApprovalDetail{Repo: "/srv/repos/proj", TaskState: string(store.StateNeedsApproval)}
+	d := api.ApprovalDetail{Repo: tRepoPath, TaskState: string(store.StateNeedsApproval)}
 	d.ID, d.TaskID, d.Kind, d.Hash, d.Base, d.Head, d.Status = 1, 7, store.KindPublishOutsideAllowlist, hash, tBase, tHead, store.ApprovalPending
 	d.Message, d.ProtectedFiles = m.Text(), []string{}
-	d.Meaning, d.Action = "작업 #7의 head 에 대해 정책 변경 뒤 게시를 계속하기를 허용합니다.", "policy_change:"+strings.Repeat("c", 64)
+	d.Meaning, d.Action = "작업 #7의 head 에 대해 허용 목록 밖의 게시 행위 하나, push 를 허용합니다.", publish.KindPushBranch
 	d.RequiresSignature, d.Issued = true, issued.Format(time.RFC3339)
 	return d
 }
@@ -164,7 +176,7 @@ func TestApproveSignedFlow(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("approve %d out %q err %q", code, out, errS)
 		}
-		for _, want := range []string{"BEGIN HASHED DIFF", "+line2", "hash: " + d.Hash, d.Meaning, "aigate-approval-v1", "mac", "verifying"} {
+		for _, want := range []string{"BEGIN HASHED DIFF", "+line2", "hash: " + d.Hash, d.Meaning, "aigate-approval-v1", "mac", "verifying", tRepoPath} {
 			if !strings.Contains(out, want) {
 				t.Errorf("output lacks %q:\n%s", want, out)
 			}
@@ -207,7 +219,7 @@ func TestApproveSignedFlow(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("approve %d out %q err %q", code, out, errS)
 		}
-		if !strings.Contains(out, d.Meaning) || !strings.Contains(out, d.Hash) {
+		if !strings.Contains(out, d.Meaning) || !strings.Contains(out, d.Hash) || !strings.Contains(out, "행위: "+publish.KindPushBranch) {
 			t.Fatalf("meaning/hash not shown:\n%s", out)
 		}
 		if f.count() != 1 || s.grantCount() != 1 || s.grants[0]["signer"] != "backup" {
@@ -233,6 +245,72 @@ func TestApproveSignedFlow(t *testing.T) {
 		code, _, errS := s.approve(t, "yes\n", "--sign-key", key, "--signer", "mac")
 		if code != 64 || f.count() != 0 || s.grantCount() != 0 {
 			t.Fatalf("code %d signed %d err %q", code, f.count(), errS)
+		}
+	})
+	t.Run("publish-action-mismatch", func(t *testing.T) {
+		f := installFakeSigner(t)
+		d := publishDetail(t) // hash binds push_branch
+		d.Action = publish.KindNotify
+		d.Meaning = "알림 보내기(notify)를 허용합니다."
+		s := newSignedServer(t, d)
+		code, out, errS := s.approve(t, "yes\n", "--sign-key", key, "--signer", "mac")
+		if code != 64 || f.count() != 0 || s.grantCount() != 0 || !strings.Contains(errS, "게시 행위") {
+			t.Fatalf("code %d signed %d out %q err %q", code, f.count(), out, errS)
+		}
+	})
+	t.Run("publish-unknown-hash", func(t *testing.T) {
+		f := installFakeSigner(t)
+		d := publishDetail(t)
+		d.Hash = strings.Repeat("ab", 32)
+		m, _ := signing.ParseMessage(d.Message)
+		m.Hash = d.Hash
+		d.Message = m.Text()
+		s := newSignedServer(t, d)
+		code, _, errS := s.approve(t, "yes\n", "--sign-key", key, "--signer", "mac")
+		if code != 64 || f.count() != 0 || s.grantCount() != 0 {
+			t.Fatalf("code %d signed %d err %q", code, f.count(), errS)
+		}
+	})
+	t.Run("policy-change-action", func(t *testing.T) {
+		f := installFakeSigner(t)
+		d := publishDetail(t)
+		d.PolicyHash = strings.Repeat("c", 64)
+		d.Action = steps.PolicyChangeKind(d.PolicyHash)
+		d.Hash = approvals.PublishHash(7, tHead, d.Action)
+		m, _ := signing.ParseMessage(d.Message)
+		m.Hash = d.Hash
+		d.Message = m.Text()
+		s := newSignedServer(t, d)
+		if code, out, errS := s.approve(t, "yes\n", "--sign-key", key, "--signer", "mac"); code != 0 || f.count() != 1 {
+			t.Fatalf("code %d signed %d out %q err %q", code, f.count(), out, errS)
+		}
+	})
+	t.Run("repo-id-mismatch", func(t *testing.T) {
+		f := installFakeSigner(t)
+		d := protectedDetail(t, sampleHashed)
+		d.Repo = "/srv/repos/other" // the message's repo id is /srv/repos/proj's
+		s := newSignedServer(t, d)
+		code, _, errS := s.approve(t, "yes\n", "--sign-key", key, "--signer", "mac")
+		if code != 64 || f.count() != 0 || s.grantCount() != 0 || !strings.Contains(errS, "저장소") {
+			t.Fatalf("code %d signed %d err %q", code, f.count(), errS)
+		}
+	})
+	t.Run("repo-id-local-repository", func(t *testing.T) {
+		f := installFakeSigner(t)
+		repo, _ := filepath.EvalSymlinks(t.TempDir())
+		git(t, repo, "init", "-q")
+		rid, _, err := gate.RepoID(repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		d := protectedDetail(t, sampleHashed)
+		m, _ := signing.ParseMessage(d.Message)
+		m.Repo = rid
+		d.Repo, d.Message = repo, m.Text()
+		s := newSignedServer(t, d)
+		code, out, errS := s.approve(t, "yes\n", "--sign-key", key, "--signer", "mac")
+		if code != 0 || f.count() != 1 || !strings.Contains(out, repo) {
+			t.Fatalf("code %d signed %d out %q err %q", code, f.count(), out, errS)
 		}
 	})
 	t.Run("no-signer-id", func(t *testing.T) {
@@ -379,5 +457,23 @@ func TestDefaultSignCmdSSHKeygen(t *testing.T) {
 	}
 	if signing.VerifySSHSig(strings.TrimSpace(string(pub)), "aigate-login", msg, armored) == nil {
 		t.Fatal("signature verified in another namespace")
+	}
+}
+
+// M5: server error text is escaped before it reaches the terminal.
+func TestServerErrorTextEscaped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error":{"code":"internal","message":"bad\u001b[2Jthing"}}`))
+	}))
+	defer srv.Close()
+	tf := writeTok(t, "tok\n", 0o600)
+	fakeTTY(t)
+	for _, args := range [][]string{{"list"}, {"approve", "1"}, {"reverify", "1"}} {
+		var o, e bytes.Buffer
+		code := run(append([]string{"--server", srv.URL, "--token-file", tf}, args...), &o, &e)
+		if code == 0 || strings.Contains(o.String()+e.String(), "\x1b") || !strings.Contains(e.String(), `bad\x1b[2Jthing`) {
+			t.Fatalf("%v: code %d out %q err %q", args, code, o.String(), e.String())
+		}
 	}
 }
