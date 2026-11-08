@@ -12,6 +12,9 @@ import { replaceContent } from '../shell.js';
 const POLL_MS = 10000;
 export const MIN_BAR_PCT = 2; // every stage stays visible
 const FINAL = new Set(['done', 'failed', 'cancelled']);
+// RUNNING states have a live timer; needs_approval, passed and error are
+// waiting for a person or a retry, so no growing timer is shown for them.
+const RUNNING = new Set(['queued', 'preparing', 'agent_running', 'collecting', 'verifying', 'publishing']);
 const HEX_RE = /^[0-9a-f]{7,64}$/;
 
 const num = (x) => (typeof x === 'number' && Number.isFinite(x) && x >= 0 ? x : 0);
@@ -22,7 +25,7 @@ function effectiveSeconds(steps, opts) {
   const now = opts && opts.now instanceof Date ? opts.now.getTime() : null;
   return steps.map((s, i) => {
     let sec = num(s && s.seconds);
-    if (i === steps.length - 1 && sec === 0 && now !== null && s && !FINAL.has(s.state)) {
+    if (i === steps.length - 1 && sec === 0 && now !== null && s && RUNNING.has(s.state)) {
       const at = Date.parse(s.at);
       if (Number.isFinite(at) && now > at) sec = (now - at) / 1000;
     }
@@ -46,17 +49,21 @@ export function renderTimeline(steps, opts) {
   if (list.length === 0) return el('p', { class: 'note' }, '기록된 단계가 없습니다.');
   const secs = effectiveSeconds(list, opts);
   const widths = barWidths(secs);
-  const lastLive = !FINAL.has(list[list.length - 1].state);
+  const lastState = list[list.length - 1].state;
+  const lastLive = RUNNING.has(lastState);
+  const lastWait = !lastLive && !FINAL.has(lastState);
   const rows = list.map((s, i) => {
     const known = typeof s.state === 'string' && Object.prototype.hasOwnProperty.call(STATE_LABELS, s.state);
     const label = stateLabel(s.state);
-    const live = i === list.length - 1 && lastLive;
+    const last = i === list.length - 1;
+    const live = last && lastLive;
+    const waiting = last && lastWait;
     const fill = el('div', { class: 'bar-f' });
     fill.style.width = widths[i] + '%'; // CSSOM: CSP forbids style attributes
     return el('li', { class: 'bar-r', 'data-step': known ? s.state : '?' }, [
       el('span', {}, label),
       el('div', { class: 'bar-t', 'aria-hidden': 'true' }, fill),
-      el('span', { class: 'mono' }, live ? '진행 중 · ' + formatSeconds(secs[i]) : formatSeconds(secs[i])),
+      el('span', { class: 'mono' }, live ? '진행 중 · ' + formatSeconds(secs[i]) : waiting ? '대기 중' : formatSeconds(secs[i])),
     ]);
   });
   const total = secs.reduce((a, b) => a + b, 0);
@@ -201,7 +208,7 @@ export function taskView(ctx) {
         } catch { /* the banner works without the reason */ }
       }
       if (ctx.signal && ctx.signal.aborted) return;
-      const live = data && Array.isArray(data.steps) && data.steps.length && !FINAL.has(data.steps[data.steps.length - 1].state);
+      const live = data && Array.isArray(data.steps) && data.steps.length && RUNNING.has(data.steps[data.steps.length - 1].state);
       const key = JSON.stringify([data, approval, live ? Math.floor(Date.now() / POLL_MS) : 0]);
       if (st.data && key === last) return;
       last = key;

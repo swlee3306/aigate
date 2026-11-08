@@ -364,7 +364,7 @@ export function formatLive(state, lastUpdated, failures) {
 // reaching the page by replacing them with VISIBLE placeholders.
 
 // bidi controls, zero-width characters, BOM, line/paragraph separators
-const INVISIBLE_RE = /[\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g;
+const INVISIBLE_RE = /[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2069\u3164\ufe00-\ufe0f\ufeff\ufff9-\ufffb\u{e0000}-\u{e007f}]/gu;
 const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f]/g;
 
 // sanitize makes s safe to show. opts.keepTab keeps U+0009 (diff/pre blocks),
@@ -405,8 +405,13 @@ export const MAX_LINE = 500;
 
 // capLine sanitizes one line of a block and caps its length with a marker.
 export function capLine(s, max) {
-  const c = clip(sanitize(s, { keepTab: true }), max || MAX_LINE);
-  return c.dropped ? c.text + ' …(+' + c.dropped + '자)' : c.text;
+  max = max || MAX_LINE;
+  // clip first (with a margin for placeholders that widen text), so a huge
+  // line is never sanitized whole
+  const pre = clip(typeof s === 'string' ? s : String(s === null || s === undefined ? '' : s), max + 64);
+  const c = clip(sanitize(pre.text, { keepTab: true }), max);
+  const dropped = pre.dropped + c.dropped;
+  return dropped ? c.text + ' …(+' + dropped + '자)' : c.text;
 }
 
 // splitLines splits text on \n (CRLF counts as one break). At most `limit`

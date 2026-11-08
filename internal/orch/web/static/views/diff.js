@@ -14,7 +14,9 @@ import { replaceContent } from '../shell.js';
 
 const LINE_CHUNK = 300;
 const FILE_CHUNK = 200;
-const MAX_PARSE_LINES = 20000; // 256 KiB cap upstream; belt and braces here
+// A full server-sized text (256 KiB, at least 2 bytes per line) is at most ~131k
+// lines, so the default never clips it; the cap only bounds hostile input.
+export const MAX_PARSE_LINES = 200000;
 const HASH_RE = /^[0-9a-f]{8,64}$/;
 
 // parseHashedText splits the gate's text into per-file sections and the set
@@ -22,8 +24,11 @@ const HASH_RE = /^[0-9a-f]{8,64}$/;
 // A section header is `diff --git a/P b/P`; lines of a hunk always start
 // with ' ', '+', '-' or '\', so "diff --git " and "A " at a line start can
 // not come from file content.
-export function parseHashedText(text) {
-  const { lines } = splitLines(text, MAX_PARSE_LINES);
+export function parseHashedText(text, limit) {
+  const { lines, total } = splitLines(text, limit || MAX_PARSE_LINES);
+  // clipped: the client cap cut the input, so later sections and `A` lines were never seen.
+  const clipped = total > lines.length;
+  let last = null;
   const sections = new Map();
   const added = new Set();
   let cur = null;
@@ -35,7 +40,7 @@ export function parseHashedText(text) {
       const path = Number.isInteger(n) && n > 0 && rest.slice(n, n + 3) === ' b/' && rest.slice(0, n) === rest.slice(n + 3)
         ? rest.slice(0, n) : null;
       cur = path === null ? { path: null, lines: [] } : sections.get(path) || { path, lines: [] };
-      if (path !== null) sections.set(path, cur);
+      if (path !== null) { sections.set(path, cur); last = path; }
       inHunk = false;
       cur.lines.push({ kind: 'meta', text: line });
     } else if (line.startsWith('@@') && cur) {
@@ -48,10 +53,11 @@ export function parseHashedText(text) {
       cur = null;
       inHunk = false;
     } else if (cur) {
+      if (!inHunk && line.startsWith('new file mode ')) cur.isNew = true;
       cur.lines.push({ kind: 'meta', text: line });
     }
   }
-  return { sections, added };
+  return { sections, added, clipped, last };
 }
 
 const KIND_CLASS = { add: 'add', del: 'del', hunk: 'hunk', meta: 'meta', ctx: '' };
@@ -60,16 +66,18 @@ const KIND_CLASS = { add: 'add', del: 'del', hunk: 'hunk', meta: 'meta', ctx: ''
 // its protection kind: 'added' (new guarded file), 'changed' (protected,
 // body present), 'unseen' (protected but not in the possibly cut text) or
 // null (not protected: no body in this view).
-export function fileEntries(view) {
+export function fileEntries(view, limit) {
   const files = Array.isArray(view.files) ? view.files : [];
   const prot = new Set((Array.isArray(view.protected_files) ? view.protected_files : []).filter((p) => typeof p === 'string'));
-  const { sections, added } = parseHashedText(view.hashed_text);
+  const { sections, added, clipped, last } = parseHashedText(view.hashed_text, limit);
+  const cut = view.truncated === true || clipped; // the text may end mid-section
   const seen = new Set();
   const out = [];
   const kindOf = (path) => {
     if (!prot.has(path)) return null;
-    if (added.has(path)) return 'added';
-    return sections.has(path) ? 'changed' : 'unseen';
+    if (!sections.has(path)) return added.has(path) ? 'added' : 'unseen';
+    if (added.has(path) || sections.get(path).isNew) return 'added';
+    return cut && path === last ? 'cut' : 'changed'; // the last section of a cut text may be partial
   };
   for (const f of files) {
     if (!f || typeof f.path !== 'string' || seen.has(f.path)) continue;
@@ -81,13 +89,14 @@ export function fileEntries(view) {
     seen.add(p);
     out.push({ path: p, added: null, deleted: null, kind: kindOf(p) });
   }
-  return { entries: out, sections };
+  return { entries: out, sections, clipped };
 }
 
 const KIND_BADGE = {
   added: '보호 파일 · 새 파일',
   changed: '보호 파일 · 변경',
   unseen: '보호 파일 · 내용 잘림',
+  cut: '보호 파일 · 내용 잘림',
 };
 
 function fileLabel(e) {
@@ -110,9 +119,9 @@ function renderBody(entry, sections, truncated) {
   }
   const sec = sections.get(entry.path);
   if (!sec) {
-    return el('div', {}, [head, el('p', { class: 'note' }, truncated
-      ? '보호 파일이지만 diff가 길어 잘린 부분에 있어 표시되지 않았습니다. 전체 diff는 `orch diff`로 확인하세요.'
-      : '이 파일의 변경 줄이 없습니다.')]);
+    // Never "no changes": a protected file whose section was not seen is cut off.
+    return el('div', {}, [head, el('p', { class: 'note' },
+      '보호 파일이지만 diff가 길어 잘린 부분에 있어 표시되지 않았습니다. 전체 diff는 `orch diff`로 확인하세요.')]);
   }
   const pre = el('div', { class: 'diff', role: 'region', tabindex: '0', 'aria-label': inline(entry.path, 80) + ' 변경 내용' });
   chunked(pre, sec.lines, LINE_CHUNK, (l) => el('div', { class: ['dl', KIND_CLASS[l.kind]] }, capLine(l.text) || ' '), '줄');
@@ -120,11 +129,12 @@ function renderBody(entry, sections, truncated) {
 }
 
 // renderDiff: view is the diff response; state {selected: index}; onSelect(i).
-export function renderDiff(view, state, onSelect) {
+export function renderDiff(view, state, onSelect, opts) {
   view = view && typeof view === 'object' ? view : {};
   state = state || {};
-  const { entries, sections } = fileEntries(view);
-  const truncated = view.truncated === true;
+  const { entries, sections, clipped } = fileEntries(view, opts && opts.maxParseLines);
+  const serverCut = view.truncated === true;
+  const truncated = serverCut || clipped;
   const selected = Number.isInteger(state.selected) && state.selected >= 0 && state.selected < entries.length
     ? state.selected : Math.max(0, entries.findIndex((e) => e.kind));
   const pending = entries.filter((e) => e.kind).length;
@@ -144,6 +154,7 @@ export function renderDiff(view, state, onSelect) {
         ? el('div', { class: 'trunc', role: 'alert' }, [
           el('b', {}, '일부만 표시됨'),
           ': 전체 diff는 `orch diff`로 확인',
+          clipped ? el('small', {}, ' · 화면에서 일부 줄을 생략했습니다.') : null,
           el('small', {}, ' · 잘린 diff는 승인할 수 없습니다. 서버가 보여 주는 해시는 전체 diff의 값입니다.'),
         ])
         : null,

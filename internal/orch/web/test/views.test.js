@@ -192,9 +192,20 @@ test('TestTaskTimelineBars', () => {
   assert.deepEqual(spans.map((s) => s[0]), ['대기', '준비', '에이전트', '수집', '검증', '승인 대기']);
   assert.deepEqual(spans.map((s) => s[1]).slice(0, 5), ['0.2초', '2.0초', '25초', '1.3초', '154초']);
   // the last, still-open step shows it is in progress when `now` is given
-  const live = renderTimeline(data.steps, { now: new Date(Date.parse(data.steps[5].at) + 90000) });
-  const lastRow = byClass(live, 'bar-r').pop();
-  assert.match(text(lastRow), /진행 중 · 90초/);
+  const runningSteps = data.steps.slice(0, 6).map((s2, i) => (i === 5 ? { ...s2, state: 'verifying' } : s2));
+  const live = renderTimeline(runningSteps, { now: new Date(Date.parse(data.steps[5].at) + 90000) });
+  assert.match(text(byClass(live, 'bar-r').pop()), /진행 중 · 90초/);
+  // waiting states (needs_approval, passed, error) never show a growing timer
+  for (const st of ['needs_approval', 'passed', 'error']) {
+    const steps = data.steps.map((s2, i) => (i === 5 ? { ...s2, state: st } : s2));
+    const later = renderTimeline(steps, { now: new Date(Date.parse(data.steps[5].at) + 90000) });
+    const row = text(byClass(later, 'bar-r').pop());
+    assert.match(row, /대기 중/, st);
+    assert.doesNotMatch(row, /진행 중|90초/, st);
+  }
+  // a finished task shows a plain duration
+  const done = data.steps.map((s2, i) => (i === 5 ? { ...s2, state: 'done' } : s2));
+  assert.doesNotMatch(text(byClass(renderTimeline(done, { now: new Date(Date.parse(data.steps[5].at) + 90000) }), 'bar-r').pop()), /진행 중|대기 중/);
   // verify summary from the real parsed note
   const shown = text(root);
   assert.match(shown, /복원55초/);
@@ -438,6 +449,77 @@ test('diff view paints the selected file on click and keeps view state', async (
   assert.deepEqual(list().map((b) => b.getAttribute('aria-pressed')), ['false', 'false', 'true']);
   assert.match(text(ctx.root), /<script>alert\(1\)<\/script>/);
   assert.equal(ctx.calls.length, 1, 'selecting a file does not refetch');
+});
+
+// ---- fix round 1 ------------------------------------------------------------
+
+function probeView(extra) {
+  // 30k added lines of tests/a (60 KB), then a new guarded pytest.ini section and its A line
+  const lines = ['diff --git a/tests/a b/tests/a', 'index 1..2 100644', '--- a/tests/a', '+++ b/tests/a', '@@ -0,0 +1,30000 @@'];
+  for (let i = 0; i < 30000; i++) lines.push('+');
+  lines.push('diff --git a/pytest.ini b/pytest.ini', 'new file mode 100644', 'index 0000..1111', '--- /dev/null', '+++ b/pytest.ini', '@@ -0,0 +1 @@', '+[pytest]', 'A pytest.ini');
+  return { hash: 'abcdef0123456789', hashed_text: lines.join('\n') + '\n', truncated: false,
+    protected_files: ['pytest.ini', 'tests/a'], files: [{ path: 'pytest.ini', added: 1, deleted: 0 }, { path: 'tests/a', added: 30000, deleted: 0 }], ...extra };
+}
+
+test('client parse cap clipping is shown as truncation, never as "no changes"', () => {
+  const view = probeView();
+  assert.ok(view.hashed_text.length < 70000);
+  assert.equal(parseHashedText(view.hashed_text, 20000).clipped, true);
+  const root = renderDiff(view, { selected: 1 }, () => {}, { maxParseLines: 20000 });
+  const banner = byClass(root, 'trunc')[0];
+  assert.ok(banner, 'banner although truncated:false');
+  assert.match(text(banner), /일부만 표시됨/);
+  assert.match(text(banner), /화면에서 일부 줄을 생략했습니다/);
+  const ini = buttons(findAll(root, (e) => e.tagName === 'UL')[0]).find((b) => text(b).includes('pytest.ini'));
+  assert.match(text(ini), /보호 파일/);
+  assert.match(text(ini), /내용 잘림/);
+  assert.doesNotMatch(text(root), /변경 줄이 없습니다/);
+  // the partially seen last section is cut too, and its body says so nowhere as "no changes"
+  const sel0 = renderDiff(view, { selected: 0 }, () => {}, { maxParseLines: 20000 });
+  assert.doesNotMatch(text(sel0), /변경 줄이 없습니다/);
+  assert.match(text(sel0), /잘린 부분에 있어 표시되지 않았습니다/);
+  // with the default (large) cap this input is fully parsed: no banner, new file recognised
+  const full = renderDiff(view, { selected: 0 }, () => {});
+  assert.equal(byClass(full, 'trunc').length, 0);
+  assert.match(text(buttons(findAll(full, (e) => e.tagName === 'UL')[0]).find((b) => text(b).includes('pytest.ini'))), /새 파일/);
+});
+
+test('new file mode marks a new guarded file even when the A lines were cut', () => {
+  const t = 'diff --git a/pytest.ini b/pytest.ini\nnew file mode 100644\nindex 0000..1111\n--- /dev/null\n+++ b/pytest.ini\n@@ -0,0 +1 @@\n+x\n';
+  const view = { hash: 'abcdef01', hashed_text: t, truncated: true, protected_files: ['pytest.ini', 'tests/z'], files: [{ path: 'pytest.ini', added: 1, deleted: 0 }] };
+  assert.equal(parseHashedText(t).sections.get('pytest.ini').isNew, true);
+  const root = renderDiff(view, {}, () => {});
+  const fb = buttons(findAll(root, (e) => e.tagName === 'UL')[0]);
+  // pytest.ini is the last section of a cut text: the section may be partial, but a "new file" mode line is seen
+  assert.match(text(fb[0]), /보호 파일 · 새 파일/);
+  assert.match(text(fb[1]), /내용 잘림/, 'protected file with no section at all');
+  const complete = fileEntries({ ...view, truncated: false }).entries[0];
+  assert.equal(complete.kind, 'added');
+  // a content line that looks like the mode line cannot flag a section
+  const fake = parseHashedText('diff --git a/x b/x\n@@ -1 +1 @@\n+new file mode 100644\n');
+  assert.equal(fake.sections.get('x').isNew, undefined);
+});
+
+test('invisible and format characters are neutralised (all ranges)', () => {
+  const cps = [0xad, 0x34f, 0x61c, 0x115f, 0x1160, 0x17b4, 0x17b5, 0x180b, 0x180c, 0x180d, 0x180e, 0x200b, 0x200f, 0x2028, 0x202e, 0x2060, 0x2069,
+    0x3164, 0xfe00, 0xfe0f, 0xfeff, 0xfff9, 0xfffb, 0xe0000, 0xe0041, 0xe007f];
+  for (const cp of cps) {
+    const out = sanitize('a' + String.fromCodePoint(cp) + 'b');
+    assert.match(out, /^a\u27e8U\+[0-9A-F]{4,5}\u27e9b$/, 'U+' + cp.toString(16));
+    assert.equal(out.includes(String.fromCodePoint(cp)), false);
+  }
+  assert.equal(sanitize('\u{e0041}'), '\u27e8U+E0041\u27e9');
+  assert.equal(sanitize('한글 😀 a-b'), '한글 😀 a-b', 'ordinary text untouched');
+});
+
+test('capLine clips before sanitizing: a 2 MiB line yields a short bounded result', () => {
+  const huge = ('\u001b' + 'x').repeat(1 << 20); // 2 MiB
+  const out = capLine(huge);
+  assert.ok(out.length < 560, 'length ' + out.length);
+  assert.match(out, /…\(\+\d{6,}자\)$/);
+  assert.equal(out.includes('\u001b'), false);
+  assert.equal(capLine('abc'), 'abc');
 });
 
 // ---- helpers ----------------------------------------------------------------
