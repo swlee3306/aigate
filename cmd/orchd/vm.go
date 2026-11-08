@@ -158,16 +158,21 @@ func (v *vmFlags) checkLocations(dbPath string, exposed []string) error {
 	return nil
 }
 
+// reportDir is where verification reports are saved: the flag, else
+// <db dir>/reports. The step provider and the API's report endpoint share it.
+func (v *vmFlags) reportDir(dbPath string) string {
+	if v.ReportDir != "" {
+		return v.ReportDir
+	}
+	return filepath.Join(filepath.Dir(dbPath), "reports")
+}
+
 // provider builds the real step provider. Nothing connects to a VM here.
 func (v *vmFlags) provider(st *store.Store, dbPath string) (api.StepProvider, error) {
 	if err := v.validate(); err != nil {
 		return nil, err
 	}
-	dir := filepath.Dir(dbPath)
-	reportDir, gateHome := v.ReportDir, v.gateHome(dbPath)
-	if reportDir == "" {
-		reportDir = filepath.Join(dir, "reports")
-	}
+	reportDir, gateHome := v.reportDir(dbPath), v.gateHome(dbPath)
 	agent := &vm.AgentVM{Host: v.AgentHost, User: v.AgentUser, KeyPath: v.AgentKey,
 		KnownHosts: v.AgentKnownHosts, JumpHost: v.AgentJump}
 	if v.live != nil {

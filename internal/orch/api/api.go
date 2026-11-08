@@ -119,6 +119,8 @@ type handler struct {
 	grants approvals.Grants
 	// policyHash reports the policy in force (nil: none).
 	policyHash func() string
+	// reportDir confines the report endpoint (empty: nothing is served).
+	reportDir string
 }
 
 func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome string) (*handler, error) {

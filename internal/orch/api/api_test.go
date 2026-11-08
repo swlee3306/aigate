@@ -59,7 +59,7 @@ func git(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func newEnv(t *testing.T, p StepProvider, conc int) *env {
+func newEnv(t *testing.T, p StepProvider, conc int, opts ...func(*Config)) *env {
 	t.Helper()
 	dir := shortDir(t)
 	e := &env{sock: filepath.Join(dir, "o.sock"), root: filepath.Join(dir, "repos")}
@@ -77,7 +77,11 @@ func newEnv(t *testing.T, p StepProvider, conc int) *env {
 	}
 	t.Cleanup(func() { st.Close() })
 	e.st = st
-	d, err := NewDaemon(Config{Socket: e.sock, Concurrency: conc, AllowedRepos: []string{e.root}}, st, p)
+	cfg := Config{Socket: e.sock, Concurrency: conc, AllowedRepos: []string{e.root}}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	d, err := NewDaemon(cfg, st, p)
 	if err != nil {
 		t.Fatal(err)
 	}

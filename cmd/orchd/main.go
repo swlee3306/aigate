@@ -123,6 +123,7 @@ func run(args []string) int {
 	}
 	var provider api.StepProvider = placeholderSteps{}
 	if vf.enabled() {
+		cfg.ReportDir = vf.reportDir(cfg.DB)
 		if provider, err = vf.provider(st, cfg.DB); err != nil {
 			fmt.Fprintln(os.Stderr, "orchd:", err)
 			return 2
