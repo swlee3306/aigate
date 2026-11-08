@@ -880,3 +880,19 @@ func TestFileChangeHeadPrefixAndSymlinkTarget(t *testing.T) {
 		t.Errorf("link: mode %s target %q", f.HeadMode, f.HeadSymlinkTarget)
 	}
 }
+
+func TestHashOfMatchesDiffHash(t *testing.T) {
+	r := newRepo(t)
+	write(t, r, "tests/a.txt", "one\n")
+	base := commit(t, r, "base")
+	write(t, r, "tests/a.txt", "two\n")
+	write(t, r, "tests/new.txt", "n\n")
+	head := commit(t, r, "head")
+	d, err := ProtectedDiff(r, base, head, Globs("tests/**"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Hash == "" || HashOf(d.HashedText()) != d.Hash {
+		t.Fatalf("HashOf(HashedText) = %q, Diff.Hash = %q", HashOf(d.HashedText()), d.Hash)
+	}
+}

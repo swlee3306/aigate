@@ -697,6 +697,10 @@ func removedLines(text string) []string {
 	return out
 }
 
+// HashOf is the diff hash of a ProtDiff.HashedText() value: callers that hold
+// a (possibly truncated) copy of the text can verify it against Diff.Hash.
+func HashOf(hashed string) string { return hashOf(hashed) }
+
 func hashOf(hashed string) string {
 	sum := sha256.Sum256([]byte(hashed))
 	return hex.EncodeToString(sum[:])[:16]
