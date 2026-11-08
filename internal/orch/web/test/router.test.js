@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { parseRoute, registerView, getView, navItem } = await import('../static/router.js');
+const { parseRoute, shouldRoute, registerView, getView, navItem } = await import('../static/router.js');
 
 test('parseRoute', () => {
   const eq = (h, name, params = []) => assert.deepEqual(parseRoute(h), { name, params }, h);
@@ -9,7 +9,7 @@ test('parseRoute', () => {
   eq('#/overview', 'overview'); eq('#/overview/', 'overview');
   eq('#/tasks', 'tasks'); eq('#/tasks/38', 'task', ['38']);
   eq('#/approvals', 'approvals'); eq('#/diff/38', 'diff', ['38']); eq('#/diff/38/main.go', 'diff', ['38', 'main.go']);
-  eq('#/tasks/abc', 'notfound'); eq('#/tasks/1/2', 'notfound'); eq('#/nope', 'notfound'); eq('tasks', 'notfound');
+  eq('#/tasks/abc', 'notfound'); eq('#/tasks/1/2', 'notfound'); eq('#/nope', 'notfound');
   eq('#/diff/38/..', 'notfound'); eq('#/diff/38/a%2Fb', 'notfound'); eq('#/tasks/38?x=1', 'task', ['38']);
   eq('#/tasks/' + '9'.repeat(30), 'notfound'); eq(undefined, 'overview');
   assert.equal(navItem('task'), 'tasks');
@@ -22,4 +22,15 @@ test('registerView', () => {
   assert.equal(getView('nothing'), null);
   assert.throws(() => registerView('Bad Name', f));
   assert.throws(() => registerView('x', 'not a function'));
+});
+
+test('non-route fragments are never routes and never notfound', () => {
+  for (const h of ['#main', '#content', 'tasks', '#x/y']) {
+    assert.equal(parseRoute(h), null, h);
+    assert.equal(shouldRoute(h), false, h);
+  }
+  for (const h of ['#', '', undefined, null]) assert.equal(shouldRoute(h), false, String(h));
+  assert.equal(shouldRoute('#/nope'), true);
+  assert.deepEqual(parseRoute('#/nope'), { name: 'notfound', params: [] }, 'a real unknown route still is notfound');
+  assert.deepEqual(parseRoute('#/tasks/abc'), { name: 'notfound', params: [] });
 });

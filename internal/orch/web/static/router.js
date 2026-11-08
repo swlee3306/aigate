@@ -4,9 +4,10 @@
 // Routes: #/overview  #/tasks  #/tasks/ID  #/approvals  #/diff/ID[/...]
 // View names: overview, tasks, task, approvals, diff, login (and notfound).
 
+import { ID_RE } from './render.js';
+
 const views = new Map();
 const NAME_RE = /^[a-z][a-z-]{0,31}$/;
-const ID_RE = /^[0-9]{1,18}$/;
 const SEG_RE = /^[A-Za-z0-9._-]{1,200}$/;
 
 // registerView(name, fn): fn(ctx) renders into ctx.root (see app.js for ctx).
@@ -21,14 +22,21 @@ export function getView(name) {
   return views.get(name) || null;
 }
 
-// parseRoute maps location.hash to {name, params}. Anything malformed or
-// unknown is {name: 'notfound'}; an empty hash is the overview.
+// shouldRoute: only `#/...` hashes are routes. Other fragments (`#main` from
+// the skip link, `#`, empty) must never change the view.
+export function shouldRoute(hash) {
+  return typeof hash === 'string' && hash.startsWith('#/');
+}
+
+// parseRoute maps location.hash to {name, params}. An empty hash (or `#`) is
+// the overview; a `#/...` hash that is malformed or unknown is
+// {name: 'notfound'}; any other fragment is not a route: null.
 export function parseRoute(hash) {
   let h = typeof hash === 'string' ? hash : '';
   const q = h.indexOf('?');
   if (q >= 0) h = h.slice(0, q);
   if (h === '' || h === '#' || h === '#/') return { name: 'overview', params: [] };
-  if (!h.startsWith('#/')) return { name: 'notfound', params: [] };
+  if (!h.startsWith('#/')) return null;
   const segs = h.slice(2).split('/');
   if (segs[segs.length - 1] === '') segs.pop();
   const [head, ...rest] = segs;

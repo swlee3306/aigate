@@ -18,8 +18,14 @@ const PLAIN_ATTRS = new Set([
   'hidden', 'scope', 'colspan', 'placeholder',
 ]);
 const PATTERN_ATTRS = [/^aria-[a-z]+$/, /^data-[a-z0-9-]+$/];
-// href is only ever a hash route of this page.
-const HREF_RE = /^#\/[A-Za-z0-9._~\/?=&%-]*$/;
+// ID_RE: a numeric id (task, approval). Views must validate ids with it
+// before building a `#/tasks/<id>` href.
+export const ID_RE = /^[0-9]{1,18}$/;
+// SAFE_TOKEN_RE: the only shape accepted for id/for/name values and for each
+// segment of a hash route (no dots, so `..` is impossible).
+export const SAFE_TOKEN_RE = /^[A-Za-z0-9_-]{1,64}$/;
+// href is only ever `#/` + safe segments separated by `/`.
+const HREF_RE = /^#\/[A-Za-z0-9_-]{1,64}(\/[A-Za-z0-9_-]{1,64})*$/;
 const EVENT_RE = /^[a-z]+$/;
 
 function isPlainObject(x) {
@@ -36,6 +42,9 @@ function setAttr(node, tag, name, value) {
     if (tag !== 'a' || typeof value !== 'string' || !HREF_RE.test(value)) {
       throw new Error('el: href must be a #/ route on an <a>');
     }
+  }
+  if ((name === 'id' || name === 'for' || name === 'name') && !(typeof value === 'string' && SAFE_TOKEN_RE.test(value))) {
+    throw new Error('el: ' + name + ' must match SAFE_TOKEN_RE');
   }
   if (name === 'class' && Array.isArray(value)) value = value.filter(Boolean).join(' ');
   if (value === true) value = '';
@@ -187,7 +196,7 @@ export function renderOverview(ov) {
         el('b', {}, '사람이 볼 것 ' + pending + '건'),
         first ? ' · ' + first.text : null,
       ]),
-      el('a', { href: '#/approvals' }, '승인 보기 →'),
+      el('a', { href: '#/approvals', 'data-focus-key': 'todo-approvals' }, '승인 보기 →'),
     ])
     : null;
 
@@ -295,6 +304,7 @@ export function poll(fn, ms, opts) {
     } finally {
       inFlight = false;
     }
+    if (stopped) return; // a late result of a left view must not touch the UI
     notify();
     schedule(interval());
   }

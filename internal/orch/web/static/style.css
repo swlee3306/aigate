@@ -123,3 +123,18 @@ button.pill { color: var(--muted); cursor: pointer; }
   *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; }
 }
 @media (pointer: coarse) { a.stg, button.pill, .todo a { display: inline-flex; align-items: center; min-height: 44px; min-width: 44px; } .logoutbtn, #logoutbtn { min-height: 44px; } }
+
+/* fix round 1 */
+.rail { overflow-y: auto; max-height: calc(100vh - 24px); overscroll-behavior: contain; }
+.banner.info { background: var(--raised); color: var(--text); }
+.banner.error { background: var(--red-bg); color: var(--red); }
+@media (max-width: 760px) {
+  /* stacked rail: the stage menu becomes one compact wrapped row, not a tall list */
+  .shell { align-content: start; min-height: 0; }
+  .rail { max-height: none; overflow: visible; }
+  .stagenav h2, .stg-next { display: none; }
+  .stg-list { display: flex; flex-wrap: wrap; gap: 4px 6px; }
+  .stg-list li { padding: 2px 4px; }
+  .stg { gap: 6px; flex-wrap: nowrap; }
+  .brand { padding-bottom: 8px; }
+}

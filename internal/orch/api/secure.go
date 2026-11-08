@@ -3,8 +3,10 @@ package api
 // HTTP listener security (design 7 and 9, Task 21).
 //
 // The loopback HTTP listener is reached only through `tailscale serve`, which
-// terminates TLS and forwards to 127.0.0.1. It serves the same handler as the
-// unix socket, wrapped in this chain (outermost first):
+// terminates TLS and forwards to 127.0.0.1. Paths under /api go to the same
+// handler as the unix socket; every other path is the embedded web console
+// (splitWeb in daemon.go, never served on the socket). Both are wrapped in
+// this chain (outermost first):
 //
 //	secureHeaders -> hostCheck -> noCORS -> originCheck -> limitBody -> jsonOnly -> rateLimit -> handler
 //

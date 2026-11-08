@@ -20,7 +20,8 @@
 
 import { get, post, session, logout, onSessionExpired, setCsrf, ApiError } from './api.js';
 import { el, clear, poll, formatLive, renderStageMenu, renderOverview } from './render.js';
-import { registerView, getView, parseRoute, navItem } from './router.js';
+import { registerView, getView, parseRoute, navItem, shouldRoute } from './router.js';
+import { bindSkipLink, showNotice, replaceContent, renderBootFailure } from './shell.js';
 
 export { registerView };
 
@@ -32,7 +33,6 @@ const $ = (id) => document.getElementById(id);
 
 const state = {
   session: null,
-  stages: null,
   pending: 0,
   cleanups: [],
   ctl: null,
@@ -40,10 +40,8 @@ const state = {
   seq: 0,
 };
 
-function banner(msg) {
-  const b = $('banner');
-  b.textContent = msg || '';
-  b.hidden = !msg;
+function banner(msg, kind) {
+  showNotice($('banner'), kind || 'error', msg);
 }
 
 function errText(err) {
@@ -137,7 +135,7 @@ async function show() {
   leave();
   const main = clear($('main'));
   banner('');
-  let route = parseRoute(location.hash);
+  let route = parseRoute(location.hash) || { name: 'overview', params: [] };
   const authed = state.session !== null;
   if (!authed) route = { name: 'login', params: [] };
   setNav(route.name);
@@ -187,7 +185,7 @@ registerView('overview', (ctx) => {
       last = key;
       state.pending = Number.isFinite(ov && ov.pending_approvals) ? ov.pending_approvals : 0;
       paintMenu(stages, state.pending);
-      clear(ctx.root).append(renderOverview(ov));
+      replaceContent(ctx.root, renderOverview(ov));
     } catch (err) {
       if (!ctx.signal.aborted && !(err instanceof ApiError && err.status === 401)) banner(errText(err));
       throw err; // poll backs off
@@ -204,13 +202,12 @@ async function enter(sess) {
   await show();
 }
 
-function showLogin(msg) {
+function showLogin(msg, kind) {
   state.session = null;
   setCsrf(null);
-  state.stages = null;
   clear($('stagenav'));
   setAuthUI(false);
-  show().then(() => { if (msg) banner(msg); });
+  show().then(() => { if (msg) banner(msg, kind); });
 }
 
 async function boot() {
@@ -221,22 +218,31 @@ async function boot() {
   });
   $('logoutbtn').addEventListener('click', async () => {
     try { await logout(); } catch { /* shown as a logged-out screen anyway */ }
-    showLogin('로그아웃했습니다.');
+    showLogin('로그아웃했습니다.', 'info');
   });
   onSessionExpired(() => showLogin('세션이 만료되었습니다. 다시 로그인하세요.'));
-  window.addEventListener('hashchange', () => { show(); });
+  window.addEventListener('hashchange', () => { if (shouldRoute(location.hash)) show(); });
+  bindSkipLink(document.querySelector('.skip'), $('main'));
 
   for (const name of VIEW_MODULES) {
     try { await import('./views/' + name + '.js'); } catch { /* optional view not shipped */ }
   }
 
+  await probe();
+}
+
+// probe asks who is logged in, once per call (boot and each retry click).
+// Only a 401 (session() returns null) means the login screen; any other
+// failure shows the connection-failure pane with a retry button.
+async function probe() {
   let sess = null;
   try {
     sess = await session(); // the only auth probe: never polled
-  } catch (err) {
+  } catch {
+    leave();
     setAuthUI(false);
-    await show();
-    banner(errText(err));
+    banner('');
+    replaceContent($('main'), renderBootFailure(probe));
     return;
   }
   if (sess) await enter(sess);

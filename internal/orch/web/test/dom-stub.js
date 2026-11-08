@@ -44,6 +44,11 @@ export class Element extends Node {
   hasAttribute(k) { return this.attrs.has(k); }
   removeAttribute(k) { this.attrs.delete(k); }
   addEventListener(ev, fn) { (this.listeners[ev] ||= []).push(fn); }
+  contains(n) {
+    for (let x = n; x; x = x.parentNode) if (x === this) return true;
+    return false;
+  }
+  focus() { globalThis.document.activeElement = this; }
   get className() { return this.getAttribute('class') || ''; }
   get textContent() { return this.childNodes.map((c) => c.textContent).join(''); }
 }
@@ -52,6 +57,7 @@ export class Document extends EventTarget {
   constructor() {
     super();
     this.visibilityState = 'visible';
+    this.activeElement = null;
   }
   createElement(tag) { return new Element(tag); }
   createTextNode(s) { return new Text(s); }

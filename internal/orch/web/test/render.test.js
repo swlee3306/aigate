@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { installDocument, byClass, findAll, allElements } from './dom-stub.js';
 
 const doc = installDocument();
-const { el, renderStageMenu, renderOverview, poll, formatSeconds, formatLive } = await import('../static/render.js');
+const { el, ID_RE, SAFE_TOKEN_RE, renderStageMenu, renderOverview, poll, formatSeconds, formatLive } = await import('../static/render.js');
 
 const HOSTILE = [
   '<img src=x onerror=alert(1)>',
@@ -242,4 +242,39 @@ test('poll backs off after errors and recovers', async (t) => {
   mock.timers.tick(1000);
   assert.equal(e.calls, 4, 'back to the normal interval');
   p.stop();
+});
+
+test('el allowlist is strict for id/for/name and href routes', () => {
+  assert.ok(ID_RE.test('38') && !ID_RE.test('3a') && !ID_RE.test('') && !ID_RE.test('1'.repeat(19)));
+  assert.ok(SAFE_TOKEN_RE.test('h-overview_1') && !SAFE_TOKEN_RE.test('a b') && !SAFE_TOKEN_RE.test('a.b'));
+  for (const bad of ['a b', 'x"y', '', 'a.b', '..', 'x'.repeat(65), '<b>', 5, null]) {
+    if (bad === null) continue; // null means "unset"
+    assert.throws(() => el('div', { id: bad }), /SAFE_TOKEN/, JSON.stringify(bad));
+  }
+  assert.throws(() => el('label', { for: 'a b' }), /SAFE_TOKEN/);
+  assert.throws(() => el('input', { name: 'a.b' }), /SAFE_TOKEN/);
+  assert.equal(el('div', { id: 'h-overview' }).getAttribute('id'), 'h-overview');
+  for (const bad of ['#/diff/38/a.go', '#/tasks/../x', '#/tasks/', '#//x', '#/', '#', '#/a?b=1', '#/a/./b', '#/a%2Fb', '#/ a']) {
+    assert.throws(() => el('a', { href: bad }), /href/, bad);
+  }
+  for (const ok of ['#/tasks', '#/tasks/38', '#/diff/38/file_1']) {
+    assert.equal(el('a', { href: ok }).getAttribute('href'), ok);
+  }
+});
+
+test('poll: stop during an in-flight fetch means no notify and no further timers', async (t) => {
+  t.after(() => mock.timers.reset());
+  const e = pollEnv();
+  const seen = [];
+  const p = poll(e.fn, 1000, { onUpdate: (u) => seen.push(u.state) });
+  mock.timers.tick(0);
+  assert.equal(e.calls, 1);
+  p.stop();
+  const n = seen.length;
+  assert.equal(seen[n - 1], 'stopped');
+  e.gates[0].ok();
+  await flush();
+  assert.equal(seen.length, n, 'late result did not notify');
+  mock.timers.tick(120000);
+  assert.equal(e.calls, 1, 'no further fetch');
 });

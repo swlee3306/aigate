@@ -149,3 +149,12 @@ test('request timeout aborts the fetch', async () => {
   stub((path, init) => new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(new Error('aborted')))));
   await assert.rejects(api.request('GET', '/api/v1/stages', undefined, { timeoutMs: 10 }), (e) => e.code === 'timeout');
 });
+
+test('session(): 429 (after its one retry) and network errors are errors, not "logged out"', async () => {
+  stub(res(429, envelope('rate_limited'), { 'Retry-After': '1' }), res(429, envelope('rate_limited')));
+  await assert.rejects(api.session(), (e) => e.status === 429);
+  assert.equal(expired, 0);
+  stub(() => { throw new TypeError('down'); });
+  await assert.rejects(api.session(), (e) => e.code === 'network');
+  assert.equal(expired, 0);
+});
