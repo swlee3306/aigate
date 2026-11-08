@@ -25,7 +25,9 @@ table inet aigate {
     ip daddr { 10.70.0.12, 10.70.0.13 } tcp dport 22 accept
     ip daddr 8.8.8.8 udp dport 53 accept
     ip daddr 8.8.8.8 tcp dport 53 accept
-    oifname "tailscale0" accept
+    # GitLab over the tailnet: ssh (git push) and the web port only; the rest of the tailnet stays unreachable
+    oifname "tailscale0" ip daddr 100.64.0.10 tcp dport { 22, 18082 } accept
+    # tailscaled itself (control plane, DERP, peer traffic) is not routed through tailscale0
     # OpenStack API of the homeserver only (identity, compute, volume, image, network, placement), for test VM restore
     ip daddr 192.168.1.121 tcp dport { 5000, 8774, 8776, 9292, 9696, 8778 } accept
     udp dport { 3478, 41641 } ip daddr != @private4 accept
