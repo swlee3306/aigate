@@ -21,20 +21,20 @@ func stubServer(t *testing.T) string {
 	}
 	mux := http.NewServeMux()
 	const failedJSON = `{"id":%d,"repo":"/r","base":"b","prompt":"p","class":"c","agent":"claude","state":"failed","attempts":0,"retry_state":"verifying","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","error":"restore quota 413","retryable":true,"retries":1}`
-	mux.HandleFunc("GET /tasks", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/v1/tasks", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`[` + strings.Replace(failedJSON, "%d", "7", 1) + `,` +
 			`{"id":8,"repo":"/r","base":"b","prompt":"p","class":"c","agent":"claude","state":"failed","attempts":0,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}]`))
 	})
-	mux.HandleFunc("GET /tasks/7", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/v1/tasks/7", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(strings.Replace(failedJSON, "%d", "7", 1)))
 	})
-	mux.HandleFunc("POST /tasks/7/retry", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/v1/tasks/7/retry", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(strings.Replace(strings.Replace(failedJSON, "%d", "7", 1), `"state":"failed"`, `"state":"verifying"`, 1)))
 	})
-	mux.HandleFunc("POST /tasks/8/retry", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/v1/tasks/8/retry", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(409)
-		w.Write([]byte(`{"error":"판정·승인 거절 등으로 실패한 작업은 다시 시도할 수 없습니다"}`))
+		w.Write([]byte(`{"error":{"code":"conflict","message":"판정·승인 거절 등으로 실패한 작업은 다시 시도할 수 없습니다"}}`))
 	})
 	srv := &http.Server{Handler: mux}
 	go srv.Serve(l)

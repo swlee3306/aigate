@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -21,7 +20,7 @@ import (
 
 const defaultSocket = "/run/orchd/orchd.sock"
 
-const usage = `사용법: orch [--socket PATH] [--json] <명령>
+const usage = `사용법: orch [--socket PATH | --server URL [--token-file PATH]] [--json] <명령>
 
   submit --repo R --base B --prompt P --class C --agent claude|codex   작업 제출
   list                                                              작업 목록
@@ -35,49 +34,74 @@ const usage = `사용법: orch [--socket PATH] [--json] <명령>
 ` + policyUsage + `
 
 소켓: --socket 또는 ORCHD_SOCKET (기본 ` + defaultSocket + `)
+원격: --server https://주소 (소켓과 함께 쓸 수 없음), 토큰은 --token-file(기본 ~/.config/orch/token, 권한 0600)
 승인 기록 위치: --gate-home 또는 ORCH_GATE_HOME (orchd의 --gate-home과 같아야 함)`
 
 type client struct {
-	hc *http.Client
-}
-
-func newClient(sock string) *client {
-	return &client{hc: &http.Client{
-		Timeout: 30 * time.Second,
-		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", sock)
-		}},
-	}}
+	hc    *http.Client
+	base  string                 // scheme://host, no API prefix
+	token func() (string, error) // remote mode only
+	err   error                  // construction error, reported by call
 }
 
 // call returns the raw body; a non-2xx answer becomes an error with the
-// server's message.
+// server's message. Paths are relative to /api/v1.
 func (c *client) call(method, path string, body any) ([]byte, error) {
+	if c.err != nil {
+		return nil, c.err
+	}
 	var rd io.Reader
 	if body != nil {
 		b, _ := json.Marshal(body)
 		rd = bytes.NewReader(b)
 	}
-	req, _ := http.NewRequest(method, "http://orchd"+path, rd)
+	req, _ := http.NewRequest(method, c.base+apiPrefix+path, rd)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	if c.token != nil {
+		tok, err := c.token()
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
+		if c.token != nil {
+			return nil, fmt.Errorf("orchd 서버에 연결할 수 없습니다: %w", unwrapDial(err))
+		}
 		return nil, fmt.Errorf("orchd에 연결할 수 없습니다: %w", unwrapDial(err))
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if resp.StatusCode/100 != 2 {
-		var e struct {
-			Error string `json:"error"`
-		}
-		if json.Unmarshal(b, &e) == nil && e.Error != "" {
-			return nil, errors.New(e.Error)
+		if msg := errorMessage(b); msg != "" {
+			return nil, errors.New(msg)
 		}
 		return nil, fmt.Errorf("서버 오류 (HTTP %d)", resp.StatusCode)
 	}
 	return b, nil
+}
+
+// errorMessage reads the v1 envelope {"error":{"message"}}, falling back to the
+// legacy flat {"error":"msg"}; "" when the body is neither.
+func errorMessage(b []byte) string {
+	var env struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(b, &env) == nil && env.Error.Message != "" {
+		return env.Error.Message
+	}
+	var flat struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(b, &flat) == nil {
+		return flat.Error
+	}
+	return ""
 }
 
 func unwrapDial(err error) error {
@@ -92,6 +116,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("orch", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	sock := fs.String("socket", envOr("ORCHD_SOCKET", defaultSocket), "")
+	server := fs.String("server", "", "")
+	tokenFile := fs.String("token-file", "", "")
 	asJSON := fs.Bool("json", false, "")
 	gateHomeFlag := fs.String("gate-home", "", "")
 	if err := fs.Parse(args); err != nil || fs.NArg() == 0 {
@@ -103,7 +129,22 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if cmd == "propose" || cmd == "policy" {
 		return localCmd(cmd, rest, *asJSON, *gateHomeFlag, stdout, stderr)
 	}
-	c := newClient(*sock)
+	var c *client
+	if *server != "" {
+		socketGiven := false
+		fs.Visit(func(f *flag.Flag) { socketGiven = socketGiven || f.Name == "socket" })
+		if socketGiven {
+			fmt.Fprintln(stderr, "오류: --server와 --socket은 함께 쓸 수 없습니다")
+			return 2
+		}
+		tf := *tokenFile
+		if tf == "" {
+			tf = defaultTokenFile()
+		}
+		c = newRemoteClient(*server, tokenSource(tf))
+	} else {
+		c = newClient(*sock)
+	}
 
 	// --json is also accepted after the command.
 	sub := flag.NewFlagSet(cmd, flag.ContinueOnError)
