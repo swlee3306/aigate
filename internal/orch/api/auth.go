@@ -120,14 +120,10 @@ func (a *StoreAuthenticator) Session(ctx context.Context, raw string) (Principal
 	if !ok {
 		return Principal{}, nil, false
 	}
-	ttl := SessionIdleTTL
-	if left := s.CreatedAt.Add(SessionMaxLifetime).Sub(a.now()); left < ttl {
-		ttl = left
-	}
-	if ttl <= 0 {
-		return Principal{}, nil, false
-	}
-	if err := a.St.TouchSession(ctx, raw, ttl); err != nil {
+	// The store applies the cap with its own reading of now, so the stored
+	// expiry never passes CreatedAt+SessionMaxLifetime (lookup already
+	// refused a session at or past it).
+	if err := a.St.TouchSessionCapped(ctx, raw, SessionIdleTTL, s.CreatedAt.Add(SessionMaxLifetime)); err != nil {
 		return Principal{}, nil, false
 	}
 	return Principal{ID: s.Principal, Kind: KindSession}, &s, true
@@ -239,9 +235,8 @@ func (h *handler) authenticate(next http.Handler) http.Handler {
 			sess *store.Session
 			ok   bool
 		)
-		if authz := r.Header.Values("Authorization"); len(authz) > 0 {
-			scheme, tok, found := strings.Cut(authz[0], " ")
-			if len(authz) == 1 && found && strings.EqualFold(scheme, "Bearer") && tok != "" {
+		if len(r.Header.Values("Authorization")) > 0 {
+			if tok, found := bearerToken(r); found {
 				p, ok = h.auth.Bearer(r.Context(), tok)
 			}
 		} else if c, err := r.Cookie(SessionCookieName); err == nil {
@@ -253,6 +248,20 @@ func (h *handler) authenticate(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r.WithContext(withPrincipal(r.Context(), p, sess)))
 	})
+}
+
+// bearerToken returns the token of a single, well-formed
+// "Authorization: Bearer <token>" header (scheme case-insensitive).
+func bearerToken(r *http.Request) (string, bool) {
+	authz := r.Header.Values("Authorization")
+	if len(authz) != 1 {
+		return "", false
+	}
+	scheme, tok, found := strings.Cut(authz[0], " ")
+	if !found || !strings.EqualFold(scheme, "Bearer") || tok == "" {
+		return "", false
+	}
+	return tok, true
 }
 
 // requireWrite admits the write tier: a socket peer, a bearer token (design 7:

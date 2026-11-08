@@ -169,6 +169,11 @@ type handler struct {
 	pendingFile        string
 	pendingMu          sync.Mutex
 	enrollChallengeCap int
+	// Passkey login (webauthn_login.go): the cap on live login challenges and
+	// the per-process key behind the fake credential ids offered for
+	// non-signers.
+	webauthnLoginCap int
+	credKey          []byte
 }
 
 func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome string) (*handler, error) {
@@ -176,6 +181,8 @@ func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome 
 	h.loginChallengeCap = DefaultLoginChallengeCap
 	h.enrollChallengeCap = DefaultEnrollChallengeCap
 	h.pendingFile = DefaultPendingFile
+	h.webauthnLoginCap = DefaultWebAuthnLoginChallengeCap
+	h.credKey = newCredKey()
 	for _, r := range allowed {
 		if !filepath.IsAbs(r) || filepath.Clean(r) != r {
 			return nil, fmt.Errorf("allowed repo root %q must be an absolute clean path", r)
@@ -198,8 +205,9 @@ func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome 
 	h.mux = mux
 	h.root = http.NewServeMux()
 	// The only unauthenticated routes: healthz, the SSH challenge login
-	// (login_ssh.go) and the passkey registration ceremony, which needs a
-	// one-time enrollment code issued over the socket (webauthn_register.go).
+	// (login_ssh.go), the passkey registration ceremony, which needs a
+	// one-time enrollment code issued over the socket (webauthn_register.go),
+	// and the passkey login with its public signer list (webauthn_login.go).
 	// Everything else, other methods on these paths included, goes through
 	// authenticate.
 	h.root.HandleFunc("GET "+v1Prefix+"/healthz", healthz)
@@ -207,14 +215,18 @@ func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome 
 	h.root.HandleFunc("POST "+v1Prefix+"/auth/token", h.authToken)
 	h.root.HandleFunc("POST "+v1Prefix+"/auth/webauthn/register/begin", h.registerBegin)
 	h.root.HandleFunc("POST "+v1Prefix+"/auth/webauthn/register/finish", h.registerFinish)
+	h.root.HandleFunc("GET "+v1Prefix+"/auth/signers", h.authSigners)
+	h.root.HandleFunc("POST "+v1Prefix+"/auth/webauthn/login/begin", h.webauthnLoginBegin)
+	h.root.HandleFunc("POST "+v1Prefix+"/auth/webauthn/login/finish", h.webauthnLoginFinish)
 	h.root.Handle("/", h.authenticate(mux))
 	return h, nil
 }
 
 // ServeHTTP authenticates every request except GET /api/v1/healthz, the two
-// SSH login POSTs (/api/v1/auth/challenge, /api/v1/auth/token) and the two
-// passkey registration POSTs (/api/v1/auth/webauthn/register/*) before it
-// reaches a handler (see authenticate); mutating routes add requireWrite.
+// SSH login POSTs (/api/v1/auth/challenge, /api/v1/auth/token), the two
+// passkey registration POSTs (/api/v1/auth/webauthn/register/*), GET
+// /api/v1/auth/signers and the two passkey login POSTs
+// (/api/v1/auth/webauthn/login/*) before it reaches a handler (see authenticate); mutating routes add requireWrite.
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if isV1Path(r.URL.Path) {
 		v1Wrap(h.root).ServeHTTP(w, r)

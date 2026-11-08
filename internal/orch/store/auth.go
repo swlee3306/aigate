@@ -95,12 +95,28 @@ func (s *Store) GetSession(ctx context.Context, token string) (Session, error) {
 }
 
 // TouchSession sets last_seen to now and the expiry to now+ttl (sliding window).
-// An unknown or expired session is ErrNotFound. Absolute lifetime caps are the caller's job.
+// An unknown or expired session is ErrNotFound. Absolute lifetime caps are the
+// caller's job (TouchSessionCapped).
 func (s *Store) TouchSession(ctx context.Context, token string, ttl time.Duration) error {
+	return s.TouchSessionCapped(ctx, token, ttl, time.Time{})
+}
+
+// TouchSessionCapped is TouchSession with the new expiry never later than
+// notAfter (zero: no cap). The cap is applied with the store's own reading of
+// now, so the stored expiry can never pass it, whatever clock the caller used.
+// An unknown or expired session is ErrNotFound.
+func (s *Store) TouchSessionCapped(ctx context.Context, token string, ttl time.Duration, notAfter time.Time) error {
 	n := s.nowNanos()
+	exp := n + int64(ttl)
+	if !notAfter.IsZero() && notAfter.UTC().UnixNano() < exp {
+		exp = notAfter.UTC().UnixNano()
+	}
+	if exp <= n {
+		return ErrNotFound
+	}
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE sessions SET last_seen = ?, expires_at = ? WHERE id_hash = ? AND expires_at > ?`,
-		n, n+int64(ttl), HashSecret(token), n)
+		n, exp, HashSecret(token), n)
 	if err != nil {
 		return err
 	}
@@ -109,6 +125,38 @@ func (s *Store) TouchSession(ctx context.Context, token string, ttl time.Duratio
 	}
 	return nil
 }
+
+// RotateSessionCSRF replaces the live session's CSRF hash with the hash of the
+// raw csrf and returns the updated row. The old CSRF token stops matching at
+// once. An unknown or expired session is ErrNotFound. Only the CSRF changes
+// (not last_seen, the expiry or the creation time).
+func (s *Store) RotateSessionCSRF(ctx context.Context, token, csrf string) (Session, error) {
+	if token == "" || csrf == "" {
+		return Session{}, errors.New("store: csrf rotation needs a token and a csrf value")
+	}
+	var (
+		sess                  Session
+		created, seen, expiry int64
+	)
+	err := s.db.QueryRowContext(ctx,
+		`UPDATE sessions SET csrf_hash = ? WHERE id_hash = ? AND expires_at > ?
+		 RETURNING id_hash, principal, kind, csrf_hash, created_at, last_seen, expires_at`,
+		HashSecret(csrf), HashSecret(token), s.nowNanos()).
+		Scan(&sess.IDHash, &sess.Principal, &sess.Kind, &sess.CSRFHash, &created, &seen, &expiry)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Session{}, ErrNotFound
+	}
+	if err != nil {
+		return Session{}, err
+	}
+	sess.CreatedAt, sess.LastSeen, sess.ExpiresAt = ts(created), ts(seen), ts(expiry)
+	return sess, nil
+}
+
+// SetClock makes the auth tables (sessions, challenges, idempotency keys) use
+// now instead of time.Now; nil restores real time. It is a test seam: call it
+// before the store is shared between goroutines.
+func (s *Store) SetClock(now func() time.Time) { s.clock = now }
 
 // DeleteSession removes the session; an unknown token is not an error.
 func (s *Store) DeleteSession(ctx context.Context, token string) error {

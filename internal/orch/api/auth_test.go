@@ -438,6 +438,7 @@ func TestWriteTierCoversEveryMutatingRoute(t *testing.T) {
 	for _, p := range []string{
 		"/api/v1/tasks", "/api/v1/tasks/1/cancel", "/api/v1/tasks/1/retry",
 		"/api/v1/approvals/1/reverify", "/api/v1/approvals/1/grant", "/api/v1/admin/enroll",
+		"/api/v1/auth/logout",
 		"/tasks", "/tasks/1/cancel", "/tasks/1/retry", "/approvals/1/reverify",
 	} {
 		code, _, b := httpDo(t, srv, "POST", p, "{}", hdr{"Cookie": cookie(tok)})
@@ -503,12 +504,17 @@ func TestSessionExpiredOrOverLifetime401(t *testing.T) {
 		t.Fatalf("over-lifetime session not deleted: %v", err)
 	}
 
-	// Touching never extends past the cap: after a touch near the end the
-	// stored expiry is at most CreatedAt+SessionMaxLifetime.
+	// Touching never extends past the cap. One clock for the store and the
+	// authenticator (CF11): at +23h a touch without the cap would store
+	// +31h. TestSessionIdleAndAbsoluteExpiry covers the same end to end.
+	clk := &testClock{}
+	e.st.SetClock(clk.now)
+	defer e.st.SetClock(nil)
+	a.Now = clk.now
 	if _, err := e.st.CreateSession(ctx, "near", "c", "alice", KindSession, 100*time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	a.Now = func() time.Time { return time.Now().Add(SessionMaxLifetime - time.Hour) }
+	clk.set(SessionMaxLifetime - time.Hour)
 	if _, _, ok := a.Session(ctx, "near"); !ok {
 		t.Fatal("near-cap session refused")
 	}
@@ -516,9 +522,10 @@ func TestSessionExpiredOrOverLifetime401(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lim := s.CreatedAt.Add(SessionMaxLifetime); s.ExpiresAt.After(lim) {
-		t.Fatalf("expiry %v past cap %v", s.ExpiresAt, lim)
+	if lim := s.CreatedAt.Add(SessionMaxLifetime); s.ExpiresAt.After(lim) || s.ExpiresAt.Before(lim.Add(-time.Second)) {
+		t.Fatalf("expiry %v, want the cap %v", s.ExpiresAt, lim)
 	}
+	e.st.SetClock(nil)
 
 	// Bearer tokens have their own absolute cap.
 	if _, err := e.st.CreateSession(ctx, "tok", "", "alice", KindToken, 100*time.Hour); err != nil {

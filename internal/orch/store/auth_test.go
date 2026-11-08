@@ -413,3 +413,80 @@ func TestPurgeExpired(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRotateSessionCSRF(t *testing.T) {
+	s, c, _ := openClock(t)
+	ctx := context.Background()
+	made, err := s.CreateSession(ctx, "tok-r", "csrf-old", "alice", "session", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Advance(10 * time.Minute)
+	got, err := s.RotateSessionCSRF(ctx, "tok-r", "csrf-new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Only the CSRF hash changes; the returned row is the stored one.
+	if got.CSRFHash != HashSecret("csrf-new") || got.IDHash != HashSecret("tok-r") || got.Principal != "alice" ||
+		got.Kind != "session" || !got.CreatedAt.Equal(made.CreatedAt) || !got.ExpiresAt.Equal(made.ExpiresAt) {
+		t.Fatalf("rotated %+v (made %+v)", got, made)
+	}
+	stored, err := s.GetSession(ctx, "tok-r")
+	if err != nil || stored != got {
+		t.Fatalf("stored %+v %v, returned %+v", stored, err, got)
+	}
+	// Unknown and expired sessions are ErrNotFound and nothing is created.
+	if _, err := s.RotateSessionCSRF(ctx, "nope", "x"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown: %v", err)
+	}
+	c.Advance(time.Hour)
+	if _, err := s.RotateSessionCSRF(ctx, "tok-r", "csrf-late"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expired: %v", err)
+	}
+	if _, err := s.RotateSessionCSRF(ctx, "", "x"); err == nil {
+		t.Fatal("empty token accepted")
+	}
+}
+
+func TestSetClock(t *testing.T) {
+	s, _ := openTemp(t)
+	ctx := context.Background()
+	at := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	s.SetClock(func() time.Time { return at })
+	made, err := s.CreateSession(ctx, "t", "c", "p", "session", time.Hour)
+	if err != nil || !made.CreatedAt.Equal(at) {
+		t.Fatalf("%+v %v", made, err)
+	}
+}
+
+func TestTouchSessionCapped(t *testing.T) {
+	s, c, _ := openClock(t)
+	ctx := context.Background()
+	made, err := s.CreateSession(ctx, "tok-c", "c", "alice", "session", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	limit := made.CreatedAt.Add(90 * time.Minute)
+	c.Advance(30 * time.Minute)
+	if err := s.TouchSessionCapped(ctx, "tok-c", time.Hour, limit); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.GetSession(ctx, "tok-c")
+	if !got.ExpiresAt.Equal(limit) {
+		t.Fatalf("capped expiry %v, want %v", got.ExpiresAt, limit)
+	}
+	// Under the cap the plain sliding window applies.
+	if err := s.TouchSessionCapped(ctx, "tok-c", 10*time.Minute, limit); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetSession(ctx, "tok-c"); !got.ExpiresAt.Equal(c.Now().Add(10 * time.Minute)) {
+		t.Fatalf("uncapped expiry %v", got.ExpiresAt)
+	}
+	// A cap already passed refuses the touch and leaves the row alone.
+	if err := s.TouchSessionCapped(ctx, "tok-c", time.Hour, c.Now()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("passed cap: %v", err)
+	}
+	if got, _ := s.GetSession(ctx, "tok-c"); !got.ExpiresAt.Equal(c.Now().Add(10 * time.Minute)) {
+		t.Fatalf("row changed: %v", got.ExpiresAt)
+	}
+}

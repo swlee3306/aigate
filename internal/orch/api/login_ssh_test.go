@@ -531,6 +531,9 @@ func TestOnlyHealthzAndLoginRoutesOpen(t *testing.T) {
 		"POST /api/v1/auth/token":                    true,
 		"POST /api/v1/auth/webauthn/register/begin":  true,
 		"POST /api/v1/auth/webauthn/register/finish": true,
+		"GET /api/v1/auth/signers":                   true,
+		"POST /api/v1/auth/webauthn/login/begin":     true,
+		"POST /api/v1/auth/webauthn/login/finish":    true,
 	}
 	routes := []string{
 		"GET /api/v1/healthz", "POST /api/v1/auth/challenge", "POST /api/v1/auth/token",
@@ -548,6 +551,10 @@ func TestOnlyHealthzAndLoginRoutesOpen(t *testing.T) {
 		"GET /api/v1/auth/webauthn/register/begin", "PUT /api/v1/auth/webauthn/register/finish",
 		"POST /api/v1/auth/webauthn/register", "POST /api/v1/auth/webauthn/register/begin/",
 		"POST /api/v1/admin/enroll", "GET /api/v1/admin/enroll",
+		"GET /api/v1/auth/signers", "POST /api/v1/auth/signers", "GET /api/v1/auth/signers/x",
+		"POST /api/v1/auth/webauthn/login/finish", "GET /api/v1/auth/webauthn/login/begin",
+		"PUT /api/v1/auth/webauthn/login/finish", "POST /api/v1/auth/webauthn/login",
+		"POST /api/v1/auth/webauthn/login/begin/", "GET /api/v1/auth/logout",
 	}
 	for _, rt := range routes {
 		method, path, _ := strings.Cut(rt, " ")

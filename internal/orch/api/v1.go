@@ -36,6 +36,8 @@ func (h *handler) mountV1(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+v1Prefix+"/ops", h.opsView)
 	// Socket principals only (adminEnroll refuses sessions and tokens).
 	mux.HandleFunc("POST "+v1Prefix+"/admin/enroll", h.requireWrite(h.adminEnroll))
+	mux.HandleFunc("GET "+v1Prefix+"/auth/session", h.authSession)
+	mux.HandleFunc("POST "+v1Prefix+"/auth/logout", h.requireWrite(h.authLogout))
 }
 
 // v1Wrap serves next with errors rewritten into the v1 envelope.
