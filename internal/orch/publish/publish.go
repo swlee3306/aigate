@@ -107,7 +107,11 @@ type Config struct {
 	// Remote is where push_branch pushes: an absolute local path or an
 	// https:// URL without credentials.
 	Remote string
-	GitLab GitLab
+	// RepoRemotes overrides Remote for tasks of a given repository (absolute
+	// repo path -> remote, same forms as Remote). A repository without an
+	// entry pushes to Remote.
+	RepoRemotes map[string]string
+	GitLab      GitLab
 	// TokenFile is the 0600 file holding the GitLab write token. Required
 	// for an https remote and for draft_pr.
 	TokenFile string
@@ -151,6 +155,17 @@ func New(cfg Config) (*Publisher, error) {
 		}
 		p.plan = append(p.plan, KindPushBranch)
 	}
+	for repo, r := range cfg.RepoRemotes {
+		if cfg.Remote == "" {
+			return nil, errors.New("publish: a per-repository remote needs a default remote too")
+		}
+		if !filepath.IsAbs(repo) || filepath.Clean(repo) != repo {
+			return nil, fmt.Errorf("publish: repository %q must be an absolute clean path", repo)
+		}
+		if err := checkRemote(r); err != nil {
+			return nil, err
+		}
+	}
 	if cfg.GitLab.BaseURL != "" {
 		if err := checkAPIBase(cfg.GitLab.BaseURL); err != nil {
 			return nil, err
@@ -169,7 +184,18 @@ func New(cfg Config) (*Publisher, error) {
 	if len(p.plan) == 0 {
 		return nil, errors.New("publish: nothing configured (need a remote, GitLab or a notifier)")
 	}
-	needToken := cfg.GitLab.BaseURL != "" || strings.HasPrefix(cfg.Remote, "https://")
+	anyRemote := func(prefix string) bool {
+		if strings.HasPrefix(cfg.Remote, prefix) {
+			return true
+		}
+		for _, r := range cfg.RepoRemotes {
+			if strings.HasPrefix(r, prefix) {
+				return true
+			}
+		}
+		return false
+	}
+	needToken := cfg.GitLab.BaseURL != "" || anyRemote("https://")
 	if needToken && cfg.TokenFile == "" {
 		return nil, errors.New("publish: a token file is required for GitLab and https remotes")
 	}
@@ -178,7 +204,7 @@ func New(cfg Config) (*Publisher, error) {
 			return nil, err
 		}
 	}
-	if strings.HasPrefix(cfg.Remote, "ssh://") {
+	if anyRemote("ssh://") {
 		if err := checkSSHFiles(cfg.SSHKeyFile, cfg.SSHKnownHosts); err != nil {
 			return nil, err
 		}
@@ -254,10 +280,18 @@ func (p *Publisher) check(a Action) error {
 	return nil
 }
 
-func (p *Publisher) target(kind string) string {
+// remoteFor is the remote a task of repo pushes to.
+func (p *Publisher) remoteFor(repo string) string {
+	if r, ok := p.cfg.RepoRemotes[repo]; ok {
+		return r
+	}
+	return p.cfg.Remote
+}
+
+func (p *Publisher) target(kind, repo string) string {
 	switch kind {
 	case KindPushBranch:
-		return p.cfg.Remote
+		return p.remoteFor(repo)
 	case KindDraftPR:
 		g := p.cfg.GitLab
 		return strings.TrimRight(g.BaseURL, "/") + " project=" + g.Project + " target=" + g.TargetBranch
@@ -275,7 +309,7 @@ func (p *Publisher) Do(ctx context.Context, a Action) error {
 	}
 	if p.cfg.Ledger != nil {
 		err := p.cfg.Ledger.Record("publish_action", map[string]any{"kind": a.Kind, "task": int(a.Task),
-			"head": a.Head, "target": p.target(a.Kind), "policy_hash": a.PolicyHash})
+			"head": a.Head, "target": p.target(a.Kind, a.Repo), "policy_hash": a.PolicyHash})
 		if err != nil {
 			return fmt.Errorf("publish: cannot record the action in the ledger, not running it: %w", err)
 		}
@@ -450,11 +484,12 @@ func (p *Publisher) push(ctx context.Context, a Action) error {
 		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0",
 		"GIT_ALLOW_PROTOCOL=file:https:ssh",
 	}
-	if strings.HasPrefix(p.cfg.Remote, "ssh://") {
+	remote := p.remoteFor(a.Repo)
+	if strings.HasPrefix(remote, "ssh://") {
 		env = append(env, "GIT_SSH_COMMAND="+sshCommand(p.cfg.SSHKeyFile, p.cfg.SSHKnownHosts))
 	}
 	token := ""
-	if strings.HasPrefix(p.cfg.Remote, "https://") {
+	if strings.HasPrefix(remote, "https://") {
 		if token, err = ReadToken(p.cfg.TokenFile); err != nil {
 			return err
 		}
@@ -470,7 +505,7 @@ func (p *Publisher) push(ctx context.Context, a Action) error {
 	cmd := exec.CommandContext(ctx, p.cfg.Git, "-C", a.Repo,
 		"-c", "core.hooksPath=/dev/null", "-c", "credential.helper=", "-c", "http.followRedirects=false",
 		"-c", "protocol.ext.allow=never", "-c", "push.default=nothing",
-		"push", "--no-verify", "--no-recurse-submodules", "--porcelain", "--", p.cfg.Remote, refspec)
+		"push", "--no-verify", "--no-recurse-submodules", "--porcelain", "--", remote, refspec)
 	cmd.Env = env
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out

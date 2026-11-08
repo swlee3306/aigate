@@ -42,6 +42,7 @@ type vmFlags struct {
 	// live is the policy in force (nil without --policy); limits come from it.
 	live                                                                       *policy.Live
 	PublishAllow, GitRemote, GitLabURL, GitLabProject, GitLabTarget, TokenFile string
+	GitRemoteFor                                                               stringList
 	GitSSHKey, GitSSHKnownHosts                                                string
 }
 
@@ -73,6 +74,7 @@ func (v *vmFlags) register(fs *flag.FlagSet) {
 	sf(&v.GitLabURL, "gitlab-url", "", "GitLab base URL for draft merge requests")
 	sf(&v.GitLabProject, "gitlab-project", "", "GitLab project id or path")
 	sf(&v.GitLabTarget, "gitlab-target", "main", "target branch of the draft merge request")
+	fs.Var(&v.GitRemoteFor, "git-remote-for", "REPO=REMOTE: push tasks of the repository REPO (absolute path) to REMOTE instead of --git-remote (repeatable)")
 	sf(&v.GitSSHKey, "git-ssh-key", "", "0600 deploy key used for an ssh:// --git-remote")
 	sf(&v.GitSSHKnownHosts, "git-ssh-known-hosts", "", "known_hosts file pinning the ssh:// git server")
 	sf(&v.TokenFile, "gitlab-token-file", "", "0600 file holding the GitLab write token (never printed)")
@@ -125,7 +127,7 @@ func (v *vmFlags) validate() error {
 
 // publishConfigured reports whether any publishing flag is set.
 func (v *vmFlags) publishConfigured() bool {
-	for _, x := range []string{v.GitRemote, v.GitLabURL, v.TokenFile, v.PublishAllow, v.GitSSHKey, v.GitSSHKnownHosts} {
+	for _, x := range []string{v.GitRemote, strings.Join(v.GitRemoteFor, ""), v.GitLabURL, v.TokenFile, v.PublishAllow, v.GitSSHKey, v.GitSSHKnownHosts} {
 		if x != "" {
 			return true
 		}
@@ -196,7 +198,18 @@ func (v *vmFlags) provider(st *store.Store, dbPath string) (api.StepProvider, er
 		cfg.Publisher = steps.LocalOnlyPublisher{}
 	}
 	if v.publishConfigured() {
-		pcfg := publish.Config{Remote: v.GitRemote, TokenFile: v.TokenFile, SSHKeyFile: v.GitSSHKey, SSHKnownHosts: v.GitSSHKnownHosts,
+		repoRemotes := map[string]string{}
+		for _, kv := range v.GitRemoteFor {
+			repo, remote, ok := strings.Cut(kv, "=")
+			if !ok || repo == "" || remote == "" {
+				return nil, fmt.Errorf("--git-remote-for %q must be REPO=REMOTE", kv)
+			}
+			if _, dup := repoRemotes[repo]; dup {
+				return nil, fmt.Errorf("--git-remote-for repeats %s", repo)
+			}
+			repoRemotes[repo] = remote
+		}
+		pcfg := publish.Config{Remote: v.GitRemote, RepoRemotes: repoRemotes, TokenFile: v.TokenFile, SSHKeyFile: v.GitSSHKey, SSHKnownHosts: v.GitSSHKnownHosts,
 			Allow:  policy.NewAllowlist(splitList(v.PublishAllow)...),
 			GitLab: publish.GitLab{BaseURL: v.GitLabURL, Project: v.GitLabProject, TargetBranch: v.GitLabTarget},
 			Grants: approvals.Grants{Home: gateHome},
@@ -333,6 +346,9 @@ func (v *vmFlags) describe(db string, concurrency int) []string {
 	}
 	if v.GitRemote != "" {
 		l = append(l, "git remote (push_branch): "+v.GitRemote)
+	}
+	for _, kv := range v.GitRemoteFor {
+		l = append(l, "git remote override (push_branch): "+kv)
 	}
 	if v.GitLabURL != "" {
 		l = append(l, fmt.Sprintf("GitLab draft MR: %s project %s target %s (token file set: %t)",
