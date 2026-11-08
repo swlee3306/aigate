@@ -141,11 +141,16 @@ func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome 
 	mux.HandleFunc("GET /approvals", h.approvals)
 	mux.HandleFunc("GET /approvals/{id}", h.approvalGet)
 	mux.HandleFunc("POST /approvals/{id}/reverify", h.reverify)
+	h.mountV1(mux)
 	h.mux = mux
 	return h, nil
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if isV1Path(r.URL.Path) {
+		v1Wrap(h.mux).ServeHTTP(w, r)
+		return
+	}
 	h.mux.ServeHTTP(&jsonErrors{ResponseWriter: w}, r)
 }
 
