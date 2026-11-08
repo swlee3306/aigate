@@ -1,6 +1,7 @@
 # orchd as deployed on orch-vm (layout under /home/orch). Install:
 #   sudo cp orchd-orchvm.service /etc/systemd/system/orchd.service && sudo systemctl daemon-reload && sudo systemctl enable --now orchd
 # --prune-restore-volumes: user-approved 2026-11-07 (Cinder's 300 GB quota counts snapshots + restore clones; see internal/orch/vm/prune.go for the guards).
+# Web console flags below are EXAMPLES (orch-vm.example.ts.net is a placeholder): finalize them in E2 with the real tailnet FQDN. See infra/README.md "웹 콘솔 배포 (W1)" for the order of operations.
 # Flags mirror the verified manual run. Change the snapshot name here when a newer clean snapshot is made.
 [Unit]
 Description=aigate orchestrator daemon (orchd) on orch-vm
@@ -25,7 +26,16 @@ ExecStart=/home/orch/bin/orchd \
   --git-remote /home/orch/repos/remote.git \
   --git-remote-for /home/orch/repos/sample-app=ssh://git@100.64.0.10/example-group/sample-collector.git \
   --git-ssh-key /home/orch/orchd/ssh/id_gitlab_deploy --git-ssh-known-hosts /home/orch/orchd/ssh/known_hosts_gitlab \
-  --gate-home /home/orch/orchd/gate-home --report-dir /home/orch/orchd/reports
+  --gate-home /home/orch/orchd/gate-home --report-dir /home/orch/orchd/reports \
+  --http-listen 127.0.0.1:8808 \
+  --allowed-host orch-vm.example.ts.net --origin https://orch-vm.example.ts.net --rp-id orch-vm.example.ts.net \
+  --signers-file /etc/aigate/signers.json \
+  --pending-file /home/orch/orchd/state/signers.pending.json \
+  --socket-uid 0
+# EXAMPLE values above. Notes:
+# - --signers-file: /etc/aigate/signers.json must stay root-owned 0644 (readable by User=orch, read-only under ProtectSystem=strict). While the file does not exist orchd stays in legacy (unsigned) mode; creating it = signed-only mode.
+# - --pending-file: the default is /var/lib/orchd/..., which this unit cannot write (ProtectSystem=strict); it lives under the already writable /home/orch/orchd instead.
+# - --socket-uid 0: operators run `sudo orch`; orchd always adds its own uid (orch) to the allowed list. Drop it if nobody uses sudo orch.
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=30

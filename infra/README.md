@@ -73,3 +73,30 @@ FIP가 어느 포트에도 안 붙은 채 남았다면 `floating ip list --netwo
 - `verify-firewall.sh`: connection attempts from each VM vs expectation; writes `firewall-report.md`; exit 1 on any difference.
 - `snapshot.sh create|restore|time|prune <vm>`: Cinder snapshot and restore (new volume from snapshot + new server; see report for why not `volume revert`).
 - Rollback of the rules: `sudo cp /etc/nftables.conf.pre-task2 /etc/nftables.conf && sudo nft -f /etc/nftables.conf` (via the admin key through orch-vm).
+
+## 웹 콘솔 배포 (W1)
+orchd의 HTTP 리스너(루프백)를 `tailscale serve`로 tailnet에 HTTPS(443)로 노출한다. 스크립트·유닛의 값은 **예시**이며 실제 값(FQDN, 포트)은 E2에서 확정한다. 아래 절차는 아직 실제 서버에 적용·검증하지 않았다(**미검증**).
+
+파일: `orch-web-serve.sh PORT [--apply] [--off]`(기본 드라이런, 계획만 출력), `signers-init.sh [--apply]`(기본 드라이런, `--apply`는 root만), `test-web-scripts.sh`(로컬 검사, 서버 미접촉), `nftables/orchestrator.nft`(tailscale0의 443 허용 추가), `systemd/orchd-orchvm.service`(새 플래그 예시).
+
+### 반드시 지킬 것
+- **Tailscale Funnel은 이 서비스에 절대 켜지 않는다.** Funnel은 공인 인터넷에 노출한다. 스크립트는 Funnel 명령을 쓰지 않고, `--apply`는 `tailscale serve status`에 Funnel이 켜져 있으면 중단한다.
+- **orch-vm에서 신뢰할 수 없는 로컬 프로세스를 실행하지 않는다.** 리스너는 루프백 전용이라, 로컬 프로세스는 `Tailscale-User-Login` 같은 헤더를 위조해 횟수 제한 키를 마음대로 바꿀 수 있다(전역 천장은 남지만 로컬 신뢰 경계가 깨진다). 신뢰할 수 없는 코드는 agent-vm/test-vm에서만 실행한다.
+- **`--allowed-host`는 브라우저 주소창에 보이는 tailnet FQDN**(`<노드>.<tailnet>.ts.net`)이어야 하고 `--origin`(`https://<FQDN>`, 포트 없음)·`--rp-id`(FQDN)와 일치해야 한다. 설계상 `tailscale serve`가 Host를 그대로 넘기고 클라이언트가 보낸 `Tailscale-User-*` 헤더를 지운다고 가정하지만, **실제 동작은 미확인**이다(X1에서 확인). Host가 다르게 오면 요청이 전부 421이 된다.
+- **`--socket-uid`**: 소켓에 접근할 추가 uid(반복 가능). orchd 자신의 uid는 항상 포함된다(대체가 아니라 추가). `sudo orch`로 운영하려면 `0`을 추가한다(유닛 예시는 `--socket-uid 0`). `sudo orch admin signers ... --pending`을 쓸 때는 `--pending-file`도 유닛과 같은 경로로 지정한다(CLI 기본값은 `/var/lib/orchd/signers.pending.json`이고 유닛은 쓰기 가능한 `/home/orch/orchd/state` 아래를 쓴다).
+
+### 적용 순서 (사용자 본인의 작업·승인 필요 표시)
+1. **[사용자 승인]** orch-vm에서 `sudo sh infra/signers-init.sh`(계획 확인) → `sudo sh infra/signers-init.sh --apply`. `/etc/aigate`를 `root:root 0755`로 만들 뿐 `signers.json`은 **만들지 않는다**(만들면 서명 필수 모드가 켜진다).
+2. **[사용자 승인]** 새 플래그를 넣은 유닛 배포(FQDN 등 예시 값을 실제 값으로 바꾼 뒤): `sudo cp infra/systemd/orchd-orchvm.service /etc/systemd/system/orchd.service && sudo systemctl daemon-reload && sudo systemctl restart orchd`. `signers.json`이 없으므로 **레거시 모드로 계속 동작**한다. nft 갱신(443)은 `apply-firewall.sh`의 기존 절차(180초 자동 롤백)로 적용한다.
+3. **[사용자 승인]** `sh infra/orch-web-serve.sh 8808`(계획) → `sh infra/orch-web-serve.sh 8808 --apply`. 끝에 `tailscale serve status`를 출력한다.
+4. **[사용자 직접]** Tailscale 관리 콘솔에서 이 tailnet의 HTTPS 인증서를 켠다(MagicDNS와 HTTPS Certificates). 스크립트가 대신하지 않는다.
+5. **[사용자 직접, 컷오버]** 첫 키 등록: `sudo orch admin signers add --id <ID> --key ~/.ssh/id_ed25519.pub`. 이 명령이 `/etc/aigate/signers.json`을 만들며 **그 순간부터 서명된 승인만 유효한 모드**가 된다.
+6. 확인: `sudo orch admin signers list`, 시작 로그(`HTTP listener on ...`, `socket uids allowed`, `approvals: mode ...`), 브라우저에서 `https://<FQDN>/` 접속, `tailscale serve status`에 Funnel이 없는지.
+
+### 롤백
+- 서명 필수 모드 해제: `sudo rm /etc/aigate/signers.json`(레거시 모드로 복귀. orchd가 파일을 매 요청마다 읽는지, 재시작이 필요한지는 **미확인**이므로 필요하면 `sudo systemctl restart orchd`).
+- 웹 노출 끄기: `sh infra/orch-web-serve.sh 8808 --off --apply`(`tailscale serve --https=443 off`).
+- 유닛: 이전 유닛은 git 이력에 있다(`git show c444233:infra/systemd/orchd-orchvm.service`). `.bak` 파일은 만들지 않는다.
+
+### 검증
+`sh infra/test-web-scripts.sh`(드라이런 출력, 잘못된 포트·비root `--apply` 거부, funnel 명령 부재). `nft -c -f`는 nft가 있는 호스트(홈서버 등)에서 따로 실행해야 한다.
