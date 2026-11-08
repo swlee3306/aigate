@@ -19,6 +19,16 @@
 | R5 | 프로젝트는 W1에서 테이블 없이 **작업의 repo별 집계**로 보여 줌(생성은 W3) | 설계서 범위(읽기만) | W3에서 테이블 추가 |
 | R6 | 배포는 `orchd`·`orch`·`aigate` 세 바이너리를 **같이** 한다 | 옛 게이트는 서명 없는 항목도 통과시킨다(서명 필드를 모름) | 컷오버 순서로 해결(E2) |
 
+### 실행 전 점검에서 추가한 결정 (2026-11-09, 계획 충돌 해소)
+| # | 결정 | 이유 |
+|---|---|---|
+| R7 | 서명자 목록 경로와 로드 옵션은 **프로세스 전역**: `signing.RegistryPath()`, `signing.SetRegistryPath(string)`, `var signing.DefaultOptions RegistryOptions`. `approval.Store`는 `Store{Path}` 그대로이고 `SignersPath` 필드가 없다. `api.Config`에 `Signers`·`SignersPath`를 두지 않는다 | `Store{Path}`를 만드는 호출자 6곳(게이트, 게시, 승인 확인 등)이 `--signers-file`을 모르면 데몬과 게이트가 다른 모드가 된다 |
+| R8 | WebAuthn 서명자는 목록 항목에 `RPID`, `Origin`을 함께 고정한다. `VerifyOptions`에는 RPID/Origin이 없다. `signers add --pending`은 대기 자격의 값(`Config.RPID/Origin`으로 등록 시 기록)을 복사한다 | 승인 파일을 읽는 게이트에는 서버 설정이 없다. 목록(root 소유)이 신뢰의 뿌리다 |
+| R9 | CLI 서명 이음새는 `var signCmd func(keyPath, namespace string, message []byte) (string, error)` | 로그인(`aigate-login`)과 승인(`aigate-approval`)이 같은 이음새를 쓴다 |
+| R10 | 소켓 상대 uid는 빌드 태그 파일로 읽는다: Linux는 `syscall.GetsockoptUcred`, macOS는 `golang.org/x/sys/unix.GetsockoptXucred`. `x/sys`는 이미 `go.mod`에 있어 새 모듈이 아니다 | 개발은 Mac, 운영은 Linux |
+| R11 | B7의 승인 상세 응답에 `truncated bool`(hashed_text가 잘렸는지)을 포함한다 | B8의 `TestApproveRefusesTruncatedDiff`가 필요로 함 |
+| R12 | B7에 `TestKindConstantsMatchStore`(signing의 종류 상수 == `store.Kind*`)를 추가한다 | 두 패키지가 같은 문자열을 따로 정의함 |
+
 ## 전역 제약 (모든 작업에 적용)
 
 - API 경로는 모두 `/api/v1` 아래. 오류는 `{"error":{"code","message"}}`. 사용자에게 보이는 메시지는 한국어.
@@ -123,7 +133,7 @@
 
 ### Task B2: 서명자 목록
 **Files:** Create `internal/approval/signing/registry.go`, `registry_test.go`
-**Interfaces:** Produces `type Signer struct{ID, Type, Label, PublicKey, CredentialID string; AddedAt time.Time}`(Type: `ssh-ed25519`, `webauthn-es256`), `type Registry struct{Signers []Signer}`, `type RegistryOptions struct{OwnerOK func(uid uint32) bool}`, `const DefaultRegistryPath = "/etc/aigate/signers.json"`, `func LoadRegistry(path string, o RegistryOptions) (Registry, error)`, `func (r Registry) Find(id string) (Signer, bool)`, `var ErrRegistryAbsent`.
+**Interfaces:** Produces `type Signer struct{ID, Type, Label, PublicKey, CredentialID, RPID, Origin string; AddedAt time.Time}`(Type: `ssh-ed25519`, `webauthn-es256`; 웹 서명자는 `CredentialID`, `RPID`, `Origin` 필수, R8), `func RegistryPath() string`, `func SetRegistryPath(path string)`, `var DefaultOptions RegistryOptions`(R7), `type Registry struct{Signers []Signer}`, `type RegistryOptions struct{OwnerOK func(uid uint32) bool}`, `const DefaultRegistryPath = "/etc/aigate/signers.json"`, `func LoadRegistry(path string, o RegistryOptions) (Registry, error)`, `func (r Registry) Find(id string) (Signer, bool)`, `var ErrRegistryAbsent`.
 - [ ] **시험:** `TestAbsentIsErrRegistryAbsent`, `TestLoadOK`, `TestRefusesGroupOrWorldWritableFile`, `TestRefusesSymlink`, `TestRefusesNonRootOwnerFile`(`OwnerOK` 기본은 uid 0), `TestRefusesWritableParentDir`(상위 폴더가 그룹·기타 쓰기 가능), `TestRefusesNonRootOwnedParentDir`, `TestRejectsDuplicateIDsAndUnknownType`, `TestRejectsBadPublicKey`
 - [ ] 구현: `os.Lstat`으로 파일과 `filepath.Dir`을 검사. 시험에서는 `OwnerOK`를 현재 uid 허용으로 바꿔 쓴다. 공개 키는 `ssh.ParseAuthorizedKey`(ed25519만), 웹 키는 base64url 비압축 P-256 점(65바이트, 0x04 시작).
 - [ ] 통과, 커밋 `feat(signing): root-owned signers registry loader`
@@ -144,28 +154,28 @@
 
 ### Task B5: 통합 검증 `signing.Verify`
 **Files:** Create `internal/approval/signing/verify.go`, `verify_test.go`
-**Interfaces:** Produces `type Signature struct{Signer, Alg, Sig string; WebAuthn *WebAuthnData}`, `type WebAuthnData struct{AuthenticatorData, ClientDataJSON string}`(base64url), `type VerifyOptions struct{Now time.Time; MaxAge time.Duration; SkipFreshness bool; RPID, Origin string}`, `func Verify(reg Registry, msg Message, sig Signature, o VerifyOptions) error`. Consumes B1~B4.
+**Interfaces:** Produces `type Signature struct{Signer, Alg, Sig string; WebAuthn *WebAuthnData}`, `type WebAuthnData struct{AuthenticatorData, ClientDataJSON string}`(base64url), `type VerifyOptions struct{Now time.Time; MaxAge time.Duration; SkipFreshness bool}`(웹 서명의 RPID·Origin은 서명자 항목에서 읽는다, R8), `func Verify(reg Registry, msg Message, sig Signature, o VerifyOptions) error`. Consumes B1~B4.
 - [ ] **시험:** `TestVerifySSH`, `TestVerifyWebAuthn`(챌린지 = `msg.Digest()`), `TestUnknownSigner`, `TestAlgMismatchWithSignerType`, `TestIssuedTooOldAndTooNew`(±5분 경계), `TestSkipFreshnessIgnoresIssued`, `TestLoginSignatureNotAcceptedAsApproval`(네임스페이스·메시지 접두가 다른 서명 거부)
 - [ ] 구현: 서명자 조회 → 종류 확인 → 신선도(건너뛰기 옵션 없을 때) → 방식별 검증. 오류는 정해진 `ErrBadSignature`, `ErrUnknownSigner`, `ErrStale`.
 - [ ] 통과, 커밋 `feat(signing): unified signature verification`
 
 ### Task B6: 승인 파일 v2와 서명 필수 모드
 **Files:** Modify `internal/approval/approval.go`, `approval_test.go`; Test `internal/gate` 한 건
-**Interfaces:** Produces `Store{Path string; SignersPath string}`(빈 값은 `DefaultRegistryPath`), 항목에 `message, signer, alg, sig, webauthn` 필드(`omitempty`, 파일 version은 1 유지), `func (s Store) GrantSigned(msg signing.Message, sig signing.Signature, now time.Time, o signing.VerifyOptions) error`, `var ErrSignatureRequired`; 기존 `Grant`는 서명 필수 모드에서 `ErrSignatureRequired`. `Valid` 시그니처는 그대로다(호출자 6곳 변경 없음). Consumes B5.
-- [ ] **시험:** `TestLegacyModeUnchanged`(목록 파일 없음 → 기존 동작), `TestSignedModeRejectsUnsignedEntry`, `TestSignedModeAcceptsValidEntry`, `TestSignedModeRejectsTamperedHash`, `TestSignedModeRejectsTamperedBaseOrRepo`, `TestSignedModeRejectsEditedMessage`, `TestSignatureForItemANotValidForItemB`(검토 포인트 1), `TestLoosePermsRegistryFailsClosed`(검토 포인트 3: 목록이 있으나 권한이 틀리면 `Valid` false이고 `GrantSigned` 오류), `TestGrantRefusedInSignedMode`, `TestGrantSignedIdempotentAndConcurrent`(두 고루틴 동시 → 항목 1개, flock), `TestGateRunsHonorSignedMode`(`internal/gate`: 서명 없는 승인 파일 + 목록 파일 → `ApprovalHashValid` false)
+**Interfaces:** Produces `Store{Path string}`(변경 없음. 서명자 목록 경로는 `signing.RegistryPath()`, 옵션은 `signing.DefaultOptions`, R7), 항목에 `message, signer, alg, sig, webauthn` 필드(`omitempty`, 파일 version은 1 유지), `func (s Store) GrantSigned(msg signing.Message, sig signing.Signature, now time.Time, o signing.VerifyOptions) error`, `var ErrSignatureRequired`; 기존 `Grant`는 서명 필수 모드에서 `ErrSignatureRequired`. `Valid` 시그니처는 그대로다(호출자 6곳 변경 없음). Consumes B5.
+- [ ] **시험:** `TestLegacyModeUnchanged`(목록 파일 없음 → 기존 동작), `TestSignedModeRejectsUnsignedEntry`, `TestSignedModeAcceptsValidEntry`, `TestSignedModeRejectsTamperedHash`, `TestSignedModeRejectsTamperedBaseOrRepo`, `TestSignedModeRejectsEditedMessage`, `TestSignatureForItemANotValidForItemB`(검토 포인트 1), `TestLoosePermsRegistryFailsClosed`(시험은 `signing.SetRegistryPath`와 `t.Cleanup`으로 전역 복원)(검토 포인트 3: 목록이 있으나 권한이 틀리면 `Valid` false이고 `GrantSigned` 오류), `TestGrantRefusedInSignedMode`, `TestGrantSignedIdempotentAndConcurrent`(두 고루틴 동시 → 항목 1개, flock), `TestGateRunsHonorSignedMode`(`internal/gate`: 서명 없는 승인 파일 + 목록 파일 → `ApprovalHashValid` false)
 - [ ] 구현: `Valid`는 목록 파일이 있으면(없으면 `ErrRegistryAbsent` → 기존 경로) 항목의 `message`를 `ParseMessage`로 읽고 `(repo, base, hash)`가 인자와 같은지 확인한 뒤 `SkipFreshness: true`로 검증한다. 목록 로드 오류는 false. `GrantSigned`는 신선도를 강제하고 같은 flock 구간에서 쓴다.
 - [ ] `go test ./internal/approval/... ./internal/gate/... ./internal/orch/... -count=1 -race`, 커밋 `feat(approval): signed entries and signed-only mode`
 
 ### Task B7: 승인 상세의 서명 메시지와 `grant` 엔드포인트
-**Files:** Modify `internal/orch/api/v1.go`, `daemon.go`(`Config.Signers signing.RegistryOptions`, `SignersPath string`, `RPID, Origin string`), `api.go`; Create `internal/orch/api/grant.go`, `grant_test.go`
-**Interfaces:** Produces `GET /api/v1/approvals/{id}` 응답에 `message`, `digest`, `hashed_text`(보호 파일 항목, A4 재사용), `meaning`(한국어 "무엇을 허용하나요?"), `requires_signature bool`, `issued`; `POST /api/v1/approvals/{id}/grant` 본문 `{signer, alg, sig, issued, webauthn?}` → 서명 확인 → `GrantSigned` → 재판정 → 작업 뷰. 이력(ledger) `approval_granted`에 `signer`, `alg`, `via`(socket/session/token) 추가.
-- [ ] **시험(시험용 서명자 목록 + `ssh-keygen -Y sign`):** `TestGrantHappyPathSSH`(작업이 `passed`/다음 상태로 진행), `TestGrantWrongHashConflict409`, `TestGrantStaleIssued403`, `TestGrantUnknownSigner403`, `TestGrantNotPending409`, `TestGrantDestructiveBlockedRefused`, `TestGrantSignatureForOtherApprovalRefused`(검토 포인트 1), `TestGrantMessageRebuiltServerSide`(클라이언트가 보낸 `issued`로만 메시지를 다시 만든다, 본문의 다른 필드는 무시), `TestGrantLedgerRecordsSigner`, `TestDetailMessageMatchesGrantVerification`
+**Files:** Modify `internal/orch/api/v1.go`, `api.go`; Create `internal/orch/api/grant.go`, `grant_test.go`
+**Interfaces:** Produces `GET /api/v1/approvals/{id}` 응답에 `message`, `digest`, `hashed_text`(보호 파일 항목, A4 재사용), `truncated`(R11), `meaning`(한국어 "무엇을 허용하나요?"), `requires_signature bool`, `issued`; `POST /api/v1/approvals/{id}/grant` 본문 `{signer, alg, sig, issued, webauthn?}` → 서명 확인 → `GrantSigned` → 재판정 → 작업 뷰. 이력(ledger) `approval_granted`에 `signer`, `alg`, `via`(socket/session/token) 추가.
+- [ ] **시험(시험용 서명자 목록 + `ssh-keygen -Y sign`):** `TestGrantHappyPathSSH`(작업이 `passed`/다음 상태로 진행), `TestGrantWrongHashConflict409`, `TestGrantStaleIssued403`, `TestGrantUnknownSigner403`, `TestGrantNotPending409`, `TestGrantDestructiveBlockedRefused`, `TestGrantSignatureForOtherApprovalRefused`(검토 포인트 1), `TestGrantMessageRebuiltServerSide`(클라이언트가 보낸 `issued`로만 메시지를 다시 만든다, 본문의 다른 필드는 무시), `TestGrantLedgerRecordsSigner`, `TestDetailMessageMatchesGrantVerification`, `TestKindConstantsMatchStore`(R12)
 - [ ] 구현: 서버는 항목과 작업에서 `Message`를 다시 만든다(`Issued`만 클라이언트 값, 허용 오차 안). 서명 필수 모드가 아니면 `requires_signature=false`이고 `grant`는 400 `not_signed_mode`.
 - [ ] 통과 + `-race`, 커밋 `feat(api): signed approval grant endpoint`
 
 ### Task B8: CLI 서명 승인과 `orch admin signers`
 **Files:** Modify `cmd/orch/approve.go`, `cli.go`; Create `cmd/orch/admin.go`, `admin_test.go`, `approve_signed_test.go`
-**Interfaces:** Produces `orch approve ITEM [--sign-key PATH]`(서명 필수면 서명 흐름), `var signCmd func(keyPath string, message []byte) (armored string, err error)`(시험용 이음새, 기본은 `ssh-keygen -Y sign -n aigate-approval -f <키>`에 메시지를 표준 입력으로), `orch admin signers add|list|remove|pending`(`--signers-file`, 쓰기는 euid 0만), `var geteuid = os.Geteuid`.
+**Interfaces:** Produces `orch approve ITEM [--sign-key PATH]`(서명 필수면 서명 흐름), `var signCmd func(keyPath, namespace string, message []byte) (armored string, err error)`(R9. 시험용 이음새, 기본은 `ssh-keygen -Y sign -n <namespace> -f <키>`에 메시지를 표준 입력으로. 승인은 `aigate-approval`), `orch admin signers add|list|remove|pending`(`--signers-file`, 쓰기는 euid 0만), `var geteuid = os.Geteuid`.
 - [ ] **시험:** `TestApproveSignedFlow`(상세 → TTY 확인 → 서명 → `grant`), `TestApproveRefusesHashMismatch`(서버가 준 `hashed_text`의 `gitx.HashOf`가 `hash`와 다르면 서명하지 않고 이유 출력), `TestApproveRefusesTruncatedDiff`(`Truncated`면 서명 거부, 안내 출력), `TestApproveStillNeedsTTY`, `TestLegacyApproveUnchangedWhenNotSigned`, `TestSignersAddRequiresRoot`, `TestSignersAddWritesAtomicallyAndIdempotent`, `TestSignersListShowsFingerprints`, `TestSignersRemoveRequiresRoot`
 - [ ] 구현: 정책 변경 같은 `hashed_text`가 없는 항목은 서버가 계산한 `meaning`과 해시를 보여 주고 서명한다(해시 재계산은 diff가 있는 항목에만). `admin signers add`는 `ssh-ed25519` 공개 키 파일과 웹 대기 자격(`pending`) 둘 다 받는다. 목록은 임시 파일에 쓰고 `rename`.
 - [ ] 통과, 커밋 `feat(cli): signed approvals and admin signers`
@@ -182,7 +192,7 @@
 
 ### Task C2: 신원 주체, 티어 미들웨어, 소켓 uid
 **Files:** Create `internal/orch/api/auth.go`, `auth_test.go`; Modify `daemon.go`(`Config.SocketUIDs []uint32`, `ConnContext`)
-**Interfaces:** Produces `type Principal struct{ID, Kind string}`(Kind: `socket`, `session`, `token`), `func PrincipalFrom(ctx context.Context) (Principal, bool)`, 미들웨어 `authenticate(next)`(소켓: SO_PEERCRED uid가 허용 목록, HTTP: 베어러 토큰 또는 세션 쿠키), `requireWrite(next)`, `GET /api/v1/healthz`(무인증), `POST /tasks`의 `Idempotency-Key` 처리.
+**Interfaces:** Produces `type Principal struct{ID, Kind string}`(Kind: `socket`, `session`, `token`), `func PrincipalFrom(ctx context.Context) (Principal, bool)`, 미들웨어 `authenticate(next)`(소켓: 상대 uid가 허용 목록(R10: `peercred_linux.go`, `peercred_darwin.go` 빌드 태그 파일), HTTP: 베어러 토큰 또는 세션 쿠키), `requireWrite(next)`, `GET /api/v1/healthz`(무인증), `POST /tasks`의 `Idempotency-Key` 처리.
 - [ ] **시험:** `TestSocketPrincipalAllowedUID`, `TestSocketForeignUIDRefused`(`peerUID` 이음새), `TestHTTPNoCredentials401`, `TestHealthzOpen`, `TestIdempotentSubmitReturnsSameTask`, `TestIdempotencyKeyDifferentBodyConflict409`
 - [ ] 구현·통과·`-race`, 커밋 `feat(api): principals, write tier, socket uid allowlist, idempotency`
 
@@ -195,7 +205,7 @@
 
 ### Task C4a: 패스키 등록 (대기 자격)
 **Files:** Create `internal/orch/api/webauthn_register.go`, `webauthn_register_test.go`; Modify `cmd/orch/admin.go`(`orch admin enroll`), `v1.go`
-**Interfaces:** Produces `orch admin enroll`(소켓 전용, 일회용 코드 발급·출력, 10분), `POST /api/v1/auth/webauthn/register/begin {code}` → 등록 옵션(챌린지), `POST /api/v1/auth/webauthn/register/finish` → 대기 자격 저장(`orch admin signers pending`으로 조회, `signers add --pending <id>`로 root가 활성화).
+**Interfaces:** Produces `orch admin enroll`(소켓 전용, 일회용 코드 발급·출력, 10분), `POST /api/v1/auth/webauthn/register/begin {code}` → 등록 옵션(챌린지), `POST /api/v1/auth/webauthn/register/finish` → 대기 자격 저장(`orch admin signers pending`으로 조회, `signers add --pending <id>`로 root가 활성화). 대기 자격에는 등록 시점의 `Config.RPID`·`Origin`을 기록하고 활성화 때 서명자 항목에 복사한다(R8).
 - [ ] **시험:** `TestEnrollCodeSingleUseAndExpiry`, `TestRegisterBeginNeedsValidCode`, `TestRegisterFinishStoresPendingOnly`(목록 파일은 그대로, 로그인 불가), `TestRegisterRejectsWrongOriginOrRPID`, `TestPendingNotUsableForLoginOrApproval`
 - [ ] 구현·통과, 커밋 `feat(api): passkey enrollment into a pending list`
 
@@ -207,7 +217,7 @@
 
 ### Task C5: HTTP 리스너와 보안 미들웨어, orchd 플래그
 **Files:** Create `internal/orch/api/secure.go`, `secure_test.go`; Modify `daemon.go`(`Config.HTTPListen, AllowedHosts []string, SessionTTL`, 두 번째 `http.Server`), `cmd/orchd/main.go`
-**Interfaces:** Produces 미들웨어 `secureHeaders`, `hostCheck(allowed)`, `originCheck(origin)`, `limitBody`, `rateLimit`(인증 경로 분당 10회/주소), 플래그 `--http-listen`, `--allowed-host`(반복), `--origin`, `--rp-id`, `--signers-file`, `--session-ttl`. 루프백이 아닌 주소 바인딩은 거부.
+**Interfaces:** Produces 미들웨어 `secureHeaders`, `hostCheck(allowed)`, `originCheck(origin)`, `limitBody`, `rateLimit`(인증 경로 분당 10회/주소), 플래그 `--http-listen`, `--allowed-host`(반복), `--origin`, `--rp-id`, `--signers-file`(시작 시 `signing.SetRegistryPath`, R7), `--session-ttl`. 루프백이 아닌 주소 바인딩은 거부.
 - [ ] **시험:** `TestSecurityHeadersPresent`, `TestHostMismatchRefused`(검토 포인트 5), `TestCrossOriginPostRefused`, `TestBodyTooLarge413`, `TestRateLimit429`, `TestNonLoopbackBindRefused`, `TestShutdownClosesBothListeners`, `TestAPIResponsesNoStore`
 - [ ] 구현·통과·`-race`, 커밋 `feat(api): loopback http listener with security middleware`
 
