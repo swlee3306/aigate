@@ -103,7 +103,7 @@ func TestSessionExpiry(t *testing.T) {
 	}
 	// Touch slides the expiry.
 	c.Advance(50 * time.Minute)
-	if err := s.TouchSession(ctx, "tok-1", time.Hour); err != nil {
+	if err := s.TouchSessionCapped(ctx, "tok-1", time.Hour, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	c.Advance(30 * time.Minute) // 80 min after creation, past the original expiry
@@ -115,7 +115,7 @@ func TestSessionExpiry(t *testing.T) {
 	if _, err := s.GetSession(ctx, "tok-1"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expired session returned: %v", err)
 	}
-	if err := s.TouchSession(ctx, "tok-1", time.Hour); !errors.Is(err, ErrNotFound) {
+	if err := s.TouchSessionCapped(ctx, "tok-1", time.Hour, time.Time{}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("touch of expired session: %v", err)
 	}
 	// Delete is idempotent.

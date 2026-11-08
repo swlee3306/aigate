@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -60,7 +61,10 @@ func (h *handler) diff(w http.ResponseWriter, r *http.Request) {
 	}
 	p, err := gate.Prepare(gate.Options{Repo: t.Repo, Base: t.Base, Head: t.HeadSHA})
 	if err != nil {
-		writeErr(w, &httpError{code: http.StatusConflict, msg: "diff를 만들 수 없습니다: " + err.Error()})
+		// err carries the repo path and git's stderr: log it, never echo it
+		// to a read-tier caller.
+		log.Printf("orchd: diff of task %d: %v", id, err)
+		writeErr(w, apiErr(http.StatusConflict, "diff_unavailable", "diff를 만들 수 없습니다. 저장소 상태는 서버 로그에서 확인하세요"))
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)

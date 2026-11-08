@@ -94,15 +94,8 @@ func (s *Store) GetSession(ctx context.Context, token string) (Session, error) {
 	return sess, nil
 }
 
-// TouchSession sets last_seen to now and the expiry to now+ttl (sliding window).
-// An unknown or expired session is ErrNotFound. Absolute lifetime caps are the
-// caller's job (TouchSessionCapped).
-func (s *Store) TouchSession(ctx context.Context, token string, ttl time.Duration) error {
-	return s.TouchSessionCapped(ctx, token, ttl, time.Time{})
-}
-
-// TouchSessionCapped is TouchSession with the new expiry never later than
-// notAfter (zero: no cap). The cap is applied with the store's own reading of
+// TouchSessionCapped sets last_seen to now and slides the expiry to now+ttl,
+// never later than notAfter (zero: no cap). The cap is applied with the store's own reading of
 // now, so the stored expiry can never pass it, whatever clock the caller used.
 // An unknown or expired session is ErrNotFound.
 func (s *Store) TouchSessionCapped(ctx context.Context, token string, ttl time.Duration, notAfter time.Time) error {

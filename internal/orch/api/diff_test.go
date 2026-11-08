@@ -231,3 +231,24 @@ func TestDiffProtectedFilesIncludeNewGuarded(t *testing.T) {
 		})
 	}
 }
+
+// A task whose head cannot be diffed answers with a fixed message and a
+// stable code: the repo path and git's stderr stay in the server log.
+func TestDiffUnavailableDoesNotEchoDetail(t *testing.T) {
+	e := newEnv(t, noSteps{}, 1)
+	e.d.pauseWorkers()
+	id, err := e.st.CreateTask(t.Context(), store.Task{Repo: e.repo, Base: e.sha, Prompt: "p", Class: "docs", Agent: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.st.SetHeadSHA(t.Context(), id, strings.Repeat("e", 40)); err != nil {
+		t.Fatal(err)
+	}
+	code, b := e.do(t, "GET", "/api/v1/tasks/"+strconv.FormatInt(id, 10)+"/diff", "")
+	if code != http.StatusConflict || !strings.Contains(string(b), `"code":"diff_unavailable"`) {
+		t.Fatalf("code %d: %s", code, b)
+	}
+	if strings.Contains(string(b), e.repo) || strings.Contains(string(b), "git") || strings.Contains(string(b), "fatal") {
+		t.Fatalf("detail leaked: %s", b)
+	}
+}
