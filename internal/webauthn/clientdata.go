@@ -25,10 +25,13 @@ const maxClientDataJSON = 4 << 10
 // ("webauthn.create" or "webauthn.get"), its challenge is the unpadded
 // base64url encoding of challenge, its origin equals origin exactly,
 // crossOrigin is absent or false, and topOrigin is absent. Unknown keys are
-// ignored.
+// ignored. An empty expected origin is refused (ErrConfig).
 func CheckClientData(clientDataJSON []byte, wantType string, challenge []byte, origin string) error {
 	if len(clientDataJSON) > maxClientDataJSON {
 		return fmt.Errorf("%w: clientDataJSON over %d bytes", errTooLarge, maxClientDataJSON)
+	}
+	if origin == "" {
+		return ErrConfig
 	}
 	if len(challenge) == 0 {
 		return fmt.Errorf("%w: empty expected challenge", errChallenge)

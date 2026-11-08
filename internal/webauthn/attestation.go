@@ -25,6 +25,16 @@ var (
 	errRPID     = errors.New("webauthn: rpIdHash does not match the relying party ID")
 	errFlags    = errors.New("webauthn: authenticator flags not acceptable")
 	errCOSEKey  = errors.New("webauthn: credential public key is not an ES256 P-256 COSE key")
+
+	// ErrConfig: the expected relying party ID or origin is empty. An unset
+	// value is a misconfiguration and never matches (sha256("") is a valid
+	// rpIdHash an authenticator can be made to produce).
+	ErrConfig = errors.New("webauthn: empty expected relying party ID or origin")
+	// ErrRPID, ErrOrigin and ErrChallenge let callers map these refusals to
+	// fixed codes; the errors returned wrap them.
+	ErrRPID      = errRPID
+	ErrOrigin    = errOrigin
+	ErrChallenge = errChallenge
 )
 
 const (
@@ -42,10 +52,13 @@ const (
 // ParseAttestationNone parses a registration attestation object of format
 // "none" and returns the attested ES256 credential. The authenticator data
 // must be bound to rpID and carry the UP, UV and AT flags; extension data is
-// refused.
+// refused. An empty rpID is refused (ErrConfig).
 func ParseAttestationNone(attestationObject []byte, rpID string) (Credential, error) {
 	if len(attestationObject) > maxAttestationObject {
 		return Credential{}, fmt.Errorf("%w: attestation object over %d bytes", errTooLarge, maxAttestationObject)
+	}
+	if rpID == "" {
+		return Credential{}, ErrConfig
 	}
 	obj, err := decodeCBOR(attestationObject)
 	if err != nil {
@@ -75,6 +88,9 @@ func ParseAttestationNone(attestationObject []byte, rpID string) (Credential, er
 // checkAuthDataHeader verifies rpIdHash and the UP/UV flags and refuses
 // extension data. It returns the flags byte.
 func checkAuthDataHeader(authData []byte, rpID string) (byte, error) {
+	if rpID == "" {
+		return 0, ErrConfig
+	}
 	if len(authData) < authDataHeaderLen {
 		return 0, fmt.Errorf("%w: %d bytes", errAuthData, len(authData))
 	}

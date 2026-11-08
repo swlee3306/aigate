@@ -26,8 +26,11 @@ type AssertionInput struct {
 // and UV set; the client data must be a "webauthn.get" for Challenge and
 // Origin; and Signature must be a canonical DER ECDSA signature over
 // authenticatorData || SHA-256(clientDataJSON). Signature counters are not
-// checked.
+// checked. An empty RPID or Origin is refused (ErrConfig).
 func VerifyAssertion(in AssertionInput) error {
+	if in.RPID == "" || in.Origin == "" {
+		return ErrConfig
+	}
 	if in.PublicKey == nil || in.PublicKey.Curve != elliptic.P256() {
 		return fmt.Errorf("%w: public key must be P-256", errSignature)
 	}

@@ -601,3 +601,33 @@ func TestVerifyAssertionRejectsBadKey(t *testing.T) {
 	in.PublicKey = nil
 	wantErr(t, VerifyAssertion(in), errSignature)
 }
+
+// An empty relying party ID or origin is a misconfiguration, never a match:
+// an authenticator answering for rpId "" (sha256("")) and a client data
+// origin "" must not verify against an unset expected value.
+func TestEmptyRPIDOrOriginRefused(t *testing.T) {
+	a := newAuthn(t)
+	_, err := ParseAttestationNone(a.registration(""), "")
+	wantErr(t, err, ErrConfig)
+
+	in := a.assertion(t, "", fUP|fUV, cd(t, "webauthn.get", challenge(), testOrigin))
+	in.RPID = ""
+	wantErr(t, VerifyAssertion(in), ErrConfig)
+
+	in = a.assertion(t, testRPID, fUP|fUV, cd(t, "webauthn.get", challenge(), ""))
+	in.Origin = ""
+	wantErr(t, VerifyAssertion(in), ErrConfig)
+
+	err = CheckClientData(cd(t, "webauthn.create", challenge(), ""), "webauthn.create", challenge(), "")
+	wantErr(t, err, ErrConfig)
+}
+
+// The exported sentinels are the ones the checks return (callers map them
+// to fixed API codes).
+func TestExportedSentinels(t *testing.T) {
+	a := newAuthn(t)
+	wantErr(t, CheckClientData(cd(t, "webauthn.create", challenge(), "https://evil.example.test"), "webauthn.create", challenge(), testOrigin), ErrOrigin)
+	wantErr(t, CheckClientData(cd(t, "webauthn.create", []byte("x"), testOrigin), "webauthn.create", challenge(), testOrigin), ErrChallenge)
+	_, err := ParseAttestationNone(a.registration("evil.example.test"), testRPID)
+	wantErr(t, err, ErrRPID)
+}
