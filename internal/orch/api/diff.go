@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -70,10 +71,18 @@ func (h *handler) diff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	text, truncated := capUTF8(p.Diff.HashedText(), maxDiffBytes)
-	prot := p.Diff.Changed()
-	if prot == nil {
-		prot = []string{}
+	// Everything that needs approval: changed protected files and new guarded
+	// files (the latter only show up as trailing "A <path>" lines of the text,
+	// which truncation cuts first).
+	seen := map[string]bool{}
+	prot := []string{}
+	for _, f := range append(p.Diff.Changed(), p.AddedGuarded...) {
+		if !seen[f] {
+			seen[f] = true
+			prot = append(prot, f)
+		}
 	}
+	sort.Strings(prot)
 	writeJSON(w, http.StatusOK, DiffView{Hash: p.Diff.Hash, HashedText: text, Truncated: truncated,
 		ProtectedFiles: prot, Files: files})
 }

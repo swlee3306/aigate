@@ -190,3 +190,44 @@ func TestDiffNoTextconvNoExtDiff(t *testing.T) {
 		t.Errorf("files %+v", v.Files)
 	}
 }
+
+// A new guarded file (built-in guard) needs approval but is not in Changed();
+// it must still be listed, also when the trailing "A <path>" line is cut off.
+func TestDiffProtectedFilesIncludeNewGuarded(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		spec      string
+		truncated bool
+	}{
+		{"small", "line1\nCHANGED\n", false},
+		{"truncated", strings.Repeat("한", 120_000) + "\n", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t, noSteps{}, 1)
+			id, base, head := diffTask(t, e, func() {
+				putFile(t, e.repo, "tests/spec.txt", tc.spec)
+				putFile(t, e.repo, "pytest.ini", "[pytest]\n")
+			})
+			code, v, b := getDiff(t, e, id)
+			if code != http.StatusOK {
+				t.Fatalf("code %d: %.200s", code, b)
+			}
+			p, err := gate.Prepare(gate.Options{Repo: e.repo, Base: base, Head: head})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(p.AddedGuarded) == 0 {
+				t.Fatal("setup: no new guarded file")
+			}
+			if want := []string{"pytest.ini", "tests/spec.txt"}; !reflect.DeepEqual(v.ProtectedFiles, want) {
+				t.Errorf("protected %q, want %q", v.ProtectedFiles, want)
+			}
+			if v.Truncated != tc.truncated || v.Hash != gitx.HashOf(p.Diff.HashedText()) {
+				t.Errorf("truncated=%v hash=%q want full-text hash %q", v.Truncated, v.Hash, gitx.HashOf(p.Diff.HashedText()))
+			}
+			if tc.truncated && strings.Contains(v.HashedText, "A pytest.ini") {
+				t.Error("setup: the added-file line was not cut")
+			}
+		})
+	}
+}
