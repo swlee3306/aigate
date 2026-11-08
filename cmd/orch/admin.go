@@ -57,7 +57,7 @@ const adminUsage = `관리(로컬, 쓰기는 root만):
 
 // defaultPendingFile is where orchd records pending passkey enrollments (next
 // to its database, a directory orchd can write).
-const defaultPendingFile = "/var/lib/orchd/signers.pending.json"
+const defaultPendingFile = "/home/orch/orchd/state/signers.pending.json"
 
 // geteuid is a seam: tests cannot run as root.
 var geteuid = os.Geteuid
@@ -201,6 +201,7 @@ func cmdAdmin(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return fail("%v", err)
 		}
+		pendingMissingHint(*pendPath, stderr)
 		if len(ps) == 0 {
 			fmt.Fprintln(stdout, "대기 중인 패스키가 없습니다.")
 			return 0
@@ -245,6 +246,7 @@ func cmdAdmin(args []string, stdout, stderr io.Writer) int {
 			if err != nil {
 				return fail("%v", err)
 			}
+			pendingMissingHint(*pendPath, stderr)
 			var p *pendingCredential
 			for i := range ps {
 				if ps[i].ID == *pendingID {
@@ -609,6 +611,14 @@ func replaceKeepingOwner(path string, data []byte, old os.FileInfo) error {
 
 // readPending reads the (untrusted) pending-enrollment file. A missing file
 // is an empty list.
+// pendingMissingHint tells the operator when the pending file does not exist
+// (a wrong --pending-file looks the same as an empty list otherwise).
+func pendingMissingHint(path string, stderr io.Writer) {
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		fmt.Fprintf(stderr, "대기 파일이 없습니다: %s; --pending-file 로 경로를 지정할 수 있습니다\n", textsafe.Escape(path))
+	}
+}
+
 func readPending(path string) ([]pendingCredential, error) {
 	b, err := readSmall(path, 1<<20)
 	if errors.Is(err, os.ErrNotExist) {

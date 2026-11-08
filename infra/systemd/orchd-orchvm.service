@@ -34,7 +34,7 @@ ExecStart=/home/orch/bin/orchd \
   --socket-uid 0
 # EXAMPLE values above. Notes:
 # - --signers-file: /etc/aigate/signers.json must stay root-owned 0644 (readable by User=orch, read-only under ProtectSystem=strict). While the file does not exist orchd stays in legacy (unsigned) mode; creating it = signed-only mode.
-# - --pending-file: the default is /var/lib/orchd/..., which this unit cannot write (ProtectSystem=strict); it lives under the already writable /home/orch/orchd instead.
+# - --pending-file: same value as the compiled default of orchd and `orch admin signers`, written explicitly so it is visible; under the writable /home/orch/orchd (ProtectSystem=strict).
 # - --socket-uid 0: operators run `sudo orch`; orchd always adds its own uid (orch) to the allowed list. Drop it if nobody uses sudo orch.
 Restart=on-failure
 RestartSec=10

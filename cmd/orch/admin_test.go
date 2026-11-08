@@ -463,3 +463,20 @@ func tmpOther(t *testing.T, dir, keep string) []string {
 	}
 	return left
 }
+
+func TestSignersPendingMissingFileHint(t *testing.T) {
+	fakeEUID(t, 501)
+	missing := filepath.Join(t.TempDir(), "nope.json")
+	code, out, errS := admin("pending", "--pending-file", missing)
+	if code != 0 || !strings.Contains(errS, "대기 파일이 없습니다: "+missing) || !strings.Contains(out, "대기 중인 패스키가 없습니다") {
+		t.Fatalf("missing: %d %q %q", code, out, errS)
+	}
+	empty := filepath.Join(t.TempDir(), "empty.json")
+	if err := os.WriteFile(empty, []byte(`{"version":1,"pending":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errS = admin("pending", "--pending-file", empty)
+	if code != 0 || errS != "" || !strings.Contains(out, "대기 중인 패스키가 없습니다") {
+		t.Fatalf("empty: %d %q %q", code, out, errS)
+	}
+}

@@ -193,7 +193,7 @@ func TestWebAuthnFlags(t *testing.T) {
 	if err := checkWebAuthnFlags(api.Config{PendingFile: api.DefaultPendingFile}); err != nil {
 		t.Fatalf("passkeys off: %v", err)
 	}
-	if api.DefaultPendingFile != "/var/lib/orchd/signers.pending.json" {
+	if api.DefaultPendingFile != "/home/orch/orchd/state/signers.pending.json" {
 		t.Fatalf("default %q", api.DefaultPendingFile)
 	}
 }

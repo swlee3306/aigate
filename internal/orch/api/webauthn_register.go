@@ -75,7 +75,7 @@ const (
 	PendingTTL = 7 * 24 * time.Hour
 	// DefaultPendingFile is the pending-enrollment file (the same default as
 	// `orch admin signers --pending-file`).
-	DefaultPendingFile = "/var/lib/orchd/signers.pending.json"
+	DefaultPendingFile = "/home/orch/orchd/state/signers.pending.json"
 
 	enrollAlphabet  = "0123456789ABCDEFGHJKMNPQRSTVWXYZ" // Crockford base32
 	enrollCodeLen   = 8
