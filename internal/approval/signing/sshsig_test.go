@@ -313,7 +313,20 @@ func TestBlobFieldChecks(t *testing.T) {
 }
 
 func TestMalformedArmorNoPanic(t *testing.T) {
-	k := newGoKey(t)
+	// Pick a key whose (deterministic ed25519) signature blob encodes differently
+	// in the URL and standard alphabets, so the "url base64" case is a real
+	// variant and not the valid armor itself.
+	var k goKey
+	for i := 0; ; i++ {
+		k = newGoKey(t)
+		blob := validFields(t, k, NamespaceApproval, "sha512", testMessage).blob()
+		if base64.URLEncoding.EncodeToString(blob) != base64.StdEncoding.EncodeToString(blob) {
+			break
+		}
+		if i > 100 {
+			t.Fatal("could not find a blob with + or / in its base64")
+		}
+	}
 	valid := armor(validFields(t, k, NamespaceApproval, "sha512", testMessage).blob())
 	if err := VerifySSHSig(k.line, NamespaceApproval, testMessage, valid); err != nil {
 		t.Fatalf("baseline: %v", err)

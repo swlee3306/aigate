@@ -14,7 +14,7 @@ import (
 var (
 	ErrBadSignature   = errors.New("서명이 올바르지 않습니다")
 	ErrUnknownSigner  = errors.New("등록되지 않은 서명자입니다")
-	ErrStale          = errors.New("서명 시각이 허용 범위(±5분)를 벗어났습니다")
+	ErrStale          = errors.New("서명 시각이 허용 범위를 벗어났습니다")
 	ErrInvalidMessage = errors.New("서명 메시지가 올바르지 않습니다")
 )
 
@@ -83,7 +83,7 @@ func Verify(reg Registry, msg Message, sig Signature, o VerifyOptions) error {
 }
 
 func verifyWebAuthn(signer Signer, msg Message, sig Signature) error {
-	if sig.WebAuthn == nil {
+	if sig.WebAuthn == nil || signer.RPID == "" || signer.Origin == "" {
 		return ErrBadSignature
 	}
 	der, ok1 := decodeExactRawURL(sig.Sig)

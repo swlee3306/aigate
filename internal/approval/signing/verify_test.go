@@ -222,6 +222,70 @@ func TestSkipFreshnessIgnoresIssued(t *testing.T) {
 	}
 }
 
+// SkipFreshness skips only the time window; the signature is still verified.
+func TestSkipFreshnessStillVerifiesSignature(t *testing.T) {
+	f := newSSHFixture(t, "alice")
+	a := newFakeAuthenticator(t)
+	reg := Registry{Signers: []Signer{f.signer, a.signer(t, "phone")}}
+	skip := VerifyOptions{Now: testNow, SkipFreshness: true}
+	msg := approvalMsg(testNow.AddDate(-1, 0, 0))
+	other := msg
+	other.Hash = strings.Repeat("c", 16)
+
+	garbageWA := a.assert(t, "phone", msg)
+	garbageWA.Sig = b64u([]byte("not a der signature"))
+	cases := map[string]Signature{
+		"ssh other message":      f.sign(t, NamespaceApproval, other.Text()),
+		"ssh garbage":            {Signer: "alice", Alg: TypeSSHEd25519, Sig: "garbage"},
+		"webauthn other message": a.assert(t, "phone", other),
+		"webauthn garbage":       garbageWA,
+	}
+	for name, s := range cases {
+		t.Run(name, func(t *testing.T) {
+			wantErr(t, Verify(reg, msg, s, skip), ErrBadSignature)
+		})
+	}
+}
+
+// A valid signature by one registered signer is not valid under another's id.
+func TestSignatureNotValidForOtherSigner(t *testing.T) {
+	alice, bob := newSSHFixture(t, "alice"), newSSHFixture(t, "bob")
+	pa, pb := newFakeAuthenticator(t), newFakeAuthenticator(t)
+	reg := Registry{Signers: []Signer{alice.signer, bob.signer, pa.signer(t, "phone-a"), pb.signer(t, "phone-b")}}
+	msg := approvalMsg(testNow)
+
+	sshSig := alice.sign(t, NamespaceApproval, msg.Text())
+	if err := Verify(reg, msg, sshSig, fixedOpts); err != nil {
+		t.Fatalf("precondition ssh: %v", err)
+	}
+	sshSig.Signer = "bob"
+	wantErr(t, Verify(reg, msg, sshSig, fixedOpts), ErrBadSignature)
+
+	waSig := pa.assert(t, "phone-a", msg)
+	if err := Verify(reg, msg, waSig, fixedOpts); err != nil {
+		t.Fatalf("precondition webauthn: %v", err)
+	}
+	waSig.Signer = "phone-b"
+	wantErr(t, Verify(reg, msg, waSig, fixedOpts), ErrBadSignature)
+}
+
+func TestWebAuthnSignerWithoutRPIDOrOrigin(t *testing.T) {
+	a := newFakeAuthenticator(t)
+	msg := approvalMsg(testNow)
+	sig := a.assert(t, "phone", msg)
+	noRP := a.signer(t, "phone")
+	noRP.RPID = ""
+	noOrigin := a.signer(t, "phone")
+	noOrigin.Origin = ""
+	for _, s := range []Signer{noRP, noOrigin} {
+		wantErr(t, Verify(Registry{Signers: []Signer{s}}, msg, sig, fixedOpts), ErrBadSignature)
+	}
+	// Assertions made to match the empty values are refused too.
+	d := msg.Digest()
+	wantErr(t, Verify(Registry{Signers: []Signer{noRP}}, msg, a.assertFor(t, "phone", d[:], "", a.origin), fixedOpts), ErrBadSignature)
+	wantErr(t, Verify(Registry{Signers: []Signer{noOrigin}}, msg, a.assertFor(t, "phone", d[:], a.rpID, ""), fixedOpts), ErrBadSignature)
+}
+
 func TestInvalidMessageRefusedBeforeAnything(t *testing.T) {
 	f := newSSHFixture(t, "alice")
 	a := newFakeAuthenticator(t)
