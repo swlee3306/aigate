@@ -28,10 +28,13 @@ const usage = `사용법: orch [--socket PATH | --server URL [--token-file PATH]
   cancel ID                                                         작업 취소
   retry ID                                                          인프라 오류로 실패한(failed) 작업을 실패한 단계부터 다시 시도(최대 3회)
   approvals                                                         승인 대기 목록
-  approve ITEM                                                      승인(사람이 터미널에서 직접, TTY 필요). ITEM은 approvals의 ID 열(승인 항목 번호, 작업 번호 아님)
+  approve [--sign-key KEY] [--signer ID] ITEM                       승인(사람이 터미널에서 직접, TTY 필요). ITEM은 approvals의 ID 열(승인 항목 번호, 작업 번호 아님)
+                                                                    서명 필수 모드면 KEY(기본 ~/.ssh/id_ed25519)로 서명. ID는 --signer 또는 AIGATE_SIGNER
   reverify ITEM                                                     이미 승인한 항목의 재검증 요청(승인 기록이 있어야 함). ITEM은 approvals의 ID 열
 
 ` + policyUsage + `
+
+` + adminUsage + `
 
 소켓: --socket 또는 ORCHD_SOCKET (기본 ` + defaultSocket + `)
 원격: --server https://주소 (소켓과 함께 쓸 수 없음), 토큰은 --token-file(기본 ~/.config/orch/token, 권한 0600)
@@ -76,12 +79,37 @@ func (c *client) call(method, path string, body any) ([]byte, error) {
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if resp.StatusCode/100 != 2 {
-		if msg := errorMessage(b); msg != "" {
-			return nil, errors.New(msg)
-		}
-		return nil, fmt.Errorf("서버 오류 (HTTP %d)", resp.StatusCode)
+		return nil, &apiError{Status: resp.StatusCode, Code: errorCode(b), Message: errorMessage(b)}
 	}
 	return b, nil
+}
+
+// apiError is a non-2xx answer. Error() is the server's message (or the HTTP
+// status), as before. Code is the v1 envelope's code: callers that must not
+// echo server text (CF1, the signed grant) switch on it instead.
+type apiError struct {
+	Status        int
+	Code, Message string
+}
+
+func (e *apiError) Error() string {
+	if e.Message != "" {
+		return e.Message
+	}
+	return fmt.Sprintf("서버 오류 (HTTP %d)", e.Status)
+}
+
+// errorCode reads the v1 envelope's {"error":{"code"}}; "" when absent.
+func errorCode(b []byte) string {
+	var env struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(b, &env) != nil {
+		return ""
+	}
+	return env.Error.Code
 }
 
 // errorMessage reads the v1 envelope {"error":{"message"}}, falling back to the
@@ -129,6 +157,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if cmd == "propose" || cmd == "policy" {
 		return localCmd(cmd, rest, *asJSON, *gateHomeFlag, stdout, stderr)
 	}
+	if cmd == "admin" {
+		return cmdAdmin(rest, stdout, stderr)
+	}
 	var c *client
 	if *server != "" {
 		socketGiven := false
@@ -157,6 +188,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		sub.StringVar(&prompt, "prompt", "", "")
 		sub.StringVar(&class, "class", "", "")
 		sub.StringVar(&agent, "agent", "", "")
+	}
+	var so signOpts
+	if cmd == "approve" {
+		sub.StringVar(&so.KeyPath, "sign-key", "", "")
+		sub.StringVar(&so.Signer, "signer", "", "")
 	}
 	fail := func(err error) int { fmt.Fprintln(stderr, "오류:", err); return 1 }
 	if err := sub.Parse(rest); err != nil {
@@ -295,7 +331,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return fail(err)
 		}
-		return cmdApprove(c, id, *gateHomeFlag, stdout, stderr)
+		return cmdApprove(c, id, *gateHomeFlag, so, stdout, stderr)
 	case "reverify":
 		id, err := idArg()
 		if err != nil {

@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -14,14 +18,17 @@ import (
 	"golang.org/x/term"
 
 	"aigate/internal/approval"
+	"aigate/internal/approval/signing"
 	"aigate/internal/approval/ui"
 	"aigate/internal/gate"
+	"aigate/internal/gitx"
 	"aigate/internal/ledger"
 	"aigate/internal/orch/api"
 	"aigate/internal/orch/approvals"
 	"aigate/internal/orch/publish"
 	"aigate/internal/orch/steps"
 	"aigate/internal/orch/store"
+	"aigate/internal/textsafe"
 )
 
 // approveIn is where the human's answer is read from (a seam for tests).
@@ -68,7 +75,7 @@ func (c *client) approvalDetail(id string) (api.ApprovalDetail, error) {
 // cmdApprove is `orch approve ID`: the human's terminal path. The grant file it
 // writes is the authority; the daemon is asked to re-judge only afterwards, and
 // it checks the file itself.
-func cmdApprove(c *client, id, gateHomeFlag string, stdout, stderr io.Writer) int {
+func cmdApprove(c *client, id, gateHomeFlag string, so signOpts, stdout, stderr io.Writer) int {
 	const prog = "orch"
 	// Refuse before anything is fetched or shown: no TTY, no approval.
 	if err := requireTTY(approveIn, stdout); err != nil {
@@ -90,6 +97,13 @@ func cmdApprove(c *client, id, gateHomeFlag string, stdout, stderr io.Writer) in
 	case d.TaskState != string(store.StateNeedsApproval):
 		fmt.Fprintf(stderr, "orch: approve 거부: 작업 #%d 는 승인 대기 상태가 아닙니다(%s)\n", d.TaskID, d.TaskState)
 		return ui.ExitGateError
+	}
+	if d.RequiresSignature {
+		// Signed-only mode: the daemon verifies a signature and writes the
+		// grant itself; nothing is written locally.
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return approveSigned(ctx, c, id, d, so, stdout, stderr)
 	}
 	home, err := gateHome(gateHomeFlag)
 	if err != nil {
@@ -201,4 +215,156 @@ func safeLine(s string) string {
 		}
 		return r
 	}, s)
+}
+
+// signOpts are `orch approve`'s signing flags.
+type signOpts struct {
+	KeyPath string // --sign-key; "" means defaultSignKey()
+	Signer  string // --signer; "" means $AIGATE_SIGNER
+}
+
+// signCmd signs message in namespace with the SSH key at keyPath and returns
+// the armored SSHSIG (R9: a seam for tests; login uses it too, with
+// "aigate-login"). The default runs `ssh-keygen -Y sign`, message on stdin and
+// signature on stdout; ssh-keygen asks for a passphrase on the terminal itself
+// and may use the agent when keyPath names a public key.
+var signCmd = func(keyPath, namespace string, message []byte) (string, error) {
+	cmd := exec.Command("ssh-keygen", "-Y", "sign", "-n", namespace, "-f", keyPath)
+	cmd.Stdin = bytes.NewReader(message)
+	var out, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("ssh-keygen -Y sign 실패: %v: %s", err, safeLine(strings.TrimSpace(errb.String())))
+	}
+	return out.String(), nil
+}
+
+// defaultSignKey is the private key `orch approve` signs with when
+// --sign-key is not given.
+func defaultSignKey() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ".ssh/id_ed25519"
+	}
+	return filepath.Join(home, ".ssh", "id_ed25519")
+}
+
+// grantRefusals are the fixed texts for the grant endpoint's error codes
+// (CF1): the server's own message is never printed, since it could echo input.
+var grantRefusals = map[string]string{
+	"bad_signature":       "서명이 서명자 목록의 공개 키로 검증되지 않았습니다. --sign-key의 키가 --signer로 등록된 키인지 확인하세요",
+	"unknown_signer":      "서명자 ID가 서버의 서명자 목록에 없습니다(관리자가 `orch admin signers list`로 확인)",
+	"stale_signature":     "서명 시각이 허용 범위(±5분)를 벗어났습니다. 다시 실행하세요",
+	"invalid_message":     "서버가 서명 메시지를 다시 만들 수 없었습니다",
+	"signers_unavailable": "서버의 서명자 목록을 신뢰할 수 없어 서명 승인을 처리할 수 없습니다(관리자 확인 필요)",
+	"not_pending":         "대기 중인 항목이 아니거나 작업이 승인 대기 상태가 아닙니다. 변경 없음",
+	"hash_changed":        "작업의 base·head·diff 해시가 이 항목과 다릅니다. 다시 확인하세요. 변경 없음",
+	"not_signed_mode":     "서버가 서명 필수 모드가 아닙니다. 다시 실행하면 기존 방식으로 승인합니다",
+	"forbidden":           "이 항목은 승인할 수 없습니다",
+}
+
+func refuseSigned(stderr io.Writer, format string, a ...any) int {
+	fmt.Fprintf(stderr, "orch: approve 거부: "+format+" 서명하지 않았습니다(승인은 기록하지 않음)\n", a...)
+	return ui.ExitGateError
+}
+
+// approveSigned is the signed-only-mode path of `orch approve` (design 8.2,
+// 8.7). Order: check that the message the server asks us to sign is the
+// entry shown and (for a diff) that the shown text hashes to the entry's
+// hash, show it, require "yes", then sign and post. Nothing is signed before
+// the confirmation.
+func approveSigned(ctx context.Context, c *client, id string, d api.ApprovalDetail, so signOpts, stdout, stderr io.Writer) int {
+	const prog = "orch"
+	if d.Message == "" {
+		return refuseSigned(stderr, "서버가 지금은 이 항목을 승인할 수 없다고 합니다: %s.", textsafe.Escape(d.Meaning))
+	}
+	// CF4: parse (which validates) before anything is shown or signed, and
+	// require the message to be about exactly this entry.
+	msg, err := signing.ParseMessage(d.Message)
+	issued, terr := time.Parse(time.RFC3339, d.Issued)
+	if err != nil || terr != nil {
+		return refuseSigned(stderr, "서버가 준 서명 메시지가 올바른 형식이 아닙니다.")
+	}
+	if msg.Kind != d.Kind || msg.Hash != d.Hash || msg.Base != d.Base || msg.Task != d.TaskID || !msg.Issued.Equal(issued) {
+		return refuseSigned(stderr, "서버가 준 서명 메시지가 이 항목(종류·작업·base·해시)과 다릅니다.")
+	}
+
+	switch d.Kind {
+	case store.KindProtectedModified:
+		// Truncation first: a cut text never hashes right, and the reason
+		// to give is that it cannot be reviewed in full here.
+		if d.Truncated {
+			return refuseSigned(stderr, "보호 파일 diff가 API 표시 한도를 넘어 잘렸습니다. 전체를 보지 않고는 서명할 수 없습니다. "+
+				"저장소에서 `git diff %s %s`로 전체를 검토하고, 보호 파일 변경을 더 작은 커밋으로 나눠 다시 실행하세요.", short(d.Base), textsafe.Escape(short(d.Head)))
+		}
+		if d.HashedText == "" {
+			return refuseSigned(stderr, "서버가 해시 대상 diff를 주지 않았습니다.")
+		}
+		if got := gitx.HashOf(d.HashedText); got != d.Hash {
+			return refuseSigned(stderr, "서버가 보여 준 diff의 해시(%s)가 승인 항목의 해시(%s)와 다릅니다. 보이는 내용과 서명 대상이 다를 수 있습니다.",
+				short(got), short(d.Hash))
+		}
+		if f, bad := textsafe.FirstUnsafe(d.HashedText); bad {
+			return refuseSigned(stderr, "diff %d번째 줄에 터미널 제어·비정상 문자(%s)가 있어 화면에서 내용을 숨길 수 있습니다.", f.Line, f.Desc)
+		}
+		fmt.Fprintf(stdout, "작업 #%d 보호 파일 변경 승인(서명)\n  base: %s\n  head: %s\n  보호 파일(%d):\n",
+			d.TaskID, d.Base, textsafe.Escape(d.Head), len(d.ProtectedFiles))
+		for _, f := range d.ProtectedFiles {
+			fmt.Fprintf(stdout, "    %s\n", textsafe.Escape(f))
+		}
+		fmt.Fprint(stdout, "the approval binds exactly this text (sha256 prefix = hash):\n", ui.BeginMark, d.HashedText, ui.EndMark)
+	case store.KindPublishOutsideAllowlist:
+		// No diff: the server's meaning (built from stored values only) and
+		// the hash are what is signed for.
+		fmt.Fprintf(stdout, "작업 #%d 게시 행위 승인(서명)\n  행위: %s\n  base: %s\n  head: %s\n",
+			d.TaskID, textsafe.Escape(d.Action), d.Base, textsafe.Escape(d.Head))
+	default:
+		return refuseSigned(stderr, "알 수 없는 종류 %q 입니다.", d.Kind)
+	}
+	fmt.Fprintf(stdout, "hash: %s\n무엇을 허용하나요: %s\n", d.Hash, textsafe.Escape(d.Meaning))
+
+	signer := so.Signer
+	if signer == "" {
+		signer = os.Getenv("AIGATE_SIGNER")
+	}
+	if signer == "" {
+		fmt.Fprintln(stderr, "orch: approve 거부: 서명자 ID가 없습니다. --signer ID 또는 AIGATE_SIGNER로 지정하세요(`orch admin signers list`의 ID)")
+		return ui.ExitGateError
+	}
+	key := so.KeyPath
+	if key == "" {
+		key = defaultSignKey()
+	}
+	if _, err := os.Stat(key); err != nil {
+		fmt.Fprintf(stderr, "orch: approve 거부: 서명 키 파일이 없습니다: %s (--sign-key로 지정)\n", key)
+		return ui.ExitGateError
+	}
+	fmt.Fprintf(stdout, "서명할 메시지(네임스페이스 %s, 서명자 %s, 키 %s):\n%s", signing.NamespaceApproval, signer, key, msg.Text())
+	if !ui.Confirm(ctx, "Type 'yes' to sign and approve exactly this: ", prog, approveIn, stdout, stderr) {
+		return ui.ExitGateError
+	}
+	armored, err := signCmd(key, signing.NamespaceApproval, []byte(msg.Text()))
+	if err != nil {
+		fmt.Fprintf(stderr, "orch: 서명하지 못했습니다: %v\n", err)
+		return ui.ExitGateError
+	}
+	raw, err := c.call("POST", "/approvals/"+id+"/grant", map[string]string{
+		"signer": signer, "alg": signing.TypeSSHEd25519, "sig": armored, "issued": d.Issued})
+	if err != nil {
+		var ae *apiError
+		if !errors.As(err, &ae) {
+			fmt.Fprintln(stderr, "오류:", err) // transport error: local text, no server content
+			return 1
+		}
+		text, ok := grantRefusals[ae.Code]
+		if !ok {
+			text = fmt.Sprintf("서버가 승인을 거부했습니다(HTTP %d)", ae.Status)
+		}
+		fmt.Fprintf(stderr, "orch: approve 거부: %s\n", text)
+		return ui.ExitGateError
+	}
+	var v api.TaskView
+	_ = json.Unmarshal(raw, &v)
+	fmt.Fprintf(stdout, "approved (서명자 %s). 작업 #%d 상태: %s\n", signer, v.ID, safeLine(string(v.State)))
+	return 0
 }

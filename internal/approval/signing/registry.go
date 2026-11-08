@@ -3,6 +3,7 @@ package signing
 import (
 	"bytes"
 	"crypto/ecdh"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -307,4 +308,32 @@ func nearestExistingAncestor(dir string) (os.FileInfo, error) {
 		}
 		cur = parent
 	}
+}
+
+// ValidateSigner applies the registry's per-entry rules (id format, type,
+// key encoding, WebAuthn rp_id/origin) to one signer. Writers (orch admin
+// signers) use it so that what they write is what LoadRegistry accepts.
+func ValidateSigner(s Signer) error { return validateSigner(s) }
+
+// Fingerprint names a signer's public key for humans: "SHA256:" and the
+// unpadded standard base64 of the SHA-256 of the key bytes (the SSH wire
+// form for ssh-ed25519, the same as `ssh-keygen -l`; the 65-byte uncompressed
+// P-256 point for webauthn-es256). The signer must be valid.
+func Fingerprint(s Signer) (string, error) {
+	if err := validateSigner(s); err != nil {
+		return "", err
+	}
+	if s.Type == TypeSSHEd25519 {
+		pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(s.PublicKey))
+		if err != nil {
+			return "", err
+		}
+		return ssh.FingerprintSHA256(pub), nil
+	}
+	raw, err := rawURL.DecodeString(s.PublicKey)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return "SHA256:" + base64.RawStdEncoding.EncodeToString(sum[:]), nil
 }
