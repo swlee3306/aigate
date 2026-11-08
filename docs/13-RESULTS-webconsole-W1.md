@@ -13,16 +13,15 @@
 
 **D. 웹 콘솔(Task 23~25).** `go:embed`로 내장한 바닐라 JS 화면: 단계 메뉴, 작업 목록·상세·타임라인, diff 보기(보이지 않는 문자·제어 문자 표시, 잘림 표시), 패스키 로그인·등록, 승인 화면. 에이전트가 만든 글은 `textContent`로만 넣는다. 승인 화면은 메시지·저장소 id·게시 행위·다이제스트를 브라우저에서 다시 확인하고, 잘렸거나 다 보이지 않은 승인은 서명하지 않고 `orch approve`를 안내한다(R22).
 
-**E1. 적대 시험(Task 26).** 아래 3장. 공격자가 승인 파일을 마음대로 쓸 수 있거나(orch 사용자), 서명자 목록 배치가 잘못됐거나, 브라우저가 다른 출처에서 요청을 보낼 때 승인이 생기지 않는지를 확인하는 시험과, 그 시험이 실제로 잡는지 확인하는 변이 시험을 추가했다. 함께 갚은 빚: 불안정한 시험 2개, 유효한 세션·토큰의 전역 속도 제한 면제(CF21), CLI 서명 화면의 게시 설명 표시.
+**E1. 적대 시험(Task 26).** 아래 3장. 공격자가 승인 파일을 마음대로 쓸 수 있거나(orch 사용자), 서명자 목록 배치가 잘못됐거나, 브라우저가 다른 출처에서 요청을 보낼 때 승인이 생기지 않는지를 확인하는 시험과, 그 시험이 실제로 잡는지 확인하는 변이 시험을 추가했다. 함께 갚은 빚: 불안정한 시험 2개, 유효한 세션·토큰의 전역 속도 제한 면제(CF21: `GET /auth/session`, `GET /auth/signers`, `POST /auth/logout`에만 적용. 챌린지·토큰·패스키 로그인·등록은 자격이 있어도 키별·전역 한도를 모두 받는다), CLI 서명 화면의 게시 설명 표시.
 
 ## 2. 시험 목록 (실제 실행 결과)
 
-실행: 2026-11-09, macOS(Apple Silicon), Go 1.27.1, Node v26.5.0, 커밋 `2f83df6`.
+실행: 2026-11-09, macOS(Apple Silicon), Go 1.27.1, Node v26.5.0, 커밋 `2c05dbb`(수정 1회차 후 다시 실행).
 
 - `go vet ./...`, `GOOS=darwin go vet ./cmd/... ./internal/...`, `GOOS=linux go vet ./cmd/... ./internal/...`: 통과. `gofmt -l`: 출력 없음.
-- `go test ./... -count=1 -race`: 최상위 시험 함수 849개 중 **847 통과, 1 실패, 1 건너뜀**(하위 시험 659개 별도, 모두 통과).
-  - 실패 1개: `internal/pathfold` `TestCollisionsPerformance`(20만 경로를 1초 안에 처리하는지 재는 시험이 `-race`에서 2.3초). 이 작업과 무관한 패키지이고 Task 15부터 알려진 것이다. `-race` 없이 3회 다시 돌려 통과.
-  - 건너뜀 1개: `internal/orch/web` `TestDevServer`(수동 개발 서버, 환경 변수로만 켬).
+- `go test ./... -count=1 -race`: **종료 코드 0**. 최상위 시험 함수 851개 중 849 통과, 0 실패, 2 건너뜀(하위 시험 659개 모두 통과).
+  - 건너뜀 2개: `internal/orch/web` `TestDevServer`(수동 개발 서버, 환경 변수로만 켬), `internal/pathfold` `TestCollisionsPerformance`(-race 빌드에서만 건너뜀. 20만 경로를 1초 안에 처리하는지 재는 시간 검사라 -race 부담에서는 의미가 없다. 이 건너뜀은 **-race에서만 시간 검사를 숨긴다**. 일반 빌드 `go test ./internal/pathfold -count=1`에서는 그대로 돌고 통과(0.53초)).
 - `node --test "internal/orch/web/test/*.test.js"`: **76개 전부 통과**.
 - `internal/orch/api` 패키지 전체를 `-race -count=3`으로 부하(변이 시험과 동시 실행) 중에 돌려 통과. 고친 두 시험(`TestOverviewCounts`, `TestRetryAPIConcurrentDouble`)은 각각 `-race -count=30` 통과.
 
@@ -39,7 +38,7 @@
 | `internal/gate` | 59 | 0 | 0 | 63 |
 | `internal/gitx` | 37 | 0 | 0 | 3 |
 | `internal/ledger` | 17 | 0 | 0 | 0 |
-| `internal/orch/api` | 158 | 0 | 0 | 2 |
+| `internal/orch/api` | 160 | 0 | 0 | 2 |
 | `internal/orch/approvals` | 6 | 0 | 0 | 0 |
 | `internal/orch/machine` | 33 | 0 | 0 | 14 |
 | `internal/orch/policy` (+autonomy, propose) | 27 | 0 | 0 | 25 |
@@ -48,13 +47,13 @@
 | `internal/orch/store` | 31 | 0 | 0 | 4 |
 | `internal/orch/vm` | 75 | 0 | 0 | 5 |
 | `internal/orch/web` (Go) | 9 | 0 | 1 | 0 |
-| `internal/pathfold` | 5 | 1 | 0 | 12 |
+| `internal/pathfold` | 5 | 0 | 1 (-race만) | 12 |
 | `internal/remote` | 18 | 0 | 0 | 7 |
 | `internal/report`, `rules`, `runner`, `stats` | 30 | 0 | 0 | 35 |
 | `internal/textsafe` | 4 | 0 | 0 | 25 |
 | `internal/webauthn` | 22 | 0 | 0 | 0 |
 
-이번에 더한 적대 시험: `internal/approval/adversarial_test.go` 10개(하위 시험 포함 통과 항목 79개), `internal/orch/api/adversarial_test.go` 6개, `cmd/orch/remote_e2e_test.go` 1개(원격 CLI → 실제 데몬 HTTP 리스너 → SSH 서명 승인 → 게이트 통과까지), `secure_test.go`에 CF21 시험 2개.
+이번에 더한 적대 시험: `internal/approval/adversarial_test.go` 10개(하위 시험 포함 통과 항목 79개), `internal/orch/api/adversarial_test.go` 6개, `cmd/orch/remote_e2e_test.go` 1개(원격 CLI → 실제 데몬 HTTP 리스너 → SSH 서명 승인 → 게이트 통과까지), `secure_test.go`에 CF21 시험 4개(면제 경로 한정 포함).
 
 ## 3. 변이 시험 (시험이 실제로 잡는지)
 
@@ -71,14 +70,15 @@
 | ⑦ | `GrantSigned`가 `issued` 신선도 검사를 건너뜀 | **TestStaleIssuedRejected**, TestGrantSignedIdempotentAndConcurrent, api.TestGrantStaleIssued403 |
 | ⑧ | 쓰기의 CSRF 헤더 검사 제거 | **TestCSRFCrossOriginRejected**, TestWriteTierSessionCSRF, TestCSRFHeaderRequiredOnWrite, TestWriteTierCoversEveryMutatingRoute, TestGrantLedgerViaSession, TestOriginCheckedOnAuthSession |
 | ⑨ | Host 허용 목록 검사 제거 | **TestHostRebindingRejected**, TestHostMismatchRefused, TestSecurityHeadersPresent, TestAPIResponsesNoStore, TestStaticServedWithCSPAndTypes |
-| ⑩ | (CF21) 유효한 자격의 전역 한도 면제 제거 | **TestValidCredentialBypassesGlobalAuthCeiling** |
+| ⑩ | (CF21) 유효한 자격의 전역 한도 면제 제거 | **TestValidCredentialBypassesGlobalAuthCeiling**, **TestCredentialExemptionOnlyOnSessionRoutes** |
+| ⑩b | (수정 1회차) 면제를 모든 `/auth/*` 경로로 넓힘 | **TestCredentialExemptionOnlyOnSessionRoutes** |
 | ⑪ | `limitBody`의 `MaxBytesReader` 감싸기 제거 | **TestLimitBodyWrapsChunkedBody** |
 | ⑫ | `Sec-Fetch-Site` 값 1개 조건 제거 | **TestSecFetchSiteSingleValue** |
 | ⑬ | `activePasskey`의 종류 재확인 제거 | **TestActivePasskeyTypeRecheck** |
 | ⑭ | CLI 게시 승인의 "서버 설명(검증 안 됨)" 표시 되돌림 | TestApproveSignedFlow(이번에 단언 추가) |
 | ⑮ | 승인 파일 갱신의 `flock` 제거 | **TestConcurrentGrantsOneEntry**, TestConcurrentGrantsNoLostEntries, TestGrantSignedIdempotentAndConcurrent |
 
-결과: 15개 모두 잡혔다(잡히지 않은 변이 없음). 각 변이는 `go vet`도 통과한 상태로(컴파일 오류로 실패한 것이 아님) 확인했다.
+결과: 16개 모두 잡혔다(잡히지 않은 변이 없음). 브리프의 9개(①~⑨) 중 ①, ②(폴더 검사, 두 형태 m2a·m2b), ③, ④, ⑤, ⑥, ⑧, ⑨와 ⑩은 **검토자가 따로 재현해 같은 결과를 확인**했다(m1, m2a, m2b, m3, m4, m5, m6, m8, m9, m10). ⑦과 ⑪~⑮, ⑩b는 구현자 실행만이다. 각 변이는 `go vet`도 통과한 상태로(컴파일 오류로 실패한 것이 아님) 확인했다.
 
 ## 4. 알려진 한계와 확인하지 않은 것
 
@@ -93,6 +93,7 @@
 - 침해된 서버가 사용자에게 다른 diff를 보여 주는 위험은 남는다(설계서 10장). CLI와 웹 모두 서버가 준 텍스트로 해시를 다시 계산하지만, 그 텍스트가 실제 저장소의 diff인지는 서버를 믿는다.
 - diff 응답의 파일 목록(`files`, numstat)에는 상한이 없다(시험: 1,800개 파일 변경이 그대로 나옴). 해시 대상 텍스트는 256 KiB에서 잘린다.
 - 같은 서명이 여러 armored 표현을 가진다. 승인 항목은 `(repo, base, hash)`로만 구분하고 서명 문자열을 식별자로 쓰지 않는다(CF3).
+- CF21 면제는 `GET /auth/session`, `GET /auth/signers`, `POST /auth/logout`에만 있다(`HEAD /auth/session`은 면제 아님). 그 밖의 인증 경로에서는 로그인한 사용자도 전역 한도에 막힐 수 있다.
 - Host 검사는 포트를 무시한다(`tailscale serve`가 브라우저의 Host를 `:443` 유무와 관계없이 넘기기 때문). 허용된 이름이면 어떤 포트든 통과한다.
 - 단일 사용자 시험 환경의 한계: 서명자 목록의 "폴더는 orch 소유, 파일은 root 소유" 조합은 소유자를 바꿀 수 없어 직접 만들지 못했다. 소유자 규칙(uid 0만)을 시험 사용자 소유 배치에 적용하는 방식과 폴더 쓰기 권한 비트로 확인했다.
 - 서명 필수 모드는 프로세스 전역(R7)이라, 같은 기계에서 혼자 쓰는 개인 `aigate`도 목록 파일이 있으면 서명 필수가 된다(설계서 8.5의 "orchd의 gate-home에만"과 다름).
