@@ -108,6 +108,13 @@ func newEnv(t *testing.T, p StepProvider, conc int, opts ...func(*Config)) *env 
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", e.sock)
 		}}}
+	// Runs before the daemon is cancelled (cleanups are LIFO). With several
+	// concurrent requests the transport can dial a connection that ends up
+	// pooled without ever carrying a request; the server keeps such a
+	// connection in StateNew, and http.Server.Shutdown only treats StateNew
+	// as idle after 5 s, the same as the stop timeout above, so the cleanup
+	// raced ("daemon did not stop", TestRetryAPIConcurrentDouble).
+	t.Cleanup(e.client.CloseIdleConnections)
 	return e
 }
 

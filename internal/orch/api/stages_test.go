@@ -37,8 +37,14 @@ func TestStagesStatic(t *testing.T) {
 	}
 }
 
+// mkTask stores a task and walks it through the given states by hand. It
+// pauses the daemon's workers first (idempotent): otherwise the worker loop can
+// claim a parked queued/preparing/error task and fail it (noSteps registers no
+// step) before the test reads the counts, which made TestOverviewCounts flaky
+// under -race load.
 func mkTask(t *testing.T, e *env, to ...store.State) int64 {
 	t.Helper()
+	e.d.pauseWorkers()
 	ctx := context.Background()
 	id, err := e.st.CreateTask(ctx, store.Task{Repo: e.repo, Base: e.sha, Prompt: "p", Class: "버그수정", Agent: "claude"})
 	if err != nil {
@@ -146,5 +152,16 @@ func TestStageAvgMath(t *testing.T) {
 	}
 	if g := stageAvg(nil); g == nil || len(g) != 0 {
 		t.Fatalf("empty %+v", g)
+	}
+	// Task 5 minor: a state visited twice counts per visit (verify 2 s, then
+	// 4 s after the approval: average 3 s, not the 6 s total).
+	c := []store.Event{ev(store.StateQueued, 0), ev(store.StatePreparing, 0), ev(store.StateVerifying, 1),
+		ev(store.StateNeedsApproval, 3), ev(store.StateVerifying, 10), ev(store.StateDone, 14)}
+	got = stageAvg([][]store.Event{c})
+	if got["verifying"] != 3 || got["preparing"] != 1 || got["queued"] != 0 {
+		t.Fatalf("visited twice: %+v", got)
+	}
+	if _, ok := got["needs_approval"]; ok {
+		t.Fatalf("waiting for a human is not a stage average: %+v", got)
 	}
 }
