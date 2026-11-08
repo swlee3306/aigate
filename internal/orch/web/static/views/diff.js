@@ -121,7 +121,7 @@ function renderBody(entry, sections, truncated) {
   if (!sec) {
     // Never "no changes": a protected file whose section was not seen is cut off.
     return el('div', {}, [head, el('p', { class: 'note' },
-      '보호 파일이지만 diff가 길어 잘린 부분에 있어 표시되지 않았습니다. 전체 diff는 `orch diff`로 확인하세요.')]);
+      '보호 파일이지만 diff가 길어 잘린 부분에 있어 표시되지 않았습니다. 전체 diff는 저장소에서 `git diff <base> <head>`로 확인하세요.')]);
   }
   const pre = el('div', { class: 'diff', role: 'region', tabindex: '0', 'aria-label': inline(entry.path, 80) + ' 변경 내용' });
   chunked(pre, sec.lines, LINE_CHUNK, (l) => el('div', { class: ['dl', KIND_CLASS[l.kind]] }, capLine(l.text) || ' '), '줄');
@@ -153,7 +153,7 @@ export function renderDiff(view, state, onSelect, opts) {
       truncated
         ? el('div', { class: 'trunc', role: 'alert' }, [
           el('b', {}, '일부만 표시됨'),
-          ': 전체 diff는 `orch diff`로 확인',
+          ': 전체 diff는 저장소에서 `git diff <base> <head>`로 확인',
           clipped ? el('small', {}, ' · 화면에서 일부 줄을 생략했습니다.') : null,
           el('small', {}, ' · 잘린 diff는 승인할 수 없습니다. 서버가 보여 주는 해시는 전체 diff의 값입니다.'),
         ])

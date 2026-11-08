@@ -381,7 +381,7 @@ test('TestDiffTruncatedBanner', () => {
   const banner = byClass(root, 'trunc')[0];
   assert.ok(banner, 'banner present');
   assert.equal(banner.getAttribute('role'), 'alert');
-  assert.match(text(banner), /일부만 표시됨: 전체 diff는 `orch diff`로 확인/);
+  assert.match(text(banner), /일부만 표시됨: 전체 diff는 저장소에서 `git diff <base> <head>`로 확인/);
   // the cut dropped the trailing A line: the file is still marked protected
   const fb = buttons(findAll(root, (e) => e.tagName === 'UL')[0]);
   assert.match(text(fb[0]), /보호 파일/);

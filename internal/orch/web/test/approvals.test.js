@@ -508,7 +508,7 @@ test('truncated, clipped or unseen content: refusal with orch approve guidance, 
     const all = text(ctx.root);
     assert.ok(all.includes(A.CUT_REFUSAL), name);
     assert.match(all, /orch approve/, name);
-    assert.match(all, /orch diff/, name);
+    assert.match(all, /git diff/, name);
     assert.ok(findAll(ctx.root, (e) => e.getAttribute('role') === 'alert').some((e) => text(e).includes(A.CUT_REFUSAL)), name);
     assert.equal(byKey(ctx.root, 'read'), null, name + ': no checkbox');
     assert.equal(byKey(ctx.root, 'sign'), null, name + ': no sign button');

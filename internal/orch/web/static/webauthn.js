@@ -55,7 +55,7 @@ export const WA_TEXT = {
   message_mismatch: '서명할 메시지의 내용이 이 승인 항목과 다릅니다. 서명하지 않습니다.',
   bad_digest: '서버가 준 다이제스트 형식이 올바르지 않아 서명하지 않습니다.',
   digest_mismatch: '서버가 준 메시지와 다이제스트가 서로 맞지 않습니다. 서명하지 않습니다.',
-  truncated: '잘린 내용이 있어 웹에서는 서명할 수 없습니다. 전체 diff는 터미널에서 orch diff 로 읽고, 승인은 orch approve 로 하세요.',
+  truncated: '잘린 내용이 있어 웹에서는 서명할 수 없습니다. 전체 diff는 저장소에서 git diff <base> <head> 로 읽고, 승인은 터미널의 orch approve 로 하세요.',
   repo_mismatch: '서명할 메시지의 저장소 ID가 이 화면의 저장소 경로와 맞지 않습니다. 서명하지 않습니다.',
   publish_action_unknown: '이 게시 승인의 해시와 맞는 게시 행위를 찾지 못했습니다. 서명하지 않습니다.',
   publish_action_mismatch: '서버가 말한 게시 행위가 해시에서 찾은 행위와 다릅니다. 서명하지 않습니다.',
