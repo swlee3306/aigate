@@ -33,6 +33,9 @@ var schemaV4 string
 //go:embed schema_v5.sql
 var schemaV5 string
 
+//go:embed schema_v6.sql
+var schemaV6 string
+
 // MaxErrorText caps Task.ErrorText so a noisy failure cannot bloat the DB.
 const MaxErrorText = 4096
 
@@ -106,6 +109,8 @@ type Store struct {
 	db   *sql.DB
 	path string
 	id   os.FileInfo // identity of the database file at Open
+	// clock overrides time.Now in tests (expiry of sessions, challenges, keys); nil means real time.
+	clock func() time.Time
 }
 
 // ErrDBGone is returned when the database file was deleted or replaced while
@@ -129,6 +134,7 @@ var migrations = []func(tx *sql.Tx) error{
 	func(tx *sql.Tx) error { _, err := tx.Exec(schemaV3); return err },
 	func(tx *sql.Tx) error { _, err := tx.Exec(schemaV4); return err },
 	func(tx *sql.Tx) error { _, err := tx.Exec(schemaV5); return err },
+	func(tx *sql.Tx) error { _, err := tx.Exec(schemaV6); return err },
 }
 
 // Open creates or opens the database at path with mode 0600.
