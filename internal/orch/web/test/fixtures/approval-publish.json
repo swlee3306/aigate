@@ -1,0 +1,23 @@
+{
+  "id": 11,
+  "task_id": 38,
+  "kind": "publish_outside_allowlist",
+  "hash": "dafbe2fdc61a991ad960a71e7d456a2e817b5ed26af792479b6b7e35f8fbe7d6",
+  "base": "1111111111111111111111111111111111111111",
+  "head": "89abcdef0123456789abcdef0123456789abcdef",
+  "reason": "push",
+  "status": "pending",
+  "created_at": "2026-11-09T10:03:03Z",
+  "repo": "/srv/repos/proj",
+  "task_state": "needs_approval",
+  "policy_hash": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+  "message": "aigate-approval-v1\nkind: publish_outside_allowlist\nrepo: 0e22c6a35c36\ntask: 38\nbase: 1111111111111111111111111111111111111111\nhash: dafbe2fdc61a991ad960a71e7d456a2e817b5ed26af792479b6b7e35f8fbe7d6\nissued: 2026-11-09T10:04:05Z\n",
+  "digest": "7965e3605059449c19a2386c731e2300ccded59f9e60e05065cff3383322fe69",
+  "hashed_text": "",
+  "protected_files": [],
+  "truncated": false,
+  "meaning": "작업 #38의 head 89abcdef0123 에 대해 허용 목록 밖의 게시 행위 하나, 작업 브랜치를 원격 저장소로 push(push_branch) 를 허용합니다. 승인은 게시 해시 dafbe2fdc61a991ad960a71e7d456a2e817b5ed26af792479b6b7e35f8fbe7d6 에만 묶이며, head나 행위가 바뀌면 다시 승인해야 합니다.",
+  "action": "push_branch",
+  "requires_signature": true,
+  "issued": "2026-11-09T10:04:05Z"
+}

@@ -98,9 +98,11 @@ func TestDevServer(t *testing.T) {
 	}
 	mux.HandleFunc("/api/v1/approvals", func(w http.ResponseWriter, r *http.Request) {
 		json(w, `[{"id":9,"task_id":38,"kind":"protected_modified","hash":"3273763058ed7862","base":"1111111111111111111111111111111111111111","head":"89abcdef0123456789abcdef0123456789abcdef","status":"pending","reason":"r"},
-{"id":10,"task_id":38,"kind":"protected_modified","hash":"3273763058ed7862","base":"1111111111111111111111111111111111111111","head":"89abcdef0123456789abcdef0123456789abcdef","status":"pending","reason":"r"}]`)
+{"id":10,"task_id":38,"kind":"protected_modified","hash":"3273763058ed7862","base":"1111111111111111111111111111111111111111","head":"89abcdef0123456789abcdef0123456789abcdef","status":"pending","reason":"r"},
+{"id":11,"task_id":38,"kind":"publish_outside_allowlist","hash":"dafbe2fdc61a991ad960a71e7d456a2e817b5ed26af792479b6b7e35f8fbe7d6","base":"1111111111111111111111111111111111111111","head":"89abcdef0123456789abcdef0123456789abcdef","status":"pending","reason":"push"}]`)
 	})
 	mux.HandleFunc("/api/v1/approvals/9", func(w http.ResponseWriter, r *http.Request) { serve(w, detail("approval.json", 9)) })
+	mux.HandleFunc("/api/v1/approvals/11", func(w http.ResponseWriter, r *http.Request) { serve(w, fixture("approval-publish.json")) })
 	mux.HandleFunc("/api/v1/approvals/10", func(w http.ResponseWriter, r *http.Request) { serve(w, detail("approval-truncated.json", 10)) })
 	mux.HandleFunc("/api/v1/approvals/9/grant", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(409)

@@ -7,14 +7,17 @@
 // the passkey; the WebAuthn challenge is the message digest (webauthn.js).
 // The web does NOT recompute the diff hash (design 8.7): the screen says so,
 // and never claims the hash was checked. The sign button is a native button
-// that stays disabled until the user ticked "위 내용을 읽었습니다" (and, when
-// anything is cut, typed '잘림 확인'); the grant request is sent only after
-// the authenticator returned a signature. Server error texts are never shown.
+// that stays disabled until the user ticked "위 내용을 읽었습니다"; the grant
+// request is sent only after the authenticator returned a signature. Anything
+// cut or not fully visible (server truncation, client clipping, an unseen
+// protected file, an omitted file name, a cut meaning) is refused outright, as
+// `orch approve` does (R22): no confirmation controls, no authenticator, the
+// user is sent to the terminal. Server error texts are never shown.
 
 import { el, inline, idOf, errorPane, capLine, splitLines, sanitize, clip, textBlock, MAX_LINE } from '../render.js';
 import { registerView } from '../router.js';
 import { replaceContent, copyButton } from '../shell.js';
-import { checkMessage, digestBytes, signApproval, activeSigners, rememberedPasskey, supported, waText } from '../webauthn.js';
+import { checkMessage, consistency, signApproval, activeSigners, rememberedPasskey, supported, waText, WA_TEXT } from '../webauthn.js';
 import { fileEntries } from './diff.js';
 
 const POLL_MS = 10000;
@@ -22,10 +25,20 @@ const MAX_DETAILS = 10; // details fetched for the list (each runs git on the se
 const SNIPPET_LINES = 12;
 const MAX_FILES = 50;
 export const MAX_BLOCK_LINES = 5000;
-export const TRUNC_PHRASE = '잘림 확인';
 export const NOT_RECOMPUTED = '이 화면은 해시를 다시 계산하지 않았습니다 (확인되지 않음). 서버가 보여 준 내용을 믿고 서명합니다. ' +
   '전체 diff는 터미널의 orch approve 로 직접 확인할 수 있습니다.';
-export const TRUNC_WARNING = "잘린 내용이 있습니다: 보이지 않는 부분도 허용됩니다. 그래도 서명하려면 아래에 '잘림 확인'을 입력";
+export const CUT_REFUSAL = WA_TEXT.truncated;
+const MAX_MEANING = 4000;
+
+// actionLabel names a publish action derived by webauthn.js deriveAction.
+export function actionLabel(action) {
+  const fixed = { push_branch: '작업 브랜치를 원격 저장소로 push', draft_pr: '초안 PR 만들기', notify: '알림 보내기' };
+  if (has(fixed, action)) return fixed[action] + ' (' + action + ')';
+  if (typeof action === 'string' && action.startsWith('policy_changed:')) {
+    return '작업 시작 뒤 바뀐 정책으로 게시를 계속하기 (정책 해시 ' + inline(action.slice('policy_changed:'.length), 70) + ')';
+  }
+  return inline(action, 120);
+}
 
 const KIND_LABEL = {
   protected_modified: '보호 파일 수정',
@@ -70,14 +83,16 @@ const short = (s) => (typeof s === 'string' && HEX_RE.test(s) ? s.slice(0, 12) :
 // longText: server text that must not be cut silently (meaning carries the
 // full hash): sanitized, cut only past a large cap with a marker.
 function longText(s, max) {
-  const c = clip(sanitize(s), max || 4000);
+  const c = clip(sanitize(s), max || MAX_MEANING);
   return c.dropped ? c.text + ' …(+' + c.dropped + '자)' : c.text;
 }
 
 // analyze decides, from the detail alone, whether it can be signed and
 // whether anything is not visible on screen. problem is a webauthn.js code;
 // cut is true when the server cut the text, the screen clips it (too many
-// lines, an over-long line) or a protected file has no visible section.
+// lines, an over-long line), a protected file has no visible section, not all
+// protected file names are listed, or the meaning text is cut. cut is a hard
+// refusal.
 export function analyze(detail) {
   let problem = null;
   try {
@@ -99,7 +114,10 @@ export function analyze(detail) {
   const fe = detail ? fileEntries(detail, MAX_BLOCK_LINES) : { entries: [] };
   const unseen = fe.entries.some((e) => e.kind === 'unseen' || e.kind === 'cut');
   const serverCut = !!detail && detail.truncated === true;
-  return { problem, clipped, unseen, serverCut, cut: serverCut || clipped || unseen };
+  const files = detail && Array.isArray(detail.protected_files) ? detail.protected_files : [];
+  const omitted = files.length > MAX_FILES; // names not all listed on screen
+  const meaningCut = !!detail && sanitize(detail.meaning).length > MAX_MEANING;
+  return { problem, clipped, unseen, serverCut, omitted, meaningCut, cut: serverCut || clipped || unseen || omitted || meaningCut };
 }
 
 // --- list ------------------------------------------------------------------
@@ -144,11 +162,10 @@ function card(item, entry) {
         : el('p', { class: 'note' }, entry && entry.error ? '상세를 불러오지 못했습니다. 열어서 다시 시도하세요.' : '상세를 불러오는 중이거나 목록이 길어 생략했습니다. 열어서 확인하세요.'),
       d ? el('dl', {}, [
         el('dt', {}, '저장소'), el('dd', { class: 'mono' }, inline(d.repo, 200) || '-'),
-        d.action ? [el('dt', {}, '행위'), el('dd', { class: 'mono' }, inline(d.action, 120))] : null,
       ]) : null,
       d ? fileList(d.protected_files) : null,
       d ? snippet(d.hashed_text) : null,
-      cut ? el('p', { class: 'trunc' }, '잘린 내용이 있습니다. 열면 확인 절차가 하나 더 있습니다.') : null,
+      cut ? el('p', { class: 'trunc' }, CUT_REFUSAL) : null,
       el('a', { class: 'btn', href: '#/approvals/' + id, 'data-focus-key': 'open-' + id }, '열어서 읽고 서명 →'),
     ]),
   ]);
@@ -227,12 +244,17 @@ export function renderApproval(st, h) {
   const msgText = typeof d.message === 'string' ? d.message : '';
   const digest = typeof d.digest === 'string' && /^[0-9a-f]{64}$/.test(d.digest) ? d.digest : null;
   const problem = a.problem || st.problem;
+  const mr = /\nrepo: ([0-9a-f]{12})\n/.exec(msgText);
+  const msgRepo = mr ? mr[1] : null; // the message's repo id, shown verbatim
 
   const facts = el('dl', {}, [
     el('dt', {}, '작업'), el('dd', {}, idOf(d.task_id) ? '#' + idOf(d.task_id) : '-'),
     el('dt', {}, '저장소'), el('dd', { class: 'mono' }, inline(d.repo, 200) || '-'),
+    el('dt', {}, '저장소 ID'), el('dd', { class: 'mono' }, msgRepo || '-'),
     el('dt', {}, '종류'), el('dd', {}, kindLabel(d.kind)),
-    d.action ? [el('dt', {}, '행위'), el('dd', { class: 'mono' }, inline(d.action, 120))] : null,
+    d.kind === 'publish_outside_allowlist'
+      ? [el('dt', {}, '행위'), el('dd', {}, st.action ? actionLabel(st.action) : '해시에서 찾지 못함')]
+      : null,
     el('dt', {}, 'base'), el('dd', { class: 'mono' }, short(d.base)),
     el('dt', {}, 'head'), el('dd', { class: 'mono' }, short(d.head)),
   ]);
@@ -264,15 +286,19 @@ export function renderApproval(st, h) {
 
   const truncBox = a.cut
     ? el('div', { class: 'trunc', role: 'alert' }, [
-      el('b', {}, TRUNC_WARNING),
+      el('b', {}, CUT_REFUSAL),
       a.serverCut ? el('small', {}, ' · 서버가 diff를 잘라서 보냈습니다.') : null,
       a.clipped ? el('small', {}, ' · 화면에서 일부 줄을 생략했습니다.') : null,
       a.unseen ? el('small', {}, ' · 보이지 않는 보호 파일이 있습니다.') : null,
+      a.omitted ? el('small', {}, ' · 보호 파일 이름을 모두 보여 주지 못했습니다.') : null,
+      a.meaningCut ? el('small', {}, ' · 설명 글이 너무 길어 잘렸습니다.') : null,
     ])
     : null;
 
   let controls = null;
-  if (problem && has(PROBLEM_TEXT, problem)) {
+  if (a.cut) {
+    controls = el('p', { class: 'trunc', role: 'status' }, CUT_REFUSAL);
+  } else if (problem && has(PROBLEM_TEXT, problem)) {
     controls = el('p', { class: 'trunc', role: 'status' }, PROBLEM_TEXT[problem]);
   } else if (problem) {
     controls = el('p', { class: 'trunc', role: 'alert' }, waText(problem));
@@ -281,10 +307,6 @@ export function renderApproval(st, h) {
   } else {
     controls = el('div', { class: 'confirm' }, [
       el('div', { class: 'row' }, [h.checkbox, el('label', { for: 'confirm-read' }, '위 내용을 읽었습니다')]),
-      a.cut ? el('div', { class: 'row' }, [
-        el('label', { for: 'confirm-trunc' }, "'" + TRUNC_PHRASE + "' 입력"),
-        h.truncInput,
-      ]) : null,
       st.signerNote ? el('p', { class: 'note' }, st.signerNote) : null,
       h.signBtn,
     ]);
@@ -326,9 +348,8 @@ export function approvalView(ctx) {
   let signerP = null; // the passkey is resolved once per visit
   const h = {};
 
-  const truncOK = () => !st.analysis.cut || (typeof h.truncInput.value === 'string' && h.truncInput.value.trim() === TRUNC_PHRASE);
-  const canSign = () => !!st && !st.busy && !st.done && !st.analysis.problem && !st.problem && st.digestChecked &&
-    !!st.signer && h.checkbox.checked === true && truncOK() && supported();
+  const canSign = () => !!st && !st.busy && !st.done && !st.analysis.problem && !st.analysis.cut && !st.problem &&
+    st.digestChecked && !!st.signer && h.checkbox.checked === true && supported();
   const refresh = () => {
     if (!h.signBtn) return;
     if (canSign()) h.signBtn.removeAttribute('disabled');
@@ -340,11 +361,6 @@ export function approvalView(ctx) {
     // a node that outlives a reload of the detail.
     h.checkbox = el('input', { type: 'checkbox', id: 'confirm-read', 'data-focus-key': 'read', on: { change: () => { st.read = h.checkbox.checked === true; refresh(); } } });
     h.checkbox.checked = st.read;
-    h.truncInput = el('input', {
-      type: 'text', id: 'confirm-trunc', 'data-focus-key': 'trunc', maxlength: '20', autocomplete: 'off', spellcheck: 'false',
-      on: { input: () => { st.ack = typeof h.truncInput.value === 'string' ? h.truncInput.value : ''; refresh(); } },
-    });
-    h.truncInput.value = st.ack;
     h.signBtn = el('button', { type: 'button', class: 'btn primary', 'data-focus-key': 'sign', disabled: true, on: { click: onSign } },
       '패스키로 서명하고 승인');
     replaceContent(ctx.root, renderApproval(st, h));
@@ -372,12 +388,13 @@ export function approvalView(ctx) {
     }
     st = {
       detail, analysis: analyze(detail), problem: null, digestChecked: false, signer: null, signerNote: null,
-      read: false, ack: '', busy: false, done: false, msg: msg || null,
+      read: false, busy: false, done: false, msg: msg || null, action: '',
     };
     paint();
-    if (st.analysis.problem) return;
+    // Refused details never reach the authenticator or /auth/signers.
+    if (st.analysis.problem || st.analysis.cut) return;
     try {
-      await digestBytes(detail); // the message and the digest must agree before anything else
+      st.action = (await consistency(detail)).action; // message, repo id, action, digest agree
       st.digestChecked = true;
     } catch (err) {
       st.problem = err && err.code ? err.code : 'digest_mismatch';
@@ -414,7 +431,7 @@ export function approvalView(ctx) {
     paint();
     let body;
     try {
-      body = await signApproval(cur.detail, cur.signer, { acknowledgeTruncation: cur.analysis.cut && cur.ack.trim() === TRUNC_PHRASE });
+      body = await signApproval(cur.detail, cur.signer);
     } catch (err) {
       if (cur !== st) return;
       cur.busy = false;
@@ -423,6 +440,9 @@ export function approvalView(ctx) {
       paint();
       return;
     }
+    // The user left (or the detail was reloaded) while the passkey prompt was
+    // open: drop the signature, send nothing.
+    if ((ctx.signal && ctx.signal.aborted) || cur !== st) return;
     try {
       await ctx.post('/api/v1/approvals/' + id + '/grant', body);
     } catch (err) {

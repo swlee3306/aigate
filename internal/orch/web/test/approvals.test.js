@@ -133,12 +133,20 @@ function makeCtx(routes, extra = {}) {
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 2));
+// Every async wait is bounded: a regression must fail a test, never hang it.
+const WAIT_MS = 3000;
 async function until(pred, what) {
-  for (let i = 0; i < 500; i++) {
+  const end = Date.now() + WAIT_MS;
+  while (Date.now() < end) {
     if (pred()) return;
     await tick();
   }
   assert.fail('timed out waiting for ' + what);
+}
+function withTimeout(p, what) {
+  let timer;
+  const t = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timed out: ' + what)), WAIT_MS); });
+  return Promise.race([p, t]).finally(() => clearTimeout(timer));
 }
 const settle = async () => { for (let i = 0; i < 15; i++) await tick(); };
 const byKey = (root, k) => findAll(root, (e) => e.getAttribute('data-focus-key') === k)[0] || null;
@@ -152,11 +160,6 @@ async function tickConfirm(root) {
   const cb = byKey(root, 'read');
   cb.checked = true;
   await fire(cb, 'change');
-}
-async function typeTrunc(root, s) {
-  const inp = byKey(root, 'trunc');
-  inp.value = s;
-  await fire(inp, 'input');
 }
 
 let auth;
@@ -206,9 +209,8 @@ test('TestSignApprovalUsesDigestAsChallenge', async () => {
   assert.ok(auth.verify(body));
   const cd = JSON.parse(Buffer.from(wa.b64uDecode(body.webauthn.client_data_json)).toString());
   assert.equal(cd.challenge, wa.b64uEncode(digest));
-  // only the message was hashed, never hashed_text
-  assert.equal(subtle.inputs.length, 1);
-  assert.deepEqual(subtle.inputs[0], utf8(detail.message));
+  // only the repo path (repo id) and the message were hashed, never hashed_text
+  assert.deepEqual(subtle.inputs.map((b) => Buffer.from(b).toString()).sort(), [detail.message, detail.repo].sort());
 
   // message/digest disagreement: refused BEFORE the authenticator
   const other = { ...detail, digest: 'ab'.repeat(32) };
@@ -254,12 +256,11 @@ test('signApproval: not signed mode, truncation, signer and response checks', as
   await assert.rejects(wa.signApproval({ ...d, requires_signature: false }, signerOf(auth)), (e) => e.code === 'not_signed_mode');
   await assert.rejects(wa.signApproval({ ...d, message: '', digest: '' }, signerOf(auth)), (e) => e.code === 'no_message');
   const t = fx('approval-truncated.json');
-  await assert.rejects(wa.signApproval(t, signerOf(auth)), (e) => e.code === 'truncation_unconfirmed');
+  await assert.rejects(wa.signApproval(t, signerOf(auth)), (e) => e.code === 'truncated');
+  await assert.rejects(wa.signApproval(t, signerOf(auth), { acknowledgeTruncation: true }), (e) => e.code === 'truncated', 'no bypass');
   await assert.rejects(wa.signApproval(d, { ...signerOf(auth), id: 'Bad Id' }), (e) => e.code === 'bad_signer');
   await assert.rejects(wa.signApproval(d, { ...signerOf(auth), credentialId: 'abc=' }), (e) => e.code === 'bad_signer');
   assert.equal(auth.gets.length, 0);
-  const ok = await wa.signApproval(t, signerOf(auth), { acknowledgeTruncation: true });
-  assert.ok(auth.verify(ok));
   auth.mode = 'other-id';
   await assert.rejects(wa.signApproval(d, signerOf(auth)), (e) => e.code === 'bad_response');
   auth.mode = 'deny';
@@ -304,7 +305,7 @@ test('base64url is strict: no padding, no standard alphabet, canonical trailing 
 test('TestApprovalsShowMeaningAndMessage', async () => {
   const detail = fx('approval.json');
   // list
-  const lctx = makeCtx({ '/api/v1/approvals': fx('approvals.json'), '/api/v1/approvals/9': detail });
+  const lctx = makeCtx({ '/api/v1/approvals': fx('approvals.json'), '/api/v1/approvals/9': detail, '/api/v1/approvals/11': fx('approval-publish.json') });
   A.approvalsView(lctx);
   assert.equal(lctx.polls.length, 1);
   await lctx.polls[0].fn();
@@ -348,11 +349,12 @@ test('TestHashedTextHashRecomputeIsNotClaimed', async () => {
     const detail = fx(name);
     subtle.inputs.length = 0;
     const ctx = makeCtx({ '/api/v1/approvals/9': detail, '/api/v1/auth/signers': signersRoute() }, { params: ['9'] });
-    await A.approvalView(ctx);
-    await until(() => byKey(ctx.root, 'sign'), 'sign button');
-    await tickConfirm(ctx.root);
-    if (detail.truncated) await typeTrunc(ctx.root, A.TRUNC_PHRASE);
-    await fire(byKey(ctx.root, 'sign'), 'click');
+    await withTimeout(A.approvalView(ctx), 'view');
+    if (!detail.truncated) {
+      await until(() => byKey(ctx.root, 'sign'), 'sign button');
+      await tickConfirm(ctx.root);
+      await withTimeout(fire(byKey(ctx.root, 'sign'), 'click'), 'sign');
+    }
     await settle();
     for (const e of allElements(ctx.root)) {
       for (const [, v] of e.attrs) assert.doesNotMatch(v, CLAIM);
@@ -361,11 +363,11 @@ test('TestHashedTextHashRecomputeIsNotClaimed', async () => {
     assert.doesNotMatch(all, CLAIM, name);
     assert.ok(all.includes(A.NOT_RECOMPUTED), name);
     assert.ok(all.includes('확인되지 않음'));
-    // nothing about hashed_text was hashed: only the message, for the digest check
-    assert.ok(subtle.inputs.length >= 1);
-    for (const inp of subtle.inputs) assert.deepEqual(inp, utf8(detail.message));
+    // nothing about hashed_text was hashed: only the message and the repo path
+    for (const inp of subtle.inputs) assert.ok([detail.message, detail.repo].includes(Buffer.from(inp).toString()), name);
+    if (!detail.truncated) assert.ok(subtle.inputs.some((b) => Buffer.from(b).toString() === detail.message));
   }
-  const lctx = makeCtx({ '/api/v1/approvals': fx('approvals.json'), '/api/v1/approvals/9': fx('approval.json') });
+  const lctx = makeCtx({ '/api/v1/approvals': fx('approvals.json'), '/api/v1/approvals/9': fx('approval.json'), '/api/v1/approvals/11': fx('approval-publish.json') });
   A.approvalsView(lctx);
   await lctx.polls[0].fn();
   assert.doesNotMatch(text(lctx.root), CLAIM);
@@ -411,12 +413,12 @@ test('TestGrantSentOnlyAfterConfirm', async () => {
   const btn = byKey(ctx.root, 'sign');
   const c1 = fire(btn, 'click');
   const c2 = fire(btn, 'click');
-  await fire(byKey(ctx.root, 'sign'), 'click');
+  const c3 = fire(byKey(ctx.root, 'sign'), 'click');
   await settle();
-  assert.equal(auth.gets.length, 2);
+  assert.equal(auth.gets.length, 2, 'one ceremony for three clicks');
   assert.equal(ctx.posts.length, 0, 'no request while the authenticator has not answered');
   release();
-  await Promise.all([c1, c2]);
+  await withTimeout(Promise.all([c1, c2, c3]), 'clicks settle');
   await until(() => ctx.posts.length === 1, 'grant post');
   await settle();
   assert.equal(grantPosts(ctx).length, 1, 'double click sends one request');
@@ -481,48 +483,114 @@ test('hash_changed and stale_signature reload the detail and require a fresh con
   }
 });
 
-test('truncated content needs the typed confirmation before the button enables', async () => {
-  const detail = fx('approval-truncated.json');
-  const ctx = detailCtx(detail, { post: { '/api/v1/approvals/9/grant': { id: 38 } } });
-  await A.approvalView(ctx);
-  await until(() => byKey(ctx.root, 'sign'), 'sign');
-  const all = text(ctx.root);
-  assert.ok(all.includes(A.TRUNC_WARNING));
-  assert.ok(findAll(ctx.root, (e) => e.getAttribute('role') === 'alert').some((e) => text(e).includes('잘린 내용이 있습니다')));
-  await tickConfirm(ctx.root);
-  assert.ok(isDisabled(byKey(ctx.root, 'sign')), 'the checkbox alone is not enough');
-  for (const wrong of ['', '잘림', '잘림확인', 'yes']) {
-    await typeTrunc(ctx.root, wrong);
-    assert.ok(isDisabled(byKey(ctx.root, 'sign')), JSON.stringify(wrong));
+// Cut or not fully visible details are refused outright, like `orch approve`
+// (R22): no confirmation controls, no authenticator, no /auth/signers, no POST.
+function cutVariants() {
+  const d = fx('approval.json');
+  return {
+    'server truncated': fx('approval-truncated.json'),
+    'client clipped (long line)': { ...d, hashed_text: d.hashed_text.replace('+[pytest]', '+' + 'x'.repeat(2000)) },
+    'client clipped (many lines)': { ...d, hashed_text: d.hashed_text + '+x\n'.repeat(A.MAX_BLOCK_LINES + 10) },
+    'unseen protected file': { ...d, protected_files: [...d.protected_files, 'secret/hidden.yml'] },
+    'protected file names omitted': { ...d, protected_files: Array.from({ length: 51 }, (_, i) => 'p' + i + '.txt') },
+    'meaning cut': { ...d, meaning: d.meaning + ' ' + 'x'.repeat(4000) },
+  };
+}
+
+test('truncated, clipped or unseen content: refusal with orch approve guidance, authenticator and POST never called', async () => {
+  for (const [name, detail] of Object.entries(cutVariants())) {
+    auth = new FakeAuthenticator();
+    wa.configure({ credentials: auth, subtle: recordingSubtle() });
+    assert.equal(A.analyze(detail).cut, true, name);
+    const ctx = detailCtx(detail, { post: { '/api/v1/approvals/9/grant': { id: 38 } } });
+    await withTimeout(A.approvalView(ctx), name);
+    await settle();
+    const all = text(ctx.root);
+    assert.ok(all.includes(A.CUT_REFUSAL), name);
+    assert.match(all, /orch approve/, name);
+    assert.match(all, /orch diff/, name);
+    assert.ok(findAll(ctx.root, (e) => e.getAttribute('role') === 'alert').some((e) => text(e).includes(A.CUT_REFUSAL)), name);
+    assert.equal(byKey(ctx.root, 'read'), null, name + ': no checkbox');
+    assert.equal(byKey(ctx.root, 'sign'), null, name + ': no sign button');
+    assert.equal(findAll(ctx.root, (e) => e.tagName === 'INPUT').length, 0, name + ': no input');
+    assert.equal(auth.gets.length, 0, name);
+    assert.equal(ctx.posts.length, 0, name);
+    assert.equal(ctx.calls.filter((c) => c.path.startsWith('/api/v1/auth/')).length, 0, name);
   }
-  await fire(byKey(ctx.root, 'sign'), 'click');
-  await settle();
-  assert.equal(auth.gets.length, 0);
-  await typeTrunc(ctx.root, '잘림 확인');
-  assert.ok(!isDisabled(byKey(ctx.root, 'sign')));
-  await fire(byKey(ctx.root, 'sign'), 'click');
-  await until(() => grantPosts(ctx).length === 1, 'grant');
-  assert.ok(auth.verify(grantPosts(ctx)[0].body));
-  // an untruncated detail does not ask for it
+  const lctx = makeCtx({ '/api/v1/approvals': [{ id: 9, task_id: 38, kind: 'protected_modified', hash: 'h', head: 'x', status: 'pending' }], '/api/v1/approvals/9': fx('approval-truncated.json') });
+  A.approvalsView(lctx);
+  await lctx.polls[0].fn();
+  assert.ok(text(lctx.root).includes(A.CUT_REFUSAL));
   const plain = detailCtx(fx('approval.json'));
-  await A.approvalView(plain);
+  await withTimeout(A.approvalView(plain), 'plain');
   await until(() => byKey(plain.root, 'sign'), 'sign');
-  assert.equal(byKey(plain.root, 'trunc'), null);
-  assert.ok(!text(plain.root).includes(A.TRUNC_WARNING));
+  assert.ok(!text(plain.root).includes(A.CUT_REFUSAL));
+  assert.equal(A.analyze(fx('approval.json')).cut, false);
 });
 
-test('client-side clipping and unseen protected files count as truncation', () => {
+test('leaving the view while the passkey prompt is open sends nothing', async () => {
+  const ctx = detailCtx(fx('approval.json'), { post: { '/api/v1/approvals/9/grant': { id: 38 } } });
+  await withTimeout(A.approvalView(ctx), 'view');
+  await until(() => byKey(ctx.root, 'sign'), 'sign');
+  let release;
+  auth.gate = new Promise((r) => { release = r; });
+  await tickConfirm(ctx.root);
+  const c = fire(byKey(ctx.root, 'sign'), 'click');
+  await until(() => auth.gets.length === 1, 'prompt open');
+  ctx.leave();
+  release();
+  await withTimeout(c, 'click');
+  await settle();
+  assert.deepEqual(auth.events.slice(-2), ['get', 'signed'], 'the authenticator answered');
+  assert.equal(ctx.posts.length, 0, 'but nothing was sent');
+});
+
+test('repo id: the message repo must be sha256(repo path)[:12] (Go vectors)', async () => {
+  for (const name of ['approval.json', 'approval-truncated.json', 'approval-publish.json']) {
+    const d = fx(name);
+    assert.equal(await wa.repoIdOf(d.repo), /\nrepo: ([0-9a-f]{12})\n/.exec(d.message)[1], name);
+  }
   const d = fx('approval.json');
-  assert.equal(A.analyze(d).cut, false);
-  assert.equal(A.analyze(fx('approval-truncated.json')).cut, true);
-  const long = { ...d, hashed_text: d.hashed_text.replace('+[pytest]', '+' + 'x'.repeat(2000)) };
-  assert.equal(A.analyze(long).clipped, true);
-  assert.equal(A.analyze(long).cut, true);
-  const many = { ...d, hashed_text: d.hashed_text + '+x\n'.repeat(A.MAX_BLOCK_LINES + 10) };
-  assert.equal(A.analyze(many).cut, true);
-  const unseen = { ...d, protected_files: [...d.protected_files, 'secret/hidden.yml'] };
-  assert.equal(A.analyze(unseen).unseen, true);
-  assert.equal(A.analyze(unseen).cut, true);
+  await assert.rejects(wa.signApproval({ ...d, repo: '/srv/repos/other' }, signerOf(auth)), (e) => e.code === 'repo_mismatch');
+  await assert.rejects(wa.signApproval(detailWith({}, (m) => m.replace(/repo: [0-9a-f]{12}/, 'repo: 0123456789ab')), signerOf(auth)), (e) => e.code === 'repo_mismatch');
+  assert.equal(auth.gets.length, 0);
+  const ctx = detailCtx(d);
+  await withTimeout(A.approvalView(ctx), 'view');
+  await until(() => byKey(ctx.root, 'sign'), 'sign');
+  assert.ok(text(ctx.root).includes(await wa.repoIdOf(d.repo)), 'message repo id shown');
+  const bad = detailCtx({ ...d, repo: '/srv/repos/other' });
+  await withTimeout(A.approvalView(bad), 'view');
+  await until(() => text(bad.root).includes(wa.WA_TEXT.repo_mismatch), 'mismatch');
+  assert.equal(byKey(bad.root, 'sign'), null);
+});
+
+test('publish actions: JS publishHash reproduces approvals.PublishHash (Go vectors); derived action shown and required', async () => {
+  for (const v of fx('publish_vectors.json')) {
+    assert.equal(await wa.publishHash(v.task, v.head, v.action), v.hash, v.action + ' ' + v.task);
+  }
+  const p = fx('approval-publish.json');
+  assert.equal(await wa.deriveAction(p), 'push_branch');
+  assert.ok(auth.verify(await wa.signApproval(p, signerOf(auth))));
+  await assert.rejects(wa.signApproval({ ...p, action: 'draft_pr' }, signerOf(auth)), (e) => e.code === 'publish_action_mismatch');
+  await assert.rejects(wa.signApproval({ ...p, action: '' }, signerOf(auth)), (e) => e.code === 'publish_action_mismatch');
+  const h = 'e'.repeat(64);
+  const none = detailWith({ ...p, hash: h }, (m) => m.replace(p.hash, h));
+  await assert.rejects(wa.signApproval(none, signerOf(auth)), (e) => e.code === 'publish_action_unknown');
+  const pv = fx('publish_vectors.json').find((v) => v.task === 38 && v.action.startsWith('policy_changed:'));
+  const pol = detailWith({ ...p, hash: pv.hash, action: pv.action }, (m) => m.replace(p.hash, pv.hash));
+  assert.equal(await wa.deriveAction(pol), pv.action);
+  assert.ok(auth.verify(await wa.signApproval(pol, signerOf(auth))));
+  await assert.rejects(wa.signApproval({ ...pol, policy_hash: '' }, signerOf(auth)), (e) => e.code === 'publish_action_unknown');
+  // the screen shows the DERIVED action label
+  const ctx = makeCtx({ '/api/v1/approvals/11': p, '/api/v1/auth/signers': signersRoute() }, { params: ['11'] });
+  await withTimeout(A.approvalView(ctx), 'view');
+  await until(() => byKey(ctx.root, 'sign'), 'sign');
+  const dd = findAll(ctx.root, (e) => e.tagName === 'DD').map(text);
+  assert.ok(dd.includes(A.actionLabel('push_branch')), dd.join('|'));
+  const mm = makeCtx({ '/api/v1/approvals/11': { ...p, action: 'draft_pr' }, '/api/v1/auth/signers': signersRoute() }, { params: ['11'] });
+  await withTimeout(A.approvalView(mm), 'view');
+  await until(() => text(mm.root).includes(wa.WA_TEXT.publish_action_mismatch), 'mismatch');
+  assert.equal(byKey(mm.root, 'sign'), null);
 });
 
 test('not signed mode: says so and never asks the authenticator or the signers list', async () => {
@@ -553,7 +621,13 @@ test('hostile meaning, paths, repo and message are shown neutralised; a hostile 
   assert.ok(all.includes('<img src=x onerror=alert(1)>'), 'markup literal');
   assert.ok(all.includes('⟨U+202E⟩') && all.includes('␛[31m') && all.includes('␀') && all.includes('⟨U+200B⟩'));
   assert.doesNotMatch(all, /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069\u200b]/);
-  assert.ok(all.includes(wa.WA_TEXT.hostile_message));
+  assert.ok(all.includes(A.CUT_REFUSAL), 'hostile names are not in the diff: refused as unseen');
+  // the same hostile message with the real file list: refused as hostile
+  const hm = detailCtx({ ...d, protected_files: fx('approval.json').protected_files });
+  await withTimeout(A.approvalView(hm), 'view');
+  await settle();
+  assert.ok(text(hm.root).includes(wa.WA_TEXT.hostile_message));
+  assert.equal(byKey(hm.root, 'sign'), null);
   assert.equal(byKey(ctx.root, 'sign'), null, 'no sign control for a hostile message');
   assert.equal(auth.gets.length, 0);
   assert.equal(ctx.posts.length, 0);

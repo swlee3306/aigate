@@ -55,7 +55,10 @@ export const WA_TEXT = {
   message_mismatch: '서명할 메시지의 내용이 이 승인 항목과 다릅니다. 서명하지 않습니다.',
   bad_digest: '서버가 준 다이제스트 형식이 올바르지 않아 서명하지 않습니다.',
   digest_mismatch: '서버가 준 메시지와 다이제스트가 서로 맞지 않습니다. 서명하지 않습니다.',
-  truncation_unconfirmed: '잘린 내용이 있어 서명 전에 잘림 확인이 필요합니다.',
+  truncated: '잘린 내용이 있어 웹에서는 서명할 수 없습니다. 전체 diff는 터미널에서 orch diff 로 읽고, 승인은 orch approve 로 하세요.',
+  repo_mismatch: '서명할 메시지의 저장소 ID가 이 화면의 저장소 경로와 맞지 않습니다. 서명하지 않습니다.',
+  publish_action_unknown: '이 게시 승인의 해시와 맞는 게시 행위를 찾지 못했습니다. 서명하지 않습니다.',
+  publish_action_mismatch: '서버가 말한 게시 행위가 해시에서 찾은 행위와 다릅니다. 서명하지 않습니다.',
   bad_signer: '서명에 쓸 패스키 정보가 올바르지 않습니다.',
   bad_options: '서버가 보낸 패스키 요청이 올바르지 않습니다.',
   bad_response: '패스키 응답이 올바르지 않습니다. 아무것도 보내지 않았습니다.',
@@ -192,16 +195,77 @@ export function checkMessage(detail) {
   return { kind, repo, task, base, hash, issued };
 }
 
-// digestBytes returns the 32 bytes of detail.digest after checking that they
-// are the SHA-256 of the UTF-8 message (WebCrypto, never a JS hash).
-export async function digestBytes(detail) {
-  checkMessage(detail);
+async function sha256(bytes) {
+  requireSupport();
+  return new Uint8Array(await deps.subtle().digest('SHA-256', bytes));
+}
+
+function hex(b) {
+  let s = '';
+  for (const x of b) s += x.toString(16).padStart(2, '0');
+  return s;
+}
+
+// repoIdOf is the repo id the server puts in the message for the stored repo
+// path: the daemon stores the symlink-resolved repository top level, and
+// gate.RepoID is the first 12 hex of sha256(top level). Same as `orch
+// approve`'s repoIDOf for a path that is not local.
+export async function repoIdOf(path) {
+  return hex(await sha256(new TextEncoder().encode(path))).slice(0, 12);
+}
+
+// Publish actions (internal/orch/publish Kind*) and the policy-change pseudo
+// action (steps.PolicyChangeKind).
+export const PUBLISH_ACTIONS = ['push_branch', 'draft_pr', 'notify'];
+export const policyChangeKind = (h) => 'policy_changed:' + h;
+
+// publishHash mirrors approvals.PublishHash byte for byte:
+// hex(sha256("aigate-orch-publish-v1\0" + task + "\0" + head + "\0" + action)).
+export async function publishHash(task, head, action) {
+  return hex(await sha256(new TextEncoder().encode('aigate-orch-publish-v1\u0000' + String(task) + '\u0000' + head + '\u0000' + action)));
+}
+
+// deriveAction mirrors `orch approve`'s deriveAction: the action whose
+// publish hash is the entry's hash, '' when none.
+export async function deriveAction(detail) {
+  let action = '';
+  for (const k of PUBLISH_ACTIONS) {
+    if (await publishHash(detail.task_id, detail.head, k) === detail.hash) action = k;
+  }
+  const ph = detail.policy_hash;
+  if (!action && typeof ph === 'string' && ph !== '' &&
+      await publishHash(detail.task_id, detail.head, policyChangeKind(ph)) === detail.hash) {
+    action = policyChangeKind(ph);
+  }
+  return action;
+}
+
+const HEAD_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
+// consistency runs every check a detail must pass before it may be signed
+// and returns {challenge, action}: the canonical message (checkMessage); not
+// truncated; the message's repo id is the screen's repo path's; for a publish
+// entry the action derived from the hash exists and equals detail.action;
+// sha256(utf8(message)) is detail.digest, whose 32 raw bytes are the
+// challenge. All are consistency checks between server values.
+export async function consistency(detail) {
+  const f = checkMessage(detail);
+  if (detail.truncated === true) throw new WebAuthnError('truncated');
+  if (typeof detail.repo !== 'string' || detail.repo === '' || await repoIdOf(detail.repo) !== f.repo) {
+    throw new WebAuthnError('repo_mismatch');
+  }
+  let action = '';
+  if (f.kind === 'publish_outside_allowlist') {
+    if (typeof detail.head !== 'string' || !HEAD_RE.test(detail.head)) throw new WebAuthnError('publish_action_unknown');
+    action = await deriveAction(detail);
+    if (!action) throw new WebAuthnError('publish_action_unknown');
+    if (action !== detail.action) throw new WebAuthnError('publish_action_mismatch');
+  }
   if (typeof detail.digest !== 'string' || !/^[0-9a-f]{64}$/.test(detail.digest)) throw new WebAuthnError('bad_digest');
   const want = hexToBytes(detail.digest);
-  requireSupport();
-  const got = new Uint8Array(await deps.subtle().digest('SHA-256', new TextEncoder().encode(detail.message)));
+  const got = await sha256(new TextEncoder().encode(detail.message));
   if (want.length !== 32 || !equalBytes(got, want)) throw new WebAuthnError('digest_mismatch');
-  return want;
+  return { challenge: want, action };
 }
 
 const SIGNER_RE = /^[a-z0-9][a-z0-9._-]{0,62}$/;
@@ -210,15 +274,13 @@ const ISSUED_RE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/;
 // signApproval asks the passkey to sign one approval detail and returns the
 // grant request body:
 //   {signer, alg: 'webauthn-es256', sig, issued, webauthn: {authenticator_data, client_data_json}}
-// signer = {id, credentialId (base64url), rpId?}. opts.acknowledgeTruncation
-// must be true when detail.truncated (the human typed the confirmation).
+// signer = {id, credentialId (base64url), rpId?}. A truncated detail is
+// always refused (as `orch approve` does).
 // Every check runs BEFORE the authenticator is called; a failure throws a
 // WebAuthnError and nothing is signed.
-export async function signApproval(detail, signer, opts) {
-  opts = opts || {};
-  const challenge = await digestBytes(detail);
+export async function signApproval(detail, signer) {
+  const { challenge } = await consistency(detail);
   if (!ISSUED_RE.test(detail.issued)) throw new WebAuthnError('bad_message');
-  if (detail.truncated === true && opts.acknowledgeTruncation !== true) throw new WebAuthnError('truncation_unconfirmed');
   if (!signer || typeof signer.id !== 'string' || !SIGNER_RE.test(signer.id)) throw new WebAuthnError('bad_signer');
   let credId;
   try {

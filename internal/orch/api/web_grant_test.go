@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"aigate/internal/approval/signing"
+	"aigate/internal/gate"
 	"aigate/internal/orch/store"
 )
 
@@ -165,6 +166,9 @@ func jsSignApproval(t *testing.T, d ApprovalDetail, signer string, assert func(c
 		m.Issued.Format(time.RFC3339) != d.Issued {
 		t.Fatalf("message does not match the detail: %v", err)
 	}
+	if fixtureRepoID(d.Repo) != m.Repo { // webauthn.js repoIdOf
+		t.Fatalf("message repo %s is not sha256(%q)[:12]", m.Repo, d.Repo)
+	}
 	sum := sha256.Sum256([]byte(d.Message))
 	challenge, err := hex.DecodeString(d.Digest)
 	if err != nil || len(challenge) != 32 || !bytes.Equal(challenge, sum[:]) {
@@ -232,5 +236,24 @@ func TestWebSignedGrantEndToEnd(t *testing.T) {
 	// the same body again: the entry is no longer pending
 	if code, _, rb := httpDo(t, f.srv, "POST", path, string(bb), auth); code != http.StatusConflict {
 		t.Fatalf("replay: %d %s", code, rb)
+	}
+}
+
+// TestRepoIDIsHashOfStoredPath: the daemon stores a task's repo as the
+// symlink-resolved path of a directory with .git at its top (validate), and
+// for such a path gate.RepoID (sha256 of git's toplevel) equals
+// sha256(path)[:12], which is what the console recomputes.
+func TestRepoIDIsHashOfStoredPath(t *testing.T) {
+	e := newEnv(t, noSteps{}, 1)
+	real, err := filepath.EvalSymlinks(e.repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, top, err := gate.RepoID(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if top != real || id != fixtureRepoID(real) {
+		t.Fatalf("RepoID(%q) = %s (top %q), sha256(path) = %s", real, id, top, fixtureRepoID(real))
 	}
 }

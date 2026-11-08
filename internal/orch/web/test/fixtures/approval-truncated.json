@@ -10,8 +10,8 @@
   "created_at": "2026-11-09T10:03:02Z",
   "repo": "/srv/repos/proj",
   "task_state": "needs_approval",
-  "message": "aigate-approval-v1\nkind: protected_modified\nrepo: 0123456789ab\ntask: 38\nbase: 1111111111111111111111111111111111111111\nhash: 3273763058ed7862\nissued: 2026-11-09T10:04:05Z\n",
-  "digest": "740ef9941d502148723b8d8361faaf05a35485f44c13fc67f3c52da45f08239a",
+  "message": "aigate-approval-v1\nkind: protected_modified\nrepo: 0e22c6a35c36\ntask: 38\nbase: 1111111111111111111111111111111111111111\nhash: 3273763058ed7862\nissued: 2026-11-09T10:04:05Z\n",
+  "digest": "0b33c2d4ccc9c4a5c32605b23a9d708ad614638fac9449207def3100e47c82e7",
   "hashed_text": "diff --git a/pytest.ini b/pytest.ini\nnew file mode 100644\nindex 0000000000000000000000000000000000000000..eea2c180278f7b2bc64449bc2dce8d07e3856af1\n--- /dev/null\n+++ b/pytest.ini\n@@ -0,0 +1 @@\n+[pytest]\ndiff --git a/tests/spec.txt b/tests/spec.txt\nindex c0d0fb45c382919737f8d0c20aaf57cf89b74af8..f64fff0cd766ea575a5951ef10a1c064e43fc05d 100644\n--- a/tests/spec.txt\n+++ b/tests/spec.txt\n@@ -2 +2,2 @@ line1\n-line2\n+\u003cscript\u003ealert(1)\u003c/script\u003e\n+esc \u001b[31mred\u001b[0m bidi ",
   "protected_files": [
     "pytest.ini",
