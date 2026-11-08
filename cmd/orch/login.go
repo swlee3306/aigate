@@ -108,7 +108,7 @@ func (o loginOpts) resolve(stored tokenFileData) (signer, key string, err error)
 var loginRefusals = map[string]string{
 	"bad_challenge":       "로그인 챌린지가 만료되었거나 이미 쓰였습니다. 다시 실행하세요",
 	"bad_signature":       "로그인 서명이 검증되지 않았습니다. --signer의 ID와 --sign-key의 키가 서버 서명자 목록에 함께 등록된 것인지 확인하세요",
-	"too_many_attempts":   "로그인 실패가 너무 많습니다. 1분 뒤 다시 시도하세요",
+	"busy":                "서버에 진행 중인 로그인 요청이 너무 많습니다. 잠시 뒤 다시 시도하세요",
 	"signers_unavailable": "서버의 서명자 목록을 신뢰할 수 없거나 없어서 로그인할 수 없습니다(관리자 확인 필요)",
 	"bad_request":         "서버가 로그인 요청을 거부했습니다(형식 오류)",
 }

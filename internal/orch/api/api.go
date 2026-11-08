@@ -155,15 +155,15 @@ type handler struct {
 	// idemMu serialises keyed submits (one orchd per database, see lockDB),
 	// so a key never yields two tasks.
 	idemMu sync.Mutex
-	// now is the login clock (challenge issue/expiry, failure window); nil
-	// means time.Now. loginFails limits failed SSH logins per signer id.
-	now        func() time.Time
-	loginFails *failLimiter
+	// now is the login clock (challenge issue and expiry); nil means
+	// time.Now. loginChallengeCap bounds live login challenges.
+	now               func() time.Time
+	loginChallengeCap int
 }
 
 func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome string) (*handler, error) {
 	h := &handler{st: st, m: m, grants: approvals.Grants{Home: gateHome}, socketUIDs: socketUIDSet(nil)}
-	h.loginFails = newFailLimiter(h.clock)
+	h.loginChallengeCap = DefaultLoginChallengeCap
 	for _, r := range allowed {
 		if !filepath.IsAbs(r) || filepath.Clean(r) != r {
 			return nil, fmt.Errorf("allowed repo root %q must be an absolute clean path", r)

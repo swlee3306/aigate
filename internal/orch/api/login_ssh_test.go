@@ -82,7 +82,6 @@ func newLoginFixture(t *testing.T) *loginFixture {
 	f := &loginFixture{e: e, alice: alice, bob: bob, reg: reg, clock: &testClock{}}
 	// Set before the first request (same pattern as handler.grants).
 	e.d.handler.now = f.clock.now
-	e.d.handler.loginFails = newFailLimiter(f.clock.now)
 	f.srv = e.httpServer(t)
 	return f
 }
@@ -431,7 +430,6 @@ func TestTokenExpires(t *testing.T) {
 func TestTokenUnlocksWriteNotApproval(t *testing.T) {
 	f := newGrantFixture(t)
 	f.e.d.handler.now = time.Now
-	f.e.d.handler.loginFails = newFailLimiter(time.Now)
 	srv := f.e.httpServer(t)
 	lf := &loginFixture{e: f.e, srv: srv, alice: f.alice}
 	tok := lf.login(t, f.alice)
@@ -446,19 +444,26 @@ func TestTokenUnlocksWriteNotApproval(t *testing.T) {
 	path := fmt.Sprintf("/api/v1/approvals/%d/grant", aid)
 	issued := nowSec()
 	m := f.message(t, aid, issued)
-	refused := map[string]any{
-		"empty body":    map[string]any{},
-		"no signature":  map[string]any{"signer": "alice", "alg": signing.TypeSSHEd25519, "issued": issued.Format(time.RFC3339)},
-		"garbage sig":   f.body("not a signature", issued),
-		"login sig":     f.body(f.alice.signNS(t, signing.NamespaceLogin, m.Text()), issued),
-		"the token":     f.body(tok, issued),
-		"login message": f.body(f.alice.signNS(t, signing.NamespaceLogin, LoginMessage("alice", strings.Repeat("d", 64), issued)), issued),
+	type want struct {
+		body   any
+		status int
+		code   string
 	}
-	for name, body := range refused {
-		b, _ := json.Marshal(body)
+	refused := map[string]want{
+		// Malformed: no issued, so no message can be rebuilt.
+		"empty body": {map[string]any{}, http.StatusBadRequest, "invalid_message"},
+		// Well-formed requests whose signature is not an approval signature.
+		"no signature":  {map[string]any{"signer": "alice", "alg": signing.TypeSSHEd25519, "issued": issued.Format(time.RFC3339)}, http.StatusForbidden, "bad_signature"},
+		"garbage sig":   {f.body("not a signature", issued), http.StatusForbidden, "bad_signature"},
+		"login sig":     {f.body(f.alice.signNS(t, signing.NamespaceLogin, m.Text()), issued), http.StatusForbidden, "bad_signature"},
+		"the token":     {f.body(tok, issued), http.StatusForbidden, "bad_signature"},
+		"login message": {f.body(f.alice.signNS(t, signing.NamespaceLogin, LoginMessage("alice", strings.Repeat("d", 64), issued)), issued), http.StatusForbidden, "bad_signature"},
+	}
+	for name, w := range refused {
+		b, _ := json.Marshal(w.body)
 		code, _, rb := httpDo(t, srv, "POST", path, string(b), auth)
-		if code == http.StatusOK || code/100 != 4 {
-			t.Fatalf("%s: token alone granted: %d %s", name, code, rb)
+		if code != w.status || v1Code(rb) != w.code {
+			t.Fatalf("%s: got %d %s, want %d %s", name, code, rb, w.status, w.code)
 		}
 		f.unchanged(t, tid, aid)
 	}
@@ -477,51 +482,40 @@ func TestTokenUnlocksWriteNotApproval(t *testing.T) {
 	}
 }
 
-func TestLoginRateLimited(t *testing.T) {
+// Live login challenges are capped; at the cap /auth/challenge answers 503
+// busy, and a taken or expired challenge frees its place.
+func TestLoginChallengeCap(t *testing.T) {
 	f := newLoginFixture(t)
-	for i := 0; i < loginMaxFailures; i++ {
-		c := f.challenge(t, "alice")
-		code, b := f.token(t, c.ChallengeID, f.bob.signNS(t, signing.NamespaceLogin, c.Message))
-		wantCode(t, fmt.Sprint("failure ", i), code, b, http.StatusUnauthorized, "bad_signature")
+	f.e.d.handler.loginChallengeCap = 2 // before the next request
+	c1 := f.challenge(t, "alice")
+	f.challenge(t, "mallory")
+	code, b := f.post(t, "/api/v1/auth/challenge", map[string]string{"signer": "zed-<x>"})
+	wantCode(t, "malformed id still checked first", code, b, http.StatusBadRequest, "bad_request")
+	code, b = f.post(t, "/api/v1/auth/challenge", map[string]string{"signer": "bob"})
+	wantCode(t, "at cap", code, b, http.StatusServiceUnavailable, "busy")
+	if strings.Contains(string(b), "bob") {
+		t.Fatalf("echoed: %s", b)
 	}
-	// Even a correct signature is refused while limited.
-	c := f.challenge(t, "alice")
-	code, b := f.token(t, c.ChallengeID, f.alice.signNS(t, signing.NamespaceLogin, c.Message))
-	wantCode(t, "limited", code, b, http.StatusTooManyRequests, "too_many_attempts")
-	// The limit is per signer: bob is not affected.
-	f.login(t, f.bob)
-	// After the window it works again.
-	f.clock.advance(loginFailWindow + time.Second)
-	f.login(t, f.alice)
-}
-
-func TestFailLimiterBounded(t *testing.T) {
-	clock := &testClock{}
-	l := newFailLimiter(clock.now)
-	for i := 0; i < 3*maxLimiterKeys; i++ {
-		l.fail(fmt.Sprint("k", i))
+	// Taking one (a login) frees a place.
+	if code, b := f.token(t, c1.ChallengeID, f.alice.signNS(t, signing.NamespaceLogin, c1.Message)); code != 200 {
+		t.Fatalf("token %d %s", code, b)
 	}
-	if n := l.size(); n > maxLimiterKeys+1 {
-		t.Fatalf("limiter holds %d keys", n)
+	f.challenge(t, "bob")
+	code, b = f.post(t, "/api/v1/auth/challenge", map[string]string{"signer": "bob"})
+	wantCode(t, "at cap again", code, b, http.StatusServiceUnavailable, "busy")
+	// Expired challenges do not count: with one expired row stored and the
+	// cap raised to 4 (2 live), there is room for exactly two fresh ones.
+	if err := f.e.st.SaveChallenge(context.Background(), store.Challenge{ID: strings.Repeat("e", 64),
+		Purpose: ChallengePurposeLogin, Data: "{}", ExpiresAt: time.Now().Add(-time.Second)}); err != nil {
+		t.Fatal(err)
 	}
-	// The flood fails closed: nobody is allowed while it lasts, and it never
-	// evicted a key's count.
-	if l.allow("k0") || l.allow("fresh") {
-		t.Fatal("flood did not fail closed")
-	}
-	clock.advance(loginFailWindow + time.Second)
-	if !l.allow("fresh") {
-		t.Fatal("not reset after window")
-	}
-	for i := 0; i < loginMaxFailures; i++ {
-		l.fail("x")
-	}
-	if l.allow("x") || !l.allow("y") {
-		t.Fatal("per-key limit")
-	}
-	clock.advance(loginFailWindow + time.Second)
-	if !l.allow("x") {
-		t.Fatal("not reset after window")
+	f.e.d.handler.loginChallengeCap = 4
+	f.challenge(t, "alice")
+	f.challenge(t, "alice")
+	code, b = f.post(t, "/api/v1/auth/challenge", map[string]string{"signer": "alice"})
+	wantCode(t, "cap 4", code, b, http.StatusServiceUnavailable, "busy")
+	if DefaultLoginChallengeCap != 1000 {
+		t.Fatalf("default cap %d", DefaultLoginChallengeCap)
 	}
 }
 

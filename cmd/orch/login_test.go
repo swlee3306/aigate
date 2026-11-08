@@ -465,7 +465,7 @@ func TestCLILoginErrorsFixedMessages(t *testing.T) {
 			}
 		})
 	}
-	for _, c := range []string{"bad_challenge", "bad_signature", "too_many_attempts", "signers_unavailable"} {
+	for _, c := range []string{"bad_challenge", "bad_signature", "busy", "signers_unavailable"} {
 		if loginRefusals[c] == "" {
 			t.Errorf("no fixed text for %s", c)
 		}

@@ -150,6 +150,15 @@ func (s *Store) SaveChallenge(ctx context.Context, c Challenge) error {
 	})
 }
 
+// CountChallenges returns the number of live (unexpired) challenges of the
+// given purpose.
+func (s *Store) CountChallenges(ctx context.Context, purpose string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM challenges WHERE purpose = ? AND expires_at > ?`, purpose, s.nowNanos()).Scan(&n)
+	return n, err
+}
+
 // TakeChallenge atomically removes and returns the challenge: a second take, an
 // unknown id and an expired challenge are all ErrNotFound.
 func (s *Store) TakeChallenge(ctx context.Context, id string) (Challenge, error) {

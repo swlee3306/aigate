@@ -284,6 +284,44 @@ func TestChallengeExpiry(t *testing.T) {
 	}
 }
 
+func TestCountChallenges(t *testing.T) {
+	s, c, _ := openClock(t)
+	ctx := context.Background()
+	count := func(purpose string) int {
+		t.Helper()
+		n, err := s.CountChallenges(ctx, purpose)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if n := count("login"); n != 0 {
+		t.Fatalf("empty: %d", n)
+	}
+	for _, ch := range []Challenge{
+		{ID: "a", Purpose: "login", ExpiresAt: c.Now().Add(time.Minute)},
+		{ID: "b", Purpose: "login", ExpiresAt: c.Now().Add(2 * time.Minute)},
+		{ID: "c", Purpose: "other", ExpiresAt: c.Now().Add(time.Minute)},
+	} {
+		if err := s.SaveChallenge(ctx, ch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if count("login") != 2 || count("other") != 1 {
+		t.Fatalf("counts %d %d", count("login"), count("other"))
+	}
+	if _, err := s.TakeChallenge(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if n := count("login"); n != 1 {
+		t.Fatalf("after take: %d", n)
+	}
+	c.Advance(2 * time.Minute) // expired rows are not counted, even before a purge
+	if n := count("login"); n != 0 {
+		t.Fatalf("after expiry: %d", n)
+	}
+}
+
 func TestIdempotencyKeyTTL(t *testing.T) {
 	s, c, _ := openClock(t)
 	ctx := context.Background()
