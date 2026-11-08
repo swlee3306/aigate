@@ -108,3 +108,142 @@ orch --socket ~/orchd/run/orchd.sock retry <ID>      # 작업 #N 다시 시도: 
 | `orch-openstack-access.sh` | orch-vm의 OpenStack API 접근(방화벽+자격 증명 복사) | 드라이런, 사용자 실행 |
 | `cleanup-restore-volumes.sh`, `cleanup-old-snapshots.sh` | 용량 정리 | 드라이런, 사용자 실행 |
 | `power-off.sh`, `power-check.sh` | 홈서버 종료·재가동 확인 | 드라이런 / 읽기 전용 |
+
+## 9. 웹 콘솔 W1 컷오버 런북
+설계·결과는 `11-DESIGN-webconsole-W1.md`, `13-RESULTS-webconsole-W1.md`. **이 절차는 아직 실제 서버에서 한 번도 실행하지 않았다**(코드는 이 저장소의 시험으로만 확인함). 아래 "예상 결과"는 코드·시험·스크립트를 읽고 쓴 것이지 서버에서 본 출력이 아니다. 처음 실행할 때 다르면 그 단계에서 멈추고 롤백(6단계)을 고려한다. 순서는 바꾸지 않는다.
+
+표기: **[사용자]** 사용자 본인의 작업 또는 명시적 승인이 필요한 단계, **[되돌림 가능]** 아래 되돌리기 한 줄로 원상 복구, **[주의]** 되돌리려면 DB 복원 등이 필요.
+표기한 `<…>`는 실행 때 채우는 값이다. `ORCHVM=ubuntu@192.168.1.200`, 관리자 키는 2장의 `~/.ssh/aigate_admin_ed25519`. orch-vm 안의 경로는 3장과 같다(바이너리 `/home/orch/bin`, 상태 `/home/orch/orchd/state`, 소켓 `/home/orch/orchd/run/orchd.sock`).
+
+### 9.0 시작 전에 모두 참이어야 하는 것
+- 실행 중이거나 승인 대기인 작업이 없다(`orch list`, `orch approvals`). 1·3단계는 `orchd`를 재시작하고, 4단계부터는 서명 없는 기존 승인 항목이 무효가 된다(이미 `done`인 이력은 보존).
+- **Tailscale Funnel은 켜지 않는다**(공인 인터넷 노출). 스크립트는 Funnel 명령을 쓰지 않고 `--apply`는 `tailscale serve status`에 Funnel이 켜져 있으면 중단한다.
+- **orch-vm에서 신뢰할 수 없는 로컬 프로세스를 돌리지 않는다**(CF20). HTTP 리스너는 루프백이라 로컬 프로세스가 `Tailscale-User-Login` 같은 헤더를 마음대로 보내 횟수 제한 키를 바꿀 수 있다. 신뢰할 수 없는 코드는 agent-vm/test-vm에서만 돈다.
+- **`--allowed-host`, `--origin`(`https://<FQDN>`, 포트 없음), `--rp-id`(`<FQDN>`)는 브라우저 주소창의 tailnet 이름(`<노드>.<tailnet>.ts.net`)과 글자 그대로 같아야 한다.** 다르면 요청이 전부 421이 되거나 패스키가 등록되지 않는다. 패스키는 이 이름에 묶이므로 나중에 이름이 바뀌면 다시 등록해야 한다.
+- Mac과 orch-vm의 시계 차이가 5분 이내(`date -u`로 비교). 로그인·서명 메시지의 `issued`가 ±5분을 벗어나면 거부된다.
+- Mac은 공유기 예약 `.124`에서 orch-vm에 ssh할 수 있다(2장). 이 Mac의 ssh 개인 키는 ed25519(`ssh-keygen -lf ~/.ssh/id_ed25519.pub` 끝에 `(ED25519)`)이고 서명할 때 비밀번호/에이전트로 열 수 있다.
+- `orchd` 소켓을 쓰는 운영 명령(`admin enroll` 등)을 `sudo`로 하려면 유닛에 `--socket-uid 0`이 있어야 한다(3단계 유닛). `--socket-uid`는 orchd 자신의 uid에 **더해지며** 대체하지 않는다. 없으면 `sudo orch`는 403(`forbidden_uid`).
+- 저장소(Mac)의 `infra/` 스크립트 중 `signers-init.sh`, `orch-web-serve.sh`는 orch-vm에서 돌린다. 저장소가 VM에 없으면 `scp -i <관리자 키> infra/signers-init.sh infra/orch-web-serve.sh $ORCHVM:/tmp/`로 복사한다(스크립트만, 키는 복사하지 않음).
+
+### 단계 1. 세 바이너리 백업·배포, 레거시 동작 확인 [사용자][주의: DB 스키마가 v6로 올라간다]
+**백업(전부 먼저).** orch-vm에서, `orchd`를 멈춘 상태로:
+```
+sudo systemctl stop orchd
+B=/home/orch/orchd/backup-w1; sudo mkdir -p $B
+for f in orchd orch aigate; do sudo cp -a /home/orch/bin/$f /home/orch/bin/$f.prev-w1; done
+sudo sh -c "cp -a /home/orch/orchd/state/orchd.db* $B/ && cp -a /home/orch/orchd/gate-home $B/gate-home && cp -a /etc/systemd/system/orchd.service /etc/systemd/system/orchd.service.pre-w1"
+```
+**배포.** 새 `orchd`·`orch`·`aigate` 세 개를 **한꺼번에** 올린다(옛 `aigate`는 서명 필드를 몰라 서명 없는 항목도 통과시킨다). Mac에서 `GOOS=linux GOARCH=<VM의 uname -m: x86_64→amd64, aarch64→arm64> go build -o /tmp/w1/orchd ./cmd/orchd`를 세 명령에 대해 하고(`./cmd/orch`, `./cmd/aigate`), `scp`로 VM `/tmp/w1/`에 보낸 뒤:
+```
+for f in orchd orch aigate; do sudo install -o orch -g orch -m 0755 /tmp/w1/$f /home/orch/bin/$f; done
+sudo systemctl start orchd
+```
+**전제.** `/etc/aigate`가 아직 없다(2단계 전). `signers.json`이 없으므로 서명 모드는 꺼져 있다(`/etc` 아래가 root 소유 폴더라 "없음"으로 판정, R16).
+
+**검증 체크리스트**
+- `journalctl -u orchd -n 40`: `orchd: config: approvals: mode legacy (no signers registry at /etc/aigate/signers.json)`가 보이고 오류 없이 대기 중. 첫 시작에서 DB 스키마가 v6으로 올라간다(코드상 자동 마이그레이션).
+- toy 작업 하나를 3장 명령으로 제출 → 승인 대기까지 가는 작업(보호 파일 변경 등 기존에 쓰던 종류)을 하나 만들고 **기존 TTY 방식**(`ssh -t … 'sudo -u orch -H /home/orch/bin/orch --socket … --gate-home … approve <항목ID>'`)으로 승인 → `done`.
+- 새 `orchd`는 게이트 빌드 키가 바뀌어 base 결과 캐시를 한 번 다시 실행한다(6장). 판정이 느려 보여도 정상.
+
+**그래도 안 되면:** 6단계의 바이너리·DB 복원. **옛 `orchd`는 v6 DB를 열지 않는다**(`database schema version 6 is newer than this build`, 옛 코드 읽기로 확인) — 바이너리 복원은 반드시 `$B`의 DB 백업 복원과 함께 한다. 그 사이의 작업 기록은 사라진다.
+
+### 단계 2. `/etc/aigate` 만들기 [사용자][되돌림 가능: `sudo rmdir /etc/aigate`]
+**전제:** 단계 1 검증 통과. 
+```
+sudo sh /tmp/signers-init.sh            # 드라이런: 상태·계획만 출력
+sudo sh /tmp/signers-init.sh --apply    # root 아니면 "nothing changed"로 거부
+```
+스크립트는 `/etc/aigate`를 `root:root 0755`로 만들 뿐 `signers.json`은 **만들지 않는다**(만들면 서명 필수 모드). 상위·대상 폴더가 심볼릭 링크이거나 그룹·기타 쓰기 가능이면 거부한다.
+
+**검증 체크리스트**
+- 출력 끝 `done: /etc/aigate root:root 0755 (signers.json not created)`, `ls -ld /etc/aigate` → `drwxr-xr-x … root root`, `ls /etc/aigate` 비어 있음.
+- 단계 1의 TTY 승인을 한 번 더 해도 그대로 된다(레거시 유지; 재시작 불필요).
+
+**그래도 안 되면:** `sudo rmdir /etc/aigate`(비어 있을 때). 스크립트가 거부하면 메시지의 폴더 권한부터 고친다(우회하지 않는다).
+
+### 단계 3. HTTPS 노출 (3-a 인증서, 3-b 유닛, 3-c serve, 3-d 방화벽)
+**3-a. [사용자 직접] Tailscale 관리 콘솔에서 HTTPS 인증서 기능을 켠다.** 관리 콘솔의 DNS 설정에서 MagicDNS를 켠 상태로 HTTPS Certificates를 켠다(README의 안내를 따른 것, 화면 문구는 확인하지 않음). 스크립트가 대신하지 않는다. 알려진 점(이 작업 중 재확인하지 않음): HTTPS를 켜면 tailnet 이름이 인증서 투명성 로그에 공개될 수 있다. 되돌리려면 같은 화면에서 끈다. 그다음 이 노드의 전체 이름 `<FQDN>`을 관리 콘솔의 머신 목록에서 적어 둔다.
+
+**3-b. 유닛 갱신 [사용자][되돌림 가능: `.pre-w1` 복원].** `infra/systemd/orchd-orchvm.service`의 예시 값 `orch-vm.example.ts.net`을 `<FQDN>`으로 바꾼다(`--allowed-host`, `--origin https://<FQDN>`, `--rp-id` 세 곳). 전제: **설치된 유닛과 저장소 유닛의 차이를 먼저 본다** — `diff /etc/systemd/system/orchd.service <수정한 파일>`이 새 플래그(`--http-listen`, `--allowed-host`, `--origin`, `--rp-id`, `--signers-file`, `--pending-file`, `--socket-uid 0`)만 보여야 한다. 다른 차이가 있으면 설치된 쪽이 기준이다(저장소 파일이 낡은 것).
+```
+sudo cp <수정한 유닛> /etc/systemd/system/orchd.service && sudo systemctl daemon-reload && sudo systemctl restart orchd
+```
+**검증:** 로그에 `orchd: socket uids allowed: [0 <orch uid>]`, `orchd: HTTP listener on 127.0.0.1:8808 (allowed hosts [<FQDN>], origin https://<FQDN>)`, `approvals: mode legacy`. VM에서 `curl -s -H 'Host: <FQDN>' http://127.0.0.1:8808/api/v1/healthz` → `{"ok":true}`, Host 헤더 없이(기본 `127.0.0.1`)는 421. **그래도 안 되면:** `/etc/systemd/system/orchd.service.pre-w1`을 복원하고 재시작. `--allowed-host`/`--origin`/`--rp-id` 형식 오류는 orchd가 시작을 거부하고 `journalctl`에 이유를 남긴다.
+
+**3-c. `tailscale serve` [사용자][되돌림 가능: `--off`].** orch-vm에서:
+```
+sh /tmp/orch-web-serve.sh 8808            # 계획만 출력(드라이런)
+sh /tmp/orch-web-serve.sh 8808 --apply    # 권한 오류면 sudo로
+```
+`--apply`는 먼저 Funnel 여부를 보고 켜져 있으면 중단한 뒤 `tailscale serve --bg --https=443 http://127.0.0.1:8808`을 실행하고 `tailscale serve status`를 출력한다(실행 후에도 Funnel이 보이면 중단하고 끄는 명령을 안내). 설계상 `tailscale serve`는 Host를 그대로 넘기고 클라이언트가 보낸 `Tailscale-User-*` 헤더를 지운다(tailscale 소스를 읽어 확인한 것, 실행해 본 것이 아님 — X1).
+
+**검증:** `tailscale serve status`에 `https://<FQDN>` → `http://127.0.0.1:8808`이 있고 Funnel 표시가 없다. tailnet의 다른 기기(이 Mac)에서 `curl -s https://<FQDN>/api/v1/healthz` → `{"ok":true}`; 브라우저로 `https://<FQDN>/` → 인증서 경고 없이 콘솔의 로그인 화면. 모든 요청이 421이면 `serve`가 보내는 Host가 `--allowed-host`와 다른 것이므로 3-b의 세 값을 주소창 이름과 대조한다. **그래도 안 되면:** `sh /tmp/orch-web-serve.sh 8808 --off --apply`(`tailscale serve --https=443 off`) 후 3-a 설정과 `tailscale status`의 로그인 상태부터 본다.
+
+**3-d. 방화벽 443 규칙 [사용자][주의].** Mac에서 `sh infra/apply-firewall.sh orchestrator`(드라이런), 적용은 `sh infra/apply-firewall.sh --apply orchestrator`. 스크립트가 하는 일(읽어서 확인한 내용): ① 관리자 키로 `ubuntu@192.168.1.200`에 접속해 `infra/nftables/orchestrator.nft`를 `nft -c -f`로 문법 검사, ② `sudo cp -n /etc/nftables.conf /etc/nftables.conf.pre-task2`(**이미 있으면 덮어쓰지 않는다**), ③ systemd 일회성 타이머 `aigate-rollback`을 180초 뒤에 `pre-task2` 규칙을 복원·적용하도록 걸고, ④ 새 규칙을 `/etc/nftables.conf`에 쓰고 `nft -f`로 적재, ⑤ **새 ssh 연결로 로그인을 다시 시험**하고 성공하면 타이머를 멈춘다(`confirmed: rollback timer stopped`). 로그인이 실패하면 180초 안에 규칙이 복원된다.
+- **함정:** 자동 롤백이 되돌리는 대상은 *지금 규칙*이 아니라 Task 2 이전의 `pre-task2`(임시, 아웃바운드 전부 허용 규칙)일 수 있다. 그래서 먼저 지금 규칙을 따로 저장한다: `ssh … 'sudo cp /etc/nftables.conf /etc/nftables.conf.pre-w1'`. 그리고 저장소 규칙과 설치된 규칙의 차이가 443 한 줄뿐인지 본다: `ssh … 'cat /etc/nftables.conf' | diff - infra/nftables/orchestrator.nft`. 더 있으면 적용하지 않는다.
+- 이 규칙(`tailscale0`의 tcp 443)이 `tailscale serve`에 **필요한지는 확인하지 않았다**(서브가 443을 tailscaled 내부에서 받으면 필요 없을 수 있다). 규칙은 무해하며 커널 경로 방어로 둔다. nft 문법은 이 Mac에 nft가 없어 이 저장소에서 검사하지 못했다(스크립트의 ①이 VM에서 처음 검사).
+
+**검증:** 스크립트가 `confirmed: rollback timer stopped`로 끝난다. `ssh … 'sudo nft list ruleset | grep 443'`에 tailscale0 규칙이 있다. 3-c 검증을 다시 한다. 22번 접속이 계속 된다. **그래도 안 되면:** 180초를 기다리면 `pre-task2`로 복원되므로 그 뒤 로그인해 `sudo cp /etc/nftables.conf.pre-w1 /etc/nftables.conf && sudo nft -f /etc/nftables.conf`로 직전 규칙으로 되돌린다. 접속이 안 되면 홈서버(.121)를 점프 호스트로 쓴다(2장).
+
+### 단계 4. 이 Mac의 SSH 키 등록 = 서명 필수 모드 전환, 서명 승인 끝까지 시험 [사용자][주의: 이전에 승인된 서명 없는 대기 항목은 무효]
+**전제:** 단계 1~3 검증 통과. 위 9.0 전부. 서명 없는 승인 대기 항목 없음. 이 명령을 실행하는 순간부터 **서명이 검증되는 항목만 유효**하고, 목록이 "없음"이 아닌 어떤 문제(소유자·권한·형식·심볼릭 링크)도 모든 승인을 거부한다(fail closed).
+
+Mac에서 공개 키만 VM으로 보낸다: `scp -i ~/.ssh/aigate_admin_ed25519 -o IdentitiesOnly=yes ~/.ssh/id_ed25519.pub $ORCHVM:/tmp/mac-signer.pub`. orch-vm에서(root만 쓸 수 있다. `orch` 사용자는 `/etc/aigate`에 쓸 수 없어 이 파일을 만들거나 지울 수 없다):
+```
+sudo /home/orch/bin/orch admin signers add --id mac-ssh --label "MacBook ssh" --key /tmp/mac-signer.pub
+sudo /home/orch/bin/orch admin signers list
+```
+`add`는 서명자 ID(`--id`, 소문자·숫자·`._-`, 63자 이하)를 정한다. **이 ID를 승인할 때 `--signer mac-ssh`로 줘야 한다**(또는 `AIGATE_SIGNER=mac-ssh`); 없으면 `orch approve`가 거부한다. `admin signers`는 소켓을 쓰지 않으므로 `--socket-uid`와 무관하다(`--signers-file` 기본값은 `/etc/aigate/signers.json`). 서버는 파일을 승인 검사마다 다시 읽으므로 **재시작이 필요 없다**(코드 읽기 기준).
+
+**검증 체크리스트**
+- `ls -l /etc/aigate/signers.json` → `root root`, 그룹·기타 쓰기 없음. `list` 출력에 `mac-ssh`, 종류 `ssh-ed25519`, 키 지문(Mac의 `ssh-keygen -lf ~/.ssh/id_ed25519.pub`와 같은 키인지 대조).
+- 시작 로그의 `approvals: mode` 줄은 **시작할 때만** 찍힌다. 재시작 전에는 `mode legacy`로 남아 있는 것이 정상이고, `sudo systemctl restart orchd` 뒤에는 `mode signed (1 signers in /etc/aigate/signers.json)`가 된다(재시작해서 확인하는 것을 권장).
+- Mac에서: `orch login --server https://<FQDN> --signer mac-ssh`(챌린지에 `ssh-keygen -Y sign`, 네임스페이스 `aigate-login`; 키 비밀번호 입력) → `~/.config/orch/token`(0600) 저장. 이어서 `orch --server https://<FQDN> --signer mac-ssh submit …`로 toy 작업(승인 대기가 생기는 종류) 제출 → `orch --server https://<FQDN> approvals`에서 항목 ID 확인 → `orch --server https://<FQDN> --signer mac-ssh approve <항목ID>`: 서버가 준 diff로 해시를 다시 계산해 일치해야 서명 화면(저장소 id, diff, 서명할 메시지)이 나오고, `yes`를 치면 서명해 `approved (서명자 mac-ssh). 작업 #N 상태: …` → `orch --server … reverify <항목ID>` → 작업이 판정·게시를 거쳐 `done`.
+- 음성 확인: VM에서 서명 없이 옛 방식 TTY 승인(`approve <ID>` 소켓)은 서명 키가 없어 `서명 키 파일이 없습니다`로 거부된다(코드 읽기 기준; 서명 키를 VM에 두지 않는다).
+- 원격 승인이 잘린 diff(256 KiB 초과)이면 CLI와 웹 모두 서명을 거부하고 저장소에서 `git diff`로 보라고 안내한다(R22) — 오류가 아니다.
+
+**그래도 안 되면:** `bad_signature`(키가 `--signer`로 등록된 것인지), `stale_signature`(서명 시각이 ±5분 밖: 시계 확인), `hash_changed`(그 사이 작업이 바뀜: 항목을 다시 확인), `signers_unavailable`/503(파일 소유자·권한·상위 폴더 확인; 고칠 수 없으면 즉시 6단계 `rm`), 429(분당 10회 제한, 1분 뒤 한 번만 재시도). 로그인이 계속 실패하면 서버 로그의 거부 사유(`known=true/false`)를 본다.
+
+### 단계 5. 웹: 패스키 등록, 활성화, 로그인, 웹 서명 승인 [사용자]
+**전제:** 단계 4 통과(ssh 서명 승인이 끝까지 된다). 3-b의 `--rp-id`·`--origin`이 주소창 이름과 같다. 패스키를 쓸 브라우저·기기(이 Mac)는 tailnet에 연결돼 있다.
+
+1. orch-vm에서 등록 코드 발급(소켓 전용, `--server`와 함께 쓸 수 없음):
+   `sudo /home/orch/bin/orch --socket /home/orch/orchd/run/orchd.sock admin enroll --id mac-passkey --label "MacBook passkey"`
+   → `패스키 등록 코드: XXXX-XXXX`, 10분·일회용. 코드는 등록 시도를 시작하는 순간 소모되므로 의식을 끝내지 못하면 다시 발급한다. `forbidden_uid` 거부면 유닛에 `--socket-uid 0`이 있는지 본다.
+2. Mac 브라우저에서 `https://<FQDN>/` → 패스키 등록 화면 → 코드 입력 → OS의 패스키 확인(지문 등). 완료되면 화면에 **지문**이 뜨고, 이 패스키는 **대기 목록에만** 올라가며 아직 로그인·승인에 쓸 수 없다.
+3. orch-vm에서: `sudo /home/orch/bin/orch admin signers pending` → 목록의 ID(`mac-passkey`), 지문, `rp_id`, `origin`을 **브라우저 화면의 지문과 눈으로 대조**한다. 대기 항목 파일은 `/home/orch/orchd/state/signers.pending.json`(orchd가 쓰고 root CLI가 읽는다; 파일이 없으면 CLI가 한국어 안내를 출력). 같으면:
+   `sudo /home/orch/bin/orch admin signers add --pending mac-passkey --fingerprint '<지문>'`
+   (`--id`로 활성화할 ID를 바꿀 수 있음). 7일이 지난 대기 항목은 만료되고, 버리려면 `sudo /home/orch/bin/orch admin signers pending remove <ID>`. 지문이 다르면 활성화하지 않고 버린다.
+4. 브라우저에서 패스키로 웹 로그인 → 개요·작업 화면. 승인 대기가 있는 toy 작업(보호 파일 변경)을 만들어 승인 화면에서 메시지·저장소 id·diff를 확인하고 패스키(사용자 확인 필수)로 서명 → 작업이 `done`.
+
+**검증 체크리스트**
+- `sudo orch admin signers list`에 `mac-ssh`(ssh-ed25519)와 `mac-passkey`(webauthn) 둘이 있다.
+- 웹 로그인 후 새로고침해도 세션이 유지되고(유휴 8시간·절대 24시간), 로그아웃하면 승인·쓰기 요청이 401.
+- 이력(ledger)의 승인 이벤트에 서명자 ID와 경로(`via`)가 남는다(시험으로 확인, 실서버에서 읽는 위치는 확인하지 않음).
+- 두 번째 탭을 열면 첫 탭의 첫 쓰기가 한 번 `csrf_failed`가 날 수 있고 화면이 한 번 재시도한다(`GET /auth/session`이 CSRF를 갱신하는 설계, R20-1).
+- 잘린 diff는 웹에서도 서명이 거부되고 `orch approve` 사용을 안내한다(R22).
+
+**그래도 안 되면:** 패스키 등록 화면이 막히면 `curl -sv https://<FQDN>/…`로 421·인증서 문제를 본다. WebAuthn 오류는 `rp_id`/`origin`이 주소창 이름과 다른 경우가 대부분이다(3-b 값 수정 후 재시작, 기존 대기 항목은 `pending remove`로 버리고 다시 등록). 패스키를 못 쓰는 동안에도 4단계의 ssh 서명 승인은 그대로 쓸 수 있다. 실제 브라우저·기기의 패스키 동작은 이 저장소에서 합성 인증기로만 시험했다(`13-RESULTS` 6장).
+
+### 단계 6. 롤백
+되돌리는 범위를 고른다. **위에서부터 필요한 만큼만** 한다.
+1. **서명 필수 모드 해제 [사용자][되돌림 가능: 다시 `signers add`]:** `sudo rm /etc/aigate/signers.json`. 파일은 `/etc/aigate`(root 소유)에 있어 `orch` 사용자는 지울 수 없고 root만 한다. 서버는 승인 검사(`Valid`)마다 목록을 읽으므로 **다음 검사부터 적용되고 재시작은 필요 없다**(코드 읽기 기준, 실서버 미확인). 확인: 단계 1의 TTY 승인이 다시 된다(서명 없이). 서명되지 않은 기록이 필요 없으면 이 한 줄이 가장 빠른 안전 롤백이다.
+2. **웹 노출 끄기 [되돌림 가능]:** orch-vm에서 `sh /tmp/orch-web-serve.sh 8808 --off --apply`(`tailscale serve --https=443 off`), 확인은 `tailscale serve status`가 비어 있음. 필요하면 방화벽은 `sudo cp /etc/nftables.conf.pre-w1 /etc/nftables.conf && sudo nft -f /etc/nftables.conf`(3-d에서 만든 백업. `.pre-task2`는 더 옛 규칙이다).
+3. **유닛 복원:** `sudo cp /etc/systemd/system/orchd.service.pre-w1 /etc/systemd/system/orchd.service && sudo systemctl daemon-reload && sudo systemctl restart orchd`(HTTP 리스너가 사라진다).
+4. **바이너리 복원 [주의]:** **1번을 먼저** 한다(옛 바이너리는 서명 목록을 모르므로 파일이 남아 있으면 서명이 검증되지 않은 채 통과한다). `sudo systemctl stop orchd` → `for f in orchd orch aigate; do sudo cp -a /home/orch/bin/$f.prev-w1 /home/orch/bin/$f; done` → **DB 복원: `sudo cp -a /home/orch/orchd/backup-w1/orchd.db* /home/orch/orchd/state/`**(옛 orchd는 v6 DB를 열지 않는다. 백업 이후에 생긴 작업·승인 기록은 사라지므로, 필요하면 복원 전에 현재 DB를 따로 복사한다) → 승인 파일이 필요하면 `backup-w1/gate-home`에서 → `sudo systemctl start orchd`. 세 바이너리는 항상 같이 되돌린다.
+5. `/etc/aigate`는 비어 있으면 둬도 무해하다. 지우려면 `sudo rmdir /etc/aigate`. Tailscale 관리 콘솔의 HTTPS 인증서 기능은 [사용자]가 직접 끈다.
+
+**검증:** `journalctl -u orchd`에 `approvals: mode legacy`, TTY 승인으로 toy 작업이 `done`, `orch list`가 단계 1 이전 작업을 보여 준다. **그래도 안 되면:** 아무것도 더 지우지 말고 멈춰서 상태(로그, `ls -l /etc/aigate /home/orch/bin`)를 사용자에게 보고한다.
+
+### 요약표: 누가·되돌림
+| 단계 | 사용자 작업·승인 | 되돌리기 | 재시작 |
+|---|---|---|---|
+| 1 바이너리 3개 | 승인 | 바이너리·DB 복원(DB 스키마 v6) | 필요(stop/start) |
+| 2 `/etc/aigate` | 승인(root) | `sudo rmdir /etc/aigate` | 불필요 |
+| 3-a HTTPS 인증서 | **사용자 직접**(관리 콘솔) | 같은 화면에서 끄기 | — |
+| 3-b 유닛 | 승인 | `.pre-w1` 복원 | 필요 |
+| 3-c `serve` | 승인 | `--off --apply` | 불필요 |
+| 3-d 방화벽 443 | 승인 | `.pre-w1` 복원(자동 롤백 대상은 `.pre-task2`) | 불필요 |
+| 4 SSH 키 등록(서명 필수) | **사용자 직접**(root) | `sudo rm /etc/aigate/signers.json` | 불필요 |
+| 5 패스키 활성화 | **사용자 직접**(지문 대조) | `signers remove <ID>` / `pending remove` | 불필요 |
+| 6 롤백 | 승인 | — | 4번만 필요 |

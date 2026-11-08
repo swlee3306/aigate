@@ -1,5 +1,7 @@
 # 웹 콘솔 W1 설계서: API와 인증 기반 (초안 v0.1, 2026-11-09)
 
+> 상태: **구현됨 (W1, 2026-11-09), 컷오버 대기.** 결과·가정/실험 판정·설계와 달라진 곳은 `13-RESULTS-webconsole-W1.md`, 배포·롤백 절차는 `10-OPERATIONS-orchestrator.md` 9장. 이 문서는 설계 당시 그대로 둔다.
+
 상위: `06-REQUIREMENTS-orchestrator.md`(OR1~OR11), `01-REQUIREMENTS.md`(FR15), `07-DESIGN-orchestrator.md`. 양식은 `00-TEMPLATE.md`. 화면 목업은 `web-mockup/index-v4.html`(README 참고), 데모는 `web-demo/`.
 **확정**은 사용자가 정했거나 코드로 확인한 것, **제안**은 이 문서의 기본안(승인 필요).
 
