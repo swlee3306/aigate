@@ -768,15 +768,93 @@ func TestRegisterPendingDedupeAndCap(t *testing.T) {
 	e := f.enroll(t, `{}`)
 	code, b = f.post(t, "/api/v1/auth/webauthn/register/begin", map[string]string{"code": e.Code})
 	wantCode(t, "full at begin", code, b, http.StatusServiceUnavailable, "busy")
-	// The code was not spent: free a place (as activation pruning would) and retry.
+	// The code was not spent: root activates one entry (the registry now
+	// holds it; the pending file is untouched, root never writes it), which
+	// frees a place at once.
 	ps := f.pendingList(t)
-	raw, _ := json.Marshal(pendingFileJSON{Version: 1, Pending: ps[1:]})
+	activate(t, f.reg, f.alice.signer, ps[3])
+	r = f.begin(t, e.Code)
+	if n := len(f.pendingList(t)); n != MaxPendingCredentials {
+		t.Fatalf("pending file rewritten early: %d", n)
+	}
+	// finish prunes the activated entry while appending.
+	if code, b := f.finish(t, r.ChallengeID, newPasskey(t).credential(t, goodReg(r.Options.Challenge))); code != http.StatusCreated {
+		t.Fatalf("finish after activation %d %s", code, b)
+	}
+	after := f.pendingList(t)
+	if len(after) != MaxPendingCredentials {
+		t.Fatalf("pending %d", len(after))
+	}
+	for _, p := range after {
+		if p.ID == ps[3].ID {
+			t.Fatal("activated entry not pruned")
+		}
+	}
+	// Activated under another id (signers add --pending X --id Y): the
+	// credential id still identifies it.
+	renamed := ps[5]
+	renamed.ID = "renamed"
+	activate(t, f.reg, f.alice.signer, ps[3], renamed)
+	e = f.enroll(t, `{}`)
+	f.begin(t, e.Code)
+}
+
+// activate writes the registry with base plus the pending entries as
+// webauthn signers, the way `orch admin signers add --pending` does.
+func activate(t *testing.T, reg string, base signing.Signer, ps ...PendingCredential) {
+	t.Helper()
+	signers := []signing.Signer{base}
+	for _, p := range ps {
+		signers = append(signers, signing.Signer{ID: p.ID, Type: signing.TypeWebAuthnES256, Label: p.Label,
+			PublicKey: p.PublicKey, CredentialID: p.CredentialID, RPID: p.RPID, Origin: p.Origin,
+			AddedAt: time.Now().UTC().Truncate(time.Second)})
+	}
+	b, err := json.Marshal(map[string]any{"version": 1, "signers": signers})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(reg, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Entries older than PendingTTL do not count (begin, id taken) and are
+// pruned on the next write.
+func TestPendingExpiry(t *testing.T) {
+	f := newRegFixture(t)
+	old := time.Now().UTC().Truncate(time.Second).Add(-PendingTTL - time.Minute)
+	var ps []PendingCredential
+	for i := 0; i < MaxPendingCredentials; i++ {
+		ps = append(ps, PendingCredential{ID: "old" + string(rune('a'+i)), Label: "x",
+			CredentialID: b64u(bytes.Repeat([]byte{byte(i + 1)}, 16)), PublicKey: b64u(newPasskey(t).point()),
+			RPID: regRPID, Origin: regOrigin, Created: old})
+	}
+	raw, _ := json.Marshal(pendingFileJSON{Version: 1, Pending: ps})
+	if err := os.MkdirAll(filepath.Dir(f.pending), 0o750); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(f.pending, raw, 0o640); err != nil {
 		t.Fatal(err)
 	}
-	f.begin(t, e.Code)
-	if n := len(f.pendingList(t)); n != MaxPendingCredentials-1 {
-		t.Fatalf("pending %d", n)
+	// An expired entry's id is free again, and the full-but-expired list
+	// leaves room.
+	r := f.fresh(t, `{"id":"olda"}`)
+	pk := newPasskey(t)
+	if code, b := f.finish(t, r.ChallengeID, pk.credential(t, goodReg(r.Options.Challenge))); code != http.StatusCreated {
+		t.Fatalf("finish %d %s", code, b)
+	}
+	got := f.pendingList(t)
+	if len(got) != 1 || got[0].ID != "olda" || got[0].CredentialID != b64u(pk.credID) {
+		t.Fatalf("expired entries not pruned: %+v", got)
+	}
+	// Just inside the TTL still counts (handler clock).
+	f.clock.set(PendingTTL - time.Minute)
+	code, _, b := f.e.sockDo(t, "POST", "/api/v1/admin/enroll", `{"id":"olda"}`, nil)
+	wantCode(t, "live entry id", code, b, http.StatusConflict, "id_taken")
+	f.clock.set(PendingTTL + time.Minute)
+	f.enroll(t, `{"id":"olda"}`)
+	if PendingTTL != 7*24*time.Hour {
+		t.Fatalf("ttl %v", PendingTTL)
 	}
 }
 
@@ -818,7 +896,7 @@ func TestRegisterUnconfigured(t *testing.T) {
 
 func TestValidateWebAuthnConfig(t *testing.T) {
 	for _, ok := range [][2]string{
-		{"", ""}, {regRPID, regOrigin}, {regRPID, regOrigin + ":8443"}, {"example.test", "https://console.example.test"},
+		{"", ""}, {regRPID, regOrigin}, {"tailnet.ts.net", "https://orch.tailnet.ts.net"}, {"localhost", "https://localhost"}, {regRPID, regOrigin + ":8443"}, {"example.test", "https://console.example.test"},
 		{"localhost", "http://localhost"}, {"localhost", "http://localhost:8080"},
 	} {
 		if err := ValidateWebAuthnConfig(ok[0], ok[1]); err != nil {
@@ -832,6 +910,12 @@ func TestValidateWebAuthnConfig(t *testing.T) {
 		{regRPID, "https://user@console.example.test"}, {regRPID, regOrigin + ":0"}, {regRPID, regOrigin + ":99999"},
 		{"localhost", "http://127.0.0.1"}, {regRPID, "http://localhost"}, {"localhost", "ftp://localhost"},
 		{regRPID, "https://CONSOLE.example.test"}, {regRPID + "/x", regOrigin},
+		// Default ports: browsers omit them, so the origin could never match.
+		{regRPID, regOrigin + ":443"}, {"localhost", "http://localhost:80"},
+		// IP literals and public suffixes are no relying party IDs.
+		{"127.0.0.1", "https://127.0.0.1"}, {"10.0.0.1", "https://10.0.0.1:8443"},
+		{"test", "https://console.test"}, {"com", "https://example.com"},
+		{"ts.net", "https://orch.tailnet.ts.net"}, {"co.uk", "https://example.co.uk"},
 	} {
 		if err := ValidateWebAuthnConfig(bad[0], bad[1]); err == nil {
 			t.Errorf("%q %q accepted", bad[0], bad[1])
@@ -853,7 +937,8 @@ func TestAppendPendingFile(t *testing.T) {
 		return PendingCredential{ID: id, Label: id, CredentialID: b64u(bytes.Repeat([]byte{cred}, 16)),
 			PublicKey: b64u(newPasskey(t).point()), RPID: regRPID, Origin: regOrigin, Created: time.Now().UTC().Truncate(time.Second)}
 	}
-	if err := AppendPending(path, entry("a", 1), 3); err != nil {
+	now := time.Now()
+	if err := AppendPending(path, entry("a", 1), 3, now); err != nil {
 		t.Fatal(err)
 	}
 	ino := func() uint64 {
@@ -864,29 +949,29 @@ func TestAppendPendingFile(t *testing.T) {
 		return inodeOf(fi)
 	}
 	first := ino()
-	if err := AppendPending(path, entry("b", 1), 3); !errors.Is(err, errPendingDup) {
+	if err := AppendPending(path, entry("b", 1), 3, now); !errors.Is(err, errPendingDup) {
 		t.Fatalf("dup credential: %v", err)
 	}
-	if err := AppendPending(path, entry("a", 2), 3); !errors.Is(err, errPendingDup) {
+	if err := AppendPending(path, entry("a", 2), 3, now); !errors.Is(err, errPendingDup) {
 		t.Fatalf("dup id: %v", err)
 	}
-	if err := AppendPending(path, entry("b", 2), 3); err != nil {
+	if err := AppendPending(path, entry("b", 2), 3, now); err != nil {
 		t.Fatal(err)
 	}
 	if ino() == first {
 		t.Fatal("file rewritten in place, not renamed")
 	}
-	if err := AppendPending(path, entry("alice", 3), 3); err != nil { // stored; pruned next time
+	if err := AppendPending(path, entry("alice", 3), 3, now); err != nil { // stored; pruned next time
 		t.Fatal(err)
 	}
-	if err := AppendPending(path, entry("c", 4), 3); err != nil {
+	if err := AppendPending(path, entry("c", 4), 3, now); err != nil {
 		t.Fatalf("pruning activated id should make room: %v", err)
 	}
 	ps, err := ReadPending(path)
 	if err != nil || len(ps) != 3 || ps[0].ID != "a" || ps[1].ID != "b" || ps[2].ID != "c" {
 		t.Fatalf("list %+v %v", ps, err)
 	}
-	if err := AppendPending(path, entry("d", 5), 3); !errors.Is(err, errPendingFull) {
+	if err := AppendPending(path, entry("d", 5), 3, now); !errors.Is(err, errPendingFull) {
 		t.Fatalf("cap: %v", err)
 	}
 	if left := leftovers(t, dir); len(left) != 0 {
@@ -898,7 +983,7 @@ func TestAppendPendingFile(t *testing.T) {
 		if err := os.WriteFile(bad, []byte(content), 0o640); err != nil {
 			t.Fatal(err)
 		}
-		if err := AppendPending(bad, entry("z", 9), 3); err == nil {
+		if err := AppendPending(bad, entry("z", 9), 3, now); err == nil {
 			t.Fatalf("%s accepted", content)
 		}
 		if string(fileBytes(t, bad)) != content {
@@ -911,7 +996,7 @@ func TestAppendPendingFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := fileBytes(t, path)
-	if err := AppendPending(link, entry("z", 9), 30); err == nil {
+	if err := AppendPending(link, entry("z", 9), 30, now); err == nil {
 		t.Fatal("symlink accepted")
 	}
 	if !bytes.Equal(fileBytes(t, path), before) {

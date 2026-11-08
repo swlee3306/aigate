@@ -283,7 +283,9 @@ func validateOrigin(origin string) error {
 	}
 	if p := u.Port(); p != "" {
 		n, err := strconv.Atoi(p)
-		if err != nil || n < 1 || n > 65535 || strconv.Itoa(n) != p {
+		// 443 is refused too: browsers send the origin without the default
+		// port, so such an entry could never match.
+		if err != nil || n < 1 || n > 65535 || n == 443 || strconv.Itoa(n) != p {
 			return bad
 		}
 	}

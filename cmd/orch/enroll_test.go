@@ -160,8 +160,8 @@ func TestPendingFileFromDaemonReadable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "signers.pending.json")
 	in := api.PendingCredential{ID: "phone", Label: "iPhone", CredentialID: base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{3}, 16)),
 		PublicKey: base64.RawURLEncoding.EncodeToString(pt), RPID: "orch-vm.tailnet.ts.net",
-		Origin: "https://orch-vm.tailnet.ts.net", Created: time.Date(2026, 11, 9, 1, 2, 3, 0, time.UTC)}
-	if err := api.AppendPending(path, in, api.MaxPendingCredentials); err != nil {
+		Origin: "https://orch-vm.tailnet.ts.net", Created: time.Now().UTC().Truncate(time.Second)}
+	if err := api.AppendPending(path, in, api.MaxPendingCredentials, in.Created); err != nil {
 		t.Fatal(err)
 	}
 	ps, err := readPending(path)
@@ -181,8 +181,28 @@ func TestPendingFileFromDaemonReadable(t *testing.T) {
 	if _, err := signing.Fingerprint(s); err != nil {
 		t.Fatal(err)
 	}
+	fp, err := signing.Fingerprint(s)
+	if err != nil {
+		t.Fatal(err)
+	}
 	code, out, errS := runCLI("admin", "signers", "pending", "--pending-file", path)
-	if code != 0 || !strings.Contains(out, "phone") || strings.Contains(out, "형식 오류") {
+	if code != 0 || !strings.Contains(out, "phone") || !strings.Contains(out, fp) || strings.Contains(out, "형식 오류") || strings.Contains(out, "만료") {
 		t.Fatalf("pending list %d %q %q", code, out, errS)
+	}
+	// The real activation path, to the end.
+	fakeEUID(t, 0)
+	_, reg := adminDir(t)
+	code, out, errS = runCLI("admin", "signers", "add", "--signers-file", reg, "--pending-file", path, "--pending", "phone", "--fingerprint", fp)
+	if code != 0 {
+		t.Fatalf("activate %d %q %q", code, out, errS)
+	}
+	r, err := signing.LoadRegistry(reg, selfOwned())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := r.Find("phone")
+	if !ok || got.Type != signing.TypeWebAuthnES256 || got.RPID != in.RPID || got.Origin != in.Origin ||
+		got.CredentialID != in.CredentialID || got.PublicKey != in.PublicKey || got.Label != in.Label {
+		t.Fatalf("registry signer %+v", got)
 	}
 }

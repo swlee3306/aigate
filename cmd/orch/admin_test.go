@@ -18,6 +18,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"aigate/internal/approval/signing"
+	"aigate/internal/orch/api"
 )
 
 func fakeEUID(t *testing.T, uid int) {
@@ -195,7 +196,7 @@ func writePending(t *testing.T) (path string, p pendingCredential) {
 		CredentialID: base64.RawURLEncoding.EncodeToString([]byte("cred-1")),
 		PublicKey:    base64.RawURLEncoding.EncodeToString(ek.Bytes()),
 		RPID:         "orch-vm.tailnet.ts.net", Origin: "https://orch-vm.tailnet.ts.net",
-		Created: time.Date(2026, 11, 9, 1, 2, 3, 0, time.UTC)}
+		Created: time.Now().UTC().Truncate(time.Second)}
 	b, _ := json.Marshal(pendingFile{Version: 1, Pending: []pendingCredential{p}})
 	path = filepath.Join(t.TempDir(), "signers.pending.json")
 	if err := os.WriteFile(path, b, 0o600); err != nil {
@@ -352,4 +353,113 @@ func TestSignersAddCreatesReadableDirUnderStrictUmask(t *testing.T) {
 	if _, err := signing.LoadRegistry(reg, selfOwned()); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// pendingFileWith writes a pending file (mode 0640) with the given entries.
+func pendingFileWith(t *testing.T, ps ...pendingCredential) string {
+	t.Helper()
+	b, _ := json.Marshal(pendingFile{Version: 1, Pending: ps})
+	path := filepath.Join(t.TempDir(), "signers.pending.json")
+	if err := os.WriteFile(path, b, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestSignersPendingRemove(t *testing.T) {
+	_, p := writePending(t)
+	q := p
+	q.ID, q.CredentialID = "tablet", base64.RawURLEncoding.EncodeToString([]byte("cred-2"))
+	path := pendingFileWith(t, p, q)
+	before, _ := os.ReadFile(path)
+
+	// Root only, refused before any file is touched (even a missing one).
+	fakeEUID(t, 501)
+	if code, _, errS := admin("pending", "remove", "phone", "--pending-file", path); code == 0 || !strings.Contains(errS, "sudo") {
+		t.Fatalf("non-root %d %q", code, errS)
+	}
+	if b, _ := os.ReadFile(path); !bytes.Equal(b, before) {
+		t.Fatal("non-root changed the file")
+	}
+	fakeEUID(t, 0)
+	// Unknown id refused, file untouched.
+	if code, _, errS := admin("pending", "remove", "nope", "--pending-file", path); code == 0 || !strings.Contains(errS, "nope") {
+		t.Fatalf("unknown %d %q", code, errS)
+	}
+	if b, _ := os.ReadFile(path); !bytes.Equal(b, before) {
+		t.Fatal("unknown id changed the file")
+	}
+	if code, _, _ := admin("pending", "remove", "--pending-file", path); code == 0 {
+		t.Fatal("missing id accepted")
+	}
+	fi0, _ := os.Stat(path)
+	code, out, errS := admin("pending", "remove", "phone", "--pending-file", path)
+	if code != 0 || !strings.Contains(out, "phone") {
+		t.Fatalf("remove %d %q %q", code, out, errS)
+	}
+	ps, err := readPending(path)
+	if err != nil || len(ps) != 1 || ps[0].ID != "tablet" {
+		t.Fatalf("after remove %+v %v", ps, err)
+	}
+	fi, _ := os.Stat(path)
+	if fi.Mode().Perm() != 0o640 || os.SameFile(fi0, fi) {
+		t.Fatalf("mode %v, renamed=%v", fi.Mode(), !os.SameFile(fi0, fi))
+	}
+	st0, st := fi0.Sys().(*syscall.Stat_t), fi.Sys().(*syscall.Stat_t)
+	if st0.Uid != st.Uid || st0.Gid != st.Gid {
+		t.Fatalf("owner changed %d:%d -> %d:%d", st0.Uid, st0.Gid, st.Uid, st.Gid)
+	}
+	if left := tmpOther(t, filepath.Dir(path), "signers.pending.json"); len(left) != 0 {
+		t.Fatalf("temp files %v", left)
+	}
+	// A symlinked pending file is refused and its target untouched.
+	link := filepath.Join(t.TempDir(), "link.json")
+	if err := os.Symlink(path, link); err != nil {
+		t.Fatal(err)
+	}
+	b1, _ := os.ReadFile(path)
+	if code, _, _ := admin("pending", "remove", "tablet", "--pending-file", link); code == 0 {
+		t.Fatal("symlink accepted")
+	}
+	if b2, _ := os.ReadFile(path); !bytes.Equal(b1, b2) {
+		t.Fatal("symlink target changed")
+	}
+}
+
+// Entries older than api.PendingTTL are shown as expired and cannot be
+// activated.
+func TestSignersPendingExpired(t *testing.T) {
+	_, p := writePending(t)
+	p.Created = time.Now().UTC().Add(-api.PendingTTL - time.Hour).Truncate(time.Second)
+	path := pendingFileWith(t, p)
+	fp, err := signing.Fingerprint(p.signer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, out, _ := admin("pending", "--pending-file", path); code != 0 || !strings.Contains(out, "만료") {
+		t.Fatalf("list %d %q", code, out)
+	}
+	fakeEUID(t, 0)
+	_, reg := adminDir(t)
+	if code, _, errS := admin("add", "--signers-file", reg, "--pending-file", path, "--pending", "phone", "--fingerprint", fp); code == 0 || !strings.Contains(errS, "만료") {
+		t.Fatalf("expired activated %d %q", code, errS)
+	}
+	if _, err := os.Stat(reg); !os.IsNotExist(err) {
+		t.Fatal("registry written")
+	}
+}
+
+func tmpOther(t *testing.T, dir, keep string) []string {
+	t.Helper()
+	ents, _ := os.ReadDir(dir)
+	var left []string
+	for _, e := range ents {
+		if e.Name() != keep {
+			left = append(left, e.Name())
+		}
+	}
+	return left
 }

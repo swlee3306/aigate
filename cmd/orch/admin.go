@@ -18,6 +18,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"aigate/internal/approval/signing"
+	"aigate/internal/orch/api"
 	"aigate/internal/textsafe"
 )
 
@@ -36,10 +37,12 @@ import (
 //
 // That file is writable by orchd, so it is untrusted input: `add --pending ID`
 // validates the entry with the registry's own rules and requires the
-// fingerprint the administrator compared out of band (--fingerprint). It
-// never writes the pending file (root writing into orchd's directory would
-// leave a file orchd cannot rewrite); orchd prunes entries whose id is in
-// the registry.
+// fingerprint the administrator compared out of band (--fingerprint), and
+// refuses entries older than api.PendingTTL. orchd prunes activated and
+// expired entries itself. The only root write to the pending file is
+// `pending remove ID` (discard an unwanted enrollment): an atomic rewrite
+// that keeps the old file's owner, group and mode, so orchd can still
+// rewrite it.
 
 const adminUsage = `관리(로컬, 쓰기는 root만):
   admin signers list    [--signers-file F]                               서명자 목록(ID, 종류, 라벨, 키 지문)
@@ -47,7 +50,8 @@ const adminUsage = `관리(로컬, 쓰기는 root만):
   admin signers add     [--signers-file F] --pending ID --fingerprint FP [--pending-file P] [--id ID] [--label L]
                                                                          웹에서 등록한 대기 패스키 활성화(지문 확인 필수)
   admin signers remove  [--signers-file F] ID                            서명자 제거
-  admin signers pending [--pending-file P]                               대기 중인 패스키 목록
+  admin signers pending [--pending-file P]                               대기 중인 패스키 목록(7일 지나면 만료)
+  admin signers pending remove ID [--pending-file P]                     대기 중인 패스키 버리기
   admin enroll [--id ID] [--label L]                                     패스키 일회용 등록 코드 발급(서버 소켓에서만, 10분)
   서명자 목록 기본 위치: ` + signing.DefaultRegistryPath + `, 대기 목록 기본 위치: ` + defaultPendingFile
 
@@ -166,9 +170,14 @@ func cmdAdmin(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "오류: %v\n%s\n", err, adminUsage)
 		return 2
 	}
-	write := sub == "add" || sub == "remove"
+	pendingRemove := sub == "pending" && len(pos) > 0 && pos[0] == "remove"
+	write := sub == "add" || sub == "remove" || pendingRemove
 	if write && geteuid() != 0 {
-		fmt.Fprintf(stderr, "orch: admin signers %s 거부: 서명자 목록은 root만 바꿀 수 있습니다. `sudo orch admin signers %s ...`로 실행하세요. 변경 없음\n", sub, sub)
+		what := sub
+		if pendingRemove {
+			what = "pending remove"
+		}
+		fmt.Fprintf(stderr, "orch: admin signers %s 거부: 서명자 목록과 대기 목록은 root만 바꿀 수 있습니다. `sudo orch admin signers %s ...`로 실행하세요. 변경 없음\n", what, what)
 		return 1
 	}
 	fail := func(format string, a ...any) int {
@@ -179,6 +188,15 @@ func cmdAdmin(args []string, stdout, stderr io.Writer) int {
 	case "list":
 		return signersList(*regPath, stdout, stderr)
 	case "pending":
+		if pendingRemove {
+			if len(pos) != 2 {
+				return fail("pending remove에는 대기 ID 하나가 필요합니다")
+			}
+			return pendingRemoveCmd(*pendPath, pos[1], stdout, stderr)
+		}
+		if len(pos) != 0 {
+			return fail("알 수 없는 인자입니다: %s", textsafe.Escape(pos[0]))
+		}
 		ps, err := readPending(*pendPath)
 		if err != nil {
 			return fail("%v", err)
@@ -192,6 +210,9 @@ func cmdAdmin(args []string, stdout, stderr io.Writer) int {
 			fp, err := signing.Fingerprint(p.signer())
 			if err != nil {
 				fp = "(형식 오류: 활성화할 수 없음)"
+			}
+			if pendingExpired(p) {
+				fp = "(만료: 활성화할 수 없음)"
 			}
 			fmt.Fprintf(stdout, "%-16s %-20s %-46s %-19s %-24s %s\n", textsafe.Escape(p.ID), textsafe.Escape(p.Label), fp,
 				p.Created.UTC().Format(time.DateTime), textsafe.Escape(p.RPID), textsafe.Escape(p.Origin))
@@ -232,6 +253,9 @@ func cmdAdmin(args []string, stdout, stderr io.Writer) int {
 			}
 			if p == nil {
 				return fail("대기 중인 패스키 %q가 없습니다", *pendingID)
+			}
+			if pendingExpired(*p) {
+				return fail("대기 중인 패스키 %q는 만료되었습니다(등록 후 7일). 다시 등록하세요(`orch admin enroll`)", *pendingID)
 			}
 			s = p.signer()
 			if *id != "" {
@@ -495,6 +519,92 @@ func readEd25519(path string) (line, comment string, err error) {
 		return "", "", fmt.Errorf("ssh-ed25519 키만 등록할 수 있습니다(%s)", pub.Type())
 	}
 	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub))), comment, nil
+}
+
+// pendingExpired: older than api.PendingTTL (orchd ignores and prunes it).
+func pendingExpired(p pendingCredential) bool {
+	return !time.Now().Before(p.Created.Add(api.PendingTTL))
+}
+
+// pendingRemoveCmd drops entry id from the pending file: refused for an
+// unknown id; otherwise an atomic rewrite (temp file in the same directory,
+// fsync, rename, directory fsync) that keeps the old file's mode, owner and
+// group so orchd can keep rewriting it. The caller has checked euid 0.
+func pendingRemoveCmd(path, id string, stdout, stderr io.Writer) int {
+	fail := func(format string, a ...any) int {
+		fmt.Fprintf(stderr, "orch: admin signers pending remove: "+format+"\n", a...)
+		return 1
+	}
+	ps, err := readPending(path)
+	if err != nil {
+		return fail("%v", err)
+	}
+	kept := make([]pendingCredential, 0, len(ps))
+	for _, p := range ps {
+		if p.ID != id {
+			kept = append(kept, p)
+		}
+	}
+	if len(kept) == len(ps) {
+		return fail("대기 중인 패스키 %q가 없습니다. 변경 없음", textsafe.Escape(id))
+	}
+	fi, err := os.Lstat(path)
+	if err != nil || !fi.Mode().IsRegular() {
+		return fail("대기 목록을 다시 확인할 수 없습니다. 변경 없음")
+	}
+	data, err := json.MarshalIndent(pendingFile{Version: 1, Pending: kept}, "", "  ")
+	if err != nil {
+		return fail("%v", err)
+	}
+	if err := replaceKeepingOwner(path, append(data, '\n'), fi); err != nil {
+		return fail("대기 목록을 쓸 수 없습니다: %v", err)
+	}
+	fmt.Fprintf(stdout, "대기 중인 패스키 %s를 버렸습니다.\n", textsafe.Escape(id))
+	return 0
+}
+
+// replaceKeepingOwner atomically replaces path with data, giving the new file
+// old's permission bits, owner and group.
+func replaceKeepingOwner(path string, data []byte, old os.FileInfo) error {
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, ".signers.pending-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	ok := false
+	defer func() {
+		if !ok {
+			f.Close()
+			os.Remove(tmp)
+		}
+	}()
+	if _, err := f.Write(data); err != nil {
+		return err
+	}
+	if err := f.Chmod(old.Mode().Perm()); err != nil {
+		return err
+	}
+	if st, isUnix := old.Sys().(*syscall.Stat_t); isUnix {
+		if err := f.Chown(int(st.Uid), int(st.Gid)); err != nil {
+			return err
+		}
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	ok = true
+	if d, err := os.Open(dir); err == nil {
+		d.Sync()
+		d.Close()
+	}
+	return nil
 }
 
 // readPending reads the (untrusted) pending-enrollment file. A missing file

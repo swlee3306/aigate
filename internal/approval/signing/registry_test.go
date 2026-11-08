@@ -313,6 +313,9 @@ func TestRejectsBadWebAuthnFields(t *testing.T) {
 		"fragment":     func(m map[string]any) { m["origin"] = "https://console.example.com#x" },
 		"bad port":     func(m map[string]any) { m["origin"] = "https://console.example.com:99999" },
 		"upper origin": func(m map[string]any) { m["origin"] = "https://Console.example.com" },
+		// Browsers send the origin without the default port, so an entry
+		// with :443 could never match.
+		"default port": func(m map[string]any) { m["origin"] = "https://console.example.com:443" },
 	}
 	for name, mut := range cases {
 		m := webSigner("w", point)

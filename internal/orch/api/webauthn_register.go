@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -66,8 +67,12 @@ const (
 	// DefaultEnrollChallengeCap bounds the live enrollment codes and,
 	// separately, the live registration challenges (503 busy at the cap).
 	DefaultEnrollChallengeCap = 200
-	// MaxPendingCredentials bounds the pending file's entries.
+	// MaxPendingCredentials bounds the live entries of the pending file.
 	MaxPendingCredentials = 20
+	// PendingTTL is how long a pending credential waits for activation;
+	// older entries are ignored and pruned on the next write (and the CLI
+	// refuses to activate them).
+	PendingTTL = 7 * 24 * time.Hour
 	// DefaultPendingFile is the pending-enrollment file (the same default as
 	// `orch admin signers --pending-file`).
 	DefaultPendingFile = "/var/lib/orchd/signers.pending.json"
@@ -166,25 +171,57 @@ func ReadPending(path string) ([]PendingCredential, error) {
 	return pf.Pending, nil
 }
 
+// LivePending returns the entries that still wait for an administrator: not
+// older than PendingTTL at now, and not already activated, i.e. neither their
+// id nor their (decoded) credential id is in the trusted signers registry. An
+// absent or untrusted registry activates nothing. Counting (begin, enroll)
+// and pruning (AppendPending) use this one rule.
+func LivePending(ps []PendingCredential, now time.Time) []PendingCredential {
+	reg, regErr := signing.LoadRegistry(signing.RegistryPath(), signing.DefaultOptions)
+	var active [][]byte
+	if regErr == nil {
+		for _, s := range reg.Signers {
+			if s.Type == signing.TypeWebAuthnES256 {
+				if id, err := rawURLStrict.DecodeString(s.CredentialID); err == nil {
+					active = append(active, id)
+				}
+			}
+		}
+	}
+	var live []PendingCredential
+	for _, p := range ps {
+		if !now.Before(p.Created.Add(PendingTTL)) {
+			continue
+		}
+		if regErr == nil {
+			if _, ok := reg.Find(p.ID); ok {
+				continue
+			}
+			cid, err := rawURLStrict.DecodeString(p.CredentialID)
+			activated := false
+			for _, a := range active {
+				activated = activated || (err == nil && bytes.Equal(a, cid))
+			}
+			if activated {
+				continue
+			}
+		}
+		live = append(live, p)
+	}
+	return live
+}
+
 // AppendPending adds c to the pending file atomically (temp file in the same
-// directory, mode 0640, fsync, rename, directory fsync). Entries whose id is
-// in the trusted signers registry (already activated) are pruned. It refuses
+// directory, mode 0640, fsync, rename, directory fsync). Entries that are no
+// longer live at now (expired or activated, LivePending) are pruned. It refuses
 // a credential id (compared decoded, CF2) or an id that is already pending,
 // and a list that already holds max entries. The caller serialises calls.
-func AppendPending(path string, c PendingCredential, max int) error {
-	ps, err := ReadPending(path)
+func AppendPending(path string, c PendingCredential, max int, now time.Time) error {
+	all, err := ReadPending(path)
 	if err != nil {
 		return err
 	}
-	if reg, err := signing.LoadRegistry(signing.RegistryPath(), signing.DefaultOptions); err == nil {
-		kept := ps[:0]
-		for _, p := range ps {
-			if _, active := reg.Find(p.ID); !active {
-				kept = append(kept, p)
-			}
-		}
-		ps = kept
-	}
+	ps := LivePending(all, now)
 	newID, err := rawURLStrict.DecodeString(c.CredentialID)
 	if err != nil {
 		return fmt.Errorf("credential id: %w", err)
@@ -248,14 +285,20 @@ func AppendPending(path string, c PendingCredential, max int) error {
 
 var rawURLStrict = base64.RawURLEncoding.Strict()
 
+// publicSuffixes are multi-label public suffixes refused as an rp-id (a
+// small deny list, not the Public Suffix List; single labels other than
+// localhost are refused separately).
+var publicSuffixes = map[string]bool{"ts.net": true, "co.uk": true}
+
 var rpIDRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$`)
 
 // ValidateWebAuthnConfig checks the relying party settings. Both empty means
 // passkeys are off (the register routes answer webauthn_unconfigured). rpID
-// is a lowercase host name (no scheme, port or path). origin is
-// "https://host[:port]" where host is rpID or a subdomain of it (WebAuthn's
-// registrable-suffix rule), or "http://localhost[:port]" with rpID
-// "localhost" for development. Pending credentials registered under the
+// is a lowercase host name (no scheme, port or path), not an IP address and
+// not a public suffix (a single label other than localhost, or ts.net and
+// co.uk). origin is "https://host[:port]" (never the default port) where
+// host is rpID or a subdomain of it (WebAuthn's registrable-suffix rule), or
+// "http://localhost[:port]" with rpID "localhost" for development. Pending credentials registered under the
 // development origin cannot be activated (the registry accepts https only).
 func ValidateWebAuthnConfig(rpID, origin string) error {
 	if rpID == "" && origin == "" {
@@ -267,6 +310,12 @@ func ValidateWebAuthnConfig(rpID, origin string) error {
 	if len(rpID) > 253 || !rpIDRE.MatchString(rpID) {
 		return fmt.Errorf("--rp-id %q must be a lowercase host name (no scheme, port or path)", rpID)
 	}
+	if net.ParseIP(rpID) != nil {
+		return fmt.Errorf("--rp-id %q must be a host name, not an IP address", rpID)
+	}
+	if (!strings.Contains(rpID, ".") && rpID != "localhost") || publicSuffixes[rpID] {
+		return fmt.Errorf("--rp-id %q is a public suffix, not a registrable domain", rpID)
+	}
 	u, err := url.Parse(origin)
 	if err != nil || u.User != nil || u.Opaque != "" || u.Path != "" || u.RawQuery != "" ||
 		u.Fragment != "" || u.ForceQuery || origin != u.Scheme+"://"+u.Host {
@@ -276,6 +325,10 @@ func ValidateWebAuthnConfig(rpID, origin string) error {
 		n, err := strconv.Atoi(p)
 		if err != nil || n < 1 || n > 65535 || strconv.Itoa(n) != p {
 			return fmt.Errorf("--origin %q has a bad port", origin)
+		}
+		// Browsers serialise an origin without its scheme's default port.
+		if (u.Scheme == "https" && n == 443) || (u.Scheme == "http" && n == 80) {
+			return fmt.Errorf("--origin %q must not name the default port (browsers send the origin without it)", origin)
 		}
 	}
 	host := u.Hostname()
@@ -366,12 +419,13 @@ func randomB64(n int) (string, error) {
 
 // idTaken reports whether id is already pending or a registered signer (an
 // untrusted or absent registry only skips that half; activation re-checks).
+// Expired and activated pending entries do not hold their id.
 func (h *handler) idTaken(id string) (bool, error) {
 	ps, err := ReadPending(h.pendingFile)
 	if err != nil {
 		return false, err
 	}
-	for _, p := range ps {
+	for _, p := range LivePending(ps, h.clock()) {
 		if p.ID == id {
 			return true, nil
 		}
@@ -384,10 +438,11 @@ func (h *handler) idTaken(id string) (bool, error) {
 	return false, nil
 }
 
-// pendingFull reports whether the pending file has no room.
+// pendingFull reports whether the pending file has no room for another live
+// entry (expired and activated entries do not count, LivePending).
 func (h *handler) pendingFull() (bool, error) {
 	ps, err := ReadPending(h.pendingFile)
-	return len(ps) >= MaxPendingCredentials, err
+	return len(LivePending(ps, h.clock())) >= MaxPendingCredentials, err
 }
 
 // atCap answers busy when purpose has h.enrollChallengeCap live rows.
@@ -675,7 +730,7 @@ func (h *handler) registerFinish(w http.ResponseWriter, r *http.Request) {
 		PublicKey:    base64.RawURLEncoding.EncodeToString(point),
 		RPID:         h.rpID, Origin: h.origin, Created: h.clock().UTC().Truncate(time.Second)}
 	h.pendingMu.Lock()
-	err = AppendPending(h.pendingFile, pc, MaxPendingCredentials)
+	err = AppendPending(h.pendingFile, pc, MaxPendingCredentials, h.clock())
 	h.pendingMu.Unlock()
 	switch {
 	case errors.Is(err, errPendingDup):
