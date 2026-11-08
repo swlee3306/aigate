@@ -103,6 +103,9 @@ func TestNew(t *testing.T) {
 }
 
 func TestCollisionsPerformance(t *testing.T) {
+	if raceEnabled {
+		t.Skip("timing budget is not meaningful under the race detector (checked in normal builds)")
+	}
 	paths := make([]string, 0, 200_000)
 	for i := 0; len(paths) < 200_000; i++ {
 		paths = append(paths, fmt.Sprintf("packages/pkg%03d/src/module%02d/sub/dir/file%05d_%d.ts", i%500, i%37, i, i%7))
