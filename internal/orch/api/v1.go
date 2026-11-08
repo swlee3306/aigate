@@ -17,6 +17,7 @@ func (h *handler) mountV1(mux *http.ServeMux) {
 	mux.HandleFunc("POST "+v1Prefix+"/tasks", h.submit)
 	mux.HandleFunc("GET "+v1Prefix+"/tasks", h.list)
 	mux.HandleFunc("GET "+v1Prefix+"/tasks/{id}", h.get)
+	mux.HandleFunc("GET "+v1Prefix+"/tasks/{id}/events", h.events)
 	mux.HandleFunc("POST "+v1Prefix+"/tasks/{id}/cancel", h.cancel)
 	mux.HandleFunc("POST "+v1Prefix+"/tasks/{id}/retry", h.retry)
 	mux.HandleFunc("GET "+v1Prefix+"/approvals", h.approvals)
