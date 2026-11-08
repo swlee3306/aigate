@@ -221,11 +221,16 @@ func isJSONType(vals []string) bool {
 // not limited: they need a credential, and the console polls them.
 //
 // credKey, when not nil, recognises a request that carries a live session or
-// bearer token and returns a key derived from that credential (CF21). Such a
-// request is limited on that key only and skips the global ceiling: a local
-// process that invents Tailscale-User-Login values can drain the global bucket
-// (and could drain the admin's own header key by sending the admin's login),
-// but it cannot lock a logged-in admin out of /auth/session or /auth/signers.
+// bearer token and returns a key derived from that credential (CF21). On the
+// routes a logged-in user needs (globalExempt: GET /auth/session, GET
+// /auth/signers, POST /auth/logout) such a request is limited on that key only
+// and skips the global ceiling: a local process that invents
+// Tailscale-User-Login values can drain the global bucket (and could drain the
+// admin's own header key by sending the admin's login), but it cannot lock a
+// logged-in admin out of those routes. Every other auth route (challenge,
+// token, WebAuthn login and registration) stays under the per-key AND global
+// limits for everyone, so a credential holder cannot mint tokens or probe
+// enrollment codes past the global ceiling.
 func rateLimit(l *rateLimiter, credKey func(*http.Request) (string, bool), next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, v1Prefix+"/auth/") {
@@ -233,7 +238,7 @@ func rateLimit(l *rateLimiter, credKey func(*http.Request) (string, bool), next 
 			return
 		}
 		key, global := "", true
-		if credKey != nil {
+		if credKey != nil && globalExempt(r) {
 			if k, ok := credKey(r); ok {
 				key, global = k, false
 			}
@@ -252,6 +257,19 @@ func rateLimit(l *rateLimiter, credKey func(*http.Request) (string, bool), next 
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// globalExempt lists the auth routes on which a live credential skips the
+// global ceiling (CF21): only reading one's own session and the signer list,
+// and logging out.
+func globalExempt(r *http.Request) bool {
+	switch {
+	case r.Method == http.MethodGet && r.URL.Path == v1Prefix+"/auth/session",
+		r.Method == http.MethodGet && r.URL.Path == v1Prefix+"/auth/signers",
+		r.Method == http.MethodPost && r.URL.Path == v1Prefix+"/auth/logout":
+		return true
+	}
+	return false
 }
 
 // rateKey is the limiter key. Behind tailscale serve every TCP peer is

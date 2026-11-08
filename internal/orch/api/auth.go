@@ -138,8 +138,10 @@ func (a *StoreAuthenticator) Session(ctx context.Context, raw string) (Principal
 }
 
 // Live reports whether raw is a live credential of kind (KindToken or
-// KindSession) without sliding a session's expiry. The rate limiter uses it
-// (credentialRateKey) before authentication runs.
+// KindSession). It does not slide a session's idle expiry, but it is not free
+// of side effects: like every lookup it deletes a row found past its absolute
+// lifetime. The rate limiter uses it (credentialRateKey) before
+// authentication runs.
 func (a *StoreAuthenticator) Live(ctx context.Context, raw, kind string) bool {
 	maxLife := TokenMaxLifetime
 	if kind == KindSession {
@@ -149,7 +151,7 @@ func (a *StoreAuthenticator) Live(ctx context.Context, raw, kind string) bool {
 	return ok
 }
 
-// liveChecker is the optional side-effect-free check behind credentialRateKey;
+// liveChecker is the optional non-sliding check behind credentialRateKey;
 // an Authenticator without it gets no rate-limit exemption.
 type liveChecker interface {
 	Live(ctx context.Context, raw, kind string) bool

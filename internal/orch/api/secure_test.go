@@ -1017,3 +1017,74 @@ func TestRateLimiterCredentialKeySkipsGlobal(t *testing.T) {
 		t.Fatal("credentialed key refused by the exhausted global ceiling")
 	}
 }
+
+// Fix round 1 (I1): the CF21 exemption covers only GET /auth/session, GET
+// /auth/signers and POST /auth/logout. On every other auth route a live
+// credential still counts toward the global ceiling, so a credential holder
+// cannot mint tokens or probe enrollment codes past it.
+func TestCredentialExemptionOnlyOnSessionRoutes(t *testing.T) {
+	w := newWebEnv(t)
+	w.d.pauseWorkers()
+	tok, csrf := w.newSession(t, "phone")
+	bearer := w.newToken(t, "alice")
+	drainGlobal(w)
+	creds := map[string]hdr{
+		"session": {"Cookie": cookie(tok), "Origin": webOrigin, CSRFHeader: csrf},
+		"token":   {"Authorization": "Bearer " + bearer},
+	}
+	for name, c := range creds {
+		for _, r := range []struct{ method, path, body string }{
+			{"POST", "/api/v1/auth/challenge", `{"signer":"alice"}`},
+			{"POST", "/api/v1/auth/token", `{"challenge_id":"x","sig":"y"}`},
+			{"POST", "/api/v1/auth/webauthn/login/begin", `{"signer":"phone"}`},
+			{"POST", "/api/v1/auth/webauthn/login/finish", `{}`},
+			{"POST", "/api/v1/auth/webauthn/register/begin", `{"code":"ABCD2345"}`},
+			{"POST", "/api/v1/auth/webauthn/register/finish", `{}`},
+			{"HEAD", "/api/v1/auth/session", ""},
+		} {
+			code, _, b := w.web(t, r.method, r.path, r.body, with(with(jsonCT, c), hdr{"Sec-Fetch-Site": "same-origin"}))
+			if code != http.StatusTooManyRequests {
+				t.Fatalf("%s %s %s with a live %s: %d %s (want 429: global ceiling applies)", name, r.method, r.path, name, code, b)
+			}
+		}
+	}
+	// The exempt routes still work for the same credentials.
+	for _, c := range []struct{ method, path string }{
+		{"GET", "/api/v1/auth/session"}, {"GET", "/api/v1/auth/signers"},
+	} {
+		if code, _, b := w.web(t, c.method, c.path, "", with(creds["token"], hdr{"Sec-Fetch-Site": "same-origin"})); code != http.StatusOK {
+			t.Fatalf("token %s %s: %d %s", c.method, c.path, code, b)
+		}
+	}
+	if code, _, b := w.web(t, "GET", "/api/v1/auth/signers", "", creds["session"]); code != http.StatusOK {
+		t.Fatalf("session signers: %d %s", code, b)
+	}
+	if code, _, b := w.web(t, "POST", "/api/v1/auth/logout", "", creds["session"]); code != http.StatusOK {
+		t.Fatalf("session logout: %d %s", code, b)
+	}
+}
+
+func TestGlobalExemptRoutes(t *testing.T) {
+	for _, c := range []struct {
+		method, path string
+		want         bool
+	}{
+		{"GET", "/api/v1/auth/session", true},
+		{"GET", "/api/v1/auth/signers", true},
+		{"POST", "/api/v1/auth/logout", true},
+		{"HEAD", "/api/v1/auth/session", false},
+		{"POST", "/api/v1/auth/session", false},
+		{"GET", "/api/v1/auth/logout", false},
+		{"POST", "/api/v1/auth/challenge", false},
+		{"POST", "/api/v1/auth/token", false},
+		{"POST", "/api/v1/auth/webauthn/register/begin", false},
+		{"POST", "/api/v1/auth/webauthn/register/finish", false},
+		{"POST", "/api/v1/auth/webauthn/login/begin", false},
+		{"POST", "/api/v1/auth/webauthn/login/finish", false},
+		{"GET", "/api/v1/auth/session/", false},
+	} {
+		if got := globalExempt(httptest.NewRequest(c.method, c.path, nil)); got != c.want {
+			t.Fatalf("%s %s: %v", c.method, c.path, got)
+		}
+	}
+}
