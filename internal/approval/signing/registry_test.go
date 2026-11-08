@@ -384,3 +384,64 @@ func TestRegistryPathProcessWide(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// Absent must only be reported when the directory chain is trusted, otherwise
+// an untrusted user could delete the file and switch signed mode off.
+func TestAbsentRequiresTrustedParent(t *testing.T) {
+	newDir := func(mode os.FileMode) string {
+		d := filepath.Join(t.TempDir(), "etc")
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(d, mode); err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	// (h) trusted parent, missing file: absent
+	d := newDir(0o755)
+	if _, err := LoadRegistry(filepath.Join(d, "signers.json"), ownOpts()); !errors.Is(err, ErrRegistryAbsent) {
+		t.Fatalf("(h) %v", err)
+	}
+	// (a) writable parent
+	d = newDir(0o777)
+	mustFail(t, filepath.Join(d, "signers.json"), ownOpts())
+	// (b) untrusted owner
+	d = newDir(0o755)
+	mustFail(t, filepath.Join(d, "signers.json"), notOwnOpts())
+	// (c) dangling symlink parent
+	base := t.TempDir()
+	if err := os.Symlink(filepath.Join(base, "nowhere"), filepath.Join(base, "link")); err != nil {
+		t.Fatal(err)
+	}
+	mustFail(t, filepath.Join(base, "link", "signers.json"), ownOpts())
+	// (d) parent missing under trusted ancestor: absent (legacy mode)
+	d = newDir(0o755)
+	if _, err := LoadRegistry(filepath.Join(d, "aigate", "signers.json"), ownOpts()); !errors.Is(err, ErrRegistryAbsent) {
+		t.Fatalf("(d) %v", err)
+	}
+	if _, err := LoadRegistry(filepath.Join(d, "a", "b", "signers.json"), ownOpts()); !errors.Is(err, ErrRegistryAbsent) {
+		t.Fatalf("(d2) %v", err)
+	}
+	// (e) missing parent under writable ancestor
+	d = newDir(0o777)
+	mustFail(t, filepath.Join(d, "aigate", "signers.json"), ownOpts())
+	mustFail(t, filepath.Join(d, "a", "b", "signers.json"), ownOpts())
+	// (f) missing parent under ancestor with rejected owner
+	d = newDir(0o755)
+	mustFail(t, filepath.Join(d, "aigate", "signers.json"), notOwnOpts())
+	// (g) symlink in the missing chain
+	d = newDir(0o755)
+	real := filepath.Join(d, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, filepath.Join(d, "sym")); err != nil {
+		t.Fatal(err)
+	}
+	mustFail(t, filepath.Join(d, "sym", "aigate", "signers.json"), ownOpts())
+	if err := os.Symlink(filepath.Join(d, "nowhere"), filepath.Join(d, "dangling")); err != nil {
+		t.Fatal(err)
+	}
+	mustFail(t, filepath.Join(d, "dangling", "aigate", "signers.json"), ownOpts())
+}

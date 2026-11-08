@@ -101,6 +101,32 @@ func LoadRegistry(path string, o RegistryOptions) (Registry, error) {
 	if ownerOK == nil {
 		ownerOK = func(uid uint32) bool { return uid == 0 }
 	}
+	// The parent (or, if it does not exist, the nearest existing ancestor) is
+	// checked FIRST: "absent" switches signed mode off, so it may only be
+	// reported when nobody untrusted could have removed the file.
+	dir := filepath.Dir(path)
+	absent := false
+	di, err := os.Lstat(dir)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return Registry{}, fmt.Errorf("서명자 목록 폴더 확인 실패: %w", err)
+		}
+		di, err = nearestExistingAncestor(dir)
+		if err != nil {
+			return Registry{}, err
+		}
+		absent = true
+	}
+	if !di.IsDir() {
+		return Registry{}, fmt.Errorf("서명자 목록 상위 경로가 폴더가 아닙니다(심볼릭 링크 불가): %s", dir)
+	}
+	if err := checkTrusted(di, "서명자 목록 폴더", ownerOK); err != nil {
+		return Registry{}, err
+	}
+	if absent {
+		return Registry{}, fmt.Errorf("%w: %s", ErrRegistryAbsent, path)
+	}
+
 	fi, err := os.Lstat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -116,17 +142,6 @@ func LoadRegistry(path string, o RegistryOptions) (Registry, error) {
 	}
 	if fi.Size() > maxRegistrySize {
 		return Registry{}, fmt.Errorf("서명자 목록이 너무 큽니다(최대 %d바이트)", maxRegistrySize)
-	}
-	dir := filepath.Dir(path)
-	di, err := os.Lstat(dir)
-	if err != nil {
-		return Registry{}, fmt.Errorf("서명자 목록 폴더 확인 실패: %w", err)
-	}
-	if !di.IsDir() {
-		return Registry{}, fmt.Errorf("서명자 목록 상위 경로가 폴더가 아닙니다(심볼릭 링크 불가): %s", dir)
-	}
-	if err := checkTrusted(di, "서명자 목록 폴더", ownerOK); err != nil {
-		return Registry{}, err
 	}
 
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
@@ -276,4 +291,24 @@ func validateOrigin(origin string) error {
 		}
 	}
 	return nil
+}
+
+// nearestExistingAncestor walks up from a missing directory to the first
+// ancestor that exists. Any error other than "does not exist" is returned.
+func nearestExistingAncestor(dir string) (os.FileInfo, error) {
+	cur := dir
+	for {
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return nil, fmt.Errorf("서명자 목록의 상위 폴더를 찾을 수 없습니다: %s", dir)
+		}
+		fi, err := os.Lstat(parent)
+		if err == nil {
+			return fi, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("서명자 목록 폴더 확인 실패: %w", err)
+		}
+		cur = parent
+	}
 }
