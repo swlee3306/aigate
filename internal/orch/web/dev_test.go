@@ -1,0 +1,71 @@
+package web_test
+
+import (
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"aigate/internal/orch/api"
+	"aigate/internal/orch/web"
+)
+
+// TestDevServer is a manual aid, off by default: ORCH_WEB_DEV=<seconds> serves
+// the console on 127.0.0.1:ORCH_WEB_PORT (default 18808) with the real CSP and
+// MOCKED API fixtures (no auth, no Host check), so the page can be looked at in
+// a browser. It is not a security test.
+func TestDevServer(t *testing.T) {
+	secs, _ := strconv.Atoi(os.Getenv("ORCH_WEB_DEV"))
+	if secs <= 0 {
+		t.Skip("set ORCH_WEB_DEV=<seconds> to run the mocked dev server")
+	}
+	port := os.Getenv("ORCH_WEB_PORT")
+	if port == "" {
+		port = "18808"
+	}
+	loggedOut := os.Getenv("ORCH_WEB_LOGGEDOUT") != ""
+	json := func(w http.ResponseWriter, s string) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write([]byte(s))
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/auth/session", func(w http.ResponseWriter, r *http.Request) {
+		if loggedOut {
+			w.WriteHeader(401)
+			json(w, `{"error":{"code":"unauthenticated","message":"인증이 필요합니다"}}`)
+			return
+		}
+		json(w, `{"principal":"dev","kind":"session","csrf":"dev-csrf","expires":"2026-11-10T00:00:00Z"}`)
+	})
+	mux.HandleFunc("/api/v1/stages", func(w http.ResponseWriter, r *http.Request) {
+		json(w, `[{"id":"design","name":"설계","status":"⬜","components":[],"next":"요구사항·설계서는 아직 Claude 세션에서 작성합니다 (W4에서 웹으로)"},
+{"id":"implement","name":"구현","status":"🔄","components":["오케스트레이터 ②","에이전트 VM"],"next":"작업을 제출하고 진행을 봅니다"},
+{"id":"verify","name":"검증","status":"✅","components":["게이트 ①","검사 VM"],"next":"판정 결과와 보고서를 확인합니다"},
+{"id":"approve","name":"승인","status":"🔄","components":["승인 대기 목록"],"next":"승인 대기 1건"},
+{"id":"publish","name":"게시·병합","status":"🔄","components":["push_branch","GitLab"],"next":"게시된 브랜치를 GitLab에서 검토·병합합니다 (병합은 수동)"},
+{"id":"operate","name":"운영","status":"⬜","components":["정책","복원·정리"],"next":"백업·모니터링은 아직 없습니다"}]`)
+	})
+	mux.HandleFunc("/api/v1/overview", func(w http.ResponseWriter, r *http.Request) {
+		json(w, `{"total":38,"by_state":{"done":36,"failed":2,"needs_approval":1},"pending_approvals":1,
+"stage_avg":{"queued":0.2,"preparing":2,"agent_running":25,"collecting":1.3,"verifying":134,"publishing":3},
+"todo":[{"kind":"approval","task":5,"approval":9,"text":"작업 #5 승인 대기: 정책 변경 <img src=x onerror=alert(1)>"}]}`)
+	})
+	console := web.Handler()
+	srv := &http.Server{Addr: "127.0.0.1:" + port, ReadHeaderTimeout: 5 * time.Second,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Security-Policy", api.ContentSecurityPolicy)
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			if strings.HasPrefix(r.URL.Path, "/api/") {
+				mux.ServeHTTP(w, r)
+				return
+			}
+			console.ServeHTTP(w, r)
+		})}
+	go func() { _ = srv.ListenAndServe() }()
+	t.Logf("dev console on http://127.0.0.1:%s/ for %ds", port, secs)
+	time.Sleep(time.Duration(secs) * time.Second)
+	_ = srv.Close()
+}

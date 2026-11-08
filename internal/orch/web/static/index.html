@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>orch 콘솔</title>
+<link rel="stylesheet" href="/style.css">
+<script type="module" src="/app.js"></script>
+</head>
+<body>
+<a class="skip" href="#main">본문으로 건너뛰기</a>
+<div class="shell">
+  <aside class="rail panel">
+    <div class="brand">orch</div>
+    <nav aria-label="주 메뉴" id="mainnav">
+      <a class="nav" href="#/overview" data-nav="overview"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 12h4c3 0 3-6 6-6M11 12c3 0 3 6 6 6"/></svg><span class="lb">개요</span></a>
+      <a class="nav" href="#/tasks" data-nav="tasks"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg><span class="lb">작업</span></a>
+      <a class="nav" href="#/approvals" data-nav="approvals"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.2 8-8 9-4.8-1-8-4.5-8-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></svg><span class="lb">승인</span><span class="badge" id="approvals-badge" hidden></span></a>
+    </nav>
+    <div class="rail-sep"></div>
+    <nav aria-label="단계 메뉴" id="stagenav" class="stagenav"></nav>
+    <div class="rail-foot">Tailscale 안에서만 접속됩니다</div>
+  </aside>
+  <div class="stage">
+    <header class="top panel">
+      <div class="crumb" id="crumb"></div>
+      <div class="pills">
+        <span class="pill live" id="livepill"><span id="livetxt">갱신 대기 중</span></span>
+        <button type="button" class="pill pausebtn" id="pausebtn" aria-pressed="false" aria-label="실시간 갱신 일시정지" hidden>일시정지</button>
+        <span class="sr" role="status" aria-atomic="true" id="livestatus"></span>
+        <button type="button" class="pill pausebtn" id="logoutbtn" hidden>로그아웃</button>
+      </div>
+    </header>
+    <div class="banner" id="banner" role="alert" hidden></div>
+    <main id="main" tabindex="-1"></main>
+  </div>
+</div>
+<noscript><p class="banner">이 콘솔은 JavaScript가 필요합니다.</p></noscript>
+</body>
+</html>

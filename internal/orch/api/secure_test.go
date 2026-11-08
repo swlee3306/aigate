@@ -125,7 +125,10 @@ func TestSecurityHeadersPresent(t *testing.T) {
 	}{
 		{"ok", "GET", "/api/v1/healthz", nil, 200},
 		{"401", "GET", "/api/v1/tasks", nil, 401},
-		{"legacy 401", "GET", "/tasks", nil, 401},
+		// The legacy flat routes are socket-only since the console is mounted
+		// on this listener: a non-/api path is the SPA, still with every header.
+		{"console", "GET", "/tasks", nil, 200},
+		{"console root", "GET", "/", nil, 200},
 		{"421", "GET", "/api/v1/healthz", hdr{"Host": "evil.example"}, 421},
 		{"405", "OPTIONS", "/api/v1/tasks", nil, 405},
 	} {
@@ -677,7 +680,6 @@ func TestAPIResponsesNoStore(t *testing.T) {
 	}{
 		{"healthz", "GET", "/api/v1/healthz", "", nil, 200},
 		{"tasks", "GET", "/api/v1/tasks", "", hdr{"Authorization": bearer}, 200},
-		{"legacy", "GET", "/tasks", "", hdr{"Authorization": bearer}, 200},
 		{"401", "GET", "/api/v1/tasks", "", nil, 401},
 		{"404", "GET", "/api/v1/nope", "", hdr{"Authorization": bearer}, 404},
 		{"421", "GET", "/api/v1/tasks", "", hdr{"Host": "evil.example"}, 421},
@@ -710,7 +712,6 @@ func TestWWWAuthenticateOn401(t *testing.T) {
 		h    hdr
 	}{
 		{"/api/v1/tasks", nil},
-		{"/tasks", nil},
 		{"/api/v1/tasks", hdr{"Authorization": "Bearer nope"}},
 		{"/api/v1/tasks", hdr{"Cookie": cookie("nope")}},
 	} {

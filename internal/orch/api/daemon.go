@@ -11,12 +11,14 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"aigate/internal/orch/machine"
 	"aigate/internal/orch/store"
+	"aigate/internal/orch/web"
 )
 
 // Config is everything orchd needs from the outside. Task 12 will fill it
@@ -192,7 +194,7 @@ func (d *Daemon) HTTPAddr() net.Addr { return d.httpAddr }
 // httpHandler is the handler stack of the HTTP listener (see secure.go for the
 // order). The socket serves socketHandler.
 func (d *Daemon) httpHandler() http.Handler {
-	var h http.Handler = d.handler
+	h := splitWeb(d.handler, web.Handler())
 	h = rateLimit(d.limiter, h)
 	h = jsonOnly(h)
 	h = limitBody(MaxBodyBytes, h)
@@ -200,6 +202,22 @@ func (d *Daemon) httpHandler() http.Handler {
 	h = noCORS(h)
 	h = hostCheck(d.allowedHosts, h)
 	return secureHeaders(h)
+}
+
+// splitWeb sends /api and /api/... to the API (auth, JSON errors) and
+// everything else to the embedded console. The split is by path prefix, not a
+// mux fallback, because the API handler answers every path (its root route is
+// "/" behind authentication), so the console must be chosen before it. Being
+// the innermost layer, the console inherits the whole chain of httpHandler:
+// Host check, security headers and CSP.
+func splitWeb(api, console http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if p := r.URL.Path; p == "/api" || strings.HasPrefix(p, "/api/") {
+			api.ServeHTTP(w, r)
+			return
+		}
+		console.ServeHTTP(w, r)
+	})
 }
 
 // socketHandler keeps the socket as it was (trusted by peer uid): only the
