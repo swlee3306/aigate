@@ -230,3 +230,4 @@ pre.block-pre { font-family: var(--mono); font-size: 13px; background: var(--bg)
 .plan-rows li { align-items: center; } .plan-rows .note { margin: 0; text-align: right; }
 .plan-warn { margin: 16px 0 12px; }
 [data-section="mr"] .btn { margin-top: 8px; }
+[data-focus-key="p-err"] { margin-bottom: 12px; }

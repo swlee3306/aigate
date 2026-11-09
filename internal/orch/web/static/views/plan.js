@@ -30,6 +30,7 @@ export const LIMITS = {
 const CONFIRM_TEXT = '이 파일들을 AI로 보내 계획서 만들기';
 const PREVIEW_TIMEOUT_MS = 25000;
 const REFINE_TIMEOUT_MS = 90000; // the broker's own limit is 60 s; the page waits a little longer
+const defaultNavigate = (hash) => { globalThis.location.hash = hash; };
 const R_ID = /^r[0-9]{1,2}$/;
 const Q_ID = /^q[0-9]{1,2}$/;
 
@@ -48,12 +49,13 @@ function show(s, max, newline) {
 
 // newPlanState turns the /refine response into the screen state (browser
 // memory only): {summary, items:[{id,title,description,files,checked,comment,
-// edited,origTitle,origDescription}], extraItems:[{id,title,description}],
+// edited,origTitle,origDescription}], requirement (the person's own line,
+// frozen at the preview: the Goal of the prompt), extraItems:[{id,title,description}],
 // questions:[{id,text,answer}], outOfScope, notes}. Texts are cut to the
 // server bounds and made visible, so what the person sees and edits is what is
 // assembled. Server ids are used as DOM ids only when they have the exact
 // r<n>/q<n> shape; anything else gets a client id.
-export function newPlanState(plan) {
+export function newPlanState(plan, requirement) {
   plan = plan && typeof plan === 'object' ? plan : {};
   const seen = new Set();
   const pick = (raw, re, prefix, i) => {
@@ -76,7 +78,8 @@ export function newPlanState(plan) {
     .filter((x) => x && typeof x === 'object')
     .map((x, i) => ({ id: pick(x.id, Q_ID, 'j', i), text: show(x.text, LIMITS.question), answer: '' }));
   return {
-    summary: show(plan.summary, LIMITS.summary, true),
+    summary: show(plan.summary, LIMITS.summary, true), // display only: never part of the prompt
+    requirement: str(requirement),
     items,
     extraItems: [],
     questions,
@@ -89,7 +92,7 @@ export function newPlanState(plan) {
 
 // assemblePlanPrompt builds the final request text:
 //
-//   Goal: <summary>
+//   Goal: <the person's own one-line requirement (never the AI summary)>
 //   Requirements (implement ALL of these):   numbered; checked items, then added items
 //   Do not (the user excluded these; do not implement them):   unchecked items (titles)
 //   Out of scope:
@@ -118,7 +121,7 @@ export function assemblePlanPrompt(state) {
   const outOfScope = Array.isArray(state.outOfScope) ? state.outOfScope : [];
 
   const sections = [];
-  const goal = check(state.summary, '목표 요약', true);
+  const goal = check(state.requirement, '요구사항(한 줄)', false);
   if (goal) sections.push('Goal: ' + goal);
 
   const reqs = [];
@@ -185,9 +188,13 @@ const REFINE_ERRORS = {
 const STALE_CODES = new Set(['selection_changed', 'selection_expired']);
 
 // refineErrorText: FIXED text by error code; the server's message is never shown.
-export function refineErrorText(err) {
+// afterSend: the AI call itself (a timeout or a dropped connection may still
+// have cost something).
+const SENT_UNKNOWN = '시간이 초과되었거나 연결이 끊겼습니다. 비용이 이미 발생했을 수 있습니다.';
+export function refineErrorText(err, afterSend) {
   const code = err && typeof err.code === 'string' ? err.code : '';
   if (has(REFINE_ERRORS, code)) return REFINE_ERRORS[code];
+  if (afterSend && (code === 'timeout' || code === 'network')) return SENT_UNKNOWN;
   return errorText(err);
 }
 
@@ -227,6 +234,7 @@ function usablePreview(p) {
 
 function renderPlan(env) {
   const { ctx } = env;
+  const navigate = ctx.navigate || defaultNavigate; // the real app context has none
   const repos = cleanRepos(env.repos);
   const classes = classChoices(env.policy);
   const st = {
@@ -245,6 +253,8 @@ function renderPlan(env) {
     xn: 0,
     submit: { base: headOf(repos[0]), cls: classes[0] || '', agent: AGENTS[0] },
     keys: new Map(),
+    call: 0, // identifies the current /refine call; a cancel bumps it
+    ctl: null,
     done: false,
     result: null, // {text, kind}
     submitProblem: null,
@@ -345,7 +355,7 @@ function renderPlan(env) {
     paint();
     let pv;
     try {
-      pv = await ctx.post('/api/v1/refine/preview', { repo: st.repo, text: st.text }, { timeoutMs: PREVIEW_TIMEOUT_MS });
+      pv = await ctx.post('/api/v1/refine/preview', { repo: st.repo, text: st.text }, { timeoutMs: PREVIEW_TIMEOUT_MS, noRetry429: true });
     } catch (err) {
       if (!alive()) return;
       st.busy = false;
@@ -429,7 +439,7 @@ function renderPlan(env) {
     st.err = null;
     let pv;
     try {
-      pv = await ctx.post('/api/v1/refine/preview', { repo: st.repo, text: st.text }, { timeoutMs: PREVIEW_TIMEOUT_MS });
+      pv = await ctx.post('/api/v1/refine/preview', { repo: st.repo, text: st.text }, { timeoutMs: PREVIEW_TIMEOUT_MS, noRetry429: true });
     } catch (err) {
       if (!alive()) return;
       st.busy = false;
@@ -450,21 +460,25 @@ function renderPlan(env) {
     st.busy = true;
     st.err = null;
     st.stage = 'loading';
+    const token = ++st.call;
+    st.ctl = new AbortController();
+    const signal = st.ctl.signal;
     paint();
     let plan;
     try {
-      plan = await ctx.post('/api/v1/refine', { repo: st.repo, text: st.text, selection_id: st.preview.selectionId }, { timeoutMs: REFINE_TIMEOUT_MS });
+      plan = await ctx.post('/api/v1/refine', { repo: st.repo, text: st.text, selection_id: st.preview.selectionId },
+        { timeoutMs: REFINE_TIMEOUT_MS, noRetry429: true, signal });
     } catch (err) {
-      if (!alive()) return;
+      if (!alive() || token !== st.call) return; // cancelled: the late error is not shown
       st.busy = false;
       st.stage = 'preview';
-      st.err = { text: refineErrorText(err), stale: STALE_CODES.has(err && err.code) };
+      st.err = { text: refineErrorText(err, true), stale: STALE_CODES.has(err && err.code) };
       paint();
       return;
     }
-    if (!alive()) return;
+    if (!alive() || token !== st.call) return; // cancelled: the late answer is ignored
     st.busy = false;
-    const state = newPlanState(plan);
+    const state = newPlanState(plan, st.text);
     if (state.items.length === 0) {
       st.stage = 'preview';
       st.err = { text: REFINE_ERRORS.bad_plan, stale: false };
@@ -476,11 +490,25 @@ function renderPlan(env) {
     paint();
   }
 
+  // onCancel: abort the in-flight call, ignore whatever still arrives and go
+  // back to the preview (the guard is released with the stage).
+  function onCancel() {
+    if (st.stage !== 'loading') return;
+    st.call++;
+    if (st.ctl) st.ctl.abort();
+    st.ctl = null;
+    st.busy = false;
+    st.stage = 'preview';
+    st.err = { text: '계획서 만들기를 취소했습니다. 서버에서 이미 처리 중이었다면 사용량이 반영될 수 있습니다. 다시 보내려면 확인 단추를 누르세요.', stale: false };
+    paint();
+  }
+
   // --- loading ---------------------------------------------------------------
   function buildLoading() {
     return el('div', { class: ['panel', 'canvas'] }, [
       el('h1', { id: 'h-plan' }, 'AI 계획서 만드는 중'),
       el('p', { class: 'lead', role: 'status' }, 'AI가 계획서를 만들고 있습니다. 최대 약 1분 걸립니다. 이 화면을 닫지 마세요.'),
+      el('div', { class: 'row' }, [el('button', { type: 'button', class: 'btn', id: 'p-cancel', 'data-focus-key': 'p-cancel', on: { click: onCancel } }, '취소')]),
     ]);
   }
 
@@ -678,7 +706,7 @@ function renderPlan(env) {
   function onDiscardYes() {
     st.released = true;
     syncGuard();
-    ctx.navigate('#/new');
+    navigate('#/new');
   }
   function onFinalize() {
     syncFromDom();
@@ -764,27 +792,34 @@ function renderPlan(env) {
     st.busy = true;
     syncButton();
     showResult('제출하는 중…', 'info');
+    let task;
     try {
-      const task = await ctx.post('/api/v1/tasks', body, { headers: { 'Idempotency-Key': key } });
-      if (!alive()) return;
-      const id = idOf(task && typeof task === 'object' ? task.id : null);
-      st.busy = false;
-      st.keys.clear();
-      st.done = true; // a task may exist: never offer a second submit
-      st.released = true;
-      syncGuard();
-      syncButton();
-      if (!id) {
-        showResult('작업이 접수됐지만 작업 번호를 확인할 수 없습니다. 작업 목록에서 확인하세요.', 'error', el('a', { href: '#/tasks' }, '작업 목록으로 →'));
-        return;
-      }
-      showResult('작업 #' + id + '을(를) 접수했습니다. 상세 화면으로 이동합니다.', 'ok');
-      ctx.navigate('#/tasks/' + id);
+      task = await ctx.post('/api/v1/tasks', body, { headers: { 'Idempotency-Key': key } });
     } catch (err) {
       if (!alive()) return;
       st.busy = false;
       refreshFinal();
       showResult(submitErrorText(err), 'error');
+      return;
+    }
+    if (!alive()) return;
+    const id = idOf(task && typeof task === 'object' ? task.id : null);
+    st.busy = false;
+    st.keys.clear();
+    st.done = true; // a task may exist: never offer a second submit
+    st.released = true;
+    syncGuard();
+    syncButton();
+    if (!id) {
+      showResult('작업이 접수됐지만 작업 번호를 확인할 수 없습니다. 작업 목록에서 확인하세요.', 'error', el('a', { href: '#/tasks' }, '작업 목록으로 →'));
+      return;
+    }
+    showResult('작업 #' + id + '을(를) 접수했습니다. 상세 화면으로 이동합니다.', 'ok');
+    // Outside the try above: a navigation problem can never read as a failed submit.
+    try {
+      navigate('#/tasks/' + id);
+    } catch {
+      showResult('작업 #' + id + '을(를) 접수했습니다. 작업 목록에서 확인하세요.', 'ok', el('a', { href: '#/tasks/' + id }, '작업 #' + id + ' 보기 →'));
     }
   }
 

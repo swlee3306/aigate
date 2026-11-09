@@ -89,6 +89,32 @@ test('429 waits Retry-After once (capped) then retries once', async () => {
   assert.deepEqual(sleeps, [2000], 'default wait without a header');
 });
 
+test('opts.noRetry429: a 429 is reported at once, without sleeping or a second request', async () => {
+  stub(res(429, envelope('refine_rate_limited'), { 'Retry-After': '3' }), res(200, { ok: 1 }));
+  await assert.rejects(api.post('/api/v1/refine', { a: 1 }, { noRetry429: true }), (e) => e.status === 429 && e.code === 'refine_rate_limited' && e.retryAfter === 3);
+  assert.deepEqual(sleeps, []);
+  assert.equal(calls.length, 1, 'exactly one request');
+  // without the flag the old behaviour stays
+  stub(res(429, envelope('rate_limited')), res(200, { ok: 1 }));
+  assert.deepEqual(await api.post('/api/v1/refine', {}), { ok: 1 });
+  assert.equal(calls.length, 2);
+});
+
+test('opts.signal aborts the request: the caller sees an error and the fetch signal is aborted', async () => {
+  const ctl = new AbortController();
+  let seen;
+  stub((path, init) => new Promise((_, reject) => { seen = init.signal; init.signal.addEventListener('abort', () => reject(new Error('aborted'))); }));
+  const p = api.post('/api/v1/refine', {}, { signal: ctl.signal });
+  await new Promise((r) => setTimeout(r, 5));
+  ctl.abort();
+  await assert.rejects(p, (e) => e.name === 'ApiError' && e.status === 0);
+  assert.equal(seen.aborted, true);
+  // an already aborted signal never sends
+  stub(res(200, {}));
+  await assert.rejects(api.post('/api/v1/refine', {}, { signal: ctl.signal }), (e) => e.status === 0);
+  assert.equal(calls.length, 0);
+});
+
 test('401 emits session-expired and clears the token', async () => {
   api.setCsrf('t');
   stub(res(401, envelope('unauthenticated')));

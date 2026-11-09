@@ -469,7 +469,7 @@ export function taskView(ctx) {
     let msg;
     let reload = true;
     try {
-      await ctx.post('/api/v1/tasks/' + id + '/mr', {});
+      await ctx.post('/api/v1/tasks/' + id + '/mr', {}, { noRetry429: true });
       msg = { kind: 'ok', text: '병합 요청을 만들었습니다.' };
     } catch (err) {
       const r = mrRetryResult(err);

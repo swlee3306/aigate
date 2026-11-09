@@ -21,6 +21,7 @@
 import { get, post, session, logout, onSessionExpired, setCsrf, ApiError } from './api.js';
 import { el, clear, poll, formatLive, renderStageMenu, renderOverview } from './render.js';
 import { registerView, getView, parseRoute, navItem, shouldRoute } from './router.js';
+import { makeHashGuard } from './guard.js';
 import { bindSkipLink, showNotice, replaceContent, renderBootFailure } from './shell.js';
 
 export { registerView };
@@ -226,15 +227,15 @@ async function boot() {
     showLogin('로그아웃했습니다.', 'info');
   });
   onSessionExpired(() => showLogin('세션이 만료되었습니다. 다시 로그인하세요.'));
+  const hashGuard = makeHashGuard({
+    guard: () => state.guard,
+    current: () => state.hash,
+    restore: (h) => history.replaceState(null, '', h),
+    notice: (t) => banner(t, 'info'),
+  });
   window.addEventListener('hashchange', () => {
     if (!shouldRoute(location.hash)) return;
-    // A view holding unsaved work (the AI plan) is not left by a menu link or
-    // the back button: the hash goes back and the person is told how to leave.
-    if (state.guard && state.guard()) {
-      history.replaceState(null, '', state.hash || '#/overview');
-      banner('작성 중인 계획서가 있어 이동하지 않았습니다. 계획서 화면의 "계획서 버리기"로 나가세요.', 'info');
-      return;
-    }
+    if (hashGuard()) return; // a view holding unsaved work: the hash went back
     show();
   });
   bindSkipLink(document.querySelector('.skip'), $('main'));

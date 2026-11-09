@@ -4,6 +4,17 @@
 import { installDocument } from './dom-stub.js';
 
 export const doc = installDocument();
+
+// The real app.js ctx has NO navigate: views fall back to writing
+// location.hash. The tests therefore stub location (not ctx.navigate) and
+// record every hash written into the newest context's `nav`.
+let navSink = [];
+const fakeLocation = {
+  _hash: '',
+  get hash() { return fakeLocation._hash; },
+  set hash(v) { fakeLocation._hash = String(v); navSink.push(String(v)); },
+};
+globalThis.location = fakeLocation;
 const R = await import('../static/render.js');
 const { el, poll } = R;
 
@@ -30,16 +41,17 @@ export function fakeCtx(routes, extra) {
     if (r === undefined) throw apiError(404, 'not_found', 'nope');
     return typeof r === 'function' ? r(body, opts) : structuredClone(r);
   };
+  navSink = [];
+  fakeLocation._hash = '';
   const ctx = {
     root,
     params: extra.params || [],
     calls: [],
     posts: [],
-    nav: [],
+    nav: navSink,
     pollers: [],
     pollMs: [],
     signal: ctl.signal,
-    navigate: (h) => ctx.nav.push(h),
     setCrumb() {},
     guard: null,
     setLeaveGuard: (fn) => { ctx.guard = typeof fn === 'function' ? fn : null; },

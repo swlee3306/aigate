@@ -186,5 +186,6 @@ test('TestMRRetryErrorsFixedTexts', async () => {
     assert.ok(again, code + ': button present');
     assert.equal(again.getAttribute('aria-disabled'), 'false');
     assert.equal(ctx.posts.length, 1);
+    assert.equal(ctx.posts[0].opts && ctx.posts[0].opts.noRetry429, true, 'no automatic 429 retry');
   }
 });
