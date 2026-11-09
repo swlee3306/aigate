@@ -16,6 +16,7 @@ import (
 
 	"aigate/internal/orch/api"
 	"aigate/internal/orch/approvals"
+	"aigate/internal/orch/broker"
 	"aigate/internal/orch/policy"
 	"aigate/internal/orch/publish"
 	"aigate/internal/orch/steps"
@@ -27,6 +28,9 @@ import (
 // vmFlags configures the real VM drivers. Only paths of keys and known_hosts
 // files are ever held or printed, never key contents.
 type vmFlags struct {
+	// BrokerSocket is orchd's --broker-socket (set by run): when non-empty every
+	// task that becomes done gets a Draft merge request through the broker.
+	BrokerSocket                                               string
 	AgentHost, AgentUser, AgentKey, AgentKnownHosts, AgentJump string
 	TestHost, TestUser, TestKey, TestKnownHosts, TestRepoDir   string
 	TestWorkDir, TestJump                                      string
@@ -198,6 +202,9 @@ func (v *vmFlags) provider(st *store.Store, dbPath string) (api.StepProvider, er
 	cfg.AgentTimeout, cfg.RestoreEachJob = v.AgentTimeout, v.RestoreEachJob
 	cfg.ReportDir, cfg.GateHome = reportDir, gateHome
 	cfg.Policy = v.live
+	if v.BrokerSocket != "" {
+		cfg.MR = &steps.BrokerMR{Client: &broker.Client{Socket: v.BrokerSocket}}
+	}
 	v.restoreRecord = test.LastRestore
 	v.cloudStatus = test.CloudStatus
 	if v.BaseCache && v.BaseCacheTTL > 0 {

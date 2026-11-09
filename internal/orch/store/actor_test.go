@@ -57,7 +57,7 @@ func TestMigrateV6ToV7KeepsData(t *testing.T) {
 	}
 	var v int
 	s.db.QueryRow(`SELECT version FROM schema_version`).Scan(&v)
-	if v != 7 {
+	if v != 8 {
 		t.Fatalf("version %d", v)
 	}
 	// A new event on the migrated database records its actor; the old ones stay NULL.

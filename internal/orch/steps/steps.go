@@ -139,6 +139,9 @@ type Config struct {
 	Policy *policy.Live
 	// Notifier receives the L2/L3 notifications (best effort; may be nil).
 	Notifier publish.Notifier
+	// MR, when set, opens a Draft merge request for every task that becomes
+	// done (BrokerMR in production). Nil: every done task's MR is "skipped".
+	MR MRCreator
 }
 
 // DefaultConfig returns a Config with the documented defaults.
@@ -154,6 +157,8 @@ type Provider struct {
 	vmMu sync.Mutex
 	// now is the clock for the verify timings (default time.Now; tests replace it).
 	now func() time.Time
+	// mrTimeout bounds the merge request hook (mrHookTimeout; tests shorten it).
+	mrTimeout time.Duration
 }
 
 // NewProvider validates cfg and fills the defaults.
@@ -181,7 +186,7 @@ func NewProvider(st *store.Store, cfg Config) (*Provider, error) {
 			return nil, errors.New("steps: with a policy the Publisher must implement Planner")
 		}
 	}
-	return &Provider{st: st, cfg: cfg, now: time.Now}, nil
+	return &Provider{st: st, cfg: cfg, now: time.Now, mrTimeout: mrHookTimeout}, nil
 }
 
 // maxLedgerNote caps the note written into a task_transition event.
@@ -200,7 +205,7 @@ const maxLedgerNote = 300
 // publish_action BEFORE each action (see publish.Recorder), so an action is
 // never unrecorded. A ledger write failure is logged, it never fails a task.
 func (p *Provider) MachineOptions() []machine.Option {
-	return []machine.Option{machine.WithOnTransitionCtx(p.recordTransition)}
+	return []machine.Option{machine.WithOnTransitionCtx(p.afterTransition)}
 }
 
 func (p *Provider) recordTransition(ctx context.Context, t store.Task, from, to machine.State, note string) {

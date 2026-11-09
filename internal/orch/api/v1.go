@@ -23,6 +23,7 @@ func (h *handler) mountV1(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+v1Prefix+"/tasks/{id}/events", h.events)
 	mux.HandleFunc("POST "+v1Prefix+"/tasks/{id}/cancel", h.requireWrite(h.cancel))
 	mux.HandleFunc("POST "+v1Prefix+"/tasks/{id}/retry", h.requireWrite(h.retry))
+	mux.HandleFunc("POST "+v1Prefix+"/tasks/{id}/mr", h.requireWrite(h.mrRetry))
 	mux.HandleFunc("GET "+v1Prefix+"/tasks/{id}/report", h.report)
 	mux.HandleFunc("GET "+v1Prefix+"/tasks/{id}/diff", h.diff)
 	mux.HandleFunc("GET "+v1Prefix+"/approvals", h.approvals)

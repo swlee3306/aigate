@@ -67,7 +67,7 @@ func TestMigrateFromV5KeepsTasks(t *testing.T) {
 	}
 	var v int
 	s.db.QueryRow(`SELECT version FROM schema_version`).Scan(&v)
-	if v != 7 {
+	if v != 8 {
 		t.Fatalf("version %d", v)
 	}
 	for _, tbl := range []string{"sessions", "challenges", "idempotency_keys"} {

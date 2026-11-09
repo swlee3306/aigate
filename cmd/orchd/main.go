@@ -118,6 +118,7 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stderr, "orchd:", err)
 		return 2
 	}
+	vf.BrokerSocket = cfg.BrokerSocket
 	if err := checkQueueLimit(cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "orchd:", err)
 		return 2

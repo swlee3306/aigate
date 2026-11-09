@@ -107,6 +107,15 @@ type TaskView struct {
 	// Actor is who made the task's latest change ("kind:id" or "system";
 	// empty when that event predates schema v7).
 	Actor string `json:"actor,omitempty"`
+	// Merge request of a published task (schema v8): the pushed branch, the
+	// Draft MR's address and number, its state ("created", "failed",
+	// "skipped"; absent before the step ran) and, for a failed one, the fixed
+	// failure code. Never the broker's or GitLab's own text.
+	Branch  string `json:"branch,omitempty"`
+	MRURL   string `json:"mr_url,omitempty"`
+	MRIID   int64  `json:"mr_iid,omitempty"`
+	MRState string `json:"mr_state,omitempty"`
+	MRCode  string `json:"mr_code,omitempty"`
 }
 
 // ApprovalView is the JSON form of a pending-approvals entry.
@@ -126,7 +135,8 @@ func viewOf(t store.Task) TaskView {
 	return TaskView{ID: t.ID, Repo: t.Repo, Base: t.Base, Prompt: t.Prompt, Class: t.Class,
 		Agent: t.Agent, State: string(t.State), Attempts: t.Attempts, RetryState: string(t.RetryState),
 		CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt, Error: t.ErrorText, HeadSHA: t.HeadSHA, Verdict: t.Verdict,
-		Retryable: machine.Retryable(t) == nil, Cancellable: machine.CanTransition(t.State, machine.StateCancelled), Retries: t.Retries, Actor: t.LastActor}
+		Retryable: machine.Retryable(t) == nil, Cancellable: machine.CanTransition(t.State, machine.StateCancelled), Retries: t.Retries, Actor: t.LastActor,
+		Branch: t.Branch, MRURL: t.MRURL, MRIID: t.MRIID, MRState: t.MRState, MRCode: t.MRCode}
 }
 
 type submitRequest struct {
@@ -170,6 +180,9 @@ type handler struct {
 	grants approvals.Grants
 	// policyHash reports the policy in force (nil: none).
 	policyHash func() string
+	// retryMR creates the merge request of a done task (steps.Provider.RetryMR;
+	// nil when the provider has none: the endpoint answers mr_not_applicable).
+	retryMR func(ctx context.Context, id int64) (store.Task, error)
 	// reportDir confines the report endpoint (empty: nothing is served).
 	reportDir string
 	// policy and ops supply the /policy and /ops views (nil: empty object).

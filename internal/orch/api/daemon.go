@@ -171,6 +171,11 @@ func NewDaemon(cfg Config, st *store.Store, p StepProvider) (*Daemon, error) {
 	if cfg.BrokerSocket != "" {
 		h.broker = &broker.Client{Socket: cfg.BrokerSocket}
 	}
+	if mr, ok := p.(interface {
+		RetryMR(context.Context, int64) (store.Task, error)
+	}); ok {
+		h.retryMR = mr.RetryMR
+	}
 	if sr, ok := p.(interface {
 		RecordSubmitted(context.Context, store.Task)
 	}); ok {

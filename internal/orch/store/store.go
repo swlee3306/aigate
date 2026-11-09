@@ -39,6 +39,9 @@ var schemaV6 string
 //go:embed schema_v7.sql
 var schemaV7 string
 
+//go:embed schema_v8.sql
+var schemaV8 string
+
 // MaxErrorText caps Task.ErrorText so a noisy failure cannot bloat the DB.
 const MaxErrorText = 4096
 
@@ -76,6 +79,13 @@ type Task struct {
 	// LastActor is the actor of the task's latest event (read-only; empty
 	// when that event predates schema v7).
 	LastActor string
+	// Merge request of a published task (schema v8; see mr.go). All empty
+	// until the post-publish step has run.
+	Branch  string // "orch/<id>"
+	MRIID   int64  // 0 unless MRState is "created"
+	MRURL   string // http(s) address, only when created
+	MRState string // "", MRCreated, MRFailed or MRSkipped
+	MRCode  string // fixed failure code when MRState is MRFailed
 }
 
 // Approval is a pending-approvals entry (design section 6).
@@ -145,6 +155,7 @@ var migrations = []func(tx *sql.Tx) error{
 	func(tx *sql.Tx) error { _, err := tx.Exec(schemaV5); return err },
 	func(tx *sql.Tx) error { _, err := tx.Exec(schemaV6); return err },
 	func(tx *sql.Tx) error { _, err := tx.Exec(schemaV7); return err },
+	func(tx *sql.Tx) error { _, err := tx.Exec(schemaV8); return err },
 }
 
 // Open creates or opens the database at path with mode 0600.
@@ -242,7 +253,8 @@ func capText(s string) string {
 // taskCols ends with the actor of the task's latest event (Task.LastActor),
 // read with the task_events_task index; every query using it selects FROM tasks.
 const taskCols = `id, repo, base, prompt, class, agent, state, attempts, retry_state, error_text, created_at, updated_at, head_sha, verdict, report_path, policy_hash, infra_failed, retries,
-	(SELECT e.actor FROM task_events e WHERE e.task_id = tasks.id ORDER BY e.id DESC LIMIT 1)`
+	(SELECT e.actor FROM task_events e WHERE e.task_id = tasks.id ORDER BY e.id DESC LIMIT 1),
+	branch, mr_iid, mr_url, mr_state, mr_code`
 
 // insertEvent records one task event with its actor (schema v7).
 const insertEvent = `INSERT INTO task_events(task_id, from_state, to_state, note, at, actor) VALUES (?,?,?,?,?,?)`
@@ -253,11 +265,14 @@ func scanTask(r scanner) (Task, error) {
 	var t Task
 	var c, u int64
 	var infra int
-	var actor sql.NullString
+	var actor, branch, mrURL, mrState, mrCode sql.NullString
+	var mrIID sql.NullInt64
 	err := r.Scan(&t.ID, &t.Repo, &t.Base, &t.Prompt, &t.Class, &t.Agent, &t.State,
-		&t.Attempts, &t.RetryState, &t.ErrorText, &c, &u, &t.HeadSHA, &t.Verdict, &t.ReportPath, &t.PolicyHash, &infra, &t.Retries, &actor)
+		&t.Attempts, &t.RetryState, &t.ErrorText, &c, &u, &t.HeadSHA, &t.Verdict, &t.ReportPath, &t.PolicyHash, &infra, &t.Retries, &actor,
+		&branch, &mrIID, &mrURL, &mrState, &mrCode)
 	t.InfraFailed = infra != 0
 	t.LastActor = actor.String
+	t.Branch, t.MRIID, t.MRURL, t.MRState, t.MRCode = branch.String, mrIID.Int64, mrURL.String, mrState.String, mrCode.String
 	t.CreatedAt, t.UpdatedAt = ts(c), ts(u)
 	return t, err
 }
