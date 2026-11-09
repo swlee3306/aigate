@@ -86,6 +86,16 @@ func checkConfig(cfgPath, stateDir string, o checkOptions, out io.Writer) int {
 	if fi, err := os.Stat(stateDir); err != nil || !fi.IsDir() {
 		return refuse(errors.New("상태 폴더(state-dir)가 없거나 폴더가 아닙니다"))
 	}
+	// Read-only registry check: a registry that cannot be trusted is refused;
+	// legacy entries that still sit in broker.json next to an existing registry
+	// are only a warning (the registry wins, start is not blocked).
+	exists, err := broker.RegistryStatus(stateDir, broker.RegistryOptions{OwnerOK: o.KeyOwnerOK})
+	if err != nil {
+		return refuse(errors.New("프로젝트 등록부를 신뢰할 수 없습니다(깨졌거나 소유자·권한이 올바르지 않음)"))
+	}
+	if exists && (len(cfg.ContextRepos) > 0 || len(cfg.GitLab.Projects) > 0) {
+		fmt.Fprintln(out, "orch-broker: 경고: 프로젝트 등록부가 있으므로 broker.json의 context_repos·gitlab.projects는 무시됩니다. 설정에서 지워도 됩니다")
+	}
 	fmt.Fprintln(out, "orch-broker: 점검 통과 (설정·신뢰·키 모드·소켓 그룹·상태 폴더만 확인했습니다. 외부 접속은 하지 않았습니다)")
 	return 0
 }

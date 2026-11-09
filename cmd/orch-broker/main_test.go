@@ -184,3 +184,41 @@ func TestRunCheckFlag(t *testing.T) {
 		t.Fatalf("rc=%d", rc)
 	}
 }
+
+func TestCheckWarnsAboutLegacyEntries(t *testing.T) {
+	cfg, state, _, _, _ := checkEnv(t)
+	o := trustForTest(filepath.Dir(cfg))
+	// no registry yet: the legacy entries are about to be migrated, no warning
+	var out bytes.Buffer
+	if rc := checkConfig(cfg, state, o, &out); rc != 0 || strings.Contains(out.String(), "경고") {
+		t.Fatalf("rc=%d out=%q", rc, out.String())
+	}
+	// a registry exists and broker.json still lists the old entries: warn, rc 0
+	if _, err := broker.OpenRegistry(state, broker.LegacySource{}, broker.RegistryOptions{OwnerOK: func(uint32) bool { return true }}); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if rc := checkConfig(cfg, state, o, &out); rc != 0 {
+		t.Fatalf("rc=%d out=%q", rc, out.String())
+	}
+	if !strings.Contains(out.String(), "경고") || !strings.Contains(out.String(), "context_repos") || !strings.Contains(out.String(), "통과") {
+		t.Fatalf("no warning sentence: %q", out.String())
+	}
+	if strings.Contains(out.String(), "/repo") || strings.Contains(out.String(), "g/p") {
+		t.Fatalf("warning quotes config values: %q", out.String())
+	}
+}
+
+func TestCheckRefusesBrokenRegistry(t *testing.T) {
+	cfg, state, _, _, _ := checkEnv(t)
+	if err := os.WriteFile(filepath.Join(state, broker.RegistryFileName), []byte("junk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if rc := checkConfig(cfg, state, trustForTest(filepath.Dir(cfg)), &out); rc == 0 || !strings.Contains(out.String(), "등록부") {
+		t.Fatalf("rc=%d out=%q", rc, out.String())
+	}
+	if b, _ := os.ReadFile(filepath.Join(state, broker.RegistryFileName)); string(b) != "junk" {
+		t.Fatal("-check modified the registry")
+	}
+}

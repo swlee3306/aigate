@@ -62,6 +62,8 @@ var fixedMessages = map[string]string{
 	"repo_not_mapped": "이 저장소는 GitLab 프로젝트에 연결되어 있지 않습니다.",
 	"bad_branch":      "브랜치 이름이 올바르지 않습니다.",
 	"bad_url":         "GitLab이 설정된 주소 밖의 주소를 돌려주었습니다.",
+
+	"registry_unavailable": "프로젝트 등록부를 사용할 수 없습니다. 관리자가 확인해야 합니다.",
 }
 
 // Default per-op processing time limits (decision D1).
@@ -85,8 +87,10 @@ type Server struct {
 	Handlers map[string]HandlerFunc
 	State    State
 	Secrets  Secrets
-	OpenAI   *OpenAIClient // set by New; tests may point BaseURL at a fake
-	GitLab   *GitLabClient // set by New; tests may point BaseURL at a fake
+	OpenAI   *OpenAIClient  // set by New; tests may point BaseURL at a fake
+	GitLab   *GitLabClient  // set by New; tests may point BaseURL at a fake
+	Registry *RegistryStore // set by New: the project registry (owned by the broker)
+	Used     *UsedRequests  // set by New: one-time request IDs of signed changes
 
 	PeerUID     func(net.Conn) (uint32, error) // nil: kernel peer credentials
 	AllowUID    func(uint32) bool              // nil: Config.UIDs()
@@ -124,22 +128,43 @@ func New(cfg Config, o Options) (*Server, error) {
 	if dir == "" {
 		dir = DefaultStateDir
 	}
+	// Start-up order: config trust (done by the caller) -> registry (migrates a
+	// missing one) -> used request IDs -> handlers. A registry or used-request
+	// file that cannot be trusted does not stop the broker: everything that
+	// depends on it answers registry_unavailable (fail closed, no fallback).
+	sopts := RegistryOptions{OwnerOK: o.KeyOwnerOK}
+	reg, err := OpenRegistry(dir, LegacySource{ContextRepos: cfg.ContextRepos, GitLabProjects: cfg.GitLab.Projects}, sopts)
+	if err != nil && !errors.Is(err, ErrRegistryBroken) {
+		return nil, err
+	}
+	used, err := OpenUsedRequests(dir, sopts)
+	if err != nil && !errors.Is(err, ErrUsedRequestsBroken) {
+		return nil, err
+	}
 	bud, err := OpenBudget(filepath.Join(dir, "budget.json"), Micros(cfg.Limits.WeeklyBudgetUSD), o.Clock)
 	if err != nil {
 		return nil, err
 	}
 	s := &Server{
-		Config:  cfg,
-		Secrets: sec,
-		OpenAI:  &OpenAIClient{Key: sec.OpenAIKey(), Model: cfg.OpenAI.Model},
-		mrLock:  make(chan struct{}, 1),
-		GitLab:  &GitLabClient{BaseURL: cfg.GitLab.BaseURL, Token: sec.GitLabToken()},
-		Log:     o.Log,
+		Config:   cfg,
+		Secrets:  sec,
+		OpenAI:   &OpenAIClient{Key: sec.OpenAIKey(), Model: cfg.OpenAI.Model},
+		mrLock:   make(chan struct{}, 1),
+		Registry: reg,
+		Used:     used,
+		GitLab:   &GitLabClient{BaseURL: cfg.GitLab.BaseURL, Token: sec.GitLabToken()},
+		Log:      o.Log,
 		State: State{
 			Refine:   NewHourlyLimiter(cfg.Limits.RefinePerHour, o.Clock),
 			CreateMR: NewHourlyLimiter(cfg.Limits.CreateMRPerHour, o.Clock),
 			Budget:   bud,
 		},
+	}
+	if reg.Err() != nil {
+		s.logf("프로젝트 등록부를 신뢰할 수 없어 등록부가 필요한 작업을 거부합니다")
+	}
+	if used.broken {
+		s.logf("사용된 요청 ID 목록을 신뢰할 수 없어 쓰기 작업을 거부합니다")
 	}
 	bud.OnPersistError = func() { s.logf("예산 상태 저장 실패: 요청을 거부합니다") }
 	s.Handlers = map[string]HandlerFunc{
@@ -152,12 +177,11 @@ func New(cfg Config, o Options) (*Server, error) {
 
 // statusHandler is read-only and secret-free (decision D3).
 func (s *Server) statusHandler(context.Context, json.RawMessage) (any, *OpError) {
-	repos := append([]string{}, s.Config.ContextRepos...)
-	projects := make([]string, 0, len(s.Config.GitLab.Projects))
-	for repo := range s.Config.GitLab.Projects {
-		projects = append(projects, repo)
+	if s.Registry.Err() != nil {
+		return fail("registry_unavailable")
 	}
-	sortStrings(projects)
+	repos := s.Registry.AIContextPaths()
+	projects := s.Registry.GitLabPaths()
 	remaining := s.State.Budget.RemainingMicros()
 	return map[string]any{
 		"context_repos":               repos,
@@ -166,14 +190,6 @@ func (s *Server) statusHandler(context.Context, json.RawMessage) (any, *OpError)
 		"mr_projects":                 projects,
 		"weekly_budget_remaining_usd": float64(remaining) / 1e6,
 	}, nil
-}
-
-func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j] < s[j-1]; j-- {
-			s[j], s[j-1] = s[j-1], s[j]
-		}
-	}
 }
 
 func (s *Server) setup() {

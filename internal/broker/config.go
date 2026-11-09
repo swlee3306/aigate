@@ -27,7 +27,8 @@ type Config struct {
 	AllowUIDs    []string     `json:"allow_uids"`
 	OpenAI       OpenAIConfig `json:"openai"`
 	Limits       LimitsConfig `json:"limits"`
-	ContextRepos []string     `json:"context_repos"`
+	ContextRepos []string     `json:"context_repos"` // legacy: read once for migration, then the registry wins
+	RepoRoots    []string     `json:"repo_roots"`    // optional: directories whose direct children may be registered
 	GitLab       GitLabConfig `json:"gitlab"`
 	uids         []uint32     // allow_uids resolved at start
 }
@@ -183,6 +184,11 @@ func (c *Config) validate(lookup func(string) (uint32, error)) error {
 	for _, r := range c.ContextRepos {
 		if !filepath.IsAbs(r) || filepath.Clean(r) != r {
 			return errors.New("context_repos는 정리된 절대 경로여야 합니다")
+		}
+	}
+	for _, r := range c.RepoRoots {
+		if !cleanAbs(r) {
+			return errors.New("repo_roots는 정리된 절대 경로여야 합니다")
 		}
 	}
 	return c.GitLab.validate()

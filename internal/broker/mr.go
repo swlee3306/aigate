@@ -131,8 +131,11 @@ func (s *Server) createMRHandler(ctx context.Context, raw json.RawMessage) (any,
 	if !ok {
 		return fail("bad_request")
 	}
-	// The project is looked up in the config; the request names only a repo.
-	project, mapped := s.Config.GitLab.Projects[a.Repo]
+	// The project is looked up in the registry; the request names only a repo.
+	if s.Registry.Err() != nil {
+		return fail("registry_unavailable")
+	}
+	project, mapped := s.Registry.GitLabProject(a.Repo)
 	if !mapped || !s.Config.GitLab.Configured() {
 		return fail("repo_not_mapped")
 	}

@@ -83,7 +83,10 @@ func (s *Server) refineHandler(ctx context.Context, raw json.RawMessage) (any, *
 	if _, err := dec.Token(); err != io.EOF {
 		return fail("bad_request")
 	}
-	// 1. allow list: first, before anything is read or sent.
+	// 1. allow list (from the registry): first, before anything is read or sent.
+	if s.Registry.Err() != nil {
+		return fail("registry_unavailable")
+	}
 	if !s.repoAllowed(a.Repo) {
 		return fail("repo_not_allowed")
 	}
@@ -200,7 +203,7 @@ func (s *Server) repoAllowed(repo string) bool {
 	if !filepath.IsAbs(repo) || filepath.Clean(repo) != repo {
 		return false
 	}
-	for _, r := range s.Config.ContextRepos {
+	for _, r := range s.Registry.AIContextPaths() {
 		if r == repo {
 			return true
 		}
