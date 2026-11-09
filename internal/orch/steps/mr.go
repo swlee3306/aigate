@@ -128,6 +128,9 @@ func (p *Provider) mrHook(ctx context.Context, t store.Task) {
 	}
 }
 
+// MRConfigured reports whether a merge request creator is wired in.
+func (p *Provider) MRConfigured() bool { return p.cfg.MR != nil }
+
 // RetryMR is the retry endpoint's work: it creates the merge request of a
 // done task whose MR failed or was skipped, as the actor of ctx. It returns
 // the updated task. Errors: store.ErrNotFound; ErrMRNotApplicable (not done,
@@ -197,6 +200,10 @@ func (p *Provider) attemptMR(ctx context.Context, t store.Task, prev []string, l
 	}
 	if state == store.MRFailed && code == mrCodeBadURL {
 		iid, murl = 0, "" // never keep what failed validation
+	}
+	if state == store.MRSkipped && t.MRState == store.MRSkipped {
+		// Skipped again: nothing changed, so nothing is rewritten or recorded.
+		return state, code, nil
 	}
 	if err := p.st.SetMRFrom(wctx, t.ID, prev, branch, iid, murl, state, code); err != nil {
 		return "", "", err

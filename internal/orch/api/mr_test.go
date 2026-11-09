@@ -4,9 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -236,6 +234,4 @@ func TestTaskViewCarriesMRFields(t *testing.T) {
 	if c != 200 || !strings.Contains(string(b), `"mr_state":"failed"`) || !strings.Contains(string(b), `"mr_state":"created"`) {
 		t.Fatalf("list %d %s", c, b)
 	}
-	_ = errors.New
-	_ = http.StatusOK
 }

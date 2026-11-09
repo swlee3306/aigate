@@ -491,3 +491,30 @@ func TestBrokerMRMapsCodes(t *testing.T) {
 		t.Fatal("empty error text")
 	}
 }
+
+// A retry of a skipped task that is skipped again writes nothing: no row
+// rewrite (updated_at), no ledger line, still not applicable.
+func TestRetryMRSkippedAgainChangesNothing(t *testing.T) {
+	un := &fakeMR{err: &MRError{Code: "repo_not_mapped"}}
+	e := newEnv(t, withMR(un))
+	e.drain()
+	before := e.task()
+	lines := len(e.ledgerMR(t))
+	evs := len(e.events())
+	time.Sleep(5 * time.Millisecond)
+	for i := 0; i < 2; i++ {
+		if _, err := e.p.RetryMR(context.Background(), e.id); !errors.Is(err, ErrMRNotApplicable) {
+			t.Fatalf("retry %d: %v", i, err)
+		}
+	}
+	after := e.task()
+	if !after.UpdatedAt.Equal(before.UpdatedAt) || after.MRState != store.MRSkipped {
+		t.Fatalf("row rewritten: %v -> %v, state %q", before.UpdatedAt, after.UpdatedAt, after.MRState)
+	}
+	if n := len(e.ledgerMR(t)); n != lines || len(e.events()) != evs {
+		t.Fatalf("ledger %d -> %d, events %d -> %d", lines, n, evs, len(e.events()))
+	}
+	if un.calls() != 3 {
+		t.Fatalf("calls %d", un.calls())
+	}
+}
