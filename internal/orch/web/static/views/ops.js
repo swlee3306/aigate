@@ -95,11 +95,19 @@ function phasesText(phases) {
   return list.map((p) => inline(p.name, 40) + ' ' + formatSeconds(num(p.seconds)) + (p.ok === false ? ' ✗' : '')).join(' · ');
 }
 
+// restoreOutcome: only an explicit true/false is success/failure; a missing
+// or odd `ok` is "unknown", never shown as a failure.
+export function restoreOutcome(r) {
+  if (isObj(r) && r.ok === true) return { cls: 'c-done', text: '성공' };
+  if (isObj(r) && r.ok === false) return { cls: 'c-fail', text: '실패' };
+  return { cls: 'c-idle', text: '알 수 없음' };
+}
+
 function restoreItem(r) {
-  const ok = r.ok === true;
+  const o = restoreOutcome(r);
   return el('li', {}, [
     el('span', {}, [
-      el('span', { class: ['chip', ok ? 'c-done' : 'c-fail'] }, ok ? '성공' : '실패'),
+      el('span', { class: ['chip', o.cls] }, o.text),
       ' ',
       el('small', { class: 'ell' }, phasesText(r.phases)),
     ]),

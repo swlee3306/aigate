@@ -181,20 +181,30 @@ export function actionResult(kind, err) {
   return { text: errorText(err), reload: false };
 }
 
+// actionAllowed: the server's flag for kind, honoured only when exactly true.
+export function actionAllowed(t, kind) {
+  if (!t || typeof t !== 'object') return false;
+  return kind === 'cancel' ? t.cancellable === true : kind === 'retry' ? t.retryable === true : false;
+}
+
 // actionBlock: the cancel/retry buttons (by the server's exact-true flags)
 // and, instead of a button, its in-page confirmation. act: {open, busy, msg}.
 // The "돌아가기" button shares the opener's focus key so focus lands on it
 // when the confirmation opens (replaceContent restores focus by key).
 function actionBlock(t, extras) {
   const act = extras.act && typeof extras.act === 'object' ? extras.act : {};
-  const kinds = [];
-  if (t.cancellable === true) kinds.push('cancel');
-  if (t.retryable === true) kinds.push('retry');
+  const kinds = ['cancel', 'retry'].filter((k) => actionAllowed(t, k));
   const out = [];
   for (const kind of kinds) {
     const c = CONFIRM[kind];
     if (act.open === kind) {
-      out.push(el('div', { class: 'confirm', role: 'group', 'aria-label': c.title }, [
+      // Escape anywhere in the confirmation is "돌아가기" (nothing is sent).
+      const onKey = (ev) => {
+        if (!ev || ev.key !== 'Escape') return;
+        if (typeof ev.preventDefault === 'function') ev.preventDefault();
+        if (extras.onClose) extras.onClose();
+      };
+      out.push(el('div', { class: 'confirm', role: 'group', 'aria-label': c.title, on: { keydown: onKey } }, [
         el('p', { class: 'q' }, c.title),
         el('p', { class: 'meaning' }, c.impact(t.state)),
         el('div', { class: 'row' }, [
@@ -381,6 +391,12 @@ export function taskView(ctx) {
       last = key;
       st.data = r.data;
       st.approval = r.approval;
+      // The flag went away while the confirmation was open (the task moved
+      // on): the confirmation disappears, so forget it too; otherwise it would
+      // pop up again if the flag came back later.
+      if (st.act.open && !st.act.busy && !actionAllowed(r.data && r.data.task, st.act.open)) {
+        st.act = { open: null, busy: false, msg: st.act.msg };
+      }
       paint();
     } catch (err) {
       if (!(ctx.signal && ctx.signal.aborted) && !st.data) replaceContent(ctx.root, errorPane(err, '#/tasks', '← 작업 목록'));

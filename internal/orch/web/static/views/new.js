@@ -6,7 +6,7 @@
 // server (GET /repos, GET /policy); nothing else can be submitted.
 
 import {
-  el, clear, inline, idOf, errorPane, findHostile,
+  el, clear, inline, idOf, errorPane, findHostile, sanitize,
 } from '../render.js';
 import { registerView } from '../router.js';
 import { replaceContent } from '../shell.js';
@@ -110,6 +110,20 @@ function defaultNavigate(hash) {
 }
 
 // usable list entries: shape-checked, repos need a string path.
+// REPO_LABEL_MAX: the longest repository label in the select. Paths that
+// share a long prefix differ at the END, so a long path keeps its head and
+// its tail and drops the middle (two different paths never look the same
+// because of a cut at the end).
+export const REPO_LABEL_MAX = 120;
+export function repoLabel(path, max) {
+  max = max || REPO_LABEL_MAX;
+  const cps = Array.from(sanitize(path)); // code points: never split a pair
+  if (cps.length <= max) return cps.join('');
+  const head = Math.floor((max - 1) / 3);
+  const tail = max - 1 - head;
+  return cps.slice(0, head).join('') + '…' + cps.slice(cps.length - tail).join('');
+}
+
 function cleanRepos(list) {
   return (Array.isArray(list) ? list : []).filter((r) => r && typeof r === 'object' && typeof r.path === 'string' && r.path !== '');
 }
@@ -144,7 +158,7 @@ function renderNewForm(env) {
 
   // --- controls ---
   h.repo = el('select', { id: 'f-repo', 'data-focus-key': 'repo', on: { change: () => { setBaseFromRepo(); recompute(); } } },
-    repos.map((r) => el('option', { value: r.path }, inline(r.path, 120))));
+    repos.map((r) => el('option', { value: r.path }, repoLabel(r.path))));
   h.repo.value = repos[0].path;
   h.base = el('input', {
     type: 'text', id: 'f-base', autocomplete: 'off', spellcheck: 'false', maxlength: '200', class: 'mono',
@@ -175,7 +189,9 @@ function renderNewForm(env) {
   }
   h.preview = el('pre', { id: 'f-preview', class: 'block-pre', 'aria-label': '전송될 프롬프트' });
   h.count = el('p', { class: 'note', id: 'f-count' });
-  h.problem = el('p', { class: ['note', 'err'], role: 'alert', id: 'f-problem' });
+  // A polite live region, rewritten only when the message changes: an
+  // alert refilled on every keystroke would interrupt a screen reader each time.
+  h.problem = el('p', { class: ['note', 'err'], 'aria-live': 'polite', id: 'f-problem' });
   h.result = el('div', { class: 'form-result', role: 'status' });
   h.submit = el('button', { type: 'button', class: ['btn', 'primary'], id: 'f-submit', 'data-focus-key': 'submit', on: { click: () => onSubmit() } }, '제출');
 
@@ -240,16 +256,23 @@ function renderNewForm(env) {
     h.preview.hidden = st.shown === null;
     clear(h.count);
     if (st.shown !== null) h.count.appendChild(globalThis.document.createTextNode(utf8Bytes(st.shown) + ' / ' + PROMPT_MAX_BYTES + ' 바이트'));
-    clear(h.problem);
     const showProblem = st.problem && !(cur.empty && !touched());
-    if (showProblem) h.problem.appendChild(globalThis.document.createTextNode(st.problem));
+    const want = showProblem ? st.problem : '';
+    if (want !== h.problem.textContent) {
+      clear(h.problem);
+      if (want) h.problem.appendChild(globalThis.document.createTextNode(want));
+    }
     h.problem.hidden = !showProblem;
     syncButton();
     return cur;
   }
   const touched = () => FIELDS.some((f) => h.fields[f.key].value !== '');
+  // aria-disabled (not disabled) like the task page: a real disabled attribute
+  // would throw the keyboard focus off the button the user just pressed.
+  // onSubmit guards the same conditions, so a click on it does nothing.
+  const blocked = () => st.busy || st.done || !!st.problem;
   function syncButton() {
-    if (st.busy || st.done || st.problem) h.submit.setAttribute('disabled', ''); else h.submit.removeAttribute('disabled');
+    h.submit.setAttribute('aria-disabled', blocked() ? 'true' : 'false');
     h.submit.setAttribute('aria-busy', st.busy ? 'true' : 'false');
   }
   function showResult(text, kind, extra) {
@@ -264,6 +287,8 @@ function renderNewForm(env) {
 
   async function onSubmit() {
     if (st.busy || st.done) return; // double click, Enter spam: one request
+    // st.problem is re-derived below (recompute): a stale problem must not
+    // block a form the user has just fixed without an input event.
     const before = st.shown;
     const cur = recompute();
     if (cur.problem) return;

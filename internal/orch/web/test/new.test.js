@@ -126,7 +126,8 @@ test('TestNewViewSubmitsOnceWithIdempotencyKey', async () => {
   assert.equal(btn.getAttribute('type'), 'button');
   click(btn); click(btn); click(btn); // double click and Enter spam
   assert.equal(ctx.posts.length, 1, 'exactly one request');
-  assert.equal(btn.hasAttribute('disabled'), true, 'disabled while pending');
+  assert.equal(btn.getAttribute('aria-disabled'), 'true', 'marked disabled while pending');
+  assert.equal(btn.hasAttribute('disabled'), false, 'never a real disabled (keeps focus)');
   const p = ctx.posts[0];
   assert.equal(p.path, '/api/v1/tasks');
   assert.deepEqual(Object.keys(p.body).sort(), ['agent', 'base', 'class', 'prompt', 'repo']);
@@ -157,7 +158,7 @@ test('same content keeps the key across queue_full/network errors; changed conte
   const btn = submitBtn(ctx.root);
   click(btn); await ctx.settle();
   assert.match(text(ctx.root), /가득/);
-  assert.equal(btn.hasAttribute('disabled'), false, 'retry is possible');
+  assert.equal(btn.getAttribute('aria-disabled'), 'false', 'retry is possible');
   click(btn); await ctx.settle();
   click(btn); await ctx.settle();
   const keys = ctx.posts.map((p) => p.opts.headers['Idempotency-Key']);
@@ -229,7 +230,7 @@ test('TestNewViewShowsFinalPromptBeforeSubmit', async () => {
   fill(c3.root, { goal: 'ok', scope: 'a‮b' });
   assert.match(text(c3.root), /보이지 않는 문자|제어 문자/);
   assert.match(text(c3.root), /U\+202E/);
-  assert.equal(submitBtn(c3.root).hasAttribute('disabled'), true);
+  assert.equal(submitBtn(c3.root).getAttribute('aria-disabled'), 'true');
   click(submitBtn(c3.root)); await c3.settle();
   assert.equal(c3.posts.length, 0);
   // too long: guidance, no submit
@@ -265,7 +266,7 @@ test('TestNewViewErrorsFixedTexts', async () => {
     assert.match(text(ctx.root), re, code);
     assert.doesNotMatch(text(ctx.root), /SECRETWORD|\/srv\/private|onerror/, code + ': server text never shown');
     noHostile(ctx.root);
-    assert.equal(submitBtn(ctx.root).hasAttribute('disabled'), false, code + ': usable again');
+    assert.equal(submitBtn(ctx.root).getAttribute('aria-disabled'), 'false', code + ': usable again');
     assert.deepEqual(ctx.nav, []);
   }
   // the queue_full text says the queue is full, not "rate limited"
@@ -367,4 +368,74 @@ test('TestNewViewReposAndClassesFromApi', async () => {
   const c7 = await mount({ repos: [] });
   assert.match(text(c7.root), /저장소가 없습니다/);
   assert.equal(byId(c7.root, 'f-submit'), undefined);
+});
+
+test('TestNewViewSubmitAriaDisabledKeepsFocus', async () => {
+  const g = gate();
+  const ctx = await mount({ post: async () => { await g.p; return created; } });
+  const btn = submitBtn(ctx.root);
+  // empty form: blocked, but the button keeps focusability (no disabled attribute)
+  assert.equal(btn.getAttribute('aria-disabled'), 'true');
+  btn.focus();
+  click(btn); await ctx.settle();
+  assert.equal(ctx.posts.length, 0, 'a blocked button sends nothing');
+  fill(ctx.root);
+  assert.equal(btn.getAttribute('aria-disabled'), 'false');
+  btn.focus();
+  click(btn);
+  assert.equal(btn.getAttribute('aria-disabled'), 'true');
+  assert.equal(btn.hasAttribute('disabled'), false);
+  assert.equal(globalThis.document.activeElement, btn, 'focus stays on the pressed button');
+  click(btn);
+  assert.equal(ctx.posts.length, 1);
+  g.go();
+  await ctx.settle();
+  for (const b of findAll(ctx.root, (e) => e.tagName === 'BUTTON')) assert.equal(b.hasAttribute('disabled'), false);
+});
+
+test('TestNewViewProblemIsPoliteAndStable', async () => {
+  const ctx = await mount();
+  const pr = byId(ctx.root, 'f-problem');
+  assert.equal(pr.getAttribute('aria-live'), 'polite');
+  assert.equal(pr.getAttribute('role'), null, 'not an alert');
+  fill(ctx.root, { goal: 'ok', scope: 'a‮b' });
+  const node = pr.firstChild;
+  assert.ok(node);
+  assert.match(text(pr), /U\+202E/);
+  // more typing that leaves the same problem does not rewrite the region
+  setField(ctx.root, 'f-goal', 'ok, still typing');
+  setField(ctx.root, 'f-done', 'more');
+  assert.equal(pr.firstChild, node, 'same text node: nothing re-announced');
+  // a different problem replaces it once
+  setField(ctx.root, 'f-scope', 'a​b');
+  assert.notEqual(pr.firstChild, node);
+  assert.match(text(pr), /U\+200B/);
+  // fixed: the region empties and hides
+  setField(ctx.root, 'f-scope', 'README.md');
+  assert.equal(text(pr), '');
+  assert.equal(pr.hidden, true);
+});
+
+test('TestNewViewRepoLabelsKeepTheTail', async () => {
+  const { repoLabel, REPO_LABEL_MAX } = N;
+  assert.equal(REPO_LABEL_MAX, 120);
+  const prefix = '/srv/repos/' + 'very-long-team-name/'.repeat(8);
+  const a = prefix + 'service-alpha', b = prefix + 'service-beta';
+  assert.ok(a.length > 120);
+  const la = repoLabel(a), lb = repoLabel(b);
+  assert.notEqual(la, lb, 'paths that differ at the end stay distinguishable');
+  assert.ok(la.endsWith('service-alpha') && lb.endsWith('service-beta'));
+  assert.ok(la.startsWith('/srv/repos/'));
+  assert.equal(Array.from(la).length, 120);
+  assert.match(la, /…/);
+  assert.equal(repoLabel('/srv/repos/calc'), '/srv/repos/calc', 'short paths are unchanged');
+  // never splits a surrogate pair; control characters are still neutralised
+  const emoji = '/srv/' + '😀'.repeat(200);
+  assert.ok(!/[\ud800-\udfff]/.test(repoLabel(emoji).replace(/[\ud800-\udbff][\udc00-\udfff]/g, '')));
+  assert.doesNotMatch(repoLabel('/srv/a\u001bb'), /\u001b/);
+  // in the view
+  const ctx = await mount({ repos: [{ path: a, head: 'a'.repeat(40), branch: 'main', branches: ['main'] }, { path: b, head: 'b'.repeat(40), branch: 'main', branches: ['main'] }] });
+  const opts = findAll(ctx.root, (e) => e.tagName === 'OPTION' && e.getAttribute('value') && e.getAttribute('value').startsWith('/srv/'));
+  assert.equal(opts.length, 2);
+  assert.notEqual(text(opts[0]), text(opts[1]));
 });

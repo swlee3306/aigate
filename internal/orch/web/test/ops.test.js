@@ -151,3 +151,35 @@ test('TestOpsViewHostileText', () => {
     noHostile(renderOps(junk));
   }
 });
+
+test('TestOpsUnlimitedFlagNeverWarns', () => {
+  // unlimited:true wins over a limit/in_use pair that would otherwise be 99.7 %
+  const r = renderOps(quota({ limit: 300, in_use: 299, unlimited: true }, { limit: 300, in_use: 299, reserved: 1, unlimited: true }));
+  assert.equal(warns(r).length, 0);
+  assert.doesNotMatch(text(r), /cleanup-restore-volumes/);
+  assert.equal(quotaLevel({ limit: 300, in_use: 299, unlimited: true }).kind, 'unlimited');
+  assert.match(text(r), /제한 없음/);
+});
+
+test('TestOpsRestoreWithoutOkIsUnknown', () => {
+  const { restoreOutcome } = O;
+  assert.deepEqual(restoreOutcome({ ok: true }), { cls: 'c-done', text: '성공' });
+  assert.deepEqual(restoreOutcome({ ok: false }), { cls: 'c-fail', text: '실패' });
+  for (const r of [{}, { ok: 'true' }, { ok: 1 }, { ok: null }, null, 'x']) {
+    assert.deepEqual(restoreOutcome(r), { cls: 'c-idle', text: '알 수 없음' }, JSON.stringify(r));
+  }
+  const base = fx('ops.json');
+  const h = base.cloud.history[0];
+  const { ok: _drop, ...noOk } = h;
+  const o = { ...base, cloud: { ...base.cloud, history: [noOk] } };
+  const root = renderOps(o);
+  const chips = byClass(root, 'chip').filter((c) => /성공|실패|알 수 없음/.test(text(c)));
+  assert.equal(chips.length, 1);
+  assert.equal(text(chips[0]), '알 수 없음');
+  assert.ok(chips[0].className.includes('c-idle'));
+  // without a cloud history, the last restore without ok is unknown too
+  const o2 = { ...base, cloud: undefined, last_restore: noOk };
+  const r2 = renderOps(o2);
+  assert.ok(byClass(r2, 'chip').some((c) => text(c) === '알 수 없음'));
+  assert.ok(!byClass(r2, 'chip').some((c) => text(c) === '실패'));
+});

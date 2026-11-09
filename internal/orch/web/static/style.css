@@ -211,4 +211,5 @@ pre.block-pre { font-family: var(--mono); font-size: 13px; background: var(--bg)
 .quota-warn b { color: var(--amber); } .quota-warn code { font-family: var(--mono); overflow-wrap: anywhere; }
 @media (max-width: 760px) { .quota-r { grid-template-columns: minmax(0, 1fr) auto; } .quota-r .bar-t { grid-column: 1 / -1; order: 3; } }
 .btn[aria-disabled="true"], .btn[aria-disabled="true"]:hover { background: var(--raised-2); color: var(--faint); cursor: progress; }
+.btn[aria-disabled="true"][aria-busy="false"] { cursor: not-allowed; }
 .confirm .q { font-weight: 650; margin: 0; }

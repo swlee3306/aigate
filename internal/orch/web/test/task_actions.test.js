@@ -87,9 +87,11 @@ test('TestTaskCancelRetryButtons', async () => {
   for (const [st, code, re] of [[409, 'already_final', /이미 끝난 작업/], [404, 'not_found', /찾을 수 없습니다/], [500, 'internal', /서버에서 오류/]]) {
     const c = await mount(running, { 'POST /api/v1/tasks/41/cancel': () => { throw apiError(st, code, 'SECRETWORD'); } });
     click(btn(c.root, '작업 취소'));
+    const bc = evCalls(c, 41);
     click(btn(c.root, '취소 실행'));
     await c.settle();
     assert.match(text(c.root), re, code);
+    if (code === 'already_final') assert.ok(evCalls(c, 41) > bc, 'already_final re-reads the task');
     assert.doesNotMatch(text(c.root), /SECRETWORD/);
     c.leave();
   }
@@ -100,8 +102,10 @@ test('TestTaskCancelRetryButtons', async () => {
   click(btn(c3.root, '다시 시도'));
   assert.equal(c3.posts.length, 0);
   assert.match(text(c3.root), /실패한 단계부터 다시 실행/);
+  const b3 = evCalls(c3, 42);
   click(btn(c3.root, '재시도 실행'));
   await c3.settle();
+  assert.ok(evCalls(c3, 42) > b3, 'not_retryable re-reads the task');
   assert.deepEqual(c3.posts.map((p) => p.path), ['/api/v1/tasks/42/retry']);
   assert.match(text(c3.root), /재시도 한도\(3회\)를 모두 썼습니다/);
   assert.match(text(c3.root), /<img src=x onerror=1>/, 'markup in the reason stays text');
@@ -111,8 +115,10 @@ test('TestTaskCancelRetryButtons', async () => {
   // not_retryable without a reason: fixed text
   const c4 = await mount(rd, { 'POST /api/v1/tasks/42/retry': () => { throw apiError(409, 'not_retryable', 'SECRETWORD'); } });
   click(btn(c4.root, '다시 시도'));
+  const b4 = evCalls(c4, 42);
   click(btn(c4.root, '재시도 실행'));
   await c4.settle();
+  assert.ok(evCalls(c4, 42) > b4, 'not_retryable without a reason re-reads the task too');
   assert.match(text(c4.root), /다시 시도할 수 없는 작업입니다/);
   assert.doesNotMatch(text(c4.root), /SECRETWORD/);
   c4.leave();
@@ -225,5 +231,59 @@ test('progress and actions survive a poll re-render; the page polls only the tas
   await ctx.settle();
   assert.ok(btn(ctx.root, '취소 실행'), 'an open confirmation is kept when the page refreshes');
   assert.equal(ctx.calls.every((c) => c.startsWith('/api/v1/tasks/41') || c === '/api/v1/approvals'), true);
+  ctx.leave();
+});
+
+const keydown = (node, key) => {
+  let prevented = false;
+  for (let n = node; n; n = n.parentNode) {
+    for (const fn of (n.listeners && n.listeners.keydown) || []) fn({ key, target: node, preventDefault() { prevented = true; } });
+  }
+  return prevented;
+};
+
+test('TestTaskConfirmEscapeCloses', async () => {
+  const ctx = await mount(running, { 'POST /api/v1/tasks/41/cancel': () => running.task });
+  click(btn(ctx.root, '작업 취소'));
+  const run = btn(ctx.root, '취소 실행');
+  assert.ok(run);
+  // other keys do nothing
+  assert.equal(keydown(run, 'Enter'), false);
+  assert.ok(btn(ctx.root, '취소 실행'));
+  // Escape from a button inside the confirmation closes it, sends nothing
+  assert.equal(keydown(btn(ctx.root, '돌아가기'), 'Escape'), true);
+  assert.equal(btn(ctx.root, '취소 실행'), undefined);
+  assert.ok(btn(ctx.root, '작업 취소'), 'the opener is back (same focus key)');
+  assert.equal(ctx.posts.length, 0);
+  // the same for retry
+  const c2 = await mount(failedData());
+  click(btn(c2.root, '다시 시도'));
+  keydown(btn(c2.root, '재시도 실행'), 'Escape');
+  assert.equal(btn(c2.root, '재시도 실행'), undefined);
+  assert.equal(c2.posts.length, 0);
+  ctx.leave();
+  c2.leave();
+});
+
+test('TestTaskConfirmResetWhenFlagFlips', async () => {
+  let flag = true;
+  const data = () => ({ ...structuredClone(running), task: { ...structuredClone(running.task), cancellable: flag } });
+  const ctx = fakeCtx({ '/api/v1/tasks/41/events': () => data(), '/api/v1/approvals': [] }, { params: ['41'] });
+  taskView(ctx);
+  await ctx.settle();
+  const repoll = async () => { ctx.pollers[0].pause(); ctx.pollers[0].resume(); await ctx.settle(); };
+  click(btn(ctx.root, '작업 취소'));
+  assert.ok(btn(ctx.root, '취소 실행'));
+  // the task moved on: the flag is gone, so is the confirmation
+  flag = false;
+  await repoll();
+  assert.equal(btn(ctx.root, '취소 실행'), undefined);
+  assert.equal(btn(ctx.root, '작업 취소'), undefined);
+  // the flag comes back: the plain button, NOT the stale confirmation
+  flag = true;
+  await repoll();
+  assert.equal(btn(ctx.root, '취소 실행'), undefined, 'a forgotten confirmation must not pop up again');
+  assert.ok(btn(ctx.root, '작업 취소'));
+  assert.equal(ctx.posts.length, 0);
   ctx.leave();
 });
