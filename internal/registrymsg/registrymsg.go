@@ -46,6 +46,10 @@ var schema = map[string]map[string]fieldKind{
 // ValidSubject reports whether s is a project id.
 func ValidSubject(s string) bool { return subjectRE.MatchString(s) }
 
+// ValidKind reports whether s is a project kind (a policy class name the
+// registry can carry).
+func ValidKind(s string) bool { return kindRE.MatchString(s) }
+
 // checkString rejects strings whose canonical JSON could differ between Go and
 // a browser's JSON.stringify: invalid UTF-8, control characters, DEL and the
 // U+2028/U+2029 separators.
