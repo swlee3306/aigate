@@ -150,6 +150,7 @@ sudo systemctl start orchd
 - `journalctl -u orchd -n 40`: `orchd: config: approvals: mode legacy (no signers registry at /etc/aigate/signers.json)`가 보이고 오류 없이 대기 중. 첫 시작에서 DB 스키마가 v6으로 올라간다(코드상 자동 마이그레이션).
 - toy 작업 하나를 3장 명령으로 제출 → 승인 대기까지 가는 작업(보호 파일 변경 등 기존에 쓰던 종류)을 하나 만들고 **기존 TTY 방식**(`ssh -t … 'sudo -u orch -H /usr/local/lib/aigate/orch --socket … --gate-home … approve <항목ID>'`)으로 승인 → `done`.
 - 새 `orchd`는 게이트 빌드 키가 바뀌어 base 결과 캐시를 한 번 다시 실행한다(6장). 판정이 느려 보여도 정상.
+- **배포 전부터 대기 중이던 승인은 다시 승인해야 한다(R23, 2026-11-09).** 새 빌드의 diff 해시는 SHA-256 전체 64자리이고 옛 빌드는 앞 16자리를 저장했다. 마이그레이션은 없다: 옛 16자리 대기 행과 `approvals.json`의 16자리 승인은 새 해시와 맞지 않아 무효다(fail closed). 가장 쉬운 길은 **백업 전에 `orch approvals`를 비우는 것**(옛 빌드로 승인해 끝내거나 취소). 배포 뒤 남은 16자리 행: `orch approve <ID>`는 해시 불일치로 거부한다. 옛 빌드가 이미 `approvals.json`에 승인을 써 둔 행이면 `orch reverify <ID>`로 게이트가 새 해시로 다시 판정해 64자리 항목이 대기로 올라오고, 그것을 다시 승인한다(`cmd/orch` `TestOldShortHashPendingEntry`로 확인, 레거시 모드). 승인 기록이 없는 행은 `orch cancel <작업ID>` 후 다시 제출한다. 확인: `orch --json approvals`의 `hash`가 모두 64자리.
 
 **그래도 안 되면:** 6단계의 바이너리·DB 복원. **옛 `orchd`는 v6 DB를 열지 않는다**(`database schema version 6 is newer than this build`, 옛 코드 읽기로 확인) — 바이너리 복원은 반드시 `$B`의 DB 백업 복원과 함께 한다. 그 사이의 작업 기록은 사라진다.
 
@@ -237,6 +238,7 @@ sudo /usr/local/lib/aigate/orch admin signers list
 2. **웹 노출 끄기 [되돌림 가능]:** orch-vm에서 `sh /tmp/orch-web-serve.sh 8808 --off --apply`(`tailscale serve --https=443 off`), 확인은 `tailscale serve status`가 비어 있음. 필요하면 방화벽은 `sudo cp /etc/nftables.conf.pre-w1 /etc/nftables.conf && sudo nft -f /etc/nftables.conf`(3-d에서 만든 백업. `.pre-task2`는 더 옛 규칙이다).
 3. **유닛 복원:** `sudo cp /etc/systemd/system/orchd.service.pre-w1 /etc/systemd/system/orchd.service && sudo systemctl daemon-reload && sudo systemctl restart orchd`(HTTP 리스너가 사라진다).
 4. **바이너리 복원 [주의]:** **1번을 먼저** 한다(옛 바이너리는 서명 목록을 모르므로 파일이 남아 있으면 서명이 검증되지 않은 채 통과한다). `sudo systemctl stop orchd` → `for f in orchd orch aigate; do sudo install -o root -g root -m 0755 /usr/local/lib/aigate/$f.prev-w1 /usr/local/lib/aigate/$f; done` → **DB 복원: `sudo cp -a /home/orch/orchd/backup-w1/orchd.db* /home/orch/orchd/state/`**(옛 orchd는 v6 DB를 열지 않는다. 백업 이후에 생긴 작업·승인 기록은 사라지므로, 필요하면 복원 전에 현재 DB를 따로 복사한다) → 승인 파일이 필요하면 `backup-w1/gate-home`에서 → `sudo systemctl start orchd`(유닛 `ExecStart`는 새 경로 그대로 둔다. `.pre-w1` 유닛으로 되돌리면 옛 `/home/orch/bin` 경로를 가리키므로, 그 폴더를 치웠다면 유닛의 경로도 같이 맞춘다). 세 바이너리는 항상 같이 되돌린다.
+   - **diff 해시 길이(R23):** 옛 바이너리는 diff 해시를 16자리로 계산하므로, 업그레이드 뒤 새 빌드로 만든 승인(64자리 `approvals.json` 항목, 64자리 대기 행)은 옛 바이너리에서 맞지 않는다. DB를 `backup-w1`로 되돌리면 그 사이의 대기 행은 어차피 사라지고, `approvals.json`의 64자리 항목은 남아도 무해하지만 쓰이지 않는다. 롤백 뒤 승인 대기 작업은 옛 바이너리로 다시 승인한다.
 5. `/etc/aigate`는 비어 있으면 둬도 무해하다. 지우려면 `sudo rmdir /etc/aigate`. Tailscale 관리 콘솔의 HTTPS 인증서 기능은 [사용자]가 직접 끈다.
 
 **검증:** `journalctl -u orchd`에 `approvals: mode legacy`, TTY 승인으로 toy 작업이 `done`, `orch list`가 단계 1 이전 작업을 보여 준다. **그래도 안 되면:** 아무것도 더 지우지 말고 멈춰서 상태(로그, `ls -l /etc/aigate /home/orch/bin`)를 사용자에게 보고한다.

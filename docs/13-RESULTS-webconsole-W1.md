@@ -107,7 +107,7 @@
 |---|---|---|---|
 | A1 | `tailscale serve`로 HTTPS를 붙일 수 있고 인증서가 발급된다 | **검증 못 함** | orch-vm에서 `tailscale serve`를 한 번도 실행하지 않았고 Tailscale 관리 콘솔의 HTTPS 설정도 보지 못했다(이 환경에서 접근하지 않음). 스크립트는 드라이런·잘못된 인자 거부만 시험했다(`infra/test-web-scripts.sh` 17개). 설계서가 적은 "`bon-openstack`이 443을 tailscaled로 쓰는 것으로 보인다"도 미확인. 컷오버 3단계에서 확인한다. |
 | A2 | 서명 `issued` ±5분이 CLI·웹 모두에 충분하다 | **일부 검증** | ±5분을 서버가 강제하는 것(`TestStaleIssuedRejected`, `api.TestGrantStaleIssued403`)과 CLI가 로그인 메시지의 시각을 ±5분으로 확인하는 것은 시험했다. "충분한가"는 실사용(시계 오차, 서명 화면에서 머무는 시간)을 봐야 하며 **하지 않았다**. 서명 화면을 5분 넘게 열어 두면 거부될 수 있다(코드 읽기에 따른 추정). |
-| A3 | CLI가 서버가 준 해시 대상 텍스트로 해시를 다시 계산할 수 있다(`hashOf`가 순수 해시) | **검증됨** | 코드를 읽었다: `hashOf`는 입력 문자열의 SHA-256 앞 16 hex뿐이다(`internal/gitx/gitx.go`, 외부 상태 없음). 시험: `gitx.TestHashOfMatchesDiffHash`(공개 `HashOf` = 게이트의 diff 해시), `cmd/orch` `TestApproveRefusesHashMismatch`, `TestApproveSignedFlow`, `remote_e2e_test.go`(원격 CLI가 서버 텍스트로 재계산 후 서명). 한계: 재계산은 "보인 글자 = 해시"만 보증한다. 그 글자가 실제 저장소 diff인지는 서버를 믿는다(설계서 10장). |
+| A3 | CLI가 서버가 준 해시 대상 텍스트로 해시를 다시 계산할 수 있다(`hashOf`가 순수 해시) | **검증됨** | 코드를 읽었다: `hashOf`는 입력 문자열의 SHA-256뿐이다(`internal/gitx/gitx.go`, 외부 상태 없음. 2026-11-09 결정 R23 이후 전체 64 hex, 그 전에는 앞 16 hex). 시험: `gitx.TestHashOfMatchesDiffHash`(공개 `HashOf` = 게이트의 diff 해시), `cmd/orch` `TestApproveRefusesHashMismatch`, `TestApproveSignedFlow`, `remote_e2e_test.go`(원격 CLI가 서버 텍스트로 재계산 후 서명). 한계: 재계산은 "보인 글자 = 해시"만 보증한다. 그 글자가 실제 저장소 diff인지는 서버를 믿는다(설계서 10장). |
 | A4 | Mac의 SSH 키(ed25519)로 `ssh-keygen -Y sign` 서명이 Go에서 검증된다 | **검증됨** | 실제 `ssh-keygen -Y sign`(이 Mac의 OpenSSH 10.3p1)이 만든 서명을 `x/crypto/ssh` 기반 검증기가 통과시킨다(`signing.TestVerifyOK`: sha512 기본과 `-O hashalg=sha256`, `cmd/orch` `TestDefaultSignCmdSSHKeygen`, `TestCLILoginRealSSHKeygen`, 원격 e2e). 한계: ed25519만 지원, 하드웨어 키(`sk-`)와 ssh-agent 경로는 시험하지 않았다. 다른 OpenSSH 버전은 Mac 쪽 서명 도구로만 의미가 있고 검증은 Go에서 하므로 VM의 OpenSSH와 무관하다. |
 | A5 | 세션 수명(유휴 8시간, 절대 24시간)이 개인 사용에 적절하다 | **검증 못 함** | 값이 구현된 것(만료·절대 상한 시험)만 확인했다. 적절한지는 써 봐야 안다. |
 | X1 | orch-vm에서 `tailscale serve` HTTPS와 패스키 등록·로그인 | **검증 못 함** | 실제 노드·실제 브라우저에서 한 번도 못 했다. 간접 근거만 있다: (1) Task 21 검토자가 **tailscale 소스를 읽어** `serve`가 클라이언트가 보낸 `Tailscale-User-*` 헤더를 지우고 Host를 보존한다(`r.Out.Host = r.In.Host`)고 확인했다. 이것은 **소스 읽기이며 실행이 아니다.** (2) 패스키 등록·로그인·서명은 합성(소프트웨어) 인증기로만 시험했다. 실제 기기의 `navigator.credentials`, 서명 카운터 0 보고, rpId 생략 동작은 미확인. 컷오버 단계 3·5에서 확인한다(6장). |
@@ -128,6 +128,7 @@
 | 서명 검증 비용(X3) | 4 | 게이트 시간이 레거시 대비 늘지 않는지(재측정) |
 | 시계·`issued` ±5분(A2) | 4, 5 | 서명 실패 사례가 없는지 |
 | 키보드·스크린 리더 | 5 | 화면은 ego-browser로 1280/390px 모습만 봤다. 키보드만으로 전체 흐름, 스크린 리더 낭독은 하지 않았다 |
+| 옛 빌드의 대기 승인(R23) | 1 | 배포 전부터 대기 중이던 승인은 16자리 해시라 새 빌드에서 무효. `orch approvals`로 남은 항목을 확인하고 다시 승인 |
 | 롤백이 실제로 되는지 | 6 | `signers.json` 삭제 후 재시작 없이 레거시로 돌아가는지(코드 읽기 기준일 뿐). 옛 바이너리 복원 시 DB 스키마 v6 문제 |
 
 ## 7. 설계서와 달라진 곳
@@ -153,7 +154,7 @@
 
 1. **잘린 diff 정책(R22).** 지금은 웹과 CLI 모두 256 KiB를 넘는 보호 파일 diff는 서명을 거부하고, 저장소에서 `git diff`로 보고 커밋을 나누라고 안내한다. 처음 구현(웹에서 "잘림 확인"을 입력하면 서명 허용)은 철회했다. 정말 큰 보호 파일 변경을 승인할 다른 길(예: 서버 밖에서 해시를 계산하는 도구)을 둘지.
 2. **소켓 uid 기본값.** 기본은 orchd 자신의 uid만이다. `sudo orch …`는 `--socket-uid 0`을 더해야 하고, 지금 유닛 예시는 `--socket-uid 0`을 넣었다. 운영자 uid를 기본에 넣을지, `0`을 빼고 `sudo -u orch`로만 운영할지.
-3. **diff 해시 16자리(관찰 O1).** 승인과 서명이 묶이는 diff 해시는 SHA-256의 앞 16 hex(64비트)다. 약 2^32번 시도로 같은 해시의 두 diff를 만드는 생일 공격이 이론상 가능하다(악의적 에이전트가 하나를 승인받고 다른 것을 재시도에 쓰는 경우). 게시 해시(`approvals.PublishHash`)는 이미 64자리다. W1 범위 밖이라 고치지 않았다. 전체 64자리로 넓히면 게이트 의미가 바뀌고 저장된 승인을 옮겨야 한다. 전체 브랜치 검토는 **전환(cutover) 전에 결정할 것**을 권한다: 승인은 `(repo, base, hash)`에 묶이고 `head`에는 묶이지 않으므로, 64비트 해시에서는 다른 head의 충돌 diff를 만드는 데 약 2^32번의 작업이면 된다.
+3. **diff 해시 16자리(관찰 O1) — 해결됨: 전체 64자리로 확장 (2026-11-09 사용자 결정, R23).** 원래 문제: 승인과 서명이 묶이는 diff 해시가 SHA-256의 앞 16 hex(64비트)였다. 승인은 `(repo, base, hash)`에 묶이고 `head`에는 묶이지 않으므로, 악의적 에이전트가 약 2^32번의 작업으로 같은 해시의 두 diff(다른 head)를 만들어 하나를 승인받고 다른 것을 재시도에 쓸 수 있었다. 이제 `gitx.HashOf`는 SHA-256 전체(64 hex)를 돌려주고, 서명 메시지(`signing.Message.Validate`/`ParseMessage`)와 웹 `MESSAGE_RE`는 모든 종류에서 정확히 64자리 소문자 hex만 받는다(16자리 메시지는 거부, 짧은 해시로 낮추는 길이 막힘). 게시 해시(`approvals.PublishHash`)는 원래 64자리라 그대로다. 설정 해시(`config.Hash`, 16자리)는 보고서·원장의 `config_hash`에만 쓰이고 승인·메시지에 들어가지 않아 바꾸지 않았다. **운영 영향:** 마이그레이션은 없다. 옛 빌드가 만든 승인(`approvals.json`의 16자리 항목, SQLite `approvals_pending`의 16자리 대기 행)은 새 해시와 맞지 않아 **승인이 없는 것으로 판정된다(fail closed)**. 전환 때 옛 빌드로 대기 중이던 승인은 새 빌드에서 **다시 승인해야 한다**. 옛 행은 목록·상세에 그대로 보이지만(오류·패닉 없음) 서명할 메시지가 나오지 않고 grant는 `hash_changed`로 거부된다. 시험: `gitx.TestHashOfIsFullSHA256`, `signing.TestHashMustBeFull64HexForEveryKind`, `approval.TestOldShortHashEntryNeverValidates{Legacy,Signed}Mode`, `approval.TestGrantSignedRefusesShortHash`, `gate.TestOldShortHashApprovalNotHonored`, `api.TestOldShortHashEntryDetailAndGrant`, `orch.TestOldShortHashPendingEntry`, 웹 `message fields must equal…`(16·63자리·대문자 거부). 변이(`hashOf`를 `[:16]`으로 되돌림)는 5개 패키지 시험 37개가 잡았다.
 4. **서명자 목록의 범위(R7).** 목록 경로는 프로세스 전역이라, **같은 기계의 개인용 `aigate` 단독 실행도 `signers.json`이 생기면 서명 필수가 된다**(설계서 8.5는 orchd의 gate-home만이라고 썼다). 범위를 gate-home으로 좁힐지, 설계서 문구를 고칠지.
 5. **대기 패스키를 파일에 둔 것(R18).** orchd는 `/etc/aigate`에 쓸 수 없고(R3) 데몬이 꺼져 있어도 root 활성화가 되어야 해서 JSON 파일로 했다. root가 `pending remove`를 하는 것과 orchd의 갱신이 동시에 일어나면 한쪽이 덮어쓸 수 있다(파일 잠금 없음, 알려진 한계). SQLite + 소켓 전용 관리 엔드포인트로 옮길지.
 6. **macOS 기본 서명자 목록 경로.** `/private/etc/aigate/signers.json`(개발용). 운영은 Linux라 영향 없음. 그대로 둘지.
@@ -178,7 +179,7 @@
 | R11 | 승인 상세 응답에 `truncated` 포함(CLI 거부에 필요) | 필드 이름 변경 |
 | R12 | `TestKindConstantsMatchStore`로 중복 상수를 지킴 | 없음 |
 | 미번호(Task 4) | `ProtectedFiles` = `Changed()`와 `AddedGuarded`의 정렬·중복 제거 합집합(브리프는 `Changed()`) | 필드 의미(B7/B8/D2가 읽음) |
-| R13 | 정규 승인 메시지는 마지막에 `\n`, 필드는 소문자 hex(repo 12, base 40/64, hash 16/64), issued는 UTC 초 단위, task > 0 | 기대 문자열(golden) 변경 |
+| R13 | 정규 승인 메시지는 마지막에 `\n`, 필드는 소문자 hex(repo 12, base 40/64, hash 16/64 → **R23에서 64만**), issued는 UTC 초 단위, task > 0 | 기대 문자열(golden) 변경 |
 | R14 | 모든 서명·검증 경로는 먼저 `msg.Validate()`를 부르고 거부(빈 `Text()`나 0 다이제스트는 서명·수용 불가) | 미기재 |
 | R15 | `go get golang.org/x/crypto`를 Task 10에서 9로 당김(레지스트리가 ssh 공개 키를 검증) | 없음 |
 | R16 | `ErrRegistryAbsent`는 신뢰 검사를 통과한 폴더 안에서 ENOENT일 때만(없는 폴더는 가장 가까운 존재하는 상위가 같은 검사를 통과해야 함) | 미기재(이 결정이 없으면 orch 소유 폴더에서 파일을 지워 서명 모드를 끌 수 있었다) |
@@ -194,3 +195,4 @@
 | R21-1 | Origin도 Sec-Fetch-Site도 없으면 **세션 쿠키가 없을 때만** 통과(브리프 규칙대로면 원격 `orch login`이 깨짐) | 검토자가 건전하다고 판단, 잔여 위험은 구현자 보고보다 낮음 |
 | R22 | 웹도 잘린·다 보이지 않은 승인에는 서명하지 않음(CLI와 동일), `orch approve` 안내 | 아주 큰 보호 diff는 CLI로만 승인 |
 | 미번호(수정 회차) | Task 18, 19, 22, 23, 24, 25, 26의 수정 1회차를 별도 재검토 없이 수용(각각 시험·변이 확인, vet 통과) | 빈틈은 최종 전체 검토(fable)에서 드러남 |
+| R23 | (2026-11-09 사용자 결정) 승인 diff 해시를 SHA-256 앞 16 hex에서 전체 64 hex로 넓힘. 서명 메시지·웹 문법의 hash는 모든 종류에서 64자리만. 마이그레이션 없음(옛 16자리 승인은 fail closed, 재승인) | 전환 때 옛 빌드로 대기 중이던 승인을 다시 해야 함. 롤백하면 새 빌드로 만든 64자리 승인을 옛 바이너리가 쓰지 못함(10장 롤백 메모) |
