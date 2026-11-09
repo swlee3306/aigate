@@ -11,7 +11,7 @@
 
 **A3. 제출 검증과 `/repos`.** 정책에 종류 목록이 있으면 목록에 없는 종류는 `400 unknown_class`(R3: 정책이 없거나 목록이 비면 예전처럼 받음). 대기 작업 상한(`--queue-limit`, 기본 20): 개수 세기와 삽입이 **한 트랜잭션**이라 동시 제출로도 넘지 않는다(`429 queue_full`, R5). `GET /api/v1/repos`: 허용 루트 아래 깊이 2까지의 git 작업 트리, HEAD·현재 브랜치·최근 브랜치 10개. git은 읽기 전용(훅·fsmonitor 끔, 전역·시스템 설정 무시, 상위 폴더로 올라가지 않음)이고, 작업 트리 최상위 = 나열한 경로, git 폴더가 루트 안에 있는 것만 보인다(R8).
 
-**A4. 서버 상태의 클라우드 칸(`ops.cloud`).** Cinder 쿼터(gigabytes, volumes: 한도·사용·예약·무제한), test-vm 서버 상태, 복원 볼륨 수, 최근 복원 기록. 읽기 전용 명령 세 개만(`quota show --usage -f json`, `server show <vm> -f value -c status`, `volume list`), 60초 캐시, 한 번에 하나의 갱신, 갱신 20초 제한, `/ops`는 클라우드를 최대 6초만 기다린다(넘으면 `cloud_timeout`, 갱신은 뒤에서 계속). 실패는 고정 코드 두 개(`cloud_unavailable`, `cloud_timeout`)뿐이다. 이번 작업(A6)에서 마지막 관문을 더했다: API가 공급자의 값을 정규화해 실패면 코드 두 개 중 하나와 빈 블록, 성공이면 코드 없음·상태 단어(아니면 `unknown`)·평범한 VM 이름만 내보낸다. vm 쪽도 CLI 출력에서 상태 단어만 받는다.
+**A4. 서버 상태의 클라우드 칸(`ops.cloud`).** Cinder 쿼터(gigabytes, volumes: 한도·사용·예약·무제한), test-vm 서버 상태, 복원 볼륨 수, 최근 복원 기록. 읽기 전용 명령 세 개만(`quota show --usage -f json`, `server show <vm> -f value -c status`, `volume list`), 60초 캐시, 한 번에 하나의 갱신, 갱신 20초 제한, `/ops`는 클라우드를 최대 6초만 기다린다(넘으면 `cloud_timeout`, 갱신은 뒤에서 계속). 실패는 고정 코드 두 개(`cloud_unavailable`, `cloud_timeout`)뿐이다. 이번 작업(A6)에서 마지막 관문을 더했다: API가 공급자의 값을 정규화해 실패면 코드 두 개 중 하나와 빈 블록, 성공이면 코드 없음·상태 단어(아니면 `unknown`)·평범한 VM 이름만 내보낸다. **VM 이름이 `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`가 아니면 빈칸이 된다**(실제 이름 `test-vm`은 보이고, 이상한 이름은 화면에 빈 이름으로 나온다). vm 쪽도 CLI 출력에서 상태 단어만 받는다.
 
 **A5. 웹 화면.** `#/new`(저장소·기준 커밋·종류·에이전트를 서버 목록에서 고르고, 네 칸(목표·범위·완료 조건·하지 말 것)을 고정 템플릿으로 합친 프롬프트를 **읽기 전용 미리보기**로 보여 준 그대로 보냄(R9), 64 KiB(UTF-8 바이트) 상한, 보이지 않는 문자·제어 문자 거부, 같은 내용은 같은 `Idempotency-Key`), 작업 화면의 취소·재시도(서버 플래그가 정확히 `true`일 때만 단추, 화면 안 확인 칸을 거쳐 요청 1번), 진행 줄("진행 중 · 단계 · N초 경과"), `#/ops`(쿼터 막대와 80% 경고, 클라우드 네 상태). 서버 문자열은 모두 텍스트 노드.
 
@@ -69,7 +69,7 @@
 |---|---|---|
 | `TestSubmitNeedsAuthAndCSRF` | 자격 없음, 모르는 세션, 쓰레기·Basic·세션을 베어러로, CSRF 없음·틀림, 외부 Origin으로 제출·취소·재시도 | 401/403, 어떤 작업도 바뀌지 않음(상태·갱신 시각·횟수·이벤트·주체 스냅숏 비교), 옛 평면 경로는 HTTP에 없음(405), 대조군 3개 성공 |
 | `TestSubmitHostileFields` | `..` 경로, 루트 밖 절대 경로, 상대 경로, 루트 밖을 가리키는 심볼릭 링크, 빈 `.git`(상위 저장소로 올라감, R8), 하위 폴더, `base`=`--upload-pack=x`/`-x`/공백 포함/NUL, 64 KiB+1 프롬프트, NUL, 원문 잘못된 UTF-8, 33자 종류, 정책에 없는 32자·일반 종류, 줄바꿈·대문자 종류, 허용되지 않은 에이전트, 모르는 필드 | 모두 400/403 고정 문장, 바깥 저장소의 SHA·브랜치·경로가 응답에 없음, 작업 0개. 대조군: 정확히 64 KiB와 정책에 있는 종류는 201. 이스케이프된 외톨이 서로게이트(`\ud800`)는 Go가 U+FFFD로 풀어 **받는다**(기록된 동작) |
-| `TestForgedActorHeaderIgnored` | `X-Actor`, `X-Orch-Actor`, `X-Forwarded-User`, `X-Remote-User`, `Remote-User`, `X-Webauth-User`, `Tailscale-User-Login`/`-Name`, `X-Principal` 헤더를 세션·토큰 요청에 붙여 제출·취소·재시도; 본문에 `actor`/`Actor`/`via`/`principal` | 이벤트의 주체, `TaskView.actor`, 원장 `task_submitted`·`task_transition`의 `actor`=`via`가 모두 실제 principal. 원장 파일 어디에도 위조 값이 없음, `ledger.Verify` 통과. 본문 필드는 무시가 아니라 **400**(모르는 필드 거부)이고 작업이 생기지 않음 |
+| `TestForgedActorHeaderIgnored` | `X-Actor`, `X-Orch-Actor`, `X-Forwarded-User`, `X-Remote-User`, `Remote-User`, `X-Webauth-User`, `Tailscale-User-Login`/`-Name`, `X-Principal` 헤더를 세션·토큰(HTTP)과 소켓 요청에 붙여 제출·취소·재시도; 본문에 `actor`/`Actor`/`via`/`principal` | 이벤트의 주체, `TaskView.actor`, 원장 `task_submitted`·`task_transition`의 `actor`=`via`가 모두 실제 principal. 원장 파일 어디에도 위조 값이 없음, `ledger.Verify` 통과. 본문 필드는 무시가 아니라 **400**(모르는 필드 거부)이고 작업이 생기지 않음 |
 | `TestQueueFloodBoundedAcrossPrincipals` | 상한 5에서 4 주체(세션 2, 토큰, 소켓)가 키 있는·없는 제출 40개를 동시에 | 정확히 5개 201, 나머지 35개 모두 `429 queue_full`, 다른 응답 없음. 상한은 **전역**(한 주체가 다 채울 수 있다). 취소 1개 뒤 정확히 1개 더 |
 | `TestCancelRetryOtherTasksUntouched` | 끝난·판정 실패·진행 중 작업에 취소/재시도, 없는 ID, `0`, `-1`, `abc`, `1.5`, `1e3`, `1,2`, int64 넘침 | 정해진 코드(409/404/400), 어떤 작업도 바뀌지 않음. 정상 취소·재시도는 대상 하나만 바꾸고 주체를 남김 |
 | `TestReposCannotEscapeRoots` | 루트 밖 저장소·`/`·`..`·이름이 접두사인 형제 루트로 가는 심볼릭 링크, 링크 고리, 빈 `.git`, 밖을 가리키는 gitfile(절대·상대), 깊이 3, `?root=/`·`?path=..` 같은 질의 | 목록은 정상 저장소 하나뿐, 비밀 SHA·브랜치·경로 문자열이 응답에 없음, 세션 없이는 401 |
@@ -107,6 +107,7 @@
 | ㉑ | 제출 단추에 진짜 `disabled` | **TestNewViewSubmitAriaDisabledKeepsFocus**, TestNewViewSubmitsOnceWithIdempotencyKey |
 | ㉒ | `ok` 없는 복원 기록을 실패로 | **TestOpsRestoreWithoutOkIsUnknown** |
 | ㉓ | 복구한 panic 값 서버 로그 제거 | **TestCloudStatusPanicValueIsLoggedNotReturned** |
+| ㉕ | (검토 수정 1회차) 소켓 인증이 `X-Actor`/`X-Principal` 헤더로 주체를 정함 | **TestForgedActorHeaderIgnored**(소켓 행 추가 후. 그 전에는 잡히지 않았음 — 검토자가 찾음) |
 | ㉔ | `cancellable` = `state != done` / `Cancel`의 종결 검사 = `state == done` | **TestCancellableFlagMatchesStateTable**(두 변이 모두) |
 
 결과: 브리프의 12개(①~⑫) 모두 잡혔다(12/12, 잡히지 않은 변이 없음). 다만 ⑤·⑥·⑨는 **새 적대 시험이 아니라 기존·하위 패키지 시험이 잡았고**, 새 API 시험이 통과한 이유는 겹친 방어 때문이다(각 행 참고). 추가 변이 15개(⑥b, ⑬~㉔, ⑮b, ⑲·㉔의 두 형태)도 모두 잡혔다. 처음 돌렸을 때 ⑰이 실패한 채 폴링 타이머가 남아 node가 끝나지 않았다(시험이 실패하면 `ctx.leave()`가 불리지 않음) → 새 시험 두 개를 `t.after`로 정리하도록 고치고(커밋 `9d4309c`) 다시 돌려 잡힘을 확인했다.
@@ -126,6 +127,7 @@
 | R9 | 제출 화면의 최종 프롬프트는 읽기 전용(네 칸으로만 편집) | 편집 가능한 칸을 나중에 더하면 "클릭 때 다시 조립해 비교"를 바꿔야 함 |
 
 그 밖에 문서에 남길 차이·동작 변화:
+- **이스케이프된 외톨이 서로게이트(`\ud800`)는 받는다(문서화된 수용 동작).** Go의 JSON 해독이 U+FFFD로 바꾸므로 저장되는 값은 올바른 UTF-8이고 서로게이트는 남지 않는다. 웹 화면은 이런 입력을 보내기 전에 거부한다(`findHostile`). `TestSubmitHostileFields`가 이 동작(201, 저장값 `a\uFFFDb`)을 고정한다. 원문 바이트의 잘못된 UTF-8은 400이다.
 - **재시도의 `state_changed`는 매핑만 보장한다.** API로는 사실상 닿지 않는다(재시도 경쟁의 패자는 움직인 작업을 보고 `not_retryable`이 된다). `TestRetryStateChanged409`는 매핑을 직접 확인한다.
 - **비 VM `orchd`(placeholder 단계)는 `task_submitted` 원장 이벤트를 쓰지 않는다**(원장 자체가 없음, `task_transition`도 없음). SQLite 이벤트의 주체는 남는다.
 - **CLI `orch submit`도 종류 검사를 받는다**(같은 `validate`). 정책이 종류를 나열하면 목록 밖 종류는 이제 거부된다(전에는 `default_level`로 받았음).

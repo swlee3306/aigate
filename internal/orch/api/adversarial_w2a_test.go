@@ -301,17 +301,22 @@ func TestForgedActorHeaderIgnored(t *testing.T) {
 		"Tailscale-User-Name":  "admin",
 		"X-Principal":          "token:root",
 	}
+	viaHTTP := func(m, path, body string, h hdr) (int, []byte) { c, _, b := w.web(t, m, path, body, h); return c, b }
+	viaSocket := func(m, path, body string, h hdr) (int, []byte) { c, _, b := w.sockDo(t, m, path, body, h); return c, b }
+	sock := socketActor() // the real socket principal: socket:uid:<this process's uid>
 	principals := []struct {
 		name, want string
 		h          hdr
+		send       func(method, path, body string, h hdr) (int, []byte)
 	}{
-		{"session", "session:alice", sessionHdr(tok, csrf)},
-		{"token", "token:mac-ssh", hdr{"Content-Type": "application/json", "Authorization": "Bearer " + bearer}},
+		{"session", "session:alice", sessionHdr(tok, csrf), viaHTTP},
+		{"token", "token:mac-ssh", hdr{"Content-Type": "application/json", "Authorization": "Bearer " + bearer}, viaHTTP},
+		// A uid-allowlisted socket user must not be able to forge the actor either.
+		{"socket", sock, hdr{"Content-Type": "application/json"}, viaSocket},
 	}
-	var created []int64
 	for _, pc := range principals {
 		h := with(pc.h, forged)
-		code, _, b := w.web(t, "POST", "/api/v1/tasks", w.submitBody("p-"+pc.name), h)
+		code, b := pc.send("POST", "/api/v1/tasks", w.submitBody("p-"+pc.name), h)
 		var v TaskView
 		if code != 201 || json.Unmarshal(b, &v) != nil || v.Actor != pc.want {
 			t.Fatalf("%s submit: %d %s", pc.name, code, b)
@@ -319,9 +324,8 @@ func TestForgedActorHeaderIgnored(t *testing.T) {
 		if a := lastEventActor(t, w.env, v.ID); a != pc.want {
 			t.Fatalf("%s submit event actor %q", pc.name, a)
 		}
-		created = append(created, v.ID)
 		// cancel with the same forged headers
-		code, _, b = w.web(t, "POST", "/api/v1/tasks/"+itoa(v.ID)+"/cancel", "", h)
+		code, b = pc.send("POST", "/api/v1/tasks/"+itoa(v.ID)+"/cancel", "", h)
 		if code != 200 || json.Unmarshal(b, &v) != nil || v.Actor != pc.want {
 			t.Fatalf("%s cancel: %d %s", pc.name, code, b)
 		}
@@ -330,26 +334,26 @@ func TestForgedActorHeaderIgnored(t *testing.T) {
 		}
 		// retry with the same forged headers
 		f := failedTask(t, w.env, store.StateVerifying, true)
-		code, _, b = w.web(t, "POST", "/api/v1/tasks/"+itoa(f)+"/retry", "", h)
+		code, b = pc.send("POST", "/api/v1/tasks/"+itoa(f)+"/retry", "", h)
 		if code != 200 || json.Unmarshal(b, &v) != nil || v.Actor != pc.want {
 			t.Fatalf("%s retry: %d %s", pc.name, code, b)
 		}
 		if a := lastEventActor(t, w.env, f); a != pc.want {
 			t.Fatalf("%s retry event actor %q", pc.name, a)
 		}
-	}
-	// An "actor" field in the body is not ignored silently: the decoder
-	// refuses unknown fields, so the submit is a 400 and creates nothing.
-	n := w.taskCount(t)
-	for _, extra := range []string{`"actor":"system"`, `"Actor":"socket:uid:0"`, `"via":"socket:uid:0"`, `"principal":"root"`} {
-		raw := strings.TrimSuffix(w.submitBody("p"), "}") + "," + extra + "}"
-		code, _, b := w.web(t, "POST", "/api/v1/tasks", raw, with(sessionHdr(tok, csrf), forged))
-		if code != 400 || v1Code(b) != "bad_request" {
-			t.Fatalf("body %s: %d %s", extra, code, b)
+		// An "actor" field in the body is not ignored silently: the decoder
+		// refuses unknown fields, so the submit is a 400 and creates nothing.
+		n := w.taskCount(t)
+		for _, extra := range []string{`"actor":"system"`, `"Actor":"socket:uid:0"`, `"via":"socket:uid:0"`, `"principal":"root"`} {
+			raw := strings.TrimSuffix(w.submitBody("p"), "}") + "," + extra + "}"
+			code, b := pc.send("POST", "/api/v1/tasks", raw, h)
+			if code != 400 || v1Code(b) != "bad_request" {
+				t.Fatalf("%s body %s: %d %s", pc.name, extra, code, b)
+			}
 		}
-	}
-	if w.taskCount(t) != n {
-		t.Fatal("a body with an actor field created a task")
+		if w.taskCount(t) != n {
+			t.Fatalf("%s: a body with an actor field created a task", pc.name)
+		}
 	}
 	// The ledger: every task_submitted and task_transition names the real
 	// principal; no forged value appears anywhere in the file.
@@ -358,7 +362,10 @@ func TestForgedActorHeaderIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, s := range []string{"uid:0", "admin", "evil", "token:root", `"actor":"system"`} {
+	for _, s := range []string{"socket:uid:0", "admin", "evil", "token:root", `"actor":"system"`} {
+		if s == sock {
+			continue // only if the test itself runs as root
+		}
 		if strings.Contains(string(raw), s) {
 			t.Fatalf("ledger contains forged %q", s)
 		}
@@ -371,7 +378,7 @@ func TestForgedActorHeaderIgnored(t *testing.T) {
 	for _, ev := range evs {
 		pl := ev.Payload
 		a, _ := pl["actor"].(string)
-		if a != "session:alice" && a != "token:mac-ssh" {
+		if a != "session:alice" && a != "token:mac-ssh" && a != sock {
 			t.Fatalf("ledger %s actor %q: %+v", ev.Type, a, pl)
 		}
 		if pl["via"] != a {
@@ -379,8 +386,8 @@ func TestForgedActorHeaderIgnored(t *testing.T) {
 		}
 		seen[ev.Type+"@"+a]++
 	}
-	for _, want := range []string{"task_submitted@session:alice", "task_submitted@token:mac-ssh",
-		"task_transition@session:alice", "task_transition@token:mac-ssh"} {
+	for _, want := range []string{"task_submitted@session:alice", "task_submitted@token:mac-ssh", "task_submitted@" + sock,
+		"task_transition@session:alice", "task_transition@token:mac-ssh", "task_transition@" + sock} {
 		if seen[want] == 0 {
 			t.Fatalf("ledger has no %s: %v", want, seen)
 		}
@@ -388,7 +395,6 @@ func TestForgedActorHeaderIgnored(t *testing.T) {
 	if _, err := ledger.Verify(lp); err != nil {
 		t.Fatal(err)
 	}
-	_ = created
 }
 
 // Four principals flood the queue at once with keyed and unkeyed submits. The
@@ -498,8 +504,6 @@ func TestCancelRetryOtherTasksUntouched(t *testing.T) {
 	run := mkTask(t, w.env, store.StatePreparing, store.StateAgentRunning)
 	done := mkTask(t, w.env, store.StatePreparing, store.StateAgentRunning, store.StateCollecting, store.StateVerifying,
 		store.StatePassed, store.StatePublishing, store.StateDone)
-	_ = q2
-	_ = f2
 	post := func(path string) (int, []byte) {
 		code, _, b := w.web(t, "POST", path, "", h)
 		return code, b
@@ -514,6 +518,7 @@ func TestCancelRetryOtherTasksUntouched(t *testing.T) {
 	}{
 		{"/api/v1/tasks/" + itoa(done) + "/cancel", 409, "already_final"},
 		{"/api/v1/tasks/" + itoa(fv) + "/cancel", 409, "already_final"},
+		{"/api/v1/tasks/" + itoa(f2) + "/cancel", 409, "already_final"}, // failed is final for cancel, even when retryable
 		{"/api/v1/tasks/" + itoa(q1) + "/retry", 409, "not_retryable"},
 		{"/api/v1/tasks/" + itoa(fv) + "/retry", 409, "not_retryable"},
 		{"/api/v1/tasks/" + itoa(run) + "/retry", 409, "not_retryable"},
