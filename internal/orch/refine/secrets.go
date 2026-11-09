@@ -122,6 +122,10 @@ func badText(s string, allowNL bool) bool {
 	return false
 }
 
+// BadText reports control characters (newline and tab only when allowNL),
+// zero-width/bidi/format characters, line separators and invalid UTF-8.
+func BadText(s string, allowNL bool) bool { return badText(s, allowNL) }
+
 // SafeRelPath is the broker's rule for a path it will accept: clean,
 // relative, forward slashes, no "..", at most 200 bytes, no hostile
 // characters.

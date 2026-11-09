@@ -125,3 +125,23 @@ func TestBrokerClientProtocol(t *testing.T) {
 		t.Fatal("request not JSON")
 	}
 }
+
+func TestBrokerClientDoesNotHTMLEscape(t *testing.T) {
+	var got string
+	sock := serve(t, func(c net.Conn, line string) {
+		got = line
+		c.Write([]byte("{\"ok\":true,\"result\":{}}\n"))
+	})
+	content := strings.Repeat("<a&b>", 48*1024) // 240 KiB of characters Go escapes by default
+	args := map[string]any{"files": []map[string]string{{"path": "x.html", "content": content}}}
+	if _, err := (&Client{Socket: sock}).Do(context.Background(), "refine", args); err != nil {
+		t.Fatalf("%v", err)
+	}
+	if strings.Contains(got, "\\u003c") || strings.Contains(got, "\\u0026") || len(got) >= MaxRequestBytes || !strings.HasSuffix(got, "}\n") || strings.HasSuffix(got, "\n\n") {
+		t.Fatalf("request %d bytes, escaped=%v", len(got), strings.Contains(got, "\\u003c"))
+	}
+	b, err := Encode("refine", args)
+	if err != nil || len(b) != len(got)-1 || len(b) >= MaxRequestBytes {
+		t.Fatalf("Encode %d vs %d: %v", len(b), len(got), err)
+	}
+}

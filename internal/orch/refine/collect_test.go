@@ -385,21 +385,85 @@ func TestStoreTTLActorAndCap(t *testing.T) {
 	if _, ok := s.Get(id, "alice"); ok {
 		t.Fatal("not expired after the TTL")
 	}
-	var first string
-	for i := 0; i < MaxHeld+5; i++ {
+}
+
+// A refs/replace entry must not change what Reread (hence the hash) sees.
+func TestRereadIgnoresReplaceRefs(t *testing.T) {
+	d := newRepo(t, map[string]string{"auth.go": "ORIGINAL\n"})
+	sel := collect(t, d, "auth", Options{})
+	orig := gitIn(t, d, nil, "rev-parse", "HEAD:auth.go")
+	fake := gitIn(t, d, []byte("REPLACED\n"), "hash-object", "-w", "--stdin")
+	gitIn(t, d, nil, "replace", orig, fake)
+	again, err := Reread(context.Background(), d, paths(sel), Options{})
+	if err != nil || again.Hash != sel.Hash || strings.Contains(again.Contents[0].Content, "REPLACED") {
+		t.Fatalf("hash %q vs %q: %v", again.Hash, sel.Hash, err)
+	}
+}
+
+func TestStoreFairness(t *testing.T) {
+	now := time.Unix(1000, 0)
+	s := NewStore(func() time.Time { return now })
+	sel := Selection{Hash: "h", Files: []FileEntry{{Path: "a"}}}
+	bobID, err := s.Put("bob", "/r", "t", sel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var firstA, lastA string
+	for i := 0; i < MaxHeld+20; i++ {
 		now = now.Add(time.Second)
-		x, _ := s.Put("alice", "/r", "t", sel)
-		if i == 0 {
-			first = x
+		id, err := s.Put("alice", "/r", "t", sel)
+		if err != nil {
+			t.Fatalf("alice put %d: %v", i, err)
 		}
+		if i == 0 {
+			firstA = id
+		}
+		lastA = id
+	}
+	if _, ok := s.Get(bobID, "bob"); !ok {
+		t.Fatal("alice evicted bob's selection")
+	}
+	if _, ok := s.Get(lastA, "alice"); !ok {
+		t.Fatal("alice's newest is gone")
+	}
+	if _, ok := s.Get(firstA, "alice"); ok {
+		t.Fatal("alice's oldest was kept past her cap")
 	}
 	s.mu.Lock()
-	n := len(s.m)
-	s.mu.Unlock()
-	if n != MaxHeld {
-		t.Fatalf("holding %d, want %d", n, MaxHeld)
+	n := 0
+	for _, h := range s.m {
+		if h.Actor == "alice" {
+			n++
+		}
 	}
-	if _, ok := s.Get(first, "alice"); ok {
-		t.Fatal("the oldest was kept")
+	s.mu.Unlock()
+	if n != MaxHeldPerActor {
+		t.Fatalf("alice holds %d, want %d", n, MaxHeldPerActor)
+	}
+	// The store as a whole is full: a newcomer is refused, nobody is evicted.
+	for a := 0; ; a++ {
+		if _, err := s.Put(fmt.Sprintf("actor%d", a), "/r", "t", sel); err != nil {
+			if err != ErrStoreFull {
+				t.Fatalf("err %v", err)
+			}
+			break
+		}
+		if a > 100 {
+			t.Fatal("the global cap never applied")
+		}
+	}
+	if _, ok := s.Get(bobID, "bob"); !ok {
+		t.Fatal("a full store evicted bob")
+	}
+	s.mu.Lock()
+	total := len(s.m)
+	s.mu.Unlock()
+	if total != MaxHeld {
+		t.Fatalf("holding %d, want %d", total, MaxHeld)
+	}
+	// Expiry frees room.
+	now = now.Add(TTL + time.Second)
+	if _, err := s.Put("late", "/r", "t", sel); err != nil {
+		t.Fatalf("after expiry: %v", err)
 	}
 }

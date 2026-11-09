@@ -221,10 +221,11 @@ type handler struct {
 	// every refine call is broker_unavailable), the previewed selections,
 	// the per-actor limiter (D8) and the collection limits (zero: the
 	// defaults; tests shrink them).
-	broker      *broker.Client
-	refineStore *refine.Store
-	refineLimit *actorLimiter
-	refineOpts  refine.Options
+	broker       *broker.Client
+	refineStore  *refine.Store
+	refineLimit  *actorLimiter
+	previewLimit *actorLimiter
+	refineOpts   refine.Options
 }
 
 func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome string) (*handler, error) {
@@ -238,6 +239,7 @@ func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome 
 	h.queueLimit, h.queueLimitTotal = DefaultQueueLimit, DefaultQueueLimitTotal
 	h.refineStore = refine.NewStore(h.clock)
 	h.refineLimit = newActorLimiter(RefinePerActorHour, time.Hour)
+	h.previewLimit = newActorLimiter(PreviewPerActorHour, time.Hour)
 	for _, r := range allowed {
 		if !filepath.IsAbs(r) || filepath.Clean(r) != r {
 			return nil, fmt.Errorf("allowed repo root %q must be an absolute clean path", r)

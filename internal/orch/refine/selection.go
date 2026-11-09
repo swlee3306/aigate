@@ -15,7 +15,14 @@ import (
 const (
 	TTL     = 10 * time.Minute
 	MaxHeld = 50
+	// MaxHeldPerActor bounds one actor's live previews; past it the actor's
+	// own oldest is dropped, never another actor's.
+	MaxHeldPerActor = 10
 )
+
+// ErrStoreFull: MaxHeld live previews are held; the newcomer is refused
+// (nobody is evicted).
+var ErrStoreFull = errors.New("refine: selection store full")
 
 // Held is what the store keeps of one preview.
 type Held struct {
@@ -60,7 +67,8 @@ func (s *Store) purge(now time.Time) {
 }
 
 // Put stores the preview and returns its random selection id (128 random
-// bits, independent of the content hash). Past MaxHeld the oldest is dropped.
+// bits, independent of the content hash). An actor past MaxHeldPerActor loses
+// its own oldest; a full store refuses the newcomer (ErrStoreFull).
 func (s *Store) Put(actor, repo, text string, sel Selection) (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -75,15 +83,22 @@ func (s *Store) Put(actor, repo, text string, sel Selection) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.purge(now)
-	for len(s.m) >= MaxHeld {
-		oldest, first := "", true
-		var at time.Time
-		for k, h := range s.m {
-			if first || h.Created.Before(at) {
-				oldest, at, first = k, h.Created, false
-			}
+	own, oldest, first := 0, "", true
+	var at time.Time
+	for k, h := range s.m {
+		if h.Actor != actor {
+			continue
 		}
+		own++
+		if first || h.Created.Before(at) {
+			oldest, at, first = k, h.Created, false
+		}
+	}
+	if own >= MaxHeldPerActor {
 		delete(s.m, oldest)
+	}
+	if len(s.m) >= MaxHeld {
+		return "", ErrStoreFull
 	}
 	s.m[id] = Held{Actor: actor, Repo: repo, TextHash: TextHash(text), Paths: paths, Hash: sel.Hash, Head: sel.Head, Created: now}
 	return id, nil

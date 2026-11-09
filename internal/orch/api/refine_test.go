@@ -625,7 +625,7 @@ func TestRefineRejectsBadInputWithoutTheBroker(t *testing.T) {
 		"too long":         jsonBody(map[string]string{"repo": e.repo, "text": strings.Repeat("a", 2001)}),
 		"NUL":              jsonBody(map[string]string{"repo": e.repo, "text": "a\x00b"}),
 		"escape":           jsonBody(map[string]string{"repo": e.repo, "text": "a\x1bb"}),
-		"bidi":             jsonBody(map[string]string{"repo": e.repo, "text": "a‮b"}),
+		"bidi":             jsonBody(map[string]string{"repo": e.repo, "text": "a\u202eb"}),
 		"bare CR":          jsonBody(map[string]string{"repo": e.repo, "text": "a\rb"}),
 		"secret shaped":    jsonBody(map[string]string{"repo": e.repo, "text": "use password = \"hunter2hunter2hunter2\" here"}),
 		"unknown field":    jsonBody(map[string]string{"repo": e.repo, "text": valid, "files": "x"}),
@@ -688,5 +688,148 @@ func TestRefineOffWithoutBrokerSocket(t *testing.T) {
 	st := e.st
 	if _, err := NewDaemon(Config{Socket: filepath.Join(shortDir(t), "x.sock"), BrokerSocket: "relative.sock"}, st, noSteps{}); err == nil {
 		t.Fatal("relative broker socket accepted")
+	}
+}
+
+func TestPreviewIsMeteredPerActor(t *testing.T) {
+	e := newRefineEnv(t, baseFiles)
+	a, b := e.token(t, "alice"), e.socket(t)
+	text := "add a health check"
+	body := jsonBody(map[string]string{"repo": e.repo, "text": text})
+	for i := 0; i < PreviewPerActorHour; i++ {
+		if code, out := a("/api/v1/refine/preview", body); code != 200 {
+			t.Fatalf("alice %d: %d %s", i, code, out)
+		}
+	}
+	code, out := a("/api/v1/refine/preview", body)
+	if code != 429 || v1Code(out) != "refine_rate_limited" {
+		t.Fatalf("alice over: %d %s", code, out)
+	}
+	if code, out := b("/api/v1/refine/preview", body); code != 200 {
+		t.Fatalf("other actor: %d %s", code, out)
+	}
+	e.clk.advance(time.Hour + time.Second)
+	if code, out := a("/api/v1/refine/preview", body); code != 200 {
+		t.Fatalf("after the window: %d %s", code, out)
+	}
+}
+
+func TestPreviewFloodDoesNotEvictAnotherActorsSelection(t *testing.T) {
+	e := newRefineEnv(t, baseFiles)
+	e.d.handler.refineLimit = newActorLimiter(1000, time.Hour)
+	e.d.handler.previewLimit = newActorLimiter(1000, time.Hour)
+	a, b := e.token(t, "alice"), e.socket(t)
+	text := "add a health check"
+	pb := e.preview(t, b, text)
+	for i := 0; i < refine.MaxHeld+10; i++ {
+		e.preview(t, a, text)
+	}
+	if code, out := e.refine(b, text, pb.SelectionID); code != 200 {
+		t.Fatalf("bob's selection was lost: %d %s", code, out)
+	}
+	// Fill the store with other actors: a newcomer's preview is refused (429), nobody is evicted.
+	for i := 0; ; i++ {
+		if _, err := e.d.handler.refineStore.Put(fmt.Sprintf("fill:%d", i), e.repo, text, refine.Selection{Hash: "h"}); err != nil {
+			break
+		}
+		if i > 100 {
+			t.Fatal("store never filled")
+		}
+	}
+	c := e.token(t, "carol")
+	code, out := c("/api/v1/refine/preview", jsonBody(map[string]string{"repo": e.repo, "text": text}))
+	if code != 429 || v1Code(out) != "refine_rate_limited" {
+		t.Fatalf("%d %s", code, out)
+	}
+	if code, out := e.refine(b, text, pb.SelectionID); code != 200 {
+		t.Fatalf("bob after the store filled: %d %s", code, out)
+	}
+}
+
+func TestRefineSlotRefundOnlyWithoutUpstreamCost(t *testing.T) {
+	text := "add a health check"
+	for _, tc := range []struct {
+		code   string
+		refund bool
+	}{{"busy", true}, {"forbidden", true}, {"upstream_error", false}, {"timeout", false}, {"bad_plan", false}, {"budget_exceeded", false}} {
+		e := newRefineEnv(t, baseFiles)
+		a := e.token(t, "alice")
+		p := e.preview(t, a, text)
+		tc := tc
+		e.fb.mu.Lock()
+		e.fb.refineReply = func(fakeRefineCall) string { return brokerErrReply(tc.code) }
+		e.fb.mu.Unlock()
+		for i := 0; i < RefinePerActorHour+3; i++ {
+			code, b := e.refine(a, text, p.SelectionID)
+			if tc.refund && code == 429 {
+				t.Fatalf("%s: slot not refunded, attempt %d: %s", tc.code, i, b)
+			}
+			if !tc.refund && i >= RefinePerActorHour && !(code == 429 && v1Code(b) == "refine_rate_limited") {
+				t.Fatalf("%s: attempt %d should be limited: %d %s", tc.code, i, code, b)
+			}
+		}
+		if tc.refund {
+			e.fb.mu.Lock()
+			e.fb.refineReply = nil
+			e.fb.mu.Unlock()
+			if code, b := e.refine(a, text, p.SelectionID); code != 200 {
+				t.Fatalf("%s: after refunds %d %s", tc.code, code, b)
+			}
+		}
+	}
+}
+
+func TestParsePlanRejectsHostileTextIdsAndUsage(t *testing.T) {
+	sent := map[string]bool{"README.md": true}
+	mk := func(mod func(pl map[string]any)) json.RawMessage {
+		pl := map[string]any{"summary": "S", "items": []map[string]any{{"id": "r1", "title": "T", "description": "D", "files": []string{"README.md"}}},
+			"questions": []map[string]string{{"id": "q1", "text": "Q"}}, "out_of_scope": []string{"O"},
+			"usage": map[string]int{"input_tokens": 10, "output_tokens": 5}}
+		mod(pl)
+		b, _ := json.Marshal(pl)
+		return b
+	}
+	item := func(k, v string) func(pl map[string]any) {
+		return func(pl map[string]any) {
+			it := map[string]any{"id": "r1", "title": "T", "description": "D", "files": []string{}}
+			it[k] = v
+			pl["items"] = []map[string]any{it}
+		}
+	}
+	if _, err := parsePlan(mk(func(map[string]any) {}), sent); err != nil {
+		t.Fatalf("good plan refused: %v", err)
+	}
+	// Newlines are fine in summary and description only.
+	if _, err := parsePlan(mk(func(pl map[string]any) { pl["summary"] = "a\nb"; item("description", "x\ny")(pl) }), sent); err != nil {
+		t.Fatalf("newline refused: %v", err)
+	}
+	bad := map[string]func(pl map[string]any){
+		"bidi title":       item("title", "a\u202eb"),
+		"zero width title": item("title", "a\u200bb"),
+		"control desc":     item("description", "a\x07b"),
+		"esc desc":         item("description", "a\x1b[31mb"),
+		"newline title":    item("title", "a\nb"),
+		"bidi summary":     func(pl map[string]any) { pl["summary"] = "a\u2066b" },
+		"control summary":  func(pl map[string]any) { pl["summary"] = "a\x00b" },
+		"bidi question":    func(pl map[string]any) { pl["questions"] = []map[string]string{{"id": "q1", "text": "a\u202eb"}} },
+		"newline question": func(pl map[string]any) { pl["questions"] = []map[string]string{{"id": "q1", "text": "a\nb"}} },
+		"bidi out":         func(pl map[string]any) { pl["out_of_scope"] = []string{"a\u200fb"} },
+		"newline out":      func(pl map[string]any) { pl["out_of_scope"] = []string{"a\nb"} },
+		"item id word":     item("id", "x1"),
+		"item id html":     item("id", "r1<script>"),
+		"item id 3 digits": item("id", "r100"),
+		"item id empty":    item("id", ""),
+		"q id":             func(pl map[string]any) { pl["questions"] = []map[string]string{{"id": "q-1", "text": "Q"}} },
+		"q id r":           func(pl map[string]any) { pl["questions"] = []map[string]string{{"id": "r1", "text": "Q"}} },
+		"usage huge":       func(pl map[string]any) { pl["usage"] = map[string]int{"input_tokens": 10_000_001, "output_tokens": 1} },
+		"usage out huge":   func(pl map[string]any) { pl["usage"] = map[string]int{"input_tokens": 1, "output_tokens": 1 << 40} },
+	}
+	for name, mod := range bad {
+		if _, err := parsePlan(mk(mod), sent); err == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+	if _, err := parsePlan(mk(func(pl map[string]any) { pl["usage"] = map[string]int{"input_tokens": 10_000_000, "output_tokens": 0} }), sent); err != nil {
+		t.Errorf("usage at the bound refused: %v", err)
 	}
 }

@@ -71,6 +71,19 @@ type reply struct {
 	Code   string          `json:"code"`
 }
 
+// Encode is the request line without its newline. HTML escaping is off: <, >
+// and & stay one byte (Go would expand each to six), so what is measured
+// against MaxRequestBytes is what the broker reads.
+func Encode(op string, args any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(request{V: 1, Op: op, Args: args}); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
+}
+
 func unavailable() *OpError { return &OpError{Code: CodeUnavailable} }
 
 // ValidSocketPath reports whether p may be configured: absolute and clean.
@@ -83,7 +96,7 @@ func (c *Client) Do(ctx context.Context, op string, args any) (json.RawMessage, 
 	if c == nil || c.Socket == "" || !ValidSocketPath(c.Socket) {
 		return nil, unavailable()
 	}
-	body, err := json.Marshal(request{V: 1, Op: op, Args: args})
+	body, err := Encode(op, args)
 	if err != nil {
 		return nil, &OpError{Code: "bad_request"}
 	}

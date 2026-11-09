@@ -37,7 +37,9 @@ func readEnv() []string {
 		out = append(out, kv)
 	}
 	return append(out, "GIT_TERMINAL_PROMPT=0", "LC_ALL=C", "GIT_OPTIONAL_LOCKS=0",
-		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
+		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null",
+		// refs/replace must not change what a read returns.
+		"GIT_NO_REPLACE_OBJECTS=1")
 }
 
 // runRead runs a read-only git query in repo, bounded by ctx, with hooks and
@@ -176,9 +178,9 @@ var (
 	ErrTooLarge = errors.New("gitx: too large")
 )
 
-// maxTreeListing caps the bytes of one ls-tree listing (a few hundred
+// maxTreeListing (a var so tests can shrink it) caps the bytes of one ls-tree listing (a few hundred
 // thousand paths); more is ErrTooLarge, never a silently cut list.
-const maxTreeListing = 16 << 20
+var maxTreeListing = 16 << 20
 
 var objectIDRe = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 

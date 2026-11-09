@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -27,12 +28,23 @@ import (
 const (
 	// RefinePerActorHour is D8's per-actor limit of AI plan requests.
 	RefinePerActorHour = 5
+	// PreviewPerActorHour bounds previews per actor (they cost git reads and a
+	// stored selection, not AI spend).
+	PreviewPerActorHour = 30
 	// maxRefineBody bounds a preview/refine request body (the text is at most
 	// 2000 characters).
 	maxRefineBody = 64 << 10
 	// maxPlanBytes bounds the plan orchd passes on (the broker's limits keep
 	// it far below this; a bigger reply is a broken plan).
 	maxPlanBytes = 256 << 10
+)
+
+// maxPlanTokens bounds the usage numbers a plan may report.
+const maxPlanTokens = 10_000_000
+
+var (
+	itemIDRe     = regexp.MustCompile(`^r[0-9]{1,2}$`)
+	questionIDRe = regexp.MustCompile(`^q[0-9]{1,2}$`)
 )
 
 // The AI plan endpoints' errors: fixed codes and sentences. A broker's or an
@@ -90,6 +102,19 @@ type actorLimiter struct {
 
 func newActorLimiter(n int, win time.Duration) *actorLimiter {
 	return &actorLimiter{n: n, win: win, m: map[string][]time.Time{}}
+}
+
+// refund removes the use recorded at time at (the call never cost anything).
+func (l *actorLimiter) refund(actor string, at time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	ts := l.m[actor]
+	for i := len(ts) - 1; i >= 0; i-- {
+		if ts[i].Equal(at) {
+			l.m[actor] = append(ts[:i:i], ts[i+1:]...)
+			return
+		}
+	}
 }
 
 // take records one use for actor and reports whether it was within the limit.
@@ -251,6 +276,10 @@ func (h *handler) refinePreview(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	if !h.previewLimit.take(store.ActorFrom(r.Context()), h.clock()) {
+		writeErr(w, errRefineRateLimited)
+		return
+	}
 	repo, err := h.refineRepo(r.Context(), req.Repo)
 	if err != nil {
 		writeErr(w, err)
@@ -273,6 +302,10 @@ func (h *handler) refinePreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, err := h.refineStore.Put(store.ActorFrom(r.Context()), repo, text, sel)
+	if errors.Is(err, refine.ErrStoreFull) {
+		writeErr(w, errRefineRateLimited)
+		return
+	}
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -324,12 +357,16 @@ func parsePlan(res json.RawMessage, sent map[string]bool) (planResponse, error) 
 		return p, errRefineBadPlan
 	}
 	rn := utf8.RuneCountInString
+	if refine.BadText(p.Summary, true) || p.Usage.InputTokens > maxPlanTokens || p.Usage.OutputTokens > maxPlanTokens {
+		return p, errRefineBadPlan
+	}
 	if p.Summary == "" || rn(p.Summary) > 600 || len(p.Items) < 1 || len(p.Items) > 30 ||
 		len(p.Questions) > 10 || len(p.OutOfScope) > 15 || p.Usage.InputTokens < 0 || p.Usage.OutputTokens < 0 {
 		return p, errRefineBadPlan
 	}
 	for _, it := range p.Items {
-		if it.Title == "" || rn(it.Title) > 120 || rn(it.Description) > 800 || len(it.Files) > 10 {
+		if !itemIDRe.MatchString(it.ID) || refine.BadText(it.Title, false) || refine.BadText(it.Description, true) ||
+			it.Title == "" || rn(it.Title) > 120 || rn(it.Description) > 800 || len(it.Files) > 10 {
 			return p, errRefineBadPlan
 		}
 		for _, f := range it.Files {
@@ -339,12 +376,12 @@ func parsePlan(res json.RawMessage, sent map[string]bool) (planResponse, error) 
 		}
 	}
 	for _, q := range p.Questions {
-		if q.Text == "" || rn(q.Text) > 300 {
+		if !questionIDRe.MatchString(q.ID) || refine.BadText(q.Text, false) || q.Text == "" || rn(q.Text) > 300 {
 			return p, errRefineBadPlan
 		}
 	}
 	for _, s := range p.OutOfScope {
-		if rn(s) > 200 {
+		if refine.BadText(s, false) || rn(s) > 200 {
 			return p, errRefineBadPlan
 		}
 	}
@@ -412,10 +449,6 @@ func (h *handler) refinePlan(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, errSelectionChanged)
 		return
 	}
-	if !h.refineLimit.take(actor, h.clock()) {
-		writeErr(w, errRefineRateLimited)
-		return
-	}
 	files := make([]map[string]string, len(sel.Contents))
 	sent := make(map[string]bool, len(sel.Contents))
 	for i, f := range sel.Contents {
@@ -423,11 +456,28 @@ func (h *handler) refinePlan(w http.ResponseWriter, r *http.Request) {
 		sent[f.Path] = true
 	}
 	args := map[string]any{"repo": repo, "requirement": text, "files": files, "selection": req.SelectionID}
+	// Too big for the wire: refused before it uses a slot.
+	if enc, err := broker.Encode("refine", args); err != nil || len(enc) > broker.MaxRequestBytes {
+		writeErr(w, errRefineTooBig)
+		return
+	}
+	slotAt := h.clock()
+	if !h.refineLimit.take(actor, slotAt) {
+		writeErr(w, errRefineRateLimited)
+		return
+	}
 	res, oerr := h.broker.Do(ctx, "refine", args)
 	var plan planResponse
 	var perr error
 	if oerr != nil {
 		perr = brokerError(oerr)
+		// Nothing reached the AI service (no broker, busy, not allowed to
+		// connect): the slot is given back. Failures that may have cost
+		// something keep it.
+		switch oerr.Code {
+		case broker.CodeUnavailable, "busy", "forbidden":
+			h.refineLimit.refund(actor, slotAt)
+		}
 	} else {
 		plan, perr = parsePlan(res, sent)
 	}
