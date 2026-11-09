@@ -64,6 +64,18 @@ var fixedMessages = map[string]string{
 	"bad_url":         "GitLab이 설정된 주소 밖의 주소를 돌려주었습니다.",
 
 	"registry_unavailable": "프로젝트 등록부를 사용할 수 없습니다. 관리자가 확인해야 합니다.",
+
+	"not_signed":          "서명이 없는 변경 요청입니다.",
+	"bad_signature":       "서명이 올바르지 않습니다.",
+	"unknown_signer":      "등록되지 않은 서명자입니다.",
+	"stale_signature":     "서명이 만료되었거나 시각이 맞지 않습니다.",
+	"signers_unavailable": "서명자 목록을 사용할 수 없습니다. 관리자가 확인해야 합니다.",
+	"request_reused":      "이미 사용된 요청입니다.",
+	"change_mismatch":     "서명한 변경 내용과 요청 내용이 다릅니다.",
+	"project_exists":      "같은 id 또는 경로의 프로젝트가 이미 있습니다.",
+	"project_unknown":     "등록되지 않은 프로젝트입니다.",
+	"path_not_allowed":    "이 경로는 프로젝트로 등록할 수 없습니다.",
+	"not_supported":       "이 버전에서는 지원하지 않는 변경입니다.",
 }
 
 // Default per-op processing time limits (decision D1).
@@ -92,6 +104,7 @@ type Server struct {
 	Registry *RegistryStore // set by New: the project registry (owned by the broker)
 	Used     *UsedRequests  // set by New: one-time request IDs of signed changes
 
+	Now         func() time.Time               // nil: time.Now (test seam: broker clock of signed writes)
 	PeerUID     func(net.Conn) (uint32, error) // nil: kernel peer credentials
 	AllowUID    func(uint32) bool              // nil: Config.UIDs()
 	LookupGroup func(name string) (int, error) // nil: os/user
@@ -171,6 +184,10 @@ func New(cfg Config, o Options) (*Server, error) {
 		"status":    s.statusHandler,
 		"refine":    s.refineHandler,
 		"create_mr": s.createMRHandler,
+
+		"projects":         s.projectsHandler,
+		"register_project": s.registerProjectHandler,
+		"set_flag":         s.setFlagHandler,
 	}
 	return s, nil
 }
