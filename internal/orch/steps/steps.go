@@ -190,7 +190,9 @@ const maxLedgerNote = 300
 // MachineOptions are the machine options the provider needs; api.NewDaemon
 // applies them. They append a task_transition event to the orchestrator
 // ledger (<gate home>/.aigate/ledger/orchd.jsonl, repo "orchd") for every
-// transition.
+// transition, with the actor of the call that made it (store.ActorFrom; the
+// API request's for cancel, retry and approvals, "system" for the worker) as
+// both "actor" and "via".
 //
 // Durability: the event is written AFTER the transition committed in SQLite,
 // so a crash in between can lose one transition event (the SQLite event table
@@ -198,15 +200,18 @@ const maxLedgerNote = 300
 // publish_action BEFORE each action (see publish.Recorder), so an action is
 // never unrecorded. A ledger write failure is logged, it never fails a task.
 func (p *Provider) MachineOptions() []machine.Option {
-	return []machine.Option{machine.WithOnTransition(p.recordTransition)}
+	return []machine.Option{machine.WithOnTransitionCtx(p.recordTransition)}
 }
 
-func (p *Provider) recordTransition(t store.Task, from, to machine.State, note string) {
+func (p *Provider) recordTransition(ctx context.Context, t store.Task, from, to machine.State, note string) {
 	home, err := gate.Home(p.cfg.GateHome)
 	if err != nil {
 		log.Printf("orchd: ledger: %v", err)
 		return
 	}
+	actor := store.ActorFrom(ctx)
+	// Background, not ctx: a request cancelled after the transition committed
+	// must not lose the head and policy hash from the event.
 	if cur, err := p.st.GetTask(context.Background(), t.ID); err == nil {
 		t = cur // head and policy hash may have been set by the step that just ran
 	}
@@ -218,10 +223,30 @@ func (p *Provider) recordTransition(t store.Task, from, to machine.State, note s
 	}
 	err = ledger.Append(policy.OrchLedgerPath(home), "task_transition", policy.OrchRepo, map[string]any{
 		"task": int(t.ID), "from": string(from), "to": string(to), "note": note,
-		"head": t.HeadSHA, "policy_hash": t.PolicyHash,
+		"head": t.HeadSHA, "policy_hash": t.PolicyHash, "actor": actor, "via": actor,
 	}, time.Now().UTC())
 	if err != nil {
 		log.Printf("orchd: ledger: task %d %s -> %s not recorded: %v", t.ID, from, to, err)
+	}
+}
+
+// RecordSubmitted appends a task_submitted event for a task the API just
+// created to the orchestrator ledger, with the submitter (store.ActorFrom(ctx))
+// as "actor" and "via". api.NewDaemon wires it into the submit handler. Like
+// task_transition it follows the SQLite commit: a failure is logged and never
+// fails the submit.
+func (p *Provider) RecordSubmitted(ctx context.Context, t store.Task) {
+	home, err := gate.Home(p.cfg.GateHome)
+	if err != nil {
+		log.Printf("orchd: ledger: %v", err)
+		return
+	}
+	actor := store.ActorFrom(ctx)
+	err = ledger.Append(policy.OrchLedgerPath(home), "task_submitted", policy.OrchRepo, map[string]any{
+		"task": int(t.ID), "repo": t.Repo, "class": t.Class, "agent": t.Agent, "actor": actor, "via": actor,
+	}, time.Now().UTC())
+	if err != nil {
+		log.Printf("orchd: ledger: task %d submission not recorded: %v", t.ID, err)
 	}
 }
 

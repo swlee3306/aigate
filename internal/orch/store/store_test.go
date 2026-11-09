@@ -383,7 +383,7 @@ func TestMigrateV1ToV2KeepsTasks(t *testing.T) {
 	}
 	var v int
 	s.db.QueryRow(`SELECT version FROM schema_version`).Scan(&v)
-	if v != 6 {
+	if v != 7 {
 		t.Fatalf("version %d", v)
 	}
 	if err := s.SetHeadSHA(context.Background(), 1, "deadbeef"); err != nil {
@@ -585,7 +585,7 @@ func TestMigrateV4ToV5BackfillsInfraFailures(t *testing.T) {
 	}
 	var v int
 	s.db.QueryRow(`SELECT version FROM schema_version`).Scan(&v)
-	if v != 6 {
+	if v != 7 {
 		t.Fatalf("version %d", v)
 	}
 }

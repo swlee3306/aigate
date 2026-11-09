@@ -146,6 +146,11 @@ func NewDaemon(cfg Config, st *store.Store, p StepProvider) (*Daemon, error) {
 		return nil, err
 	}
 	h.policyHash = cfg.PolicyHash
+	if sr, ok := p.(interface {
+		RecordSubmitted(context.Context, store.Task)
+	}); ok {
+		h.onSubmitted = sr.RecordSubmitted
+	}
 	h.reportDir = cfg.ReportDir
 	h.policy, h.ops = cfg.Policy, cfg.Ops
 	h.socketUIDs = socketUIDSet(cfg.SocketUIDs)

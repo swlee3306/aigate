@@ -36,6 +36,9 @@ var schemaV5 string
 //go:embed schema_v6.sql
 var schemaV6 string
 
+//go:embed schema_v7.sql
+var schemaV7 string
+
 // MaxErrorText caps Task.ErrorText so a noisy failure cannot bloat the DB.
 const MaxErrorText = 4096
 
@@ -70,6 +73,9 @@ type Task struct {
 	InfraFailed bool
 	// Retries counts operator retries (orch retry).
 	Retries int
+	// LastActor is the actor of the task's latest event (read-only; empty
+	// when that event predates schema v7).
+	LastActor string
 }
 
 // Approval is a pending-approvals entry (design section 6).
@@ -93,6 +99,9 @@ type Event struct {
 	To     State
 	Note   string
 	At     time.Time
+	// Actor is who made the change ("kind:id" or "system"; see actor.go).
+	// Empty for events recorded before schema v7.
+	Actor string
 }
 
 // TransitionOpts carries the optional extras of a transition.
@@ -135,6 +144,7 @@ var migrations = []func(tx *sql.Tx) error{
 	func(tx *sql.Tx) error { _, err := tx.Exec(schemaV4); return err },
 	func(tx *sql.Tx) error { _, err := tx.Exec(schemaV5); return err },
 	func(tx *sql.Tx) error { _, err := tx.Exec(schemaV6); return err },
+	func(tx *sql.Tx) error { _, err := tx.Exec(schemaV7); return err },
 }
 
 // Open creates or opens the database at path with mode 0600.
@@ -229,7 +239,13 @@ func capText(s string) string {
 	return s + "…[cut]"
 }
 
-const taskCols = `id, repo, base, prompt, class, agent, state, attempts, retry_state, error_text, created_at, updated_at, head_sha, verdict, report_path, policy_hash, infra_failed, retries`
+// taskCols ends with the actor of the task's latest event (Task.LastActor),
+// read with the task_events_task index; every query using it selects FROM tasks.
+const taskCols = `id, repo, base, prompt, class, agent, state, attempts, retry_state, error_text, created_at, updated_at, head_sha, verdict, report_path, policy_hash, infra_failed, retries,
+	(SELECT e.actor FROM task_events e WHERE e.task_id = tasks.id ORDER BY e.id DESC LIMIT 1)`
+
+// insertEvent records one task event with its actor (schema v7).
+const insertEvent = `INSERT INTO task_events(task_id, from_state, to_state, note, at, actor) VALUES (?,?,?,?,?,?)`
 
 type scanner interface{ Scan(...any) error }
 
@@ -237,9 +253,11 @@ func scanTask(r scanner) (Task, error) {
 	var t Task
 	var c, u int64
 	var infra int
+	var actor sql.NullString
 	err := r.Scan(&t.ID, &t.Repo, &t.Base, &t.Prompt, &t.Class, &t.Agent, &t.State,
-		&t.Attempts, &t.RetryState, &t.ErrorText, &c, &u, &t.HeadSHA, &t.Verdict, &t.ReportPath, &t.PolicyHash, &infra, &t.Retries)
+		&t.Attempts, &t.RetryState, &t.ErrorText, &c, &u, &t.HeadSHA, &t.Verdict, &t.ReportPath, &t.PolicyHash, &infra, &t.Retries, &actor)
 	t.InfraFailed = infra != 0
+	t.LastActor = actor.String
 	t.CreatedAt, t.UpdatedAt = ts(c), ts(u)
 	return t, err
 }
@@ -264,8 +282,7 @@ func (s *Store) CreateTask(ctx context.Context, t Task) (int64, error) {
 	}
 	id, _ := res.LastInsertId()
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO task_events(task_id, from_state, to_state, note, at) VALUES (?,?,?,?,?)`,
-		id, "", StateQueued, "created", n); err != nil {
+		insertEvent, id, "", StateQueued, "created", n, ActorFrom(ctx)); err != nil {
 		return 0, err
 	}
 	return id, tx.Commit()
@@ -394,8 +411,7 @@ func transitionTx(ctx context.Context, tx *sql.Tx, id int64, from, to State, not
 		return fmt.Errorf("%w: task %d is %s, expected %s", ErrStateMismatch, id, cur, from)
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO task_events(task_id, from_state, to_state, note, at) VALUES (?,?,?,?,?)`,
-		id, from, to, note, n); err != nil {
+		insertEvent, id, from, to, note, n, ActorFrom(ctx)); err != nil {
 		return err
 	}
 	return nil
@@ -436,8 +452,7 @@ func (s *Store) RetryFailed(ctx context.Context, id int64, to State, maxRetries 
 		return fmt.Errorf("%w: task %d is %s, not an infrastructure-failed task with a free retry", ErrStateMismatch, id, cur)
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO task_events(task_id, from_state, to_state, note, at) VALUES (?,?,?,?,?)`,
-		id, StateFailed, to, note, n); err != nil {
+		insertEvent, id, StateFailed, to, note, n, ActorFrom(ctx)); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -446,7 +461,7 @@ func (s *Store) RetryFailed(ctx context.Context, id int64, to State, maxRetries 
 // Events lists a task's transitions oldest first.
 func (s *Store) Events(ctx context.Context, taskID int64) ([]Event, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, task_id, from_state, to_state, note, at FROM task_events WHERE task_id=? ORDER BY id`, taskID)
+		`SELECT id, task_id, from_state, to_state, note, at, actor FROM task_events WHERE task_id=? ORDER BY id`, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -455,10 +470,11 @@ func (s *Store) Events(ctx context.Context, taskID int64) ([]Event, error) {
 	for rows.Next() {
 		var e Event
 		var at int64
-		if err := rows.Scan(&e.ID, &e.TaskID, &e.From, &e.To, &e.Note, &at); err != nil {
+		var actor sql.NullString
+		if err := rows.Scan(&e.ID, &e.TaskID, &e.From, &e.To, &e.Note, &at, &actor); err != nil {
 			return nil, err
 		}
-		e.At = ts(at)
+		e.At, e.Actor = ts(at), actor.String
 		out = append(out, e)
 	}
 	return out, rows.Err()
@@ -531,8 +547,7 @@ func (s *Store) ReleaseClaims(ctx context.Context) ([]Task, error) {
 			return nil, err
 		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO task_events(task_id, from_state, to_state, note, at) VALUES (?,?,?,?,?)`,
-			x.id, x.st, x.st, "recovered: step was in flight when the process stopped", n); err != nil {
+			insertEvent, x.id, x.st, x.st, "recovered: step was in flight when the process stopped", n, ActorSystem); err != nil {
 			return nil, err
 		}
 		t, err := scanTask(tx.QueryRowContext(ctx, `SELECT `+taskCols+` FROM tasks WHERE id=?`, x.id))

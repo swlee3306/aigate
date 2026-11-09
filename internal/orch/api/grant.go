@@ -75,12 +75,13 @@ func grantErr(err error) *httpError {
 	return errInternal
 }
 
-// viaOf names the path a write came in on, for the ledger: the principal's
-// kind (socket, session or token). Every route sits behind authenticate, so a
-// missing principal is a wiring bug and is recorded as "unknown".
+// viaOf names who a write came in as, for the ledger: the principal's
+// "kind:id" actor (socket:uid:1000, session:<signer>, token:<signer>), the
+// same string the task events record. Every route sits behind authenticate,
+// so a missing principal is a wiring bug and is recorded as "unknown".
 func viaOf(r *http.Request) string {
-	if p, ok := PrincipalFrom(r.Context()); ok {
-		return p.Kind
+	if _, ok := PrincipalFrom(r.Context()); ok {
+		return store.ActorFrom(r.Context())
 	}
 	return "unknown"
 }
@@ -340,11 +341,13 @@ func (h *handler) grantSigned(w http.ResponseWriter, r *http.Request) {
 	// The grant is recorded, the signer is a verified registry id and the
 	// entry is approved. The ledger event follows; if it fails the grant and
 	// the transition still stand.
+	// via and actor carry the same "kind:id" string (readers may use either).
+	via := viaOf(r)
 	if home, err := gate.Home(h.grants.Home); err != nil {
 		log.Printf("orchd: approval %d granted but ledger home unknown: %v", a.ID, err)
 	} else if err := ledger.Append(gate.LedgerPath(home, msg.Repo), "approval_granted", msg.Repo, map[string]any{
 		"base": a.Base, "hash": a.Hash, "kind": a.Kind, "task": t.ID, "approval": a.ID,
-		"signer": req.Signer, "alg": req.Alg, "via": viaOf(r),
+		"signer": req.Signer, "alg": req.Alg, "via": via, "actor": via,
 	}, time.Now().UTC()); err != nil {
 		log.Printf("orchd: approval %d granted but the ledger append failed: %v", a.ID, err)
 	}

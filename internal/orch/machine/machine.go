@@ -46,6 +46,9 @@ type Machine struct {
 	steps        map[State]Step
 	maxAttempts  int
 	onTransition func(t store.Task, from, to State, note string)
+	// onTransitionCtx, when set, is called instead of onTransition, with the
+	// context of the call that made the transition (it carries the actor).
+	onTransitionCtx func(ctx context.Context, t store.Task, from, to State, note string)
 }
 
 // Option configures a Machine.
@@ -64,6 +67,24 @@ func WithMaxAttempts(n int) Option {
 // transition, with the task as it was before the move. It must not block.
 func WithOnTransition(f func(t store.Task, from, to State, note string)) Option {
 	return func(m *Machine) { m.onTransition = f }
+}
+
+// WithOnTransitionCtx is WithOnTransition with the context of the call that
+// made the transition (the API request's for cancel, retry, approve and
+// reject; the worker's otherwise), so the callback can read store.ActorFrom.
+// When set, the WithOnTransition callback is not called.
+func WithOnTransitionCtx(f func(ctx context.Context, t store.Task, from, to State, note string)) Option {
+	return func(m *Machine) { m.onTransitionCtx = f }
+}
+
+// notify runs the transition callback, if any; every transition site calls it.
+func (m *Machine) notify(ctx context.Context, t store.Task, from, to State, note string) {
+	switch {
+	case m.onTransitionCtx != nil:
+		m.onTransitionCtx(ctx, t, from, to, note)
+	case m.onTransition != nil:
+		m.onTransition(t, from, to, note)
+	}
 }
 
 // New builds a Machine. queued and passed advance on their own unless a step
@@ -87,9 +108,7 @@ func (m *Machine) transition(ctx context.Context, t store.Task, to State, note s
 	if err := m.st.TransitionWith(ctx, t.ID, t.State, to, note, o); err != nil {
 		return err
 	}
-	if m.onTransition != nil {
-		m.onTransition(t, t.State, to, note)
-	}
+	m.notify(ctx, t, t.State, to, note)
 	return nil
 }
 
@@ -215,8 +234,8 @@ func (m *Machine) Approve(ctx context.Context, approvalID int64) error {
 	if err != nil {
 		return err
 	}
-	if moved && m.onTransition != nil {
-		m.onTransition(before, before.State, StateVerifying, "approved")
+	if moved {
+		m.notify(ctx, before, before.State, StateVerifying, "approved")
 	}
 	return nil
 }
@@ -234,8 +253,8 @@ func (m *Machine) Reject(ctx context.Context, approvalID int64) error {
 	if err != nil {
 		return err
 	}
-	if moved && m.onTransition != nil {
-		m.onTransition(before, before.State, StateFailed, "approval rejected")
+	if moved {
+		m.notify(ctx, before, before.State, StateFailed, "approval rejected")
 	}
 	return nil
 }

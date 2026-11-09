@@ -80,9 +80,7 @@ func (m *Machine) Retry(ctx context.Context, id int64) (store.Task, error) {
 		}
 		return store.Task{}, err
 	}
-	if m.onTransition != nil {
-		m.onTransition(t, StateFailed, t.RetryState, note)
-	}
+	m.notify(ctx, t, StateFailed, t.RetryState, note)
 	return m.st.GetTask(ctx, id)
 }
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -59,6 +60,10 @@ func TestCLIRoundTrip(t *testing.T) {
 	}
 	if code, out, _ = do("show", "1"); code != 0 || !strings.Contains(out, "안녕") {
 		t.Fatalf("show %d %q", code, out)
+	}
+	// show names who made the latest change (the socket peer submitted it)
+	if want := "  주체:     socket:uid:" + strconv.Itoa(os.Getuid()) + "\n"; !strings.Contains(out, want) {
+		t.Fatalf("show actor: want %q in %q", want, out)
 	}
 	code, out, _ = do("--json", "show", "1")
 	var v api.TaskView

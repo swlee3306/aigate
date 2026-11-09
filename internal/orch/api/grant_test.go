@@ -438,7 +438,7 @@ func TestGrantLedgerRecordsSigner(t *testing.T) {
 	ev := evs[0]
 	p := ev.Payload
 	if ev.Type != "approval_granted" || ev.Repo != f.rid || p["signer"] != "alice" || p["alg"] != signing.TypeSSHEd25519 ||
-		p["via"] != "socket" || p["hash"] != m.Hash || p["base"] != m.Base || p["kind"] != m.Kind {
+		p["via"] != "socket:uid:"+strconv.Itoa(os.Getuid()) || p["actor"] != p["via"] || p["hash"] != m.Hash || p["base"] != m.Base || p["kind"] != m.Kind {
 		t.Fatalf("event %+v", ev)
 	}
 	if n, ok := p["task"].(json.Number); !ok || n.String() != strconv.FormatInt(tid, 10) {

@@ -27,6 +27,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -84,6 +85,9 @@ type TaskView struct {
 	Retryable bool `json:"retryable,omitempty"`
 	// Retries is how many times an operator retried this task.
 	Retries int `json:"retries,omitempty"`
+	// Actor is who made the task's latest change ("kind:id" or "system";
+	// empty when that event predates schema v7).
+	Actor string `json:"actor,omitempty"`
 }
 
 // ApprovalView is the JSON form of a pending-approvals entry.
@@ -103,7 +107,7 @@ func viewOf(t store.Task) TaskView {
 	return TaskView{ID: t.ID, Repo: t.Repo, Base: t.Base, Prompt: t.Prompt, Class: t.Class,
 		Agent: t.Agent, State: string(t.State), Attempts: t.Attempts, RetryState: string(t.RetryState),
 		CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt, Error: t.ErrorText, HeadSHA: t.HeadSHA, Verdict: t.Verdict,
-		Retryable: machine.Retryable(t) == nil, Retries: t.Retries}
+		Retryable: machine.Retryable(t) == nil, Retries: t.Retries, Actor: t.LastActor}
 }
 
 type submitRequest struct {
@@ -178,6 +182,9 @@ type handler struct {
 	// sessionTTL is the idle expiry a new browser session gets
 	// (Config.SessionTTL, default SessionIdleTTL).
 	sessionTTL time.Duration
+	// onSubmitted records a task the API just created (the steps provider's
+	// task_submitted ledger event, with the actor from ctx); nil: nothing.
+	onSubmitted func(ctx context.Context, t store.Task)
 }
 
 func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome string) (*handler, error) {
@@ -359,6 +366,7 @@ func (h *handler) submit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	h.submitted(r, id, t)
 	// Under idemMu only another process (which lockDB rules out) or an expiry
 	// race can make Put fail with ErrKeyExists. Retry once when the key turns
 	// out to have expired meanwhile (CF6); a live key from elsewhere wins.
@@ -401,7 +409,16 @@ func (h *handler) createAndRespond(w http.ResponseWriter, r *http.Request, t sto
 		writeErr(w, err)
 		return
 	}
+	h.submitted(r, id, t)
 	h.respondTask(w, r, id, http.StatusCreated, false)
+}
+
+// submitted reports a newly created task (never a replay) to onSubmitted.
+func (h *handler) submitted(r *http.Request, id int64, t store.Task) {
+	if h.onSubmitted != nil {
+		t.ID = id
+		h.onSubmitted(r.Context(), t)
+	}
 }
 
 func (h *handler) respondTask(w http.ResponseWriter, r *http.Request, id int64, status int, replay bool) {

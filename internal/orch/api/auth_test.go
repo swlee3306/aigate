@@ -579,7 +579,7 @@ func TestGrantLedgerViaSession(t *testing.T) {
 	if err != nil || len(evs) != 1 {
 		t.Fatalf("ledger %v %+v", err, evs)
 	}
-	if p := evs[0].Payload; p["via"] != KindSession || p["signer"] != "alice" || p["alg"] != signing.TypeSSHEd25519 {
+	if p := evs[0].Payload; p["via"] != KindSession+":alice" || p["actor"] != p["via"] || p["signer"] != "alice" || p["alg"] != signing.TypeSSHEd25519 {
 		t.Fatalf("event %+v", evs[0])
 	}
 }

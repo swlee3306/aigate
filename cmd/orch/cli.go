@@ -326,6 +326,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "작업 #%d\n  상태:     %s\n  저장소:   %s\n  기준:     %s\n  종류:     %s\n  에이전트: %s\n  시도:     %d\n  생성:     %s\n  갱신:     %s\n",
 				v.ID, v.State, v.Repo, v.Base, v.Class, v.Agent, v.Attempts,
 				v.CreatedAt.Local().Format(time.DateTime), v.UpdatedAt.Local().Format(time.DateTime))
+			if v.Actor != "" {
+				// who made the latest change (kind:id or system)
+				fmt.Fprintf(stdout, "  주체:     %s\n", v.Actor)
+			}
 			if v.Error != "" {
 				fmt.Fprintf(stdout, "  오류:     %s\n", v.Error)
 			}

@@ -18,7 +18,7 @@ import (
 )
 
 // Principal kinds: who a request acts as, and the path it came in on (the
-// ledger's "via").
+// "kind" of the ledger's "kind:id" actor and via, see actorOf).
 const (
 	KindSocket  = "socket"  // local unix socket, peer uid on the allowlist
 	KindSession = "session" // browser session cookie (passkey login, Task 20)
@@ -230,13 +230,24 @@ func sessionFrom(ctx context.Context) (*store.Session, bool) {
 	return s, ok && s != nil
 }
 
+// withPrincipal is the one place a request gets its principal, so it is also
+// the one place it gets its actor (store.WithActor): every event a handler
+// writes through store or machine with r.Context() names the caller, and no
+// handler can forget it.
 func withPrincipal(ctx context.Context, p Principal, s *store.Session) context.Context {
 	ctx = context.WithValue(ctx, keyPrincipal, p)
+	ctx = store.WithActor(ctx, actorOf(p))
 	if s != nil {
 		ctx = context.WithValue(ctx, keySession, s)
 	}
 	return ctx
 }
+
+// actorOf is the principal as an actor string, "kind:id": socket:uid:1000
+// (the socket ID already reads "uid:<n>"), session:<signer>, token:<signer>.
+// store normalises it (an id outside the allowed characters becomes
+// "invalid"; the write still happens).
+func actorOf(p Principal) string { return p.Kind + ":" + p.ID }
 
 var (
 	errUnauthenticated = apiErr(http.StatusUnauthorized, "unauthenticated", "인증이 필요합니다")
