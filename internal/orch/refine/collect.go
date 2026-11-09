@@ -35,6 +35,7 @@ const (
 const (
 	WhyReadme    = "readme"
 	WhyNameMatch = "name_match"
+	WhySmallRepo = "small_repo"
 )
 
 // Options override the limits (tests); zero means the default.
@@ -106,7 +107,8 @@ type candidate struct {
 
 // Collect chooses the files for requirement from repo's HEAD commit:
 // root-level README*, then files whose path shares words with the
-// requirement. Everything is read from the commit's object database
+// requirement; in a small repository (isSmallRepo) every other file follows,
+// by path. Everything is read from the commit's object database
 // (ls-tree, cat-file on blob ids): the work tree, symlinks and submodules are
 // never followed, so nothing outside the repository can be read.
 func Collect(ctx context.Context, repo, requirement string, opts Options) (Selection, error) {
@@ -123,11 +125,12 @@ func Collect(ctx context.Context, repo, requirement string, opts Options) (Selec
 		return Selection{}, ErrUnreadable
 	}
 	words := wordsOf(requirement)
+	small := isSmallRepo(ents, o)
 	var cands []candidate
 	for _, e := range ents {
 		c := candidate{e: e, readme: isRootReadme(e.Path), unsafe: !SafeRelPath(e.Path)}
 		c.score = score(strings.ToLower(e.Path), words)
-		if c.readme || c.score > 0 {
+		if small || c.readme || c.score > 0 {
 			cands = append(cands, c)
 		}
 	}
@@ -173,8 +176,11 @@ func Collect(ctx context.Context, repo, requirement string, opts Options) (Selec
 			continue
 		}
 		why := WhyNameMatch
-		if c.readme {
+		switch {
+		case c.readme:
 			why = WhyReadme
+		case c.score == 0:
+			why = WhySmallRepo
 		}
 		sel.Files = append(sel.Files, FileEntry{Path: c.e.Path, Bytes: len(content), Why: why})
 		sel.Contents = append(sel.Contents, File{Path: c.e.Path, Content: content})
@@ -188,6 +194,23 @@ func Collect(ctx context.Context, repo, requirement string, opts Options) (Selec
 	}
 	sel.Hash = hashOf(head, sel.Contents)
 	return sel, nil
+}
+
+// isSmallRepo: the whole HEAD tree fits the limits (at most MaxFiles entries
+// and listed blob sizes summing to at most MaxTotalBytes). A small repository
+// sends every file that passes the per-file rules, not only README and name
+// matches, so a requirement with no matching words still gets context.
+func isSmallRepo(ents []gitx.TreeEntry, o Options) bool {
+	if len(ents) > o.MaxFiles {
+		return false
+	}
+	var total int64
+	for _, e := range ents {
+		if e.Size > 0 {
+			total += e.Size
+		}
+	}
+	return total <= int64(o.MaxTotalBytes)
 }
 
 // Reread reads exactly paths again from repo's CURRENT HEAD commit under the
