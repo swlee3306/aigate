@@ -262,21 +262,38 @@ func scanTask(r scanner) (Task, error) {
 	return t, err
 }
 
-// ErrQueueFull is CreateTaskLimited's refusal: the queue already holds
-// maxQueued tasks in StateQueued.
-var ErrQueueFull = errors.New("store: queue is full")
+// ErrQueueFull is CreateTaskLimited's per-actor refusal: the submitting actor
+// already has perActor tasks in StateQueued.
+var ErrQueueFull = errors.New("store: actor queue is full")
+
+// ErrQueueFullTotal is CreateTaskLimited's server-wide refusal: the queue
+// already holds total tasks in StateQueued, whoever made them.
+var ErrQueueFullTotal = errors.New("store: server queue is full")
 
 // CreateTask inserts t in StateQueued (State and timestamps are ignored).
 func (s *Store) CreateTask(ctx context.Context, t Task) (int64, error) {
-	return s.CreateTaskLimited(ctx, t, 0)
+	return s.CreateTaskLimited(ctx, t, 0, 0)
 }
 
-// CreateTaskLimited is CreateTask refusing with ErrQueueFull when maxQueued
-// or more tasks are already in StateQueued (maxQueued <= 0: no limit). The
-// count and the insert share one transaction, and every transaction takes
-// the write lock at BEGIN (_txlock=immediate), so concurrent callers can
-// never overshoot the limit.
-func (s *Store) CreateTaskLimited(ctx context.Context, t Task, maxQueued int) (int64, error) {
+// queuedByActorSQL counts the queued tasks whose earliest 'created' event
+// carries the given actor. The subquery walks the task_events (task_id, id)
+// index, one row per queued task.
+const queuedByActorSQL = `SELECT COUNT(*) FROM tasks t WHERE t.state = ? AND
+	(SELECT e.actor FROM task_events e WHERE e.task_id = t.id AND e.note = 'created' ORDER BY e.id LIMIT 1) = ?`
+
+// CreateTaskLimited is CreateTask with two queue limits, both checked in the
+// one transaction that inserts (every transaction takes the write lock at
+// BEGIN, _txlock=immediate, so concurrent callers can never overshoot):
+//
+//  1. ErrQueueFull when the actor of ctx (ActorFrom) already has perActor or
+//     more queued tasks, counted by the actor of each task's earliest
+//     'created' event;
+//  2. ErrQueueFullTotal when perActor or not, total or more tasks are queued.
+//
+// perActor <= 0 / total <= 0 skip that check. The actors "system" and
+// "invalid", and tasks whose creating event has no actor (made before schema
+// v7), are never counted toward an actor's limit, only toward the total.
+func (s *Store) CreateTaskLimited(ctx context.Context, t Task, perActor, total int) (int64, error) {
 	if t.Repo == "" {
 		return 0, errors.New("store: task needs a repo")
 	}
@@ -285,13 +302,23 @@ func (s *Store) CreateTaskLimited(ctx context.Context, t Task, maxQueued int) (i
 		return 0, err
 	}
 	defer tx.Rollback()
-	if maxQueued > 0 {
+	actor := ActorFrom(ctx)
+	if perActor > 0 && actor != ActorSystem && actor != ActorInvalid {
+		var q int
+		if err := tx.QueryRowContext(ctx, queuedByActorSQL, StateQueued, actor).Scan(&q); err != nil {
+			return 0, err
+		}
+		if q >= perActor {
+			return 0, ErrQueueFull
+		}
+	}
+	if total > 0 {
 		var q int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks WHERE state = ?`, StateQueued).Scan(&q); err != nil {
 			return 0, err
 		}
-		if q >= maxQueued {
-			return 0, ErrQueueFull
+		if q >= total {
+			return 0, ErrQueueFullTotal
 		}
 	}
 	n := now()
@@ -304,7 +331,7 @@ func (s *Store) CreateTaskLimited(ctx context.Context, t Task, maxQueued int) (i
 	}
 	id, _ := res.LastInsertId()
 	if _, err := tx.ExecContext(ctx,
-		insertEvent, id, "", StateQueued, "created", n, ActorFrom(ctx)); err != nil {
+		insertEvent, id, "", StateQueued, "created", n, actor); err != nil {
 		return 0, err
 	}
 	return id, tx.Commit()

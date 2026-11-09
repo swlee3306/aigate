@@ -147,7 +147,7 @@ test('same content keeps the key across queue_full/network errors; changed conte
   const ctx = await mount({
     post: (body, opts) => {
       n++;
-      if (n === 1) throw apiError(429, 'queue_full', 'x');
+      if (n === 1) throw apiError(429, 'queue_full', '내 대기 작업이 가득 찼습니다');
       if (n === 2) throw apiError(0, 'network', 'x');
       const k = opts.headers['Idempotency-Key'];
       if (!seen.has(k)) seen.set(k, { ...created, id: 100 + seen.size });
@@ -260,7 +260,7 @@ test('TestNewViewErrorsFixedTexts', async () => {
     [403, 'csrf_failed', /다시 로그인|권한/],
   ];
   for (const [status, code, re] of cases) {
-    const ctx = await mount({ post: () => { throw apiError(status, code, SECRET); } });
+    const ctx = await mount({ post: () => { throw apiError(status, code, code === 'queue_full' ? '내 대기 작업이 가득 찼습니다' : SECRET); } });
     fill(ctx.root);
     click(submitBtn(ctx.root)); await ctx.settle();
     assert.match(text(ctx.root), re, code);
@@ -270,10 +270,35 @@ test('TestNewViewErrorsFixedTexts', async () => {
     assert.deepEqual(ctx.nav, []);
   }
   // the queue_full text says the queue is full, not "rate limited"
-  const q = await mount({ post: () => { throw apiError(429, 'queue_full', 'x'); } });
+  const q = await mount({ post: () => { throw apiError(429, 'queue_full', '내 대기 작업이 가득 찼습니다'); } });
   fill(q.root);
   click(submitBtn(q.root)); await q.settle();
   assert.doesNotMatch(text(q.root), /요청이 많아/);
+});
+
+test('TestNewViewQueueFullShowsServerSentenceAsText', async () => {
+  // the two server sentences are shown (as text), each followed by the fixed advice
+  for (const msg of ['내 대기 작업이 가득 찼습니다', '서버 대기열이 가득 찼습니다']) {
+    const ctx = await mount({ post: () => { throw apiError(429, 'queue_full', msg); } });
+    fill(ctx.root);
+    click(submitBtn(ctx.root)); await ctx.settle();
+    assert.match(text(ctx.root), new RegExp(msg + '\\. 앞의 작업이 진행된 뒤 다시 제출하세요'));
+    assert.match(text(ctx.root), /중복되지 않습니다/);
+    noHostile(ctx.root);
+  }
+  // hostile or oversized server text stays text, bounded; other codes still never show it
+  const evil = '<img src=x onerror=alert(1)>' + 'A'.repeat(500);
+  const h = await mount({ post: () => { throw apiError(429, 'queue_full', evil); } });
+  fill(h.root);
+  click(submitBtn(h.root)); await h.settle();
+  assert.doesNotMatch(text(h.root), /A{81}/, 'bounded');
+  noHostile(h.root);
+  assert.equal(findAll(h.root, (e) => e.tagName === 'IMG').length, 0);
+  // no usable message: the fixed fallback sentence
+  const f = await mount({ post: () => { throw apiError(429, 'queue_full', '   '); } });
+  fill(f.root);
+  click(submitBtn(f.root)); await f.settle();
+  assert.match(text(f.root), /대기 중인 작업이 가득 찼습니다\(queue full\)/);
 });
 
 test('TestNewViewReposAndClassesFromApi', async () => {

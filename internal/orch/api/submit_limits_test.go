@@ -95,7 +95,7 @@ func TestSubmitQueueFull429(t *testing.T) {
 		t.Fatalf("%d %s", code, b)
 	}
 	v := decodeV1Err(t, b)
-	if v.Error.Code != "queue_full" || v.Error.Message == "" {
+	if v.Error.Code != "queue_full" || v.Error.Message != msgPerActor {
 		t.Fatalf("%s", b)
 	}
 	// The keyed path is limited too, and a refused keyed submit leaves no
@@ -121,11 +121,14 @@ func TestSubmitQueueFull429(t *testing.T) {
 		t.Fatalf("keyed after room: %d %s", kc, kb)
 	}
 
-	// Default limit is 20.
+	// Default limits: 20 per principal, 100 in all.
 	e2 := newEnv(t, noSteps{}, 1)
 	e2.d.pauseWorkers()
 	if e2.d.handler.queueLimit != DefaultQueueLimit || DefaultQueueLimit != 20 {
 		t.Fatalf("default limit %d / %d", e2.d.handler.queueLimit, DefaultQueueLimit)
+	}
+	if e2.d.handler.queueLimitTotal != DefaultQueueLimitTotal || DefaultQueueLimitTotal != 100 {
+		t.Fatalf("default total %d / %d", e2.d.handler.queueLimitTotal, DefaultQueueLimitTotal)
 	}
 }
 
@@ -187,7 +190,7 @@ func TestQueueLimitRaceNeverExceeds(t *testing.T) {
 			case 201:
 				created++
 			case 429:
-				if v1Code(bodies[i]) != "queue_full" {
+				if v1Code(bodies[i]) != "queue_full" || errMessage(bodies[i]) != msgPerActor {
 					t.Fatalf("round %d: 429 with %s", round, bodies[i])
 				}
 			default:

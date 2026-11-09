@@ -271,16 +271,34 @@ func checkStateDirWritable(statePath string) error {
 
 // checkWebAuthnFlags validates --rp-id, --origin and --pending-file before
 // anything is opened.
-// registerQueueLimit adds --queue-limit (Config.QueueLimit).
+// registerQueueLimit adds --queue-limit (Config.QueueLimit, per principal)
+// and --queue-limit-total (Config.QueueLimitTotal, the server-wide ceiling).
 func registerQueueLimit(fs *flag.FlagSet, cfg *api.Config) {
 	fs.IntVar(&cfg.QueueLimit, "queue-limit", api.DefaultQueueLimit,
-		fmt.Sprintf("most tasks waiting in the queue at once; a submit beyond it is refused with 429 queue_full (default %d; 0 = the default)", api.DefaultQueueLimit))
+		fmt.Sprintf("most tasks ONE principal may have waiting in the queue at once; a submit beyond it is refused with 429 queue_full (default %d; 0 = the default)", api.DefaultQueueLimit))
+	fs.IntVar(&cfg.QueueLimitTotal, "queue-limit-total", api.DefaultQueueLimitTotal,
+		fmt.Sprintf("most tasks waiting in the queue in all, whoever made them; refused with 429 queue_full (default %d; 0 = the default; must be >= --queue-limit)", api.DefaultQueueLimitTotal))
 }
 
-// checkQueueLimit refuses a negative --queue-limit.
+// checkQueueLimit refuses a negative limit, and a server-wide ceiling below
+// the per-principal limit (both after 0 became its default). The text is
+// fixed: it never echoes the values.
 func checkQueueLimit(cfg api.Config) error {
 	if cfg.QueueLimit < 0 {
-		return fmt.Errorf("--queue-limit %d: must be >= 0", cfg.QueueLimit)
+		return errors.New("--queue-limit must be >= 0")
+	}
+	if cfg.QueueLimitTotal < 0 {
+		return errors.New("--queue-limit-total must be >= 0")
+	}
+	per, total := cfg.QueueLimit, cfg.QueueLimitTotal
+	if per == 0 {
+		per = api.DefaultQueueLimit
+	}
+	if total == 0 {
+		total = api.DefaultQueueLimitTotal
+	}
+	if total < per {
+		return errors.New("--queue-limit-total must be >= --queue-limit")
 	}
 	return nil
 }

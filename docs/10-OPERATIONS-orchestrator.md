@@ -266,7 +266,7 @@ sudo /usr/local/lib/aigate/orch admin signers list
 - 실행 중이거나 대기 중인 작업이 없다: `orch list`에 `queued`·진행 중 상태가 없고 `orch approvals`가 비어 있다. 단계 1은 `orchd`를 재시작하고, 롤백은 DB를 되돌린다.
 - **동작이 바뀌는 것 두 가지를 미리 안다.**
   1. **정책이 종류(class) 목록을 가지면 목록에 없는 종류의 제출은 거부된다**(`400 unknown_class`). 웹만이 아니라 **CLI `orch submit`도 같다**(같은 검증 함수). 지금 orch-vm 정책에는 `toy`, `sample-app`가 있다고 알고 있다(3장, 실서버 정책 파일은 이번에 다시 읽지 않았다). 다른 종류 이름을 쓰던 스크립트가 있으면 먼저 정책에 넣거나 이름을 바꾼다.
-  2. **이미 끝난 작업을 취소하면** 코드 `already_final`(409)이 온다(전에는 `conflict`). 대기 중인 작업이 20개(`--queue-limit` 기본)면 새 제출은 `429 queue_full`.
+  2. **이미 끝난 작업을 취소하면** 코드 `already_final`(409)이 온다(전에는 `conflict`). 한 주체(세션·토큰·소켓 사용자)가 대기 중인 작업이 20개(`--queue-limit` 기본, **주체별**)이거나 서버 전체가 100개(`--queue-limit-total` 기본)면 새 제출은 `429 queue_full`(문장이 다르다: "내 대기 작업이 가득 찼습니다" / "서버 대기열이 가득 찼습니다").
 
 ### 단계 1. 백업, 세 바이너리 한꺼번에 배포, 재시작 [사용자][주의: DB 스키마가 v7로 올라간다]
 **백업(전부 먼저).** orch-vm에서:
@@ -284,7 +284,7 @@ ls -l /usr/local/lib/aigate $B
 for f in orchd orch aigate; do sudo install -o root -g root -m 0755 /tmp/w2a/$f /usr/local/lib/aigate/$f; done
 sudo systemctl start orchd
 ```
-유닛은 바꾸지 않는다(`--queue-limit`은 기본 20을 쓴다. 바꾸려면 유닛에 `--queue-limit N`을 더하고 `daemon-reload` 후 재시작; 음수는 시작 거부).
+유닛은 바꾸지 않는다(`--queue-limit`은 주체별 기본 20, `--queue-limit-total`은 서버 전체 기본 100을 쓴다. 바꾸려면 유닛에 `--queue-limit N`·`--queue-limit-total M`을 더하고 `daemon-reload` 후 재시작; 음수, 그리고 total < 주체별이면 시작 거부).
 
 > **[주의] 롤백은 DB 복원을 동반한다.** 새 `orchd`는 첫 시작에서 DB를 스키마 **v7**로 올린다(`task_events.actor` 열 추가, 자동 마이그레이션). **옛 `orchd`(W1)는 v7 DB를 열지 않는다**(W1 단계 1과 같은 버전 검사, 코드 읽기 기준). 그래서 바이너리를 되돌릴 때는 **반드시 `$B`의 DB 백업도 되돌려야 하고, 백업 뒤에 만든 작업·이벤트·승인 대기 기록은 모두 사라진다.** 되돌릴 가능성이 있으면 단계 2의 시험 작업 외에 실제 작업을 넣기 전에 판단한다.
 
@@ -302,10 +302,10 @@ sudo systemctl start orchd
 | # | 할 일 | 예상(코드·시험 기준) | 다르면 |
 |---|---|---|---|
 | 2-1 | 메뉴 "새 작업"(`#/new`) 열기 | 저장소 선택 상자에 `/home/orch/repos` 아래 저장소(`toy`, `sample-app`), 기준 커밋 칸에 그 저장소 HEAD, 종류 상자에 정책의 종류 목록 | 저장소가 비면 2-9(소유자·`safe.directory`)부터 본다. 종류가 글 상자이면 정책에 종류 목록이 없는 것(R3: 아무 종류나 받음) |
-| 2-2 | toy 작업 제출: 네 칸 중 "목표"만 적고 미리보기를 확인한 뒤 "제출" | 미리보기에 `Goal: …`, 바이트 수 표시. 제출하면 `#/tasks/<ID>`로 이동, 상태 `queued` → 진행 줄 "진행 중 · <단계> · N초 경과" | 오류 문구는 코드별 고정 문장이다(서버 원문은 보이지 않음). `queue_full`이면 큐 확인, `unknown_class`면 정책 확인 |
+| 2-2 | toy 작업 제출: 네 칸 중 "목표"만 적고 미리보기를 확인한 뒤 "제출" | 미리보기에 `Goal: …`, 바이트 수 표시. 제출하면 `#/tasks/<ID>`로 이동, 상태 `queued` → 진행 줄 "진행 중 · <단계> · N초 경과" | 오류 문구는 코드별 고정 문장이다(서버 원문은 보이지 않음. 예외로 `queue_full`은 서버의 고정 두 문장 중 하나를 그대로 보여 준다). `queue_full`이면 큐 확인, `unknown_class`면 정책 확인 |
 | 2-3 | 그 작업 화면의 정보 칸 | "마지막 변경"에 `session:<서명자 ID>`(예: `session:mac-passkey`). 승인이 필요한 작업이면 W1 방식(웹 패스키 서명)으로 승인 → `done` | 이 시점에는 보통 이미 `system`(워커가 옮김)이라 이 칸으로 제출자를 가리지 않는다. 제출자는 원장 `task_submitted` 줄(단계 1)로 확인하고, 취소 후 주체는 2-6에서 본다 |
 | 2-4 | 정책에 **없는** 종류로 제출해 보기. 웹은 목록에서만 고르게 하므로 Mac CLI로: `orch --server https://<FQDN> --signer mac-ssh submit … --class nosuchclass …` | `400 unknown_class` "정책에 없는 작업 종류입니다: nosuchclass", 작업이 생기지 않음(`orch list`의 마지막 번호 그대로) | 작업이 생기면 단계 3 |
-| 2-5 | 큐 상한(`queue_full`) | **컷오버에서 확인하지 않는다.** 유닛을 바꿔 상한을 낮추는 것은 이 컷오버의 범위가 아니고, 20개를 실제로 쌓는 것은 VM 시간을 쓴다. 자동 시험(`TestQueueFloodBoundedAcrossPrincipals`, `TestQueueLimitRaceNeverExceeds`)으로만 확인됨 | — |
+| 2-5 | 큐 상한(`queue_full`) | **컷오버에서 확인하지 않는다.** 유닛을 바꿔 상한을 낮추는 것은 이 컷오버의 범위가 아니고, 주체별 20개를 실제로 쌓는 것은 VM 시간을 쓴다. 자동 시험(`TestQueueFloodBoundedAcrossPrincipals`, `TestQueueLimitIsPerActor`, `TestQueueLimitTotalCeiling`, `TestQueueLimitRaceNeverExceedsPerActorOrTotal`)으로만 확인됨 | — |
 | 2-6 | 취소: 대기 중이거나 진행 중인 toy 작업 화면에서 "작업 취소" → 확인 칸 → "취소 실행" | 확인 칸에서 아무것도 보내지 않고(Escape나 "돌아가기"로 닫힘), 실행하면 상태 `cancelled`, 정보 칸 주체 `session:<ID>`(`cancelled`는 종결 상태라 이 값이 남는다: **주체 전달을 가리는 믿을 만한 확인은 이 단계다**). 이미 끝난 작업에는 취소 단추가 없다 | 409 `state_changed`가 반복되면 작업이 계속 움직이는 것: 잠시 뒤 다시 |
 | 2-7 | 재시도 | **인프라 오류로 실패한 작업이 있어야만 시험할 수 있다**(복원 쿼터 413 등). 일부러 만들지 않는다. 그런 실패가 생기면 그때 "다시 시도" → 실패한 단계부터 재개되는지 본다. 그 전까지는 **"검증 못 함"** | — |
 | 2-8 | 메뉴 "서버 상태"(`#/ops`) | 클라우드 칸에 볼륨 용량·개수 쿼터(사용/한도, 예약), test-vm 이름과 상태(`ACTIVE` 등 또는 "알 수 없음"; 이름은 `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` 모양일 때만 보이고 아니면 빈칸이다 — `test-vm`은 보임), 복원 볼륨 수, 최근 복원 기록. 클라우드가 늦으면 "응답이 늦어 이번에는 건너뜁니다"가 한 번 보이고 다음 갱신(20초)에 수치가 나온다 | **[사용자] 수치 대조:** orch-vm에서 `orchd`와 같은 OpenStack 자격으로 `openstack quota show --usage -f json`을 실행해 `gigabytes`·`volumes` 줄의 `In Use`·`Limit`·`Reserved`가 화면과 같은지 본다. **키 이름**(`Resource`, `In Use`, `Limit`, `Reserved`)이 출력과 다르면 화면은 늘 "클라우드 상태를 지금 읽을 수 없습니다"가 된다(키 이름은 기존 시험의 고정 데이터에서 가져왔고 실제 CLI로 확인한 적 없음). 다르면 결과 문서에 실제 출력의 키를 기록하고 고치는 작업을 따로 한다(데이터 손상 위험은 없음: 읽기 전용) |

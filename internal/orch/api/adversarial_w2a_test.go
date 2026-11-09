@@ -398,12 +398,14 @@ func TestForgedActorHeaderIgnored(t *testing.T) {
 }
 
 // Four principals flood the queue at once with keyed and unkeyed submits. The
-// limit is global (all principals share it): exactly QueueLimit tasks are
-// created, every other answer is 429 queue_full, nothing else. Cancelling a
-// queued task makes room for exactly one more, from any principal.
+// limit is per principal and the server has a ceiling (R11/R12): no principal
+// ends up with more than perActor queued tasks, exactly `limit` (the ceiling)
+// tasks are created, every other answer is 429 queue_full with one of the two
+// fixed messages, nothing else. Cancelling a queued task makes room for
+// exactly one more, from a principal that is under its own limit.
 func TestQueueFloodBoundedAcrossPrincipals(t *testing.T) {
-	const limit, per = 5, 10
-	w := newWebEnv(t, withQueueLimit(limit))
+	const perActor, limit, per = 5, 12, 10
+	w := newWebEnv(t, withQueueLimits(perActor, limit))
 	w.d.pauseWorkers()
 	tokA, csrfA := w.newSession(t, "alice")
 	tokB, csrfB := w.newSession(t, "bob")
@@ -462,7 +464,8 @@ func TestQueueFloodBoundedAcrossPrincipals(t *testing.T) {
 			t.Fatalf("%s: %v", r.who, r.err)
 		case r.code == 201:
 			created++
-		case r.code == 429 && v1Code(r.body) == "queue_full":
+		case r.code == 429 && v1Code(r.body) == "queue_full" &&
+			(errMessage(r.body) == msgPerActor || errMessage(r.body) == msgTotal):
 			full++
 		default:
 			t.Fatalf("%s: %d %s", r.who, r.code, r.body)
@@ -477,16 +480,57 @@ func TestQueueFloodBoundedAcrossPrincipals(t *testing.T) {
 	if n := w.taskCount(t); n != limit {
 		t.Fatalf("%d tasks stored", n)
 	}
-	// Room for exactly one more after a cancel.
+	by := queuedBy(t, w.env)
+	for a, c := range by {
+		if c > perActor {
+			t.Fatalf("%s has %d queued, per-actor limit %d", a, c, perActor)
+		}
+	}
+	// Room for exactly one more after a cancel, for a principal under its limit.
 	ts, _ := w.st.ListTasks(context.Background(), 10)
 	if code, _, b := w.web(t, "POST", "/api/v1/tasks/"+itoa(ts[0].ID)+"/cancel", "", sessionHdr(tokB, csrfB)); code != 200 {
 		t.Fatalf("cancel: %d %s", code, b)
 	}
-	if code, _, b := w.web(t, "POST", "/api/v1/tasks", w.submitBody("after"), sessionHdr(tokA, csrfA)); code != 201 {
-		t.Fatalf("after cancel: %d %s", code, b)
+	by = queuedBy(t, w.env)
+	post := map[string]func(body string) (int, []byte){
+		"session:alice": func(b string) (int, []byte) {
+			c, _, r := w.web(t, "POST", "/api/v1/tasks", b, sessionHdr(tokA, csrfA))
+			return c, r
+		},
+		"session:bob": func(b string) (int, []byte) {
+			c, _, r := w.web(t, "POST", "/api/v1/tasks", b, sessionHdr(tokB, csrfB))
+			return c, r
+		},
+		"token:mac-ssh": func(b string) (int, []byte) {
+			c, _, r := w.web(t, "POST", "/api/v1/tasks", b, hdr{"Content-Type": "application/json", "Authorization": "Bearer " + bearer})
+			return c, r
+		},
 	}
-	if code, _, b := w.web(t, "POST", "/api/v1/tasks", w.submitBody("after2"), sessionHdr(tokB, csrfB)); code != 429 || v1Code(b) != "queue_full" {
-		t.Fatalf("over the limit again: %d %s", code, b)
+	var under string
+	for a := range post {
+		if by[a] < perActor {
+			under = a
+			break
+		}
+	}
+	if under == "" {
+		t.Fatalf("every web principal is at its limit after a cancel: %v", by)
+	}
+	if code, b := post[under](w.submitBody("after")); code != 201 {
+		t.Fatalf("after cancel (%s): %d %s", under, code, b)
+	}
+	if n, _ := w.st.CountQueued(context.Background()); n != limit {
+		t.Fatalf("queued %d, want the ceiling %d", n, limit)
+	}
+	by = queuedBy(t, w.env)
+	for a, send := range post {
+		want := msgTotal // under its own limit: only the ceiling can refuse
+		if by[a] >= perActor {
+			want = msgPerActor // the per-actor check runs first
+		}
+		if code, b := send(w.submitBody("after2")); code != 429 || errMessage(b) != want {
+			t.Fatalf("%s over the ceiling: %d %s", a, code, b)
+		}
 	}
 }
 

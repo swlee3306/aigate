@@ -73,9 +73,13 @@ type Config struct {
 	// SessionTTL is the idle expiry of a browser session (0: SessionIdleTTL;
 	// MinSessionTTL..MaxSessionTTL). The absolute cap SessionMaxLifetime stays.
 	SessionTTL time.Duration
-	// QueueLimit caps the tasks waiting in StateQueued; a submit beyond it is
-	// refused with 429 queue_full (0: DefaultQueueLimit; negative refused).
-	QueueLimit int
+	// QueueLimit caps the tasks ONE principal has waiting in StateQueued; a
+	// submit beyond it is refused with 429 queue_full (0: DefaultQueueLimit;
+	// negative refused). QueueLimitTotal caps all waiting tasks (0:
+	// DefaultQueueLimitTotal; negative refused; below the effective
+	// QueueLimit refused).
+	QueueLimit      int
+	QueueLimitTotal int
 }
 
 const (
@@ -137,8 +141,8 @@ func NewDaemon(cfg Config, st *store.Store, p StepProvider) (*Daemon, error) {
 	if err := ValidateSocketUIDs(cfg.SocketUIDs); err != nil {
 		return nil, err
 	}
-	if cfg.QueueLimit < 0 {
-		return nil, errors.New("queue limit must be >= 0 (0 = default)")
+	if cfg.QueueLimit < 0 || cfg.QueueLimitTotal < 0 {
+		return nil, errors.New("queue limits must be >= 0 (0 = default)")
 	}
 	if cfg.Concurrency < 1 {
 		cfg.Concurrency = 1
@@ -174,6 +178,12 @@ func NewDaemon(cfg Config, st *store.Store, p StepProvider) (*Daemon, error) {
 	}
 	if cfg.QueueLimit > 0 {
 		h.queueLimit = cfg.QueueLimit
+	}
+	if cfg.QueueLimitTotal > 0 {
+		h.queueLimitTotal = cfg.QueueLimitTotal
+	}
+	if h.queueLimitTotal < h.queueLimit {
+		return nil, errors.New("queue limit total must be >= the per-principal queue limit")
 	}
 	if h.auth == nil {
 		h.auth = &StoreAuthenticator{St: st, IdleTTL: h.sessionTTL}

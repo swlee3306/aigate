@@ -257,10 +257,13 @@ func TestSignersFileFlagSetsRegistryPath(t *testing.T) {
 	}
 }
 
-func TestSubmitQueueLimitFlagValidation(t *testing.T) {
+func TestQueueFlagsValidation(t *testing.T) {
 	for _, args := range [][]string{
 		{"--queue-limit", "-1"},
 		{"--queue-limit", "x"},
+		{"--queue-limit-total", "-1"},
+		{"--queue-limit-total", "x"},
+		{"--queue-limit", "10", "--queue-limit-total", "9"},
 	} {
 		db := filepath.Join(t.TempDir(), "never", "o.db")
 		if code := run(append(args, "--db", db)); code != 2 {
@@ -270,19 +273,40 @@ func TestSubmitQueueLimitFlagValidation(t *testing.T) {
 			t.Errorf("%v: database directory created before the flags were checked", args)
 		}
 	}
-	if err := checkQueueLimit(api.Config{QueueLimit: 0}); err != nil {
-		t.Fatalf("0 (default): %v", err)
+	// an over-default per-principal limit with the default total is refused too
+	if code := run([]string{"--queue-limit", "101", "--db", filepath.Join(t.TempDir(), "never", "o.db")}); code != 2 {
+		t.Errorf("--queue-limit 101 with the default total: exit %d, want 2", code)
 	}
-	if err := checkQueueLimit(api.Config{QueueLimit: 5}); err != nil {
-		t.Fatal(err)
+	for _, c := range []struct {
+		cfg api.Config
+		ok  bool
+	}{
+		{api.Config{}, true}, // both defaults: 20 / 100
+		{api.Config{QueueLimit: 5}, true},
+		{api.Config{QueueLimit: 5, QueueLimitTotal: 5}, true},
+		{api.Config{QueueLimit: 5, QueueLimitTotal: 4}, false},
+		{api.Config{QueueLimit: 101}, false},     // effective total is the default 100
+		{api.Config{QueueLimitTotal: 19}, false}, // effective per-principal is the default 20
+		{api.Config{QueueLimit: -3}, false},
+		{api.Config{QueueLimitTotal: -3}, false},
+	} {
+		err := checkQueueLimit(c.cfg)
+		if (err == nil) != c.ok {
+			t.Errorf("%+v: err %v, want ok=%v", c.cfg, err, c.ok)
+		}
 	}
-	if err := checkQueueLimit(api.Config{QueueLimit: -3}); err == nil {
-		t.Fatal("negative accepted")
+	// the refusal text is fixed and carries no user input
+	err := checkQueueLimit(api.Config{QueueLimit: 7, QueueLimitTotal: 3})
+	if err == nil || !strings.Contains(err.Error(), "--queue-limit-total") || !strings.Contains(err.Error(), "--queue-limit") {
+		t.Errorf("message: %v", err)
 	}
 	fs := flag.NewFlagSet("x", flag.ContinueOnError)
 	var cfg api.Config
 	registerQueueLimit(fs, &cfg)
-	if f := fs.Lookup("queue-limit"); f == nil || f.DefValue != "20" || !strings.Contains(f.Usage, "20") {
+	if f := fs.Lookup("queue-limit"); f == nil || f.DefValue != "20" || !strings.Contains(f.Usage, "20") || !strings.Contains(f.Usage, "principal") {
+		t.Fatalf("flag %+v", f)
+	}
+	if f := fs.Lookup("queue-limit-total"); f == nil || f.DefValue != "100" || !strings.Contains(f.Usage, "100") {
 		t.Fatalf("flag %+v", f)
 	}
 }

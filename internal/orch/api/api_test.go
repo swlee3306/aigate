@@ -28,6 +28,7 @@ type env struct {
 	st     *store.Store
 	client *http.Client
 	d      *Daemon
+	dbPath string
 }
 
 type noSteps struct{}
@@ -71,7 +72,8 @@ func newEnv(t *testing.T, p StepProvider, conc int, opts ...func(*Config)) *env 
 	git(t, e.repo, "commit", "-q", "--allow-empty", "-m", "init")
 	e.sha = git(t, e.repo, "rev-parse", "HEAD")
 
-	st, err := store.Open(filepath.Join(dir, "db", "o.db"))
+	e.dbPath = filepath.Join(dir, "db", "o.db")
+	st, err := store.Open(e.dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}

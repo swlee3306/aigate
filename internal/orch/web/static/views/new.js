@@ -84,7 +84,11 @@ export function newIdempotencyKey() {
   return out;
 }
 
-// Fixed texts by error code: the server's message is never shown.
+// Fixed texts by error code: the server's message is never shown, with one
+// exception: queue_full, whose two fixed sentences (my queue is full / the
+// server queue is full) the server owns; they are shown as sanitized text
+// before the fixed advice, and the fixed text below is the fallback.
+const QUEUE_FULL_ADVICE = '앞의 작업이 진행된 뒤 다시 제출하세요. 같은 내용으로 다시 눌러도 중복되지 않습니다.';
 const SUBMIT_ERRORS = {
   unknown_class: '정책에 없는 작업 종류입니다. 종류를 다시 고르세요.',
   queue_full: '대기 중인 작업이 가득 찼습니다(queue full). 앞의 작업이 진행된 뒤 다시 제출하세요. 같은 내용으로 다시 눌러도 중복되지 않습니다.',
@@ -95,9 +99,15 @@ const SUBMIT_ERRORS = {
   unauthenticated: '로그인이 필요합니다.',
 };
 
+const QUEUE_FULL_MESSAGE_MAX = 80;
+
 export function submitErrorText(err) {
   const st = err && typeof err.status === 'number' ? err.status : 0;
   const code = err && typeof err.code === 'string' ? err.code : '';
+  if (code === 'queue_full' && typeof err.message === 'string') {
+    const m = sanitize(err.message).trim().slice(0, QUEUE_FULL_MESSAGE_MAX);
+    if (m) return m + '. ' + QUEUE_FULL_ADVICE;
+  }
   if (Object.prototype.hasOwnProperty.call(SUBMIT_ERRORS, code)) return SUBMIT_ERRORS[code];
   if (st === 413) return SUBMIT_ERRORS.body_too_large;
   if (st === 429) return '요청이 많아 잠시 쉬는 중입니다. 잠시 후 같은 내용으로 다시 제출하세요.';

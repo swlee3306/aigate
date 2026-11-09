@@ -55,13 +55,21 @@ const (
 	MaxBodyBytes = 1 << 20
 	// MaxPromptBytes caps the prompt of one task.
 	MaxPromptBytes = 64 << 10
-	// DefaultQueueLimit is how many tasks may wait in StateQueued at once
-	// when Config.QueueLimit is 0.
+	// DefaultQueueLimit is how many tasks one principal may have waiting in
+	// StateQueued at once when Config.QueueLimit is 0.
 	DefaultQueueLimit = 20
+	// DefaultQueueLimitTotal is how many tasks may wait in StateQueued in
+	// all, whoever made them, when Config.QueueLimitTotal is 0.
+	DefaultQueueLimitTotal = 100
 )
 
 // errQueueFull is the submit refusal when the queue is at its limit.
-var errQueueFull = apiErr(http.StatusTooManyRequests, "queue_full", "대기 중인 작업이 상한에 도달했습니다. 앞의 작업이 진행된 뒤 다시 제출하세요")
+// The two queue_full refusals differ only in their fixed message, which
+// never names an actor or a count.
+var (
+	errQueueFull      = apiErr(http.StatusTooManyRequests, "queue_full", "내 대기 작업이 가득 찼습니다")
+	errQueueFullTotal = apiErr(http.StatusTooManyRequests, "queue_full", "서버 대기열이 가득 찼습니다")
+)
 
 var (
 	classRe = regexp.MustCompile(`^[a-z0-9_가-힣-]{1,32}$`)
@@ -198,9 +206,11 @@ type handler struct {
 	// onSubmitted records a task the API just created (the steps provider's
 	// task_submitted ledger event, with the actor from ctx); nil: nothing.
 	onSubmitted func(ctx context.Context, t store.Task)
-	// queueLimit caps the tasks waiting in StateQueued; a submit beyond it is
-	// 429 queue_full (Config.QueueLimit, default DefaultQueueLimit).
-	queueLimit int
+	// queueLimit caps the tasks one principal has waiting in StateQueued and
+	// queueLimitTotal all waiting tasks; a submit beyond either is 429
+	// queue_full (Config.QueueLimit / QueueLimitTotal, defaults
+	// DefaultQueueLimit / DefaultQueueLimitTotal).
+	queueLimit, queueLimitTotal int
 	// reposTimeout and reposMax bound GET /repos (0: defaultReposTimeout,
 	// DefaultReposMax); tests shorten them.
 	reposTimeout time.Duration
@@ -215,7 +225,7 @@ func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome 
 	h.webauthnLoginCap = DefaultWebAuthnLoginChallengeCap
 	h.credKey = newCredKey()
 	h.sessionTTL = SessionIdleTTL
-	h.queueLimit = DefaultQueueLimit
+	h.queueLimit, h.queueLimitTotal = DefaultQueueLimit, DefaultQueueLimitTotal
 	for _, r := range allowed {
 		if !filepath.IsAbs(r) || filepath.Clean(r) != r {
 			return nil, fmt.Errorf("allowed repo root %q must be an absolute clean path", r)
@@ -458,13 +468,17 @@ func (h *handler) createAndRespond(w http.ResponseWriter, r *http.Request, t sto
 	h.respondTask(w, r, id, http.StatusCreated, false)
 }
 
-// createTask inserts t unless the queue already holds h.queueLimit queued
-// tasks (count and insert are one store transaction, for keyed and unkeyed
+// createTask inserts t unless the submitting principal (the actor of ctx)
+// already has h.queueLimit queued tasks or the server holds h.queueLimitTotal
+// (counts and insert are one store transaction, for keyed and unkeyed
 // submits alike).
 func (h *handler) createTask(ctx context.Context, t store.Task) (int64, error) {
-	id, err := h.st.CreateTaskLimited(ctx, t, h.queueLimit)
-	if errors.Is(err, store.ErrQueueFull) {
+	id, err := h.st.CreateTaskLimited(ctx, t, h.queueLimit, h.queueLimitTotal)
+	switch {
+	case errors.Is(err, store.ErrQueueFull):
 		return 0, errQueueFull
+	case errors.Is(err, store.ErrQueueFullTotal):
+		return 0, errQueueFullTotal
 	}
 	return id, err
 }
