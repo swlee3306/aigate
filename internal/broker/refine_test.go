@@ -150,6 +150,10 @@ func TestRefuseOversizeAndBadPaths(t *testing.T) {
 		{"requirement control char", func() map[string]any { a := r.args(); a["requirement"] = "a\x07b"; return a }(), "bad_request"},
 		{"requirement bidi", func() map[string]any { a := r.args(); a["requirement"] = "a‮b"; return a }(), "bad_request"},
 		{"requirement zwsp", func() map[string]any { a := r.args(); a["requirement"] = "a\u200bb"; return a }(), "bad_request"},
+		{"requirement zwnj", func() map[string]any { a := r.args(); a["requirement"] = "a\u200cb"; return a }(), "bad_request"},
+		{"requirement zwj", func() map[string]any { a := r.args(); a["requirement"] = "a\u200db"; return a }(), "bad_request"},
+		{"requirement word joiner", func() map[string]any { a := r.args(); a["requirement"] = "a\u2060b"; return a }(), "bad_request"},
+		{"requirement mongolian", func() map[string]any { a := r.args(); a["requirement"] = "a\u180eb"; return a }(), "bad_request"},
 		{"requirement soft hyphen", func() map[string]any { a := r.args(); a["requirement"] = "a\u00adb"; return a }(), "bad_request"},
 		{"requirement empty", func() map[string]any { a := r.args(); a["requirement"] = ""; return a }(), "bad_request"},
 		{"41 files", with(many...), "too_large"},
@@ -615,6 +619,18 @@ func TestBudgetCountsRealUsageInUSDAndStopsAtCap(t *testing.T) {
 // fake received (pricing of the test config: 2.5 / 10 USD per Mtok).
 func reservationOf(t *testing.T, body []byte, maxOut int64) int64 {
 	t.Helper()
+	n := int64(len(reservationParts(t, body)))
+	w, err := WorstCaseMicros(Pricing{InputPerMTok: 2.5, OutputPerMTok: 10}, n, maxOut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return w
+}
+
+// reservationParts is instructions + input + schema of a received request:
+// the bytes counted as input.
+func reservationParts(t *testing.T, body []byte) []byte {
+	t.Helper()
 	var m struct {
 		Instructions string `json:"instructions"`
 		Input        string `json:"input"`
@@ -627,12 +643,7 @@ func reservationOf(t *testing.T, body []byte, maxOut int64) int64 {
 	if err := json.Unmarshal(body, &m); err != nil {
 		t.Fatal(err)
 	}
-	n := int64(len(m.Instructions) + len(m.Input) + len(m.Text.Format.Schema))
-	w, err := WorstCaseMicros(Pricing{InputPerMTok: 2.5, OutputPerMTok: 10}, n, maxOut)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return w
+	return []byte(m.Instructions + m.Input + string(m.Text.Format.Schema))
 }
 
 func jsonStr(s string) string { b, _ := json.Marshal(s); return string(b) }
@@ -683,15 +694,21 @@ wait:
 		t.Errorf("OpenAI got %d concurrent calls, want exactly 2", h)
 	}
 	doRelease()
+	okCount := 0
 	for i := refused; i < n; i++ {
 		select {
 		case code := <-out:
-			if code != "ok" && code != "budget_exceeded" {
-				t.Errorf("released call: %q", code)
+			if code != "ok" {
+				t.Errorf("released call: %q, want ok", code)
+			} else {
+				okCount++
 			}
 		case <-time.After(10 * time.Second):
 			t.Error("a call never finished")
 		}
+	}
+	if okCount != 2 || refused != n-2 {
+		t.Errorf("ok=%d refused=%d, want 2 and %d", okCount, refused, n-2)
 	}
 }
 
@@ -795,22 +812,44 @@ func TestRefineThroughSocketAndMessagesAreFixed(t *testing.T) {
 }
 
 func TestMaxInputBytesCountsWhatIsSent(t *testing.T) {
-	fake := newFakeHTTP(t, okHandler(goodPlan, 10, 10))
-	const content = 2000
-	// file content alone fits the limit, but instructions, markers and schema push the request over it
-	r := newRefineEnv(t, fake, func(e *testEnv, t *testing.T) { e.set(t, []string{"openai", "max_input_bytes"}, content+200) })
-	a := r.args()
-	a["requirement"] = "x"
-	a["files"] = []map[string]string{{"path": "a.txt", "content": strings.Repeat("a", content)}}
-	_, oerr := r.call(t, a)
-	wantCode(t, oerr, "too_large")
-	if fake.Hits() != 0 {
-		t.Fatal("oversize request was sent")
+	var mu sync.Mutex
+	sent := 0
+	fake := newFakeHTTP(t, func(w http.ResponseWriter, req *http.Request) {
+		b, _ := io.ReadAll(req.Body)
+		mu.Lock()
+		sent = len(reservationParts(t, b))
+		mu.Unlock()
+		io.WriteString(w, respBody(goodPlan, 10, 10))
+	})
+	mk := func(limit int) *refineEnv {
+		return newRefineEnv(t, fake, func(e *testEnv, t *testing.T) { e.set(t, []string{"openai", "max_input_bytes"}, limit) })
 	}
-	r2 := newRefineEnv(t, fake, func(e *testEnv, t *testing.T) { e.set(t, []string{"openai", "max_input_bytes"}, content+6000) })
-	a["repo"] = r2.repo
-	if _, oerr := r2.call(t, a); oerr != nil {
-		t.Fatalf("request within limit refused: %s", oerr.Code)
+	args := func(r *refineEnv) map[string]any {
+		a := r.args()
+		a["requirement"] = "x"
+		a["files"] = []map[string]string{{"path": "a.txt", "content": strings.Repeat("a", 2000)}}
+		return a
+	}
+	big := mk(100000)
+	if _, oerr := big.call(t, args(big)); oerr != nil {
+		t.Fatal(oerr.Code)
+	}
+	mu.Lock()
+	exact := sent
+	mu.Unlock()
+	if exact <= 2000 {
+		t.Fatalf("sent bytes %d not larger than the content", exact)
+	}
+	hits := fake.Hits()
+	at := mk(exact)
+	if _, oerr := at.call(t, args(at)); oerr != nil {
+		t.Fatalf("limit == bytes sent refused: %s", oerr.Code)
+	}
+	under := mk(exact - 1)
+	_, oerr := under.call(t, args(under))
+	wantCode(t, oerr, "too_large")
+	if fake.Hits() != hits+1 {
+		t.Fatal("oversize request was sent")
 	}
 }
 
@@ -871,6 +910,20 @@ func TestNonceDiffersAndForgedMarkersStayInside(t *testing.T) {
 		}
 		if strings.Count(in, n) != 4 { // requirement begin/end, file begin/end
 			t.Errorf("request %d: nonce count %d", i, strings.Count(in, n))
+		}
+	}
+}
+
+func TestPlanKeysCaseSensitive(t *testing.T) {
+	for name, text := range map[string]string{
+		"Summary": `{"Summary":"s","items":[{"title":"a","description":"","files":[]}],"questions":[],"out_of_scope":[]}`,
+		"Title":   `{"summary":"s","items":[{"Title":"a","description":"","files":[]}],"questions":[],"out_of_scope":[]}`,
+	} {
+		fake := newFakeHTTP(t, okHandler(text, 10, 10))
+		r := newRefineEnv(t, fake, nil)
+		_, oerr := r.call(t, r.args())
+		if oerr == nil || oerr.Code != "bad_plan" {
+			t.Errorf("%s: got %v", name, oerr)
 		}
 	}
 }
