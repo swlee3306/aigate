@@ -310,7 +310,8 @@ func (s *Store) CreateTaskLimited(ctx context.Context, t Task, maxQueued int) (i
 	return id, tx.Commit()
 }
 
-// CountQueued is the number of tasks in StateQueued.
+// CountQueued is the number of tasks in StateQueued. Test/ops-only:
+// production submits count inside CreateTaskLimited's transaction.
 func (s *Store) CountQueued(ctx context.Context) (int, error) {
 	var q int
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks WHERE state = ?`, StateQueued).Scan(&q)
