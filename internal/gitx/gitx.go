@@ -19,9 +19,15 @@ import (
 
 // run executes git -C repo args... and returns stdout.
 func run(repo string, args ...string) ([]byte, error) {
+	return runWith(repo, nil, args...)
+}
+
+// runWith is run with extra environment variables (appended last, so they
+// win over the process environment).
+func runWith(repo string, extraEnv []string, args ...string) ([]byte, error) {
 	full := append([]string{"-C", repo}, args...)
 	cmd := exec.Command("git", full...)
-	cmd.Env = append(cleanEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
+	cmd.Env = append(append(cleanEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C"), extraEnv...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -71,6 +77,37 @@ func Resolve(repo, ref string) (string, error) {
 	out, err := run(repo, "rev-parse", "--verify", "--end-of-options", ref+"^{commit}")
 	if err != nil {
 		return "", fmt.Errorf("resolve ref %q: %w", ref, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// ceilingEnv stops git's repository discovery at repo itself: git never
+// walks up into repo's parent to find an enclosing repository (an empty or
+// broken repo/.git would otherwise make git read the outer one).
+func ceilingEnv(repo string) []string {
+	return []string{"GIT_CEILING_DIRECTORIES=" + filepath.Dir(repo)}
+}
+
+// ResolveAt is Resolve for a repository whose top level must be repo itself:
+// discovery never walks above repo (ceilingEnv).
+func ResolveAt(repo, ref string) (string, error) {
+	if ref == "" || strings.HasPrefix(ref, "-") {
+		return "", fmt.Errorf("invalid ref %q", ref)
+	}
+	out, err := runWith(repo, ceilingEnv(repo), "rev-parse", "--verify", "--end-of-options", ref+"^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("resolve ref %q: %w", ref, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// TopLevel is the work tree top level git finds from repo without walking
+// above it (ceilingEnv); it fails when repo is not inside a work tree of its
+// own.
+func TopLevel(repo string) (string, error) {
+	out, err := runWith(repo, ceilingEnv(repo), "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
 }

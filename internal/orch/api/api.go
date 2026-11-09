@@ -537,14 +537,27 @@ func (h *handler) validate(req submitRequest) (store.Task, error) {
 	if _, err := os.Lstat(filepath.Join(real, ".git")); err != nil {
 		return t, bad("git 저장소가 아닙니다(최상위 디렉터리여야 합니다)")
 	}
+	// R8: git must find THIS directory as the top level, without walking up
+	// into an enclosing repository (an empty or broken .git would otherwise
+	// make git read the outer one, and the task would bundle it). The git
+	// directory itself may live elsewhere (linked worktree, gitfile).
+	if top, err := gitx.TopLevel(real); err != nil || !sameReal(top, real) {
+		return t, bad("git 저장소가 아닙니다(최상위 디렉터리여야 합니다)")
+	}
 	if !baseRe.MatchString(req.Base) {
 		return t, bad("base 형식이 올바르지 않습니다")
 	}
-	sha, err := gitx.Resolve(real, req.Base)
+	sha, err := gitx.ResolveAt(real, req.Base)
 	if err != nil {
 		return t, bad("base를 저장소의 커밋으로 해석할 수 없습니다: %s", req.Base)
 	}
 	return store.Task{Repo: real, Base: sha, Prompt: req.Prompt, Class: req.Class, Agent: req.Agent}, nil
+}
+
+// sameReal reports whether p resolves (symlinks) to exactly real.
+func sameReal(p, real string) bool {
+	r, err := filepath.EvalSymlinks(p)
+	return err == nil && r == real
 }
 
 func (h *handler) underRoot(p string) bool {

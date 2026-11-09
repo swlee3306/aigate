@@ -47,8 +47,12 @@ type RepoView struct {
 
 // repos lists the git work trees under the allowed roots (depth <= 2), sorted
 // by path, at most reposMax. Only read-only git queries run, with a timeout
-// per repository and per request. A repository git cannot read is left out;
-// an expired request deadline is repos_unavailable.
+// per repository and per request. A repository git cannot read, or one
+// whose git directories are outside the roots (ownRepo), is left out. An
+// expired request deadline is repos_unavailable for the whole list, not a
+// partial one: each slow repository can cost up to its 5 s of the 15 s
+// budget (4 run in parallel), so a few hanging repositories degrade the
+// answer to 503.
 func (h *handler) repos(w http.ResponseWriter, r *http.Request) {
 	timeout := h.reposTimeout
 	if timeout <= 0 {
@@ -77,11 +81,13 @@ func (h *handler) repos(w http.ResponseWriter, r *http.Request) {
 			defer wg.Done()
 			for j := range next {
 				rctx, rcancel := context.WithTimeout(ctx, reposPerRepoTimeout)
-				st, err := gitx.ReadRepoState(rctx, paths[j], reposBranches, safeRefName)
-				rcancel()
-				if err == nil {
-					views[j] = &RepoView{Path: paths[j], Head: st.Head, Branch: st.Branch, Branches: st.Branches}
+				if h.ownRepo(rctx, paths[j]) {
+					st, err := gitx.ReadRepoState(rctx, paths[j], reposBranches, safeRefName)
+					if err == nil {
+						views[j] = &RepoView{Path: paths[j], Head: st.Head, Branch: st.Branch, Branches: st.Branches}
+					}
 				}
+				rcancel()
 			}
 		}()
 	}
@@ -101,6 +107,26 @@ func (h *handler) repos(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// ownRepo is R8 for GET /repos: git, with discovery stopped at path, must
+// see path itself as the work tree top level, and both the git directory and
+// the common git directory it reads must resolve under an allowed root. So
+// an empty .git (git would walk up to an enclosing repository), or a gitfile
+// or .git symlink pointing outside the roots, never shows another
+// repository's state.
+func (h *handler) ownRepo(ctx context.Context, path string) bool {
+	id, err := gitx.ReadRepoIdentity(ctx, path)
+	if err != nil || !sameReal(id.TopLevel, path) {
+		return false
+	}
+	for _, d := range []string{id.GitDir, id.CommonDir} {
+		real, err := filepath.EvalSymlinks(d)
+		if err != nil || !h.underRoot(real) {
+			return false
+		}
+	}
+	return true
 }
 
 // findRepos walks every allowed root to reposDepth without following

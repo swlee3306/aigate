@@ -87,6 +87,9 @@ func TestReposListsOnlyUnderAllowedRoots(t *testing.T) {
 	must(os.Symlink(filepath.Join(outside, "x"), filepath.Join(e.root, "group", "lx")))     // depth 2 symlink out
 	must(os.Symlink(a, filepath.Join(e.root, "link-in")))                                   // symlink to a repo inside: same real path
 	must(os.Symlink(filepath.Join(e.root, "g1", "g2"), filepath.Join(e.root, "deep-link"))) // following it would reach "deep" at depth 2
+	// Names with a newline or another control character are never listed.
+	mkRepo(t, filepath.Join(e.root, "bad\nname"))
+	mkRepo(t, filepath.Join(e.root, "ctl\x01x"))
 	// A .git FILE (worktree/submodule form) counts, as in validate.
 	wt := filepath.Join(e.root, "wt")
 	git(t, e.repo, "worktree", "add", "-q", "--detach", wt)
@@ -287,5 +290,116 @@ func TestSafeRefName(t *testing.T) {
 		if safeRefName(bad) {
 			t.Errorf("%q accepted", bad)
 		}
+	}
+}
+
+// outerSetup makes the directory around e.root an outer repository with a
+// recognisable branch, and a repository X outside every root.
+func outerSetup(t *testing.T, e *env) (outerSHA, x, xSHA string) {
+	t.Helper()
+	outer := filepath.Dir(e.root)
+	git(t, outer, "init", "-q", "-b", "outersecretbranch")
+	git(t, outer, "commit", "-q", "--allow-empty", "-m", "outer")
+	outerSHA = git(t, outer, "rev-parse", "HEAD")
+	x = filepath.Join(outer, "elsewhere", "x")
+	if err := os.MkdirAll(x, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, x, "init", "-q", "-b", "xsecretbranch")
+	git(t, x, "commit", "-q", "--allow-empty", "-m", "x")
+	return outerSHA, x, git(t, x, "rev-parse", "HEAD")
+}
+
+func assertNotLeaked(t *testing.T, e *env, path string, secrets ...string) {
+	t.Helper()
+	code, b := e.do(t, "GET", "/api/v1/repos", "")
+	if code != 200 {
+		t.Fatalf("%d %s", code, b)
+	}
+	for _, s := range append(secrets, path) {
+		if strings.Contains(string(b), s) {
+			t.Fatalf("response contains %q: %s", s, b)
+		}
+	}
+	if got := repoPaths(e.repos(t)); len(got) != 1 || got[0] != e.repo {
+		t.Fatalf("listed %v, want only %s", got, e.repo)
+	}
+}
+
+// R8: an empty .git directory must not make git walk up to an enclosing
+// repository and report ITS state.
+func TestReposRefusesEmptyGitDirWalkUp(t *testing.T) {
+	e := newEnv(t, noSteps{}, 1)
+	e.d.pauseWorkers()
+	outerSHA, _, _ := outerSetup(t, e)
+	p := filepath.Join(e.root, "emptygit")
+	if err := os.MkdirAll(filepath.Join(p, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	assertNotLeaked(t, e, p, outerSHA, "outersecretbranch")
+}
+
+func TestReposRefusesGitFileOutsideRoots(t *testing.T) {
+	e := newEnv(t, noSteps{}, 1)
+	e.d.pauseWorkers()
+	outerSHA, x, xSHA := outerSetup(t, e)
+	p := filepath.Join(e.root, "gf")
+	os.MkdirAll(p, 0o755)
+	if err := os.WriteFile(filepath.Join(p, ".git"), []byte("gitdir: "+filepath.Join(x, ".git")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	assertNotLeaked(t, e, p, xSHA, "xsecretbranch", outerSHA, "outersecretbranch")
+}
+
+func TestReposRefusesGitSymlinkOutsideRoots(t *testing.T) {
+	e := newEnv(t, noSteps{}, 1)
+	e.d.pauseWorkers()
+	outerSHA, x, xSHA := outerSetup(t, e)
+	p := filepath.Join(e.root, "gs")
+	os.MkdirAll(p, 0o755)
+	if err := os.Symlink(filepath.Join(x, ".git"), filepath.Join(p, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	assertNotLeaked(t, e, p, xSHA, "xsecretbranch", outerSHA, "outersecretbranch")
+}
+
+// R8 for submit: an empty .git directory is refused (git would resolve the
+// base in the enclosing repository and the task would bundle it).
+func TestSubmitRefusesEmptyGitDirWalkUp(t *testing.T) {
+	e := newEnv(t, noSteps{}, 1)
+	e.d.pauseWorkers()
+	outerSHA, _, _ := outerSetup(t, e)
+	p := filepath.Join(e.root, "emptygit")
+	if err := os.MkdirAll(filepath.Join(p, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(map[string]string{"repo": p, "base": "HEAD", "prompt": "p", "class": "docs", "agent": "claude"})
+	code, body := e.do(t, "POST", "/api/v1/tasks", string(b))
+	if code != 400 || v1Code(body) != "bad_request" {
+		t.Fatalf("%d %s", code, body)
+	}
+	if strings.Contains(string(body), outerSHA) || strings.Contains(string(body), "outersecretbranch") {
+		t.Fatalf("leak: %s", body)
+	}
+	if n := e.taskCount(t); n != 0 {
+		t.Fatalf("%d tasks created", n)
+	}
+}
+
+// A linked worktree (gitfile to the main repository) still submits, pinned
+// to the worktree's own path and HEAD.
+func TestSubmitAllowsLinkedWorktreeGitFile(t *testing.T) {
+	e := newEnv(t, noSteps{}, 1)
+	e.d.pauseWorkers()
+	wt := filepath.Join(e.root, "wt")
+	git(t, e.repo, "worktree", "add", "-q", "-b", "wtbranch", wt)
+	git(t, wt, "commit", "-q", "--allow-empty", "-m", "wt")
+	head := git(t, wt, "rev-parse", "HEAD")
+	b, _ := json.Marshal(map[string]string{"repo": wt, "base": "HEAD", "prompt": "p", "class": "docs", "agent": "claude"})
+	code, body := e.do(t, "POST", "/api/v1/tasks", string(b))
+	var v TaskView
+	_ = json.Unmarshal(body, &v)
+	if code != 201 || v.Repo != wt || v.Base != head {
+		t.Fatalf("%d %s (want repo %s base %s)", code, body, wt, head)
 	}
 }

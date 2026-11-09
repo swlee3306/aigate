@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -44,7 +45,7 @@ func readEnv() []string {
 func runRead(ctx context.Context, repo string, args ...string) ([]byte, int, error) {
 	full := append([]string{"-C", repo, "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"}, args...)
 	cmd := exec.CommandContext(ctx, "git", full...)
-	cmd.Env = readEnv()
+	cmd.Env = append(readEnv(), ceilingEnv(repo)...)
 	cmd.WaitDelay = time.Second
 	var stdout capBuf
 	stdout.max = 1 << 20
@@ -74,6 +75,35 @@ func (c *capBuf) Write(p []byte) (int, error) {
 		}
 	}
 	return len(p), nil
+}
+
+// RepoIdentity is where git actually reads a work tree from.
+type RepoIdentity struct {
+	// TopLevel is the work tree's top level (--show-toplevel).
+	TopLevel string
+	// GitDir is the absolute git directory (--absolute-git-dir); CommonDir
+	// is the shared one (--git-common-dir, made absolute), which differs for
+	// a linked worktree.
+	GitDir, CommonDir string
+}
+
+// ReadRepoIdentity asks git (read-only, discovery stopped at repo) which work
+// tree and git directories it would use for repo. Callers compare them with
+// what they expect; nothing is resolved through symlinks here.
+func ReadRepoIdentity(ctx context.Context, repo string) (RepoIdentity, error) {
+	out, _, err := runRead(ctx, repo, "rev-parse", "--show-toplevel", "--absolute-git-dir", "--git-common-dir")
+	if err != nil {
+		return RepoIdentity{}, err
+	}
+	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	if len(lines) != 3 || lines[0] == "" || lines[1] == "" || lines[2] == "" {
+		return RepoIdentity{}, errors.New("gitx: unexpected rev-parse output")
+	}
+	id := RepoIdentity{TopLevel: lines[0], GitDir: lines[1], CommonDir: lines[2]}
+	if !filepath.IsAbs(id.CommonDir) {
+		id.CommonDir = filepath.Join(repo, id.CommonDir)
+	}
+	return id, nil
 }
 
 // ReadRepoState reads HEAD, the current branch and up to maxBranches local
