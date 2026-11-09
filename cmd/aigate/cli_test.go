@@ -300,8 +300,8 @@ func TestApprovePrintsFullHashedDiff(t *testing.T) {
 		}
 	}
 	sum := sha256.Sum256([]byte(block))
-	if !strings.Contains(out, "hash: "+hex.EncodeToString(sum[:])[:16]+"\n") {
-		t.Fatalf("displayed text does not hash to the shown hash %s:\n%s", hex.EncodeToString(sum[:])[:16], out)
+	if !strings.Contains(out, "hash: "+hex.EncodeToString(sum[:])+"\n") {
+		t.Fatalf("displayed text does not hash to the shown hash %s:\n%s", hex.EncodeToString(sum[:]), out)
 	}
 }
 
@@ -591,7 +591,7 @@ func TestApproveCRLFFile(t *testing.T) {
 		t.Fatalf("CRLF not printed as-is: %q", block)
 	}
 	sum := sha256.Sum256([]byte(block))
-	if !strings.Contains(out, "hash: "+hex.EncodeToString(sum[:])[:16]+"\n") {
+	if !strings.Contains(out, "hash: "+hex.EncodeToString(sum[:])+"\n") {
 		t.Fatalf("block does not hash to the shown hash: %q", out)
 	}
 	if c, _, e := run("run", "--repo", repo, "--base", base); c != 0 {

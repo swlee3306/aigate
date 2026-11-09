@@ -219,7 +219,7 @@ func TestApproveWritesLedgerEvents(t *testing.T) {
 		t.Fatalf("verify %d %v", n, err)
 	}
 	evs, _ := ledger.Events(path)
-	if evs[0].Type != "approval_granted" || evs[0].Payload["base"] != base || len(evs[0].Payload["hash"].(string)) != 16 ||
+	if evs[0].Type != "approval_granted" || evs[0].Payload["base"] != base || len(evs[0].Payload["hash"].(string)) != 64 ||
 		evs[0].Payload["files_changed"] != json.Number("1") {
 		t.Fatalf("granted %+v", evs[0])
 	}
@@ -250,7 +250,7 @@ func TestApproveLedgerFailure(t *testing.T) {
 		t.Fatalf("grant + ledger failure: %d %q %q", c, out, e)
 	}
 	i := strings.Index(out, "hash: ")
-	if i < 0 || !(approval.Store{Path: gate.ApprovalsPath(home)}).Valid(id, base, out[i+6:i+22]) {
+	if i < 0 || !(approval.Store{Path: gate.ApprovalsPath(home)}).Valid(id, base, out[i+6:i+70]) {
 		t.Fatalf("the grant must stand in approvals.json: %q", out)
 	}
 	write(t, repo, "tests/t.txt", "one\ntwo\nx\x1b[2K\n")

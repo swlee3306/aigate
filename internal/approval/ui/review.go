@@ -119,7 +119,7 @@ func Review(ctx context.Context, p gate.Protected, ledgerPath, prog string, stdi
 	}
 	// The full text the hash is computed over, untruncated: the human
 	// approves exactly what they read (binary files as a summary line).
-	fmt.Fprint(stdout, "the approval binds exactly this text (sha256 prefix = hash):\n", BeginMark, display, EndMark)
+	fmt.Fprint(stdout, "the approval binds exactly this text (sha256 = hash):\n", BeginMark, display, EndMark)
 	if n := BinaryCount(p); n > 0 {
 		fmt.Fprintf(stdout, "(%d binary file(s) shown as a summary line; the hash covers their raw bytes)\n", n)
 	}

@@ -28,7 +28,9 @@ func TestHashUnchangedWithoutFoldedAlias(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const want = "8082594eac4a51b7"
+	// Full SHA-256 since 2026-11-09; its first 16 hex are the old pinned value
+	// 8082594eac4a51b7, so the hashed text itself did not change.
+	const want = "8082594eac4a51b773457d7e4c3597e97f8d8697a34585ff69d8acc085c69611"
 	if p.Diff.Hash != want {
 		t.Fatalf("hash changed: got %s want %s\n%s", p.Diff.Hash, want, p.Diff.HashedText())
 	}

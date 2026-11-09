@@ -344,7 +344,7 @@ func approveSigned(ctx context.Context, c *client, id string, d api.ApprovalDeta
 		for _, f := range d.ProtectedFiles {
 			fmt.Fprintf(stdout, "    %s\n", textsafe.Escape(f))
 		}
-		fmt.Fprint(stdout, "the approval binds exactly this text (sha256 prefix = hash):\n", ui.BeginMark, d.HashedText, ui.EndMark)
+		fmt.Fprint(stdout, "the approval binds exactly this text (sha256 = hash):\n", ui.BeginMark, d.HashedText, ui.EndMark)
 	case store.KindPublishOutsideAllowlist:
 		// No diff: the action is re-derived from the hash here (as in the
 		// TTY flow) and must be the one the server names.

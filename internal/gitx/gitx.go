@@ -382,7 +382,7 @@ func sectionPair(sec string) string {
 	return ""
 }
 
-// HashedText is the exact text Hash is the sha256 prefix of: Text followed by
+// HashedText is the exact text Hash is the full sha256 (64 lowercase hex) of: Text followed by
 // one "A <path>" line per added protected file (sorted).
 func (d ProtDiff) HashedText() string {
 	var b strings.Builder
@@ -699,11 +699,14 @@ func removedLines(text string) []string {
 
 // HashOf is the diff hash of a ProtDiff.HashedText() value: callers that hold
 // a (possibly truncated) copy of the text can verify it against Diff.Hash.
+// It is the full SHA-256 as 64 lowercase hex characters. Approvals bind
+// (repo, base, hash) but not head, so the hash must be collision resistant
+// across heads; a 64-bit prefix (the pre-2026-11-09 format) was not.
 func HashOf(hashed string) string { return hashOf(hashed) }
 
 func hashOf(hashed string) string {
 	sum := sha256.Sum256([]byte(hashed))
-	return hex.EncodeToString(sum[:])[:16]
+	return hex.EncodeToString(sum[:])
 }
 
 // AddedMatching returns the sorted paths added between base and head that match

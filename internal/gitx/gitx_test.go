@@ -219,7 +219,7 @@ func TestProtectedDiffHash(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := ProtectedDiff(r, base, h1, pat)
-	if a.Hash != b.Hash || len(a.Hash) != 16 {
+	if a.Hash != b.Hash || len(a.Hash) != 64 {
 		t.Errorf("hash unstable or wrong length: %q %q", a.Hash, b.Hash)
 	}
 	// different diff -> different hash
@@ -634,7 +634,7 @@ func TestProtectedDiffHashedTextMatchesHash(t *testing.T) {
 	}
 	ht := d.HashedText()
 	sum := sha256.Sum256([]byte(ht))
-	if hex.EncodeToString(sum[:])[:16] != d.Hash {
+	if hex.EncodeToString(sum[:]) != d.Hash {
 		t.Errorf("hash %s is not sha256(HashedText)", d.Hash)
 	}
 	for _, want := range []string{"+added\n", "+import os\n", "\nA tests/conftest.py\n"} {
@@ -894,5 +894,18 @@ func TestHashOfMatchesDiffHash(t *testing.T) {
 	}
 	if d.Hash == "" || HashOf(d.HashedText()) != d.Hash {
 		t.Fatalf("HashOf(HashedText) = %q, Diff.Hash = %q", HashOf(d.HashedText()), d.Hash)
+	}
+}
+
+// TestHashOfIsFullSHA256: the approval diff hash is the whole SHA-256 (64
+// lowercase hex), never a prefix (2026-11-09 decision: a 64-bit prefix let a
+// ~2^32-work collision across heads reuse an approval).
+func TestHashOfIsFullSHA256(t *testing.T) {
+	for _, in := range []string{"", "x", "diff --git a/t b/t\n+1\nA tests/new.txt\n"} {
+		sum := sha256.Sum256([]byte(in))
+		want := hex.EncodeToString(sum[:])
+		if got := HashOf(in); got != want || len(got) != 64 {
+			t.Fatalf("HashOf(%q) = %q, want full sha256 %q", in, got, want)
+		}
 	}
 }

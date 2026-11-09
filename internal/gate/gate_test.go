@@ -598,7 +598,7 @@ func TestDifferentGrantedHashNotHonored(t *testing.T) {
 	e, base := protectedScenario(t)
 	id, _, _ := RepoID(e.repo)
 	st := approval.Store{Path: ApprovalsPath(e.home)}
-	if err := st.Grant(id, base, "0123456789abcdef", time.Now()); err != nil {
+	if err := st.Grant(id, base, strings.Repeat("0123456789abcdef", 4), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	r, err := Run(context.Background(), e.opts(base))
@@ -607,6 +607,37 @@ func TestDifferentGrantedHashNotHonored(t *testing.T) {
 	}
 	if r.Category != rules.CategoryWeakened || !hasRule(r.Violations, "protected_modified") || r.Approvals[0].Valid {
 		t.Fatalf("got %s %+v %+v", r.Category, r.Violations, r.Approvals)
+	}
+}
+
+// TestOldShortHashApprovalNotHonored: an approvals.json entry written by a
+// build before 2026-11-09 holds the 16-hex prefix of the diff hash. The gate
+// now looks up the full 64-hex hash, so that entry no longer matches (fail
+// closed: the human re-approves; there is no migration).
+func TestOldShortHashApprovalNotHonored(t *testing.T) {
+	e, base := protectedScenario(t)
+	r, err := Run(context.Background(), e.opts(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Approvals) != 1 || len(r.Approvals[0].Hash) != 64 {
+		t.Fatalf("want one approval with a 64-hex hash: %+v", r.Approvals)
+	}
+	full := r.Approvals[0].Hash
+	id, _, _ := RepoID(e.repo)
+	st := approval.Store{Path: ApprovalsPath(e.home)}
+	if err := st.Grant(id, base, full[:16], time.Now()); err != nil { // what an old build stored
+		t.Fatal(err)
+	}
+	if st.Valid(id, base, full) {
+		t.Fatal("a 16-hex legacy entry must not validate the full hash")
+	}
+	r, err = Run(context.Background(), e.opts(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Category != rules.CategoryWeakened || !hasRule(r.Violations, "protected_modified") || r.Approvals[0].Valid {
+		t.Fatalf("old short-hash approval honored: %s %+v %+v", r.Category, r.Violations, r.Approvals)
 	}
 }
 
