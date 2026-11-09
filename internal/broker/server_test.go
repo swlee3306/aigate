@@ -205,6 +205,8 @@ func TestStatusIsReadOnlyAndSecretFree(t *testing.T) {
 	s, _ := e.newServer(t, nil)
 	sock := e.Raw["socket"].(string)
 
+	id, _ := s.State.Budget.Reserve(usd(10))
+	s.State.Budget.Settle(id, usd(4)) // known spend: 25 - 4 = 21
 	before, _ := os.ReadFile(e.Dir + "/state/budget.json")
 	r, out := call(t, sock, `{"v":1,"op":"status","args":{"ignored":true}}`)
 	if !r.OK {
@@ -218,19 +220,19 @@ func TestStatusIsReadOnlyAndSecretFree(t *testing.T) {
 	var res struct {
 		ContextRepos     []string `json:"context_repos"`
 		RefineRemaining  *int     `json:"refine_remaining_hour"`
-		TokensRemaining  *int64   `json:"tokens_remaining_today"`
+		BudgetRemaining  *float64 `json:"weekly_budget_remaining_usd"`
 		GitLabConfigured *bool    `json:"gitlab_configured"`
 		MRProjects       []string `json:"mr_projects"`
 	}
 	if err := json.Unmarshal(r.Result, &res); err != nil {
 		t.Fatal(err)
 	}
-	if res.RefineRemaining == nil || *res.RefineRemaining != 3 || res.TokensRemaining == nil || res.GitLabConfigured == nil || !*res.GitLabConfigured ||
+	if res.RefineRemaining == nil || *res.RefineRemaining != 3 || res.BudgetRemaining == nil || *res.BudgetRemaining != 21 || res.GitLabConfigured == nil || !*res.GitLabConfigured ||
 		len(res.ContextRepos) != 1 || len(res.MRProjects) != 1 {
 		t.Fatalf("status shape wrong: %s", out)
 	}
 	// read-only: no limiter or budget movement, no outbound request, budget file untouched
-	if s.State.Refine.Remaining() != 3 || s.State.Budget.RemainingMicros() != usd(25) {
+	if s.State.Refine.Remaining() != 3 || s.State.Budget.RemainingMicros() != usd(21) {
 		t.Fatal("status changed limiter or budget state")
 	}
 	call(t, sock, `{"v":1,"op":"status"}`)
@@ -373,5 +375,60 @@ func TestRedact(t *testing.T) {
 	}
 	if !strings.Contains(got, "a ") || !strings.Contains(got, " e") {
 		t.Fatalf("redaction mangled the rest: %q", got)
+	}
+}
+
+func TestUnregisteredHandlerCodeIsInternalError(t *testing.T) {
+	e := newTestEnv(t)
+	const leaky = "sk-ABCDEF1234567890 glpat-ZZZZZZZZ12345678 plain-secret-text-77"
+	_, logs := e.newServer(t, func(s *Server) {
+		s.Handlers["h1"] = func(context.Context, json.RawMessage) (any, *OpError) {
+			return nil, &OpError{Code: "made_up_code", Message: leaky}
+		}
+		s.Handlers["h2"] = func(context.Context, json.RawMessage) (any, *OpError) {
+			return nil, &OpError{Code: "budget_exceeded", Message: leaky}
+		}
+		s.Handlers["h3"] = func(context.Context, json.RawMessage) (any, *OpError) {
+			return nil, &OpError{Code: "BAD CODE " + leaky, Message: leaky}
+		}
+	})
+	sock := e.Raw["socket"].(string)
+	for _, op := range []string{"h1", "h3"} {
+		r, out := call(t, sock, `{"v":1,"op":"`+op+`"}`)
+		if r.OK || r.Code != "internal_error" || r.Message != fixedMessages["internal_error"] {
+			t.Fatalf("%s: %s", op, out)
+		}
+		for _, bad := range []string{"sk-ABCDEF", "glpat-", "plain-secret", "made_up_code"} {
+			if strings.Contains(string(out), bad) {
+				t.Fatalf("%s reply leaks %q: %s", op, bad, out)
+			}
+		}
+	}
+	r, out := call(t, sock, `{"v":1,"op":"h2"}`)
+	if r.Code != "budget_exceeded" || r.Message != fixedMessages["budget_exceeded"] || strings.Contains(string(out), "sk-") {
+		t.Fatalf("registered code: %s", out)
+	}
+	time.Sleep(50 * time.Millisecond)
+	for _, bad := range []string{"sk-ABCDEF", "glpat-", "plain-secret"} {
+		if strings.Contains(logs.String(), bad) {
+			t.Fatalf("log leaks %q: %s", bad, logs.String())
+		}
+	}
+}
+
+func TestPersistFailureLogsFixedLine(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	e := newTestEnv(t)
+	s, logs := e.newServer(t, nil)
+	dir := e.Dir + "/state"
+	os.Chmod(dir, 0o500)
+	defer os.Chmod(dir, 0o700)
+	if _, err := s.State.Budget.Reserve(usd(1)); err == nil {
+		t.Fatal("reserve succeeded with unwritable state")
+	}
+	if !strings.Contains(logs.String(), "예산 상태 저장 실패") {
+		t.Fatalf("no persistence failure line: %q", logs.String())
 	}
 }

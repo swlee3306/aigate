@@ -29,11 +29,13 @@ const (
 )
 
 // HandlerFunc serves one op. args is the request's raw "args" (may be nil).
+// Handlers must honor ctx: the server answers `timeout` when it ends, but
+// cannot stop a handler that ignores it.
 type HandlerFunc func(ctx context.Context, args json.RawMessage) (any, *OpError)
 
-// OpError is a handler failure: a fixed code and a fixed sentence. The server
-// replaces Message by its own sentence for the codes it knows and redacts the
-// rest; handlers must never put secrets or request text in it.
+// OpError is a handler failure. Code must be registered in fixedMessages; an
+// unregistered code is sent as internal_error. The wire message is always the
+// server's fixed sentence for the code: Message is never sent or logged.
 type OpError struct {
 	Code    string
 	Message string
@@ -50,8 +52,6 @@ var fixedMessages = map[string]string{
 	"not_implemented": "아직 구현되지 않은 작업입니다.",
 	"budget_exceeded": "AI 사용 예산 또는 호출 한도를 초과했습니다.",
 }
-
-var codeRE = regexp.MustCompile(`^[a-z][a-z0-9_]{0,39}$`)
 
 // Default per-op processing time limits (decision D1).
 var defaultOpTimeouts = map[string]time.Duration{
@@ -124,6 +124,7 @@ func New(cfg Config, o Options) (*Server, error) {
 			Budget:   bud,
 		},
 	}
+	bud.OnPersistError = func() { s.logf("예산 상태 저장 실패: 요청을 거부합니다") }
 	s.Handlers = map[string]HandlerFunc{
 		"status":    s.statusHandler,
 		"refine":    notImplemented,
@@ -145,16 +146,9 @@ func (s *Server) statusHandler(context.Context, json.RawMessage) (any, *OpError)
 	}
 	sortStrings(projects)
 	remaining := s.State.Budget.RemainingMicros()
-	// How many output tokens the remaining budget buys at the output rate
-	// (the dearer, so the conservative figure).
-	tokens := int64(0)
-	if p := s.Config.OpenAI.Pricing.OutputPerMTok; p > 0 {
-		tokens = int64(float64(remaining) / p)
-	}
 	return map[string]any{
 		"context_repos":               repos,
 		"refine_remaining_hour":       s.State.Refine.Remaining(),
-		"tokens_remaining_today":      tokens,
 		"gitlab_configured":           s.Config.GitLab.Configured(),
 		"mr_projects":                 projects,
 		"weekly_budget_remaining_usd": float64(remaining) / 1e6,
@@ -290,6 +284,12 @@ type request struct {
 
 func (s *Server) handle(ctx context.Context, c net.Conn) {
 	defer c.Close()
+	defer func() {
+		if recover() != nil { // never log the value: it could hold request text
+			s.logf("connection handler panic")
+			s.reply(c, nil, "internal_error", "")
+		}
+	}()
 	peer := s.PeerUID
 	if peer == nil {
 		peer = peerCredUID
@@ -342,7 +342,7 @@ func (s *Server) handle(ctx context.Context, c net.Conn) {
 }
 
 func safeCode(code string) string {
-	if _, ok := fixedMessages[code]; ok || codeRE.MatchString(code) {
+	if _, ok := fixedMessages[code]; ok {
 		return code
 	}
 	return "internal_error"
@@ -426,9 +426,8 @@ func drain(c net.Conn) {
 	io.Copy(io.Discard, io.LimitReader(c, 2*MaxRequestBytes))
 }
 
-// reply writes one JSON response. For known codes the sentence is the
-// server's fixed one; for other well-formed codes the handler's sentence is
-// kept after redaction.
+// reply writes one JSON response; failures carry the registered fixed
+// sentence of their code (unregistered codes become internal_error).
 func (s *Server) reply(c net.Conn, result any, code, msg string) {
 	c.SetWriteDeadline(time.Now().Add(writeTimeout))
 	var body []byte
@@ -441,16 +440,11 @@ func (s *Server) reply(c net.Conn, result any, code, msg string) {
 		}
 	}
 	if code != "" {
-		if fixed, ok := fixedMessages[code]; ok {
-			msg = fixed
-		} else if codeRE.MatchString(code) {
-			msg = Redact(msg, s.Secrets.values())
-			if len(msg) > 200 {
-				msg = msg[:200]
-			}
-		} else {
-			code, msg = "internal_error", fixedMessages["internal_error"]
+		fixed, ok := fixedMessages[code]
+		if !ok {
+			code, fixed = "internal_error", fixedMessages["internal_error"]
 		}
+		msg = fixed
 		body, _ = json.Marshal(map[string]any{"ok": false, "code": code, "message": msg})
 	}
 	c.Write(append(body, '\n'))

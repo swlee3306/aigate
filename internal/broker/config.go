@@ -80,7 +80,8 @@ type LoadOptions struct {
 // group/other write, trusted ancestor chain). Fails closed.
 func LoadConfig(path string) (Config, error) { return LoadConfigOpts(path, LoadOptions{}) }
 
-// Defaults for optional numeric settings.
+// Defaults for settings whose key is absent. An explicit 0 or negative value
+// is refused: a safety limit is never silently widened.
 const (
 	defaultMaxOutputTokens = 4096
 	defaultMaxInputBytes   = 262144
@@ -91,6 +92,7 @@ const (
 
 var (
 	errConfigFormat = errors.New("설정 형식이 올바르지 않습니다")
+	errBadLimit     = errors.New("한도 값은 생략하거나 양수여야 합니다(0 이하는 시작 거부)")
 	projectRE       = regexp.MustCompile(`^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+$`)
 	branchRE        = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$`)
 )
@@ -104,8 +106,13 @@ func LoadConfigOpts(path string, o LoadOptions) (Config, error) {
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
-	var c Config
+	// Absent sections take their defaults (present ones go through the
+	// presence-aware UnmarshalJSON methods).
+	c := Config{Limits: LimitsConfig{RefinePerHour: defaultRefinePerHour, CreateMRPerHour: defaultCreateMRPerHour, WeeklyBudgetUSD: defaultWeeklyBudgetUSD}}
 	if err := dec.Decode(&c); err != nil {
+		if errors.Is(err, errBadLimit) {
+			return Config{}, errBadLimit
+		}
 		return Config{}, errConfigFormat // not wrapped: json errors can quote values
 	}
 	if _, err := dec.Token(); err != io.EOF {
@@ -166,30 +173,12 @@ func (c *Config) validate(lookup func(string) (uint32, error)) error {
 	if !filepath.IsAbs(oa.KeyFile) {
 		return errors.New("openai.key_file은 절대 경로여야 합니다")
 	}
-	if oa.MaxOutputTokens < 0 || oa.MaxInputBytes < 0 {
-		return errors.New("openai 한도 값이 음수입니다")
-	}
-	if oa.MaxOutputTokens == 0 {
-		oa.MaxOutputTokens = defaultMaxOutputTokens
-	}
-	if oa.MaxInputBytes == 0 {
-		oa.MaxInputBytes = defaultMaxInputBytes
+	if oa.MaxOutputTokens <= 0 || oa.MaxInputBytes <= 0 {
+		return errBadLimit
 	}
 	l := &c.Limits
-	if l.RefinePerHour < 0 || l.CreateMRPerHour < 0 || l.WeeklyBudgetUSD < 0 {
-		return errors.New("limits 값이 음수입니다")
-	}
-	if l.RefinePerHour == 0 {
-		l.RefinePerHour = defaultRefinePerHour
-	}
-	if l.CreateMRPerHour == 0 {
-		l.CreateMRPerHour = defaultCreateMRPerHour
-	}
-	if l.WeeklyBudgetUSD == 0 {
-		l.WeeklyBudgetUSD = defaultWeeklyBudgetUSD
-	}
-	if !goodPositive(l.WeeklyBudgetUSD) {
-		return errors.New("limits.weekly_budget_usd가 올바르지 않습니다")
+	if l.RefinePerHour <= 0 || l.CreateMRPerHour <= 0 || !goodPositive(l.WeeklyBudgetUSD) {
+		return errBadLimit
 	}
 	for _, r := range c.ContextRepos {
 		if !filepath.IsAbs(r) || filepath.Clean(r) != r {
@@ -278,4 +267,74 @@ func LoadSecrets(c Config, ownerOK func(uint32) bool) (Secrets, error) {
 		s.gitlab = t
 	}
 	return s, nil
+}
+
+// strictDecode decodes b into v refusing unknown keys.
+func strictDecode(b []byte, v any) error {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	return dec.Decode(v)
+}
+
+// UnmarshalJSON makes the limits presence-aware: an absent key takes its
+// default, an explicit 0 or negative value is refused.
+func (l *LimitsConfig) UnmarshalJSON(b []byte) error {
+	var a struct {
+		Refine   *int     `json:"refine_per_hour"`
+		CreateMR *int     `json:"create_mr_per_hour"`
+		Budget   *float64 `json:"weekly_budget_usd"`
+	}
+	if err := strictDecode(b, &a); err != nil {
+		return errConfigFormat
+	}
+	*l = LimitsConfig{RefinePerHour: defaultRefinePerHour, CreateMRPerHour: defaultCreateMRPerHour, WeeklyBudgetUSD: defaultWeeklyBudgetUSD}
+	if a.Refine != nil {
+		if *a.Refine <= 0 {
+			return errBadLimit
+		}
+		l.RefinePerHour = *a.Refine
+	}
+	if a.CreateMR != nil {
+		if *a.CreateMR <= 0 {
+			return errBadLimit
+		}
+		l.CreateMRPerHour = *a.CreateMR
+	}
+	if a.Budget != nil {
+		if !goodPositive(*a.Budget) {
+			return errBadLimit
+		}
+		l.WeeklyBudgetUSD = *a.Budget
+	}
+	return nil
+}
+
+// UnmarshalJSON makes max_output_tokens and max_input_bytes presence-aware
+// in the same way.
+func (o *OpenAIConfig) UnmarshalJSON(b []byte) error {
+	var a struct {
+		Model           string  `json:"model"`
+		KeyFile         string  `json:"key_file"`
+		MaxOutputTokens *int64  `json:"max_output_tokens"`
+		MaxInputBytes   *int64  `json:"max_input_bytes"`
+		Pricing         Pricing `json:"pricing"`
+	}
+	if err := strictDecode(b, &a); err != nil {
+		return errConfigFormat
+	}
+	*o = OpenAIConfig{Model: a.Model, KeyFile: a.KeyFile, Pricing: a.Pricing,
+		MaxOutputTokens: defaultMaxOutputTokens, MaxInputBytes: defaultMaxInputBytes}
+	if a.MaxOutputTokens != nil {
+		if *a.MaxOutputTokens <= 0 {
+			return errBadLimit
+		}
+		o.MaxOutputTokens = *a.MaxOutputTokens
+	}
+	if a.MaxInputBytes != nil {
+		if *a.MaxInputBytes <= 0 {
+			return errBadLimit
+		}
+		o.MaxInputBytes = *a.MaxInputBytes
+	}
+	return nil
 }

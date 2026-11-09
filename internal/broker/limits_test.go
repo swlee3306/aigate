@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -192,14 +193,117 @@ func TestBudgetConcurrentReservationsCannotOvershoot(t *testing.T) {
 func TestCostMath(t *testing.T) {
 	p := Pricing{InputPerMTok: 2.5, OutputPerMTok: 10}
 	// 3000 bytes -> 1000 tokens * 2.5 + 4096 * 10 micro-USD
-	if got, want := WorstCaseMicros(p, 3000, 4096), int64(2500+40960); got != want {
-		t.Fatalf("worst case %d want %d", got, want)
+	if got, err := WorstCaseMicros(p, 3000, 4096); err != nil || got != 2500+40960 {
+		t.Fatalf("worst case %d %v", got, err)
 	}
-	// ceil(input bytes / 3)
-	if got, want := WorstCaseMicros(p, 3001, 0), int64(2503); got != want { // ceil(1000.33)=1001 tokens -> 2502.5 -> 2503
-		t.Fatalf("ceil %d want %d", got, want)
+	// ceil(input bytes / 3): 1001 tokens -> 2502.5 -> 2503
+	if got, err := WorstCaseMicros(p, 3001, 0); err != nil || got != 2503 {
+		t.Fatalf("ceil %d %v", got, err)
 	}
-	if got := ActualMicros(p, 1000, 100); got != 3500 {
-		t.Fatalf("actual %d", got)
+	if got, err := ActualMicros(p, 1000, 100); err != nil || got != 3500 {
+		t.Fatalf("actual %d %v", got, err)
+	}
+}
+
+func TestCostRejectsOverflowAndNegative(t *testing.T) {
+	p := Pricing{InputPerMTok: 2.5, OutputPerMTok: 10}
+	if _, err := WorstCaseMicros(p, -1, 10); err == nil {
+		t.Fatal("negative input bytes accepted")
+	}
+	if _, err := WorstCaseMicros(p, 10, -1); err == nil {
+		t.Fatal("negative output tokens accepted")
+	}
+	if _, err := WorstCaseMicros(p, math.MaxInt64, 10); err == nil {
+		t.Fatal("overflowing input bytes accepted")
+	}
+	if _, err := WorstCaseMicros(p, 10, math.MaxInt64); err == nil {
+		t.Fatal("overflowing output tokens accepted")
+	}
+	if _, err := ActualMicros(p, -5, 1); err == nil {
+		t.Fatal("negative usage accepted")
+	}
+	if _, err := ActualMicros(Pricing{InputPerMTok: 1e300, OutputPerMTok: 1}, 1<<60, 1); err == nil {
+		t.Fatal("overflowing cost accepted")
+	}
+	b, _ := OpenBudget(filepath.Join(t.TempDir(), "budget.json"), usd(25), newClock().Now)
+	if _, err := b.Reserve(-1); err == nil {
+		t.Fatal("negative reservation accepted")
+	}
+	if b.RemainingMicros() != usd(25) {
+		t.Fatal("rejected reservation changed the budget")
+	}
+}
+
+func TestSettleNoUsageContract(t *testing.T) {
+	p := Pricing{InputPerMTok: 2.5, OutputPerMTok: 10}
+	newB := func() (*Budget, string) {
+		b, _ := OpenBudget(filepath.Join(t.TempDir(), "budget.json"), usd(25), newClock().Now)
+		id, err := b.Reserve(usd(10))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b, id
+	}
+	// negative is rejected, never "keep"
+	b, id := newB()
+	if err := b.Settle(id, -1); err == nil {
+		t.Fatal("Settle(-1) accepted")
+	}
+	if b.RemainingMicros() != usd(15) {
+		t.Fatal("rejected Settle changed spend")
+	}
+	// missing usage keeps the reservation
+	for name, u := range map[string]Usage{"none": {}, "no output": {InputTokens: ptr(5)}, "no input": {OutputTokens: ptr(5)}} {
+		b, id := newB()
+		if err := b.SettleUsage(id, p, u); err != nil {
+			t.Fatal(err)
+		}
+		if b.RemainingMicros() != usd(15) {
+			t.Fatalf("%s: reservation not kept", name)
+		}
+	}
+	// a reported zero is a real zero cost
+	b, id = newB()
+	if err := b.SettleUsage(id, p, Usage{InputTokens: ptr(0), OutputTokens: ptr(0)}); err != nil {
+		t.Fatal(err)
+	}
+	if b.RemainingMicros() != usd(25) {
+		t.Fatal("explicit zero usage not settled to zero")
+	}
+	// reported usage settles to its cost
+	b, id = newB()
+	b.SettleUsage(id, p, Usage{InputTokens: ptr(1000), OutputTokens: ptr(100)})
+	if b.RemainingMicros() != usd(25)-3500 {
+		t.Fatalf("remaining %d", b.RemainingMicros())
+	}
+}
+
+func ptr(v int64) *int64 { return &v }
+
+func TestPersistFailureRefusesWithoutGhostEntry(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	dir := filepath.Join(t.TempDir(), "state")
+	b, err := OpenBudget(filepath.Join(dir, "budget.json"), usd(25), newClock().Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	b.OnPersistError = func() { calls++ }
+	os.Chmod(dir, 0o500)
+	defer os.Chmod(dir, 0o700)
+	if _, err := b.Reserve(usd(5)); err != ErrBudgetExceeded {
+		t.Fatalf("reserve with unwritable state: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("persist error hook called %d times", calls)
+	}
+	if b.RemainingMicros() != usd(25) {
+		t.Fatal("failed reservation left a ghost entry")
+	}
+	os.Chmod(dir, 0o700)
+	if _, err := b.Reserve(usd(5)); err != nil {
+		t.Fatalf("reserve after recovery: %v", err)
 	}
 }

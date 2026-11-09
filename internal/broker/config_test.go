@@ -74,6 +74,40 @@ func TestConfigRequiresModelAndPricing(t *testing.T) {
 	}
 }
 
+func TestConfigLimitsPresenceAware(t *testing.T) {
+	keys := [][]string{
+		{"limits", "weekly_budget_usd"}, {"limits", "refine_per_hour"}, {"limits", "create_mr_per_hour"},
+		{"openai", "max_output_tokens"}, {"openai", "max_input_bytes"},
+	}
+	for _, k := range keys {
+		for _, v := range []any{0, -1} {
+			e := newTestEnv(t)
+			e.set(t, k, v)
+			_, err := LoadConfigOpts(e.CfgPath, e.loadOpts())
+			if err == nil {
+				t.Fatalf("%v=%v accepted", k, v)
+			}
+			if strings.Contains(err.Error(), "-1") {
+				t.Fatalf("error reflects value: %v", err)
+			}
+		}
+		// absent key -> default, config loads
+		e := newTestEnv(t)
+		e.set(t, k, nil)
+		cfg := e.load(t)
+		if cfg.Limits.WeeklyBudgetUSD != 25 || cfg.Limits.RefinePerHour != 20 && k[1] == "refine_per_hour" ||
+			cfg.OpenAI.MaxOutputTokens != 4096 && k[1] == "max_output_tokens" || cfg.OpenAI.MaxInputBytes != 262144 && k[1] == "max_input_bytes" {
+			t.Fatalf("default wrong for %v: %+v", k, cfg)
+		}
+	}
+	// whole sections absent -> all defaults
+	e := newTestEnv(t)
+	e.set(t, []string{"limits"}, nil)
+	if cfg := e.load(t); cfg.Limits.RefinePerHour != 20 || cfg.Limits.CreateMRPerHour != 30 || cfg.Limits.WeeklyBudgetUSD != 25 {
+		t.Fatalf("limits defaults: %+v", cfg.Limits)
+	}
+}
+
 func TestConfigValidatesOtherFields(t *testing.T) {
 	bad := []struct {
 		name string

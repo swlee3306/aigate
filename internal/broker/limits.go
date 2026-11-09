@@ -72,6 +72,9 @@ const BudgetWindow = 7 * 24 * time.Hour
 // (or the budget file is unusable: fail closed).
 var ErrBudgetExceeded = errors.New("budget exceeded")
 
+// ErrBadAmount is returned for a negative or overflowing amount.
+var ErrBadAmount = errors.New("bad amount")
+
 const maxBudgetFile = 4 << 20
 
 type budgetEntry struct {
@@ -97,6 +100,9 @@ type Budget struct {
 	entries []budgetEntry
 	corrupt bool
 	seq     atomic.Uint64
+	// OnPersistError, when set, is called (no arguments, no values) each time
+	// writing the budget file fails.
+	OnPersistError func()
 }
 
 // OpenBudget loads path (absent = empty). A file that cannot be parsed makes
@@ -213,7 +219,7 @@ func (b *Budget) RemainingMicros() int64 {
 // persisted (fail closed).
 func (b *Budget) Reserve(micros int64) (string, error) {
 	if micros < 0 {
-		micros = 0
+		return "", ErrBadAmount
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -232,16 +238,19 @@ func (b *Budget) Reserve(micros int64) (string, error) {
 	b.entries = append(b.entries, budgetEntry{ID: id, At: now, MicroUSD: micros})
 	if err := b.persist(); err != nil {
 		b.entries = b.entries[:len(b.entries)-1]
+		b.persistFailed()
 		return "", ErrBudgetExceeded
 	}
 	return id, nil
 }
 
-// Settle replaces a reservation by the real cost. actual < 0 keeps the
-// reservation (no usage reported, call failed or timed out).
+// Settle replaces a reservation by the real cost, which must be known and
+// non-negative (0 means "the call really cost nothing"). When no usage was
+// reported, or the call failed or timed out, call Keep (or SettleUsage with
+// missing usage) instead: the reservation then stays as spend.
 func (b *Budget) Settle(id string, actual int64) error {
 	if actual < 0 {
-		return nil
+		return ErrBadAmount
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -251,10 +260,42 @@ func (b *Budget) Settle(id string, actual int64) error {
 	for i := range b.entries {
 		if b.entries[i].ID == id {
 			b.entries[i].MicroUSD = actual
-			return b.persist()
+			if err := b.persist(); err != nil {
+				b.persistFailed()
+				return err
+			}
+			return nil
 		}
 	}
 	return nil // already pruned out of the window
+}
+
+// Keep leaves the reservation as the final spend (no usage known).
+func (b *Budget) Keep(id string) error { return nil }
+
+// Usage is the token usage a response reported. A nil count means the
+// response did not report it (a decoded 0 must be a non-nil pointer to 0).
+type Usage struct {
+	InputTokens, OutputTokens *int64
+}
+
+// SettleUsage settles to the cost of u, or keeps the reservation when either
+// count is missing.
+func (b *Budget) SettleUsage(id string, p Pricing, u Usage) error {
+	if u.InputTokens == nil || u.OutputTokens == nil {
+		return b.Keep(id)
+	}
+	cost, err := ActualMicros(p, *u.InputTokens, *u.OutputTokens)
+	if err != nil {
+		return b.Keep(id)
+	}
+	return b.Settle(id, cost)
+}
+
+func (b *Budget) persistFailed() {
+	if b.OnPersistError != nil {
+		b.OnPersistError()
+	}
 }
 
 // persist writes the entries atomically (temp file, fsync, rename).
@@ -301,19 +342,40 @@ func (b *Budget) persist() error {
 // Micros converts USD to micro-USD (rounded to nearest).
 func Micros(usd float64) int64 { return int64(math.Round(usd * 1e6)) }
 
-func ceilMicros(tokens int64, usdPerMTok float64) int64 {
-	return int64(math.Ceil(float64(tokens) * usdPerMTok))
+func ceilMicros(tokens int64, usdPerMTok float64) (int64, error) {
+	if tokens < 0 || math.IsNaN(usdPerMTok) || usdPerMTok < 0 {
+		return 0, ErrBadAmount
+	}
+	v := math.Ceil(float64(tokens) * usdPerMTok)
+	if v > float64(math.MaxInt64/4) {
+		return 0, ErrBadAmount
+	}
+	return int64(v), nil
+}
+
+func addMicros(a, b int64, err1, err2 error) (int64, error) {
+	if err1 != nil || err2 != nil || a > math.MaxInt64/4 || b > math.MaxInt64/4 {
+		return 0, ErrBadAmount
+	}
+	return a + b, nil
 }
 
 // WorstCaseMicros is the reservation made before an AI call: ceil(input
 // bytes / 3) tokens at the input rate plus maxOutputTokens at the output rate.
-func WorstCaseMicros(p Pricing, inputBytes, maxOutputTokens int64) int64 {
-	in := (inputBytes + 2) / 3
-	return ceilMicros(in, p.InputPerMTok) + ceilMicros(maxOutputTokens, p.OutputPerMTok)
+// Negative or overflowing inputs are an error, never clamped.
+func WorstCaseMicros(p Pricing, inputBytes, maxOutputTokens int64) (int64, error) {
+	if inputBytes < 0 || inputBytes > math.MaxInt64-2 {
+		return 0, ErrBadAmount
+	}
+	in, e1 := ceilMicros((inputBytes+2)/3, p.InputPerMTok)
+	out, e2 := ceilMicros(maxOutputTokens, p.OutputPerMTok)
+	return addMicros(in, out, e1, e2)
 }
 
 // ActualMicros is the cost of the reported usage (cached input at the input
 // rate).
-func ActualMicros(p Pricing, inputTokens, outputTokens int64) int64 {
-	return ceilMicros(inputTokens, p.InputPerMTok) + ceilMicros(outputTokens, p.OutputPerMTok)
+func ActualMicros(p Pricing, inputTokens, outputTokens int64) (int64, error) {
+	in, e1 := ceilMicros(inputTokens, p.InputPerMTok)
+	out, e2 := ceilMicros(outputTokens, p.OutputPerMTok)
+	return addMicros(in, out, e1, e2)
 }
