@@ -403,3 +403,51 @@ func TestSubmitAllowsLinkedWorktreeGitFile(t *testing.T) {
 		t.Fatalf("%d %s (want repo %s base %s)", code, body, wt, head)
 	}
 }
+
+// Pins the top-level check of ownRepo (and of validate): b's .git is a
+// gitfile to a git directory under the root whose core.worktree names
+// ANOTHER directory c under the root. Every git directory is inside the
+// roots, so only "top level == listed path" keeps b (which would show c's
+// state under b's path) out of /repos and out of submit.
+func TestReposRefusesGitFileWithForeignWorktree(t *testing.T) {
+	e := newEnv(t, noSteps{}, 1)
+	e.d.pauseWorkers()
+	c := filepath.Join(e.root, "c")
+	mkRepo(t, c)
+	git(t, c, "commit", "-q", "--allow-empty", "-m", "c-only")
+	git(t, c, "branch", "csecretbranch")
+	cSHA := git(t, c, "rev-parse", "HEAD")
+	gd := filepath.Join(e.root, "gd")
+	if err := os.Rename(filepath.Join(c, ".git"), gd); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(c, ".git"), []byte("gitdir: "+gd+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, e.root, "--git-dir="+gd, "config", "core.worktree", c)
+	b := filepath.Join(e.root, "b")
+	if err := os.MkdirAll(b, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(b, ".git"), []byte("gitdir: "+gd+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := repoPaths(e.repos(t))
+	sort.Strings(got)
+	if len(got) != 2 || got[0] != c || got[1] != e.repo {
+		t.Fatalf("listed %v, want only %s and %s (never %s)", got, c, e.repo, b)
+	}
+	for _, r := range e.repos(t) {
+		if r.Path == b || (r.Path != c && r.Head == cSHA) {
+			t.Fatalf("b or c's state listed under another path: %+v", r)
+		}
+	}
+	body, _ := json.Marshal(map[string]string{"repo": b, "base": "HEAD", "prompt": "p", "class": "docs", "agent": "claude"})
+	code, rb := e.do(t, "POST", "/api/v1/tasks", string(body))
+	if code != 400 || v1Code(rb) != "bad_request" || strings.Contains(string(rb), cSHA) {
+		t.Fatalf("submit b: %d %s", code, rb)
+	}
+	if n := e.taskCount(t); n != 0 {
+		t.Fatalf("%d tasks", n)
+	}
+}

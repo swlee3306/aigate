@@ -1,8 +1,11 @@
 package vm
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -354,6 +357,26 @@ func TestCloudStatusVMStatusIsAWordOnly(t *testing.T) {
 		f.status = raw
 		if got := tv.CloudStatus(context.Background()); !got.OK || got.VMStatus != want {
 			t.Errorf("status %q: got %q ok=%v, want %q", raw, got.VMStatus, got.OK, want)
+		}
+	}
+}
+
+// A recovered panic is logged on the server with its value (for whoever
+// debugs it) and never reaches the CloudInfo a client sees.
+func TestCloudStatusPanicValueIsLoggedNotReturned(t *testing.T) {
+	var buf bytes.Buffer
+	old, oldFlags := log.Writer(), log.Flags()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(old); log.SetFlags(oldFlags) })
+	for _, w := range []string{"quota", "server", "volumes"} {
+		buf.Reset()
+		tv := &TestVM{Cloud: panicReader{w}}
+		v := tv.CloudStatus(context.Background())
+		if !strings.Contains(buf.String(), "panicked") || !strings.Contains(buf.String(), "boom "+w) {
+			t.Errorf("%s: log %q", w, buf.String())
+		}
+		if s := fmt.Sprintf("%+v", v); strings.Contains(s, "boom") {
+			t.Errorf("%s: panic value in the result: %s", w, s)
 		}
 	}
 }

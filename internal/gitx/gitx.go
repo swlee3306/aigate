@@ -84,6 +84,12 @@ func Resolve(repo, ref string) (string, error) {
 // ceilingEnv stops git's repository discovery at repo itself: git never
 // walks up into repo's parent to find an enclosing repository (an empty or
 // broken repo/.git would otherwise make git read the outer one).
+//
+// GIT_CEILING_DIRECTORIES is a colon-separated list, so a parent directory
+// whose path contains ':' splits into entries that are not repo's parent and
+// the ceiling has no effect. Callers that must not walk up therefore also
+// check that the top level git reports is repo itself (TopLevel,
+// api.validate, api.ownRepo); the two defences overlap on purpose.
 func ceilingEnv(repo string) []string {
 	return []string{"GIT_CEILING_DIRECTORIES=" + filepath.Dir(repo)}
 }

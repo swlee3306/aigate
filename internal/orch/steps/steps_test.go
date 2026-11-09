@@ -639,3 +639,35 @@ func TestPublishNeedsApprovalParksTask(t *testing.T) {
 		t.Fatalf("approvals %+v", all)
 	}
 }
+
+// Task 3 deferred item (b): submit checked that the repo is its own top
+// level, but the steps resolve the base later. If .git is emptied in the
+// meantime, git must not walk up into an enclosing repository (here one that
+// even holds the same commit) and run the task against it: prepare and
+// collect fail with "resolve base", and the agent is never prepared.
+func TestStepsNeverResolveAboveTheRepo(t *testing.T) {
+	e := newEnv(t, nil)
+	outer := filepath.Dir(e.repo)
+	git(t, outer, "init", "-q", "-b", "outer")
+	git(t, outer, "fetch", "-q", e.repo, "main:refs/heads/copied") // the outer repo has the base commit too
+	if got := git(t, outer, "rev-parse", "copied"); got != e.base {
+		t.Fatalf("outer copy %s, base %s", got, e.base)
+	}
+	if err := os.RemoveAll(filepath.Join(e.repo, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(e.repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	tk := e.task()
+	if _, err := e.p.prepare(ctx, tk); err == nil || !strings.Contains(err.Error(), "resolve base") {
+		t.Fatalf("prepare: %v", err)
+	}
+	if _, err := e.p.collect(ctx, tk); err == nil || !strings.Contains(err.Error(), "resolve base") {
+		t.Fatalf("collect: %v", err)
+	}
+	if e.agent.prepares != 0 || e.agent.collects != 0 {
+		t.Fatalf("agent ran: prepares %d collects %d", e.agent.prepares, e.agent.collects)
+	}
+}

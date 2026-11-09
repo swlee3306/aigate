@@ -3,6 +3,7 @@ package vm
 import (
 	"context"
 	"errors"
+	"log"
 	"regexp"
 	"strings"
 	"sync"
@@ -123,7 +124,9 @@ func (t *TestVM) withHistory(r CloudInfo) CloudInfo {
 func (t *TestVM) refreshCloud(f *cloudFlight) {
 	res := failInfo(CloudUnavailable)
 	defer func() {
-		_ = recover() // a panic in the reader is just "unavailable"
+		if r := recover(); r != nil { // a panic in the reader is just "unavailable"
+			log.Printf("orchd: cloud status refresh panicked: %v", r) // server log only, never a response
+		}
 		t.cloudMu.Lock()
 		if res.CheckedAt.IsZero() {
 			res.CheckedAt = t.now()
@@ -160,7 +163,8 @@ func (t *TestVM) readCloud() CloudInfo {
 		go func() {
 			defer wg.Done()
 			defer func() {
-				if recover() != nil {
+				if r := recover(); r != nil {
+					log.Printf("orchd: cloud status read panicked: %v", r) // server log only, never a response
 					*err = errors.New("cloud read panicked")
 				}
 			}()

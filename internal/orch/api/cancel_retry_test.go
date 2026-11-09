@@ -3,8 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
-	"slices"
 	"sync"
 	"testing"
 
@@ -149,26 +149,60 @@ func TestRetryStateChanged409(t *testing.T) {
 	}
 }
 
+// allStates is every state constant; the table and the flag must cover each.
+var allStates = []store.State{
+	store.StateQueued, store.StatePreparing, store.StateAgentRunning, store.StateCollecting,
+	store.StateVerifying, store.StateNeedsApproval, store.StatePassed, store.StatePublishing,
+	store.StateDone, store.StateFailed, store.StateCancelled, store.StateError,
+}
+
+// The cancellable flag agrees with what machine.Cancel really does: for a task
+// seeded in each state, Cancel succeeds exactly when the flag is true and is
+// ErrTerminal otherwise. machine.Allowed has a row for every state constant.
 func TestCancellableFlagMatchesStateTable(t *testing.T) {
-	for s := range machine.Allowed {
-		want := slices.Contains(machine.Allowed[s], machine.StateCancelled)
-		if got := viewOf(store.Task{State: s}).Cancellable; got != want {
-			t.Errorf("state %s: cancellable=%v want %v", s, got, want)
+	if len(machine.Allowed) != len(allStates) {
+		t.Fatalf("Allowed has %d rows, %d state constants", len(machine.Allowed), len(allStates))
+	}
+	for _, s := range allStates {
+		if _, ok := machine.Allowed[s]; !ok {
+			t.Errorf("Allowed has no row for %s", s)
+		}
+	}
+	e := newEnv(t, noSteps{}, 1)
+	e.d.pauseWorkers()
+	ctx := context.Background()
+	for _, s := range allStates {
+		id := queuedTask(t, e)
+		if s != store.StateQueued {
+			if err := e.st.Transition(ctx, id, store.StateQueued, s, "seed"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		got, err := e.st.GetTask(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		flag := viewOf(got).Cancellable
+		// over the API too: the view a client reads carries the same flag
+		_, b := e.do(t, "GET", "/api/v1/tasks/"+itoa(id), "")
+		var v TaskView
+		if json.Unmarshal(b, &v) != nil || v.Cancellable != flag {
+			t.Fatalf("%s: api view %s, flag %v", s, b, flag)
+		}
+		err = e.d.handler.m.Cancel(ctx, id)
+		switch {
+		case flag && err != nil:
+			t.Errorf("%s: cancellable but Cancel failed: %v", s, err)
+		case !flag && !errors.Is(err, machine.ErrTerminal):
+			t.Errorf("%s: not cancellable but Cancel returned %v", s, err)
+		}
+		after, _ := e.st.GetTask(ctx, id)
+		if flag && after.State != store.StateCancelled || !flag && after.State != s {
+			t.Errorf("%s: state after Cancel %s", s, after.State)
 		}
 	}
 	if viewOf(store.Task{State: store.StateDone}).Cancellable || !viewOf(store.Task{State: store.StateQueued}).Cancellable {
 		t.Error("spot check")
-	}
-	// over the API
-	e := newEnv(t, noSteps{}, 1)
-	e.d.pauseWorkers()
-	q, f := queuedTask(t, e), failedTask(t, e, store.StateVerifying, false)
-	for id, want := range map[int64]bool{q: true, f: false} {
-		_, b := e.do(t, "GET", "/api/v1/tasks/"+itoa(id), "")
-		var v TaskView
-		if json.Unmarshal(b, &v) != nil || v.Cancellable != want {
-			t.Fatalf("%d: %s", id, b)
-		}
 	}
 }
 
@@ -178,22 +212,28 @@ func TestCancellableFlagMatchesStateTable(t *testing.T) {
 // therefore not an invariant; the real ones are: retry always wins, cancel is
 // 200 only when it ran after the retry (final state cancelled) and otherwise a
 // clean 409 already_final (final state is the resumed step), never a 5xx.
-func TestCancelAndRetryConcurrentOneWins(t *testing.T) {
+func TestCancelAndRetryConcurrentInvariants(t *testing.T) {
 	e := newEnv(t, noSteps{}, 1)
 	e.d.pauseWorkers()
 	for i := 0; i < 50; i++ {
 		id := failedTask(t, e, store.StateVerifying, true)
 		codes := make([]int, 2)
 		bodies := make([][]byte, 2)
+		errs := make([]error, 2)
 		var wg sync.WaitGroup
 		for j, op := range []string{"cancel", "retry"} {
 			wg.Add(1)
-			go func() {
+			go func() { // no t.Fatal off the test goroutine: results are checked after Wait
 				defer wg.Done()
-				codes[j], bodies[j] = e.do(t, "POST", "/api/v1/tasks/"+itoa(id)+"/"+op, "")
+				codes[j], bodies[j], errs[j] = try(e.client, "POST", "http://orchd/api/v1/tasks/"+itoa(id)+"/"+op, "", []byte{}, nil)
 			}()
 		}
 		wg.Wait()
+		for j, err := range errs {
+			if err != nil {
+				t.Fatalf("iter %d: request %d: %v", i, j, err)
+			}
+		}
 		cur, err := e.st.GetTask(context.Background(), id)
 		if err != nil {
 			t.Fatal(err)

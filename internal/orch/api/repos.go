@@ -47,12 +47,13 @@ type RepoView struct {
 
 // repos lists the git work trees under the allowed roots (depth <= 2), sorted
 // by path, at most reposMax. Only read-only git queries run, with a timeout
-// per repository and per request. A repository git cannot read, or one
-// whose git directories are outside the roots (ownRepo), is left out. An
-// expired request deadline is repos_unavailable for the whole list, not a
-// partial one: each slow repository can cost up to its 5 s of the 15 s
-// budget (4 run in parallel), so a few hanging repositories degrade the
-// answer to 503.
+// per repository (5 s) and per request (15 s). A repository git cannot read,
+// one whose git directories are outside the roots (ownRepo), and one that
+// hits its own 5 s timeout are left out silently (the rest is still
+// listed). Only an expired REQUEST deadline (or a client that went away)
+// makes the answer 503 repos_unavailable for the whole list: 4 repositories
+// are read in parallel, so enough hanging ones can use up the 15 s and
+// degrade the answer to 503 instead of a partial list.
 func (h *handler) repos(w http.ResponseWriter, r *http.Request) {
 	timeout := h.reposTimeout
 	if timeout <= 0 {

@@ -285,6 +285,9 @@ func TestOpsReturnsWithinBudgetWhenCloudHangs(t *testing.T) {
 	for i := 0; i < 100 && !ready.Load(); i++ {
 		time.Sleep(20 * time.Millisecond)
 	}
+	if !ready.Load() {
+		t.Fatal("the detached refresh did not finish within 2 s after release (ready flag never set)")
+	}
 	_, b = e.do(t, "GET", "/api/v1/ops", "")
 	var later OpsView
 	_ = json.Unmarshal(b, &later)

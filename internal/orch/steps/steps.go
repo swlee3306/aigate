@@ -289,7 +289,7 @@ func (p *Provider) prepare(ctx context.Context, t store.Task) (machine.Outcome, 
 			return machine.Outcome{}, err
 		}
 	}
-	base, err := gitx.Resolve(t.Repo, t.Base)
+	base, err := gitx.ResolveAt(t.Repo, t.Base)
 	if err != nil {
 		return machine.Outcome{}, fmt.Errorf("resolve base: %w", err)
 	}
@@ -317,7 +317,7 @@ func (p *Provider) runAgent(ctx context.Context, t store.Task) (machine.Outcome,
 var shaRE = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
 
 func (p *Provider) collect(ctx context.Context, t store.Task) (machine.Outcome, error) {
-	base, err := gitx.Resolve(t.Repo, t.Base)
+	base, err := gitx.ResolveAt(t.Repo, t.Base)
 	if err != nil {
 		return machine.Outcome{}, fmt.Errorf("resolve base: %w", err)
 	}
@@ -374,7 +374,7 @@ func (p *Provider) verify(ctx context.Context, t store.Task) (machine.Outcome, e
 	defer ex.Close()
 	var cacheNote func() string
 	if bc := p.cfg.BaseCache; bc != nil {
-		if baseSHA, rerr := gitx.Resolve(t.Repo, t.Base); rerr == nil {
+		if baseSHA, rerr := gitx.ResolveAt(t.Repo, t.Base); rerr == nil {
 			if repoID, _, ierr := gate.RepoID(t.Repo); ierr == nil {
 				bc2 := *bc
 				bc2.Scope = scopeOf(bc.Scope, p.cfg.Test)
