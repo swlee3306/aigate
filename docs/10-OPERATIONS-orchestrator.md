@@ -121,7 +121,7 @@ orch --socket ~/orchd/run/orchd.sock retry <ID>      # 작업 #N 다시 시도: 
 - **orch-vm에서 신뢰할 수 없는 로컬 프로세스를 돌리지 않는다**(CF20). HTTP 리스너는 루프백이라 로컬 프로세스가 `Tailscale-User-Login` 같은 헤더를 마음대로 보내 횟수 제한 키를 바꿀 수 있다. 신뢰할 수 없는 코드는 agent-vm/test-vm에서만 돈다.
 - **`--allowed-host`, `--origin`(`https://<FQDN>`, 포트 없음), `--rp-id`(`<FQDN>`)는 브라우저 주소창의 tailnet 이름(`<노드>.<tailnet>.ts.net`)과 글자 그대로 같아야 한다.** 다르면 요청이 전부 421이 되거나 패스키가 등록되지 않는다. 패스키는 이 이름에 묶이므로 나중에 이름이 바뀌면 다시 등록해야 한다.
 - Mac과 orch-vm의 시계 차이가 5분 이내(`date -u`로 비교). 로그인·서명 메시지의 `issued`가 ±5분을 벗어나면 거부된다.
-- Mac은 공유기 예약 `.124`에서 orch-vm에 ssh할 수 있다(2장). 이 Mac의 ssh 개인 키는 ed25519(`ssh-keygen -lf ~/.ssh/id_ed25519.pub` 끝에 `(ED25519)`)이고 서명할 때 비밀번호/에이전트로 열 수 있다.
+- Mac은 공유기 예약 `.124`에서 orch-vm에 ssh할 수 있다(2장). 서명에 쓸 ssh 키는 **승인 전용으로 새로 만든 ed25519 키**이고 비밀번호가 걸려 있어야 한다(오케스트레이터 키·VM 접속 키는 쓰지 않는다). 예: 터미널 앱에서 `ssh-keygen -t ed25519 -C "aigate-approval" -f ~/.ssh/aigate_approve_ed25519`(**`!`나 자동 실행으로는 비밀번호를 입력할 수 없어 빈 비밀번호가 된다**; 만든 뒤 `ssh-keygen -y -P "" -f <키>`가 실패해야 비밀번호가 걸린 것). 승인할 때는 `--sign-key ~/.ssh/aigate_approve_ed25519 --signer <서명자 ID>`를 준다(`~/.ssh/id_ed25519`는 기본값일 뿐 없을 수 있다).
 - `orchd` 소켓을 쓰는 운영 명령(`admin enroll` 등)을 `sudo`로 하려면 유닛에 `--socket-uid 0`이 있어야 한다(3단계 유닛). `--socket-uid`는 orchd 자신의 uid에 **더해지며** 대체하지 않는다. 없으면 `sudo orch`는 403(`forbidden_uid`).
 - 저장소(Mac)의 `infra/` 스크립트 중 `signers-init.sh`, `orch-web-serve.sh`는 orch-vm에서 돌린다. 저장소가 VM에 없으면 `scp -i <관리자 키> infra/signers-init.sh infra/orch-web-serve.sh $ORCHVM:/tmp/`로 복사한다(스크립트만, 키는 복사하지 않음).
 
@@ -205,7 +205,7 @@ sudo /usr/local/lib/aigate/orch admin signers list
 **검증 체크리스트**
 - `ls -l /etc/aigate/signers.json` → `root root`, 그룹·기타 쓰기 없음. `list` 출력에 `mac-ssh`, 종류 `ssh-ed25519`, 키 지문(Mac의 `ssh-keygen -lf ~/.ssh/id_ed25519.pub`와 같은 키인지 대조).
 - 시작 로그의 `approvals: mode` 줄은 **시작할 때만** 찍힌다. 재시작 전에는 `mode legacy`로 남아 있는 것이 정상이고, `sudo systemctl restart orchd` 뒤에는 `mode signed (1 signers in /etc/aigate/signers.json)`가 된다(재시작해서 확인하는 것을 권장).
-- Mac에서: `orch login --server https://<FQDN> --signer mac-ssh`(챌린지에 `ssh-keygen -Y sign`, 네임스페이스 `aigate-login`; 키 비밀번호 입력) → `~/.config/orch/token`(0600) 저장. 이어서 `orch --server https://<FQDN> --signer mac-ssh submit …`로 toy 작업(승인 대기가 생기는 종류) 제출 → `orch --server https://<FQDN> approvals`에서 항목 ID 확인 → `orch --server https://<FQDN> --signer mac-ssh approve <항목ID>`: 서버가 준 diff로 해시를 다시 계산해 일치해야 서명 화면(저장소 id, diff, 서명할 메시지)이 나오고, `yes`를 치면 서명해 `approved (서명자 mac-ssh). 작업 #N 상태: …` → `orch --server … reverify <항목ID>` → 작업이 판정·게시를 거쳐 `done`.
+- Mac에서: `orch login --server https://<FQDN> --signer mac-ssh`(챌린지에 `ssh-keygen -Y sign`, 네임스페이스 `aigate-login`; 키 비밀번호 입력) → `~/.config/orch/token`(0600) 저장. 이어서 `orch --server https://<FQDN> --signer mac-ssh submit …`로 toy 작업(승인 대기가 생기는 종류) 제출 → `orch --server https://<FQDN> approvals`에서 항목 ID 확인 → `orch --server https://<FQDN> --signer mac-ssh approve <항목ID>`: 서버가 준 diff로 해시를 다시 계산해 일치해야 서명 화면(저장소 id, diff, 서명할 메시지)이 나오고, `yes`를 치면 서명해 `approved (서명자 mac-ssh). 작업 #N 상태: …` → → 작업이 판정·게시를 거쳐 `done`. **원격 `approve`는 서명을 기록하는 순간 서버가 재판정을 걸어 작업을 진행시키므로 `reverify`는 필요 없다**(그 뒤에 부르면 "대기 중인 항목이 아닙니다(상태: approved)"로 거부되는 것이 정상, 2026-11-09 실서버 확인).
 - 음성 확인: VM에서 서명 없이 옛 방식 TTY 승인(`approve <ID>` 소켓)은 서명 키가 없어 `서명 키 파일이 없습니다`로 거부된다(코드 읽기 기준; 서명 키를 VM에 두지 않는다).
 - 원격 승인이 잘린 diff(256 KiB 초과)이면 CLI와 웹 모두 서명을 거부하고 저장소에서 `git diff`로 보라고 안내한다(R22) — 오류가 아니다.
 

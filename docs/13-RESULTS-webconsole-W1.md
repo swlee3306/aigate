@@ -83,8 +83,8 @@
 ## 4. 알려진 한계와 확인하지 않은 것
 
 확인하지 않은 것(실제 환경 필요):
-- **`tailscale serve`의 실제 동작.** Host 헤더 보존과 `Tailscale-User-Login` 헤더 처리(클라이언트가 보낸 값 제거)는 Task 21 검토에서 tailscale 소스를 읽어 확인했을 뿐 실제로 실행하지 않았다. HTTPS 인증서 발급(가정 A1)도 미확인.
-- **실제 브라우저의 패스키 의식.** 등록·로그인·승인 서명은 합성(소프트웨어) 인증기로만 시험했다. 실제 기기(iCloud 키체인 등)의 `navigator.credentials` 동작, 서명 카운터 0 보고, rpId 생략 시 동작은 미확인.
+- **(2026-11-09 부분 해소, 10장)** **`tailscale serve`의 실제 동작.** Host 헤더 보존은 실서버에서 확인했다(올바른 `--allowed-host`로 요청이 통과). 그러나 `Tailscale-User-Login` 헤더 처리(클라이언트가 보낸 값 제거)는 Task 21 검토에서 tailscale 소스를 읽어 확인했을 뿐 실제로 실행하지 않았다. HTTPS 인증서 발급(가정 A1)도 미확인.
+- **(2026-11-09 부분 해소, 10장)** **실제 브라우저의 패스키 의식.** 컷오버에서 실제 Mac 브라우저로 등록·로그인·승인 서명을 확인했다. 그 전에는 합성(소프트웨어) 인증기로만 시험했다. 실제 기기(iCloud 키체인 등)의 `navigator.credentials` 동작, 서명 카운터 0 보고, rpId 생략 시 동작은 미확인.
 - **키보드·스크린 리더 사용.** 화면은 ego-browser로 1280/390px 모습만 봤다. 키보드만으로의 전체 흐름과 스크린 리더 낭독은 하지 않았다.
 - **nft 규칙.** `infra/nftables`에 443 규칙 1줄을 추가했지만 커널에 올리지도, `nft -c`로 검사하지도 않았다(이 Mac에 nft 없음).
 - **systemd 단위.** 플래그 예시를 넣은 단위 파일을 만들었을 뿐 systemd로 시작해 보지 않았다.
@@ -105,12 +105,12 @@
 
 | # | 설계서의 가정/실험 | 판정 | 근거와 한계 |
 |---|---|---|---|
-| A1 | `tailscale serve`로 HTTPS를 붙일 수 있고 인증서가 발급된다 | **검증 못 함** | orch-vm에서 `tailscale serve`를 한 번도 실행하지 않았고 Tailscale 관리 콘솔의 HTTPS 설정도 보지 못했다(이 환경에서 접근하지 않음). 스크립트는 드라이런·잘못된 인자 거부만 시험했다(`infra/test-web-scripts.sh` 17개). 설계서가 적은 "`bon-openstack`이 443을 tailscaled로 쓰는 것으로 보인다"도 미확인. 컷오버 3단계에서 확인한다. |
+| A1 | `tailscale serve`로 HTTPS를 붙일 수 있고 인증서가 발급된다 | **검증됨** (2026-11-09 실서버) | orch-vm에서 `serve --bg --https=443`을 실행해 "tailnet only"로 열렸고, tailscaled가 Let's Encrypt 인증서를 약 36초 만에 발급했다(로그 `got cert`). Mac에서 `https://orch-vm.example.ts.net/api/v1/healthz`가 200, 인증서 검증 통과, 만료 2027-02-07. 자세한 기록은 10장. |
 | A2 | 서명 `issued` ±5분이 CLI·웹 모두에 충분하다 | **일부 검증** | ±5분을 서버가 강제하는 것(`TestStaleIssuedRejected`, `api.TestGrantStaleIssued403`)과 CLI가 로그인 메시지의 시각을 ±5분으로 확인하는 것은 시험했다. "충분한가"는 실사용(시계 오차, 서명 화면에서 머무는 시간)을 봐야 하며 **하지 않았다**. 서명 화면을 5분 넘게 열어 두면 거부될 수 있다(코드 읽기에 따른 추정). |
 | A3 | CLI가 서버가 준 해시 대상 텍스트로 해시를 다시 계산할 수 있다(`hashOf`가 순수 해시) | **검증됨** | 코드를 읽었다: `hashOf`는 입력 문자열의 SHA-256뿐이다(`internal/gitx/gitx.go`, 외부 상태 없음. 2026-11-09 결정 R23 이후 전체 64 hex, 그 전에는 앞 16 hex). 시험: `gitx.TestHashOfMatchesDiffHash`(공개 `HashOf` = 게이트의 diff 해시), `cmd/orch` `TestApproveRefusesHashMismatch`, `TestApproveSignedFlow`, `remote_e2e_test.go`(원격 CLI가 서버 텍스트로 재계산 후 서명). 한계: 재계산은 "보인 글자 = 해시"만 보증한다. 그 글자가 실제 저장소 diff인지는 서버를 믿는다(설계서 10장). |
 | A4 | Mac의 SSH 키(ed25519)로 `ssh-keygen -Y sign` 서명이 Go에서 검증된다 | **검증됨** | 실제 `ssh-keygen -Y sign`(이 Mac의 OpenSSH 10.3p1)이 만든 서명을 `x/crypto/ssh` 기반 검증기가 통과시킨다(`signing.TestVerifyOK`: sha512 기본과 `-O hashalg=sha256`, `cmd/orch` `TestDefaultSignCmdSSHKeygen`, `TestCLILoginRealSSHKeygen`, 원격 e2e). 한계: ed25519만 지원, 하드웨어 키(`sk-`)와 ssh-agent 경로는 시험하지 않았다. 다른 OpenSSH 버전은 Mac 쪽 서명 도구로만 의미가 있고 검증은 Go에서 하므로 VM의 OpenSSH와 무관하다. |
 | A5 | 세션 수명(유휴 8시간, 절대 24시간)이 개인 사용에 적절하다 | **검증 못 함** | 값이 구현된 것(만료·절대 상한 시험)만 확인했다. 적절한지는 써 봐야 안다. |
-| X1 | orch-vm에서 `tailscale serve` HTTPS와 패스키 등록·로그인 | **검증 못 함** | 실제 노드·실제 브라우저에서 한 번도 못 했다. 간접 근거만 있다: (1) Task 21 검토자가 **tailscale 소스를 읽어** `serve`가 클라이언트가 보낸 `Tailscale-User-*` 헤더를 지우고 Host를 보존한다(`r.Out.Host = r.In.Host`)고 확인했다. 이것은 **소스 읽기이며 실행이 아니다.** (2) 패스키 등록·로그인·서명은 합성(소프트웨어) 인증기로만 시험했다. 실제 기기의 `navigator.credentials`, 서명 카운터 0 보고, rpId 생략 동작은 미확인. 컷오버 단계 3·5에서 확인한다(6장). |
+| X1 | orch-vm에서 `tailscale serve` HTTPS와 패스키 등록·로그인 | **일부 검증** (2026-11-09 실서버) | 실제 노드·실제 브라우저에서 확인한 것: HTTPS 접속, 패스키 등록(대기 목록에 지문 일치), 활성화, **패스키 로그인(서버 로그 `passkey login: session issued to signer "mac-passkey"`)**, **웹에서 패스키로 서명한 승인이 게이트를 통과해 작업 #41이 `done`(승인 파일에 `webauthn-es256` 서명 기록)**. 확인하지 못한 것: 클라이언트가 보낸 `Tailscale-User-Login` 헤더를 serve가 지우는지(소스 읽기만), 서명 카운터 값, iCloud 동기화 동작, 키보드·스크린 리더, 로그아웃과 새로고침 시 세션 유지, 두 번째 탭의 CSRF 재시도. 10장 참고. |
 | X2 | `ssh-keygen -Y sign` 서명을 Go로 검증(정상 통과, 변조·다른 네임스페이스 거부) | **검증됨** | 정상 서명 통과(위 A4). 변조: 실제 서명을 모든 오프셋에서 잘라 보고 바이트마다 뒤집어도 통과하지 않는다(`signing.TestMalformedArmorNoPanic` 등). 다른 네임스페이스: 로그인(`aigate-login`)과 승인(`aigate-approval`) 서명이 같은 바이트에 대해 서로 통과하지 않는다(`TestLoginVsApprovalNamespacesDisjoint`, `signing.TestLoginSignatureNotAcceptedAsApproval`, `api.TestApprovalSignatureNotAcceptedAsLogin`). |
 | X3 | 게이트의 서명 검증 비용이 1초 이상 영향을 주지 않는다 | **검증 못 함** | **측정하지 않았다.** VM에서도 이 Mac에서도 서명 검증 경로의 시간을 재지 않았고 벤치마크도 없다. 보고서 어디에도 수치가 없다. 추정(측정 아님): 승인 검사(`Valid`)마다 서명자 목록 파일을 읽고 항목당 ed25519 검증 1번이라 파일 읽기와 수십 µs 수준일 것으로 보이나, 확인 전에는 결론이 아니다. 컷오버 4단계 뒤 `orch show`의 판정 시간을 단계 1(레거시)과 비교한다. |
 
@@ -196,3 +196,37 @@
 | R22 | 웹도 잘린·다 보이지 않은 승인에는 서명하지 않음(CLI와 동일), `orch approve` 안내 | 아주 큰 보호 diff는 CLI로만 승인 |
 | 미번호(수정 회차) | Task 18, 19, 22, 23, 24, 25, 26의 수정 1회차를 별도 재검토 없이 수용(각각 시험·변이 확인, vet 통과) | 빈틈은 최종 전체 검토(fable)에서 드러남 |
 | R23 | (2026-11-09 사용자 결정) 승인 diff 해시를 SHA-256 앞 16 hex에서 전체 64 hex로 넓힘. 서명 메시지·웹 문법의 hash는 모든 종류에서 64자리만. 마이그레이션 없음(옛 16자리 승인은 fail closed, 재승인) | 전환 때 옛 빌드로 대기 중이던 승인을 다시 해야 함. 롤백하면 새 빌드로 만든 64자리 승인을 옛 바이너리가 쓰지 못함(10장 롤백 메모) |
+
+## 10. 컷오버 실행 기록 (2026-11-09, 실서버 orch-vm)
+
+`10-OPERATIONS-orchestrator.md` 9장을 처음으로 실제 서버에서 실행했다. 코드는 `main`의 `d9c1537`(x86_64 정적 빌드). 3-d(방화벽 443 규칙)는 필요 없어서 건너뛰었고, 6단계(롤백)는 실행하지 않았다.
+
+### 단계별 결과
+| 단계 | 한 일 | 서버에서 본 결과 |
+|---|---|---|
+| 1 | 세 바이너리를 root 소유 `/usr/local/lib/aigate`에 설치(옛 것은 `*.prev-w1`), DB·gate-home·옛 유닛 백업 | `orchd` 새 바이너리로 정상 시작, 로그 `approvals: mode legacy`, 소켓 uid `[1000]`. 기존 작업 1~38이 새 `orch`로 그대로 보임. toy 작업 #39 제출부터 `done`까지 약 76초 |
+| 2 | `/etc/aigate`를 `root:root 0755`로 생성(`signers.json` 없음) | 서명 모드는 그대로 꺼짐, `orchd` 재시작 불필요 |
+| 3-b | 유닛에 웹 플래그 적용(`--http-listen 127.0.0.1:8808`, `--allowed-host/--origin/--rp-id orch-vm.example.ts.net`, `--signers-file`, `--pending-file`, `--socket-uid 0`) | 소켓 uid `[0 1000]`, 8808은 `127.0.0.1`에서만 듣음, `healthz` 200, 틀린 Host 421, 인증 없는 `/api/v1/tasks` 401 |
+| 3-c | `orch-web-serve.sh 8808 --apply` | "tailnet only" 공개, 인증서 약 36초 만에 발급. Mac에서 `GET /` 200, 보안 헤더(CSP, HSTS, nosniff 등) 확인, `/api/v1/auth/signers` 열림 |
+| 4 | Mac의 승인 전용 SSH 키 등록 → 서명 필수 모드 | 재시작 후 `approvals: mode signed (1 signers ...)`. 작업 #40이 `ssh-ed25519` 서명 승인으로 `done`, 승인 파일에 서명 기록 |
+| 5 | 등록 코드 발급 → 브라우저에서 패스키 등록 → 지문 대조 → 활성화 → 패스키 로그인 → 웹 승인 | 서버 지문과 사용자가 본 지문이 같음, 서명자 2개(`mac-ssh`, `mac-passkey`), 패스키 로그인 세션 발급, 작업 #41이 `webauthn-es256` 서명 승인으로 `done` |
+
+### 실서버에서 알게 된 것 (코드·시험으로는 몰랐던 것)
+1. **Mac에 `~/.ssh/id_ed25519`가 없었다.** 런북이 가정한 기본 키 경로가 없어 승인 전용 키(`~/.ssh/aigate_approve_ed25519`)를 새로 만들었고, 승인할 때 `--sign-key`로 지정했다. 기존 `aigate_ed25519`는 오케스트레이터 키(개인 키가 VM에도 있음), `aigate_admin_ed25519`는 VM 접속 키라 서명 키로 쓰지 않았다.
+2. **`!`로 실행한 `ssh-keygen`은 비밀번호를 받지 못한다.** 터미널이 연결되지 않아 빈 비밀번호로 만들어졌고, 사용자가 터미널 앱에서 `ssh-keygen -p`로 설정했다. 비밀번호 설정 여부는 `ssh-keygen -y -P ""`가 실패하는지로 확인했다.
+3. **원격 `orch approve`는 서명을 기록하는 순간 서버가 재판정을 걸어 작업을 진행시킨다.** 따라서 그 뒤의 `orch reverify`는 "대기 중인 항목이 아닙니다(상태: approved)"로 거부된다. 오류가 아니라 정상이다. 런북을 고쳤다.
+4. **3-d(방화벽 443 규칙) 없이도 Mac에서 접속된다.** 규칙은 `tailscale serve`에 필요하지 않았다(관찰). 저장소의 nft 파일에는 규칙이 남아 있고 커널에는 올리지 않았다. 이유는 추정이다: serve가 커널 입력 훅보다 앞에서 처리하는 것으로 보인다.
+5. **orch-vm 자기 자신에서 자기 tailnet 주소로는 접속되지 않는다**(20초 시간 초과). serve가 tailnet에서 오는 패킷만 받는 것으로 보이며(추정), 따라서 접속 시험은 다른 기기(Mac)에서 해야 한다.
+6. **인증서 발급 중에는 첫 요청이 시간 초과로 보인다.** 첫 `serve` 직후 약 36초 동안 응답이 없다가 발급 후 정상이 되었다.
+7. **웹 승인 후 첫 확인에서는 서버에 승인 기록이 없었고, 이후 확인에서 기록되었다.** 그 사이 정확히 무슨 일이 있었는지는 확인하지 못했다(사용자의 서명이 늦게 도착했을 가능성). 원인은 모른다.
+8. **테스트 사용자 시계 차이는 2~3초**였다(Mac과 VM).
+
+### 이번에 확인하지 못한 것 (컷오버 후에도 남음)
+- 클라이언트가 보낸 `Tailscale-User-Login` 헤더를 serve가 지우는지(소스 읽기만 했고 실서버에서 시험하지 않음).
+- 게이트 서명 검증 비용(X3): 측정하지 않았다. 작업 #40의 승인 대기 → `done`이 약 3분이었으나 이는 판정 전체 시간이고 서명 검증 비용을 분리해 재지 않았다.
+- 서명 카운터 값, iCloud 키체인 동기화 동작, 키보드·스크린 리더 사용.
+- 로그아웃 후 401, 새로고침 시 세션 유지, 두 번째 탭의 `csrf_failed` 한 번 재시도.
+- VM에서 서명 없이 옛 방식(TTY)으로 승인하려 할 때의 거부(승인 대기 항목이 있어야 시험 가능).
+- 롤백(6단계): 실행하지 않았다.
+- 서명 없는 옛 승인 항목 3개가 승인 파일에 남아 있다(서명 모드에서 인정되지 않음, 이미 끝난 작업의 이력).
+- 집 맥북 등 다른 기기의 서명자 등록: 하지 않았다.
