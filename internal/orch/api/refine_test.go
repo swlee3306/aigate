@@ -476,6 +476,7 @@ func TestRefineErrorsAreFixedAndNeverEchoBrokerText(t *testing.T) {
 		{"looks_like_secret", 400, "bad_request"},
 		{"too_large", 400, "bad_request"},
 		{"bad_file", 400, "bad_request"},
+		{"registry_unavailable", 503, "registry_unavailable"},
 		{"busy", 503, "broker_unavailable"},
 		{"forbidden", 503, "broker_unavailable"},
 	}

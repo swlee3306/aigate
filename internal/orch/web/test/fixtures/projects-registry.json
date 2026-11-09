@@ -1,0 +1,32 @@
+{
+  "auto_merge_global": {
+    "enabled": false,
+    "max_per_day": 5
+  },
+  "projects": [
+    {
+      "id": "docs",
+      "path": "/home/orch/repos/docs",
+      "kind": "docs",
+      "ai_context": false,
+      "gitlab": {
+        "project": "team/docs",
+        "project_id": null
+      },
+      "auto_merge": {
+        "enabled": false
+      }
+    },
+    {
+      "id": "calc",
+      "path": "/home/orch/repos/calc",
+      "kind": "code",
+      "ai_context": true,
+      "gitlab": null,
+      "auto_merge": {
+        "enabled": false
+      }
+    }
+  ],
+  "providers": []
+}

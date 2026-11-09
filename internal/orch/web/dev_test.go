@@ -11,8 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"aigate/internal/approval/signing"
 	"aigate/internal/orch/api"
 	"aigate/internal/orch/web"
+	"aigate/internal/registrymsg"
 )
 
 // TestDevServer is a manual aid, off by default: ORCH_WEB_DEV=<seconds> serves
@@ -207,11 +209,127 @@ func TestDevServer(t *testing.T) {
 		json(w, `{"signers":[{"id":"phone","credential_id":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8","label":"내 폰 <b>x</b>"},
 {"id":"mac.backup","credential_id":"HxwdHhscGxoZGBcWFRQTEhEQDw4NDAsKCQgHBgUEAwIBAA","label":"예비 키"}]}`)
 	})
+	// W3a: the project registry. The state lives in memory. A successful apply
+	// changes it (a register adds a row, a set_flag flips ai_context), so the
+	// list can be seen to change. No signature is verified here: this is a
+	// look at the screens, not a test of the broker. Select behaviour with
+	// /dev-set-projects?propose=ok|mismatch&apply=ok|<error code>.
+	var projMu sync.Mutex
+	projects := []map[string]any{
+		{"id": "docs", "path": "/home/orch/repos/docs", "kind": "docs", "ai_context": false, "gitlab": map[string]any{"project": "team/docs", "project_id": nil}, "auto_merge": map[string]any{"enabled": false}},
+		{"id": "calc", "path": "/home/orch/repos/calc", "kind": "code", "ai_context": true, "gitlab": nil, "auto_merge": map[string]any{"enabled": false}},
+	}
+	projPropose, projApply := "ok", "ok"
+	projStatus := map[string]int{"not_signed": 400, "bad_signature": 403, "unknown_signer": 403, "stale_signature": 403, "signers_unavailable": 503,
+		"request_reused": 409, "change_mismatch": 400, "project_exists": 409, "project_unknown": 404, "path_not_allowed": 400,
+		"registry_unavailable": 503, "not_supported": 400, "outcome_unknown": 504, "project_rate_limited": 429}
+	mux.HandleFunc("/api/v1/projects/registry", func(w http.ResponseWriter, r *http.Request) {
+		projMu.Lock()
+		defer projMu.Unlock()
+		b, _ := stdjson.Marshal(map[string]any{"projects": projects, "providers": []any{}, "auto_merge_global": map[string]any{"enabled": false, "max_per_day": 5}})
+		serve(w, b)
+	})
+	mux.HandleFunc("/api/v1/projects/candidates", func(w http.ResponseWriter, r *http.Request) {
+		if os.Getenv("ORCH_WEB_LONGPATH") != "" { // a 300-character candidate path, for the 390px check
+			long := "/home/orch/repos/" + strings.Repeat("abcdefghij", 28) + "x"
+			b, _ := stdjson.Marshal(map[string]any{"candidates": []map[string]any{{"path": long, "head": "0123456789abcdef0123456789abcdef01234567"}}, "kinds": []string{"docs"}})
+			serve(w, b)
+			return
+		}
+		serve(w, fixture("projects-candidates.json"))
+	})
+	type projBody struct {
+		Action  string         `json:"action"`
+		Subject string         `json:"subject"`
+		Fields  map[string]any `json:"fields"`
+		Change  string         `json:"change"`
+	}
+	mux.HandleFunc("/api/v1/projects/propose", func(w http.ResponseWriter, r *http.Request) {
+		var in projBody
+		_ = stdjson.NewDecoder(r.Body).Decode(&in)
+		change, err := registrymsg.ChangeHash(in.Action, in.Subject, in.Fields)
+		if err != nil {
+			w.WriteHeader(400)
+			json(w, `{"error":{"code":"bad_request","message":"dev"}}`)
+			return
+		}
+		projMu.Lock()
+		mode := projPropose
+		projMu.Unlock()
+		shown := change
+		if mode == "mismatch" {
+			shown = strings.Repeat("0", 64) // a server that signs something else than the screen says
+		}
+		issued := time.Now().UTC().Truncate(time.Second)
+		msg := signing.RegistryMessage{Action: in.Action, Subject: in.Subject, Change: shown, Request: registrymsg.NewRequestID(), Issued: issued}
+		ai, _ := in.Fields["ai_context"].(bool)
+		if in.Action == "set_flag" {
+			ai, _ = in.Fields["value"].(bool)
+		}
+		on := "[중요] 이 저장소의 파일 내용이 외부 AI 서비스(OpenAI)로 전송될 수 있게 허용합니다. AI 계획 기능을 쓰면 요구사항과 저장소의 일부 파일 내용이 서비스 밖으로 나갑니다"
+		off := "이 저장소의 파일 내용은 AI 서비스로 전송되지 않습니다(전송 허용 꺼짐)"
+		line := off
+		if ai {
+			line = on
+		}
+		pv := []string{"새 프로젝트 '" + in.Subject + "'를 등록합니다", line, "서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다"}
+		if in.Action == "set_flag" {
+			pv = []string{"프로젝트 '" + in.Subject + "'의 AI 전송 허용 설정을 바꿉니다", line, "서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다"}
+		}
+		b, _ := stdjson.Marshal(map[string]any{"action": in.Action, "subject": in.Subject, "fields": in.Fields, "message": msg.Text(), "change": shown,
+			"request": msg.Request, "issued": issued.Format("2006-01-02T15:04:05Z"), "preview": pv})
+		serve(w, b)
+	})
+	mux.HandleFunc("/api/v1/projects/apply", func(w http.ResponseWriter, r *http.Request) {
+		var in projBody
+		_ = stdjson.NewDecoder(r.Body).Decode(&in)
+		projMu.Lock()
+		defer projMu.Unlock()
+		if projApply != "ok" {
+			st := projStatus[projApply]
+			if st == 0 {
+				st = 500
+			}
+			w.WriteHeader(st)
+			json(w, `{"error":{"code":"`+projApply+`","message":"dev <img src=x onerror=alert(1)> SERVER-WORDS"}}`)
+			return
+		}
+		switch in.Action {
+		case "register_project":
+			p := map[string]any{"id": in.Subject, "path": in.Fields["path"], "kind": in.Fields["kind"], "ai_context": in.Fields["ai_context"], "gitlab": nil, "auto_merge": map[string]any{"enabled": false}}
+			projects = append(projects, p)
+			b, _ := stdjson.Marshal(p)
+			serve(w, b)
+		default:
+			for _, p := range projects {
+				if p["id"] == in.Subject {
+					p["ai_context"] = in.Fields["value"]
+					b, _ := stdjson.Marshal(p)
+					serve(w, b)
+					return
+				}
+			}
+			w.WriteHeader(404)
+			json(w, `{"error":{"code":"project_unknown","message":"dev"}}`)
+		}
+	})
 	console := web.Handler()
 	srv := &http.Server{Addr: "127.0.0.1:" + port, ReadHeaderTimeout: 5 * time.Second,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Security-Policy", api.ContentSecurityPolicy)
 			w.Header().Set("X-Content-Type-Options", "nosniff")
+			if r.URL.Path == "/dev-set-projects" {
+				projMu.Lock()
+				if v := r.URL.Query().Get("propose"); v != "" {
+					projPropose = v
+				}
+				if v := r.URL.Query().Get("apply"); v != "" {
+					projApply = v
+				}
+				projMu.Unlock()
+				_, _ = w.Write([]byte("ok"))
+				return
+			}
 			if r.URL.Path == "/dev-set-ops" {
 				n := r.URL.Query().Get("name")
 				if !strings.HasPrefix(n, "ops") || !strings.HasSuffix(n, ".json") || strings.ContainsAny(n, "/\\") {

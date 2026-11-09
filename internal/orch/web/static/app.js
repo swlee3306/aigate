@@ -27,7 +27,7 @@ import { bindSkipLink, showNotice, replaceContent, renderBootFailure } from './s
 export { registerView };
 
 // Files under /views/ that register views (added by later tasks).
-const VIEW_MODULES = ['tasks', 'task', 'new', 'plan', 'ops', 'diff', 'approvals', 'login'];
+const VIEW_MODULES = ['tasks', 'task', 'new', 'plan', 'projects', 'ops', 'diff', 'approvals', 'login'];
 
 const POLL_MS = 10000;
 const $ = (id) => document.getElementById(id);

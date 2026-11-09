@@ -33,6 +33,12 @@ func (h *handler) mountV1(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+v1Prefix+"/stages", h.stages)
 	mux.HandleFunc("GET "+v1Prefix+"/overview", h.overview)
 	mux.HandleFunc("GET "+v1Prefix+"/projects", h.projects)
+	// Project registry (projects.go): reads, a read-only proposal, and a signed
+	// apply (write tier; the signature is checked by the broker).
+	mux.HandleFunc("GET "+v1Prefix+"/projects/registry", h.projectsRegistry)
+	mux.HandleFunc("GET "+v1Prefix+"/projects/candidates", h.projectsCandidates)
+	mux.HandleFunc("POST "+v1Prefix+"/projects/propose", h.requireWrite(h.projectsPropose))
+	mux.HandleFunc("POST "+v1Prefix+"/projects/apply", h.requireWrite(h.projectsApply))
 	mux.HandleFunc("GET "+v1Prefix+"/policy", h.policyView)
 	mux.HandleFunc("GET "+v1Prefix+"/ops", h.opsView)
 	mux.HandleFunc("GET "+v1Prefix+"/repos", h.repos)

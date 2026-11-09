@@ -46,6 +46,7 @@ export function fakeCtx(routes, extra) {
   const ctx = {
     root,
     params: extra.params || [],
+    session: extra.session,
     calls: [],
     posts: [],
     nav: navSink,

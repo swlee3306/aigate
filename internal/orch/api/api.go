@@ -238,6 +238,9 @@ type handler struct {
 	refineStore  *refine.Store
 	refineLimit  *actorLimiter
 	previewLimit *actorLimiter
+	// Registry endpoints (projects.go): separate per-actor buckets.
+	proposeLimit *actorLimiter
+	applyLimit   *actorLimiter
 	refineOpts   refine.Options
 }
 
@@ -253,6 +256,8 @@ func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome 
 	h.refineStore = refine.NewStore(h.clock)
 	h.refineLimit = newActorLimiter(RefinePerActorHour, time.Hour)
 	h.previewLimit = newActorLimiter(PreviewPerActorHour, time.Hour)
+	h.proposeLimit = newActorLimiter(ProjectProposePerActorHour, time.Hour)
+	h.applyLimit = newActorLimiter(ProjectApplyPerActorHour, time.Hour)
 	for _, r := range allowed {
 		if !filepath.IsAbs(r) || filepath.Clean(r) != r {
 			return nil, fmt.Errorf("allowed repo root %q must be an absolute clean path", r)

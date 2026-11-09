@@ -231,3 +231,15 @@ pre.block-pre { font-family: var(--mono); font-size: 13px; background: var(--bg)
 .plan-warn { margin: 16px 0 12px; }
 [data-section="mr"] .btn { margin-top: 8px; }
 [data-focus-key="p-err"] { margin-bottom: 12px; }
+
+/* projects: on a phone each registry row becomes a stacked card, labelled from data-label */
+@media (max-width: 760px) {
+  .ptable thead { display: none; }
+  .ptable, .ptable tbody, .ptable tr, .ptable td { display: block; width: auto; }
+  .ptable tr { padding: 10px 14px; border-top: 1px solid var(--line); }
+  .ptable td { border: 0; padding: 3px 0; overflow-wrap: anywhere; }
+  .ptable td[data-label]::before { content: attr(data-label) ": "; color: var(--muted); font-size: 12px; }
+  .ptable td:last-child { padding-top: 8px; }
+}
+.pfacts { padding-left: 20px; min-width: 0; } .pfacts li { min-width: 0; }
+.pfacts .mono, .ptable td.mono { overflow-wrap: anywhere; }

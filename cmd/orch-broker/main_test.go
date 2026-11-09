@@ -83,6 +83,7 @@ func checkEnv(t *testing.T) (cfgPath, stateDir, keyFile, gitlabAddr string, hits
 		"version": 1, "socket": filepath.Join(dir, "b.sock"), "socket_group": grp.Name, "allow_uids": []string{cur.Username},
 		"openai": map[string]any{"model": "test-model", "key_file": keyFile,
 			"pricing": map[string]any{"input_usd_per_mtok": 2.5, "output_usd_per_mtok": 10}},
+		"repo_roots":    []string{"/home/orch/repos"},
 		"context_repos": []string{filepath.Join(dir, "repo")},
 		"gitlab": map[string]any{"base_url": "http://" + gitlabAddr, "token_file": tokFile,
 			"projects": map[string]any{filepath.Join(dir, "repo"): "g/p"}, "target_branch": "main"},
@@ -97,9 +98,18 @@ func checkEnv(t *testing.T) (cfgPath, stateDir, keyFile, gitlabAddr string, hits
 
 // trustForTest makes the temp dir's owner (the test user) the trusted owner.
 func trustForTest(dir string) checkOptions {
+	sp := filepath.Join(dir, "etc-aigate", "signers.json")
+	if _, err := os.Stat(sp); err != nil {
+		os.MkdirAll(filepath.Dir(sp), 0o755)
+		os.Chmod(filepath.Dir(sp), 0o755)
+		os.WriteFile(sp, []byte(`{"version":1,"signers":[]}`), 0o644)
+		os.Chmod(sp, 0o644)
+	}
 	return checkOptions{
-		Load:       broker.LoadOptions{Trust: broker.TrustOptions{OwnerOK: func(uint32) bool { return true }, StopAt: dir}},
-		KeyOwnerOK: func(uint32) bool { return true },
+		Load:           broker.LoadOptions{Trust: broker.TrustOptions{OwnerOK: func(uint32) bool { return true }, StopAt: dir}},
+		KeyOwnerOK:     func(uint32) bool { return true },
+		SignersPath:    sp,
+		SignersOwnerOK: func(uint32) bool { return true },
 	}
 }
 
@@ -182,5 +192,161 @@ func TestRunCheckFlag(t *testing.T) {
 	}
 	if rc := run([]string{"--check", "extra"}, &out); rc != 2 {
 		t.Fatalf("rc=%d", rc)
+	}
+}
+
+func TestCheckWarnsAboutLegacyEntries(t *testing.T) {
+	cfg, state, _, _, _ := checkEnv(t)
+	o := trustForTest(filepath.Dir(cfg))
+	// no registry yet: the legacy entries are about to be migrated, no warning
+	var out bytes.Buffer
+	if rc := checkConfig(cfg, state, o, &out); rc != 0 || strings.Contains(out.String(), "경고") {
+		t.Fatalf("rc=%d out=%q", rc, out.String())
+	}
+	// a registry exists and broker.json still lists the old entries: warn, rc 0
+	if _, err := broker.OpenRegistry(state, broker.LegacySource{}, broker.RegistryOptions{OwnerOK: func(uint32) bool { return true }}); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if rc := checkConfig(cfg, state, o, &out); rc != 0 {
+		t.Fatalf("rc=%d out=%q", rc, out.String())
+	}
+	if !strings.Contains(out.String(), "경고") || !strings.Contains(out.String(), "context_repos") || !strings.Contains(out.String(), "통과") {
+		t.Fatalf("no warning sentence: %q", out.String())
+	}
+	if strings.Contains(out.String(), "/repo") || strings.Contains(out.String(), "g/p") {
+		t.Fatalf("warning quotes config values: %q", out.String())
+	}
+}
+
+func TestCheckRefusesBrokenRegistry(t *testing.T) {
+	cfg, state, _, _, _ := checkEnv(t)
+	if err := os.WriteFile(filepath.Join(state, broker.RegistryFileName), []byte("junk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if rc := checkConfig(cfg, state, trustForTest(filepath.Dir(cfg)), &out); rc == 0 || !strings.Contains(out.String(), "등록부") {
+		t.Fatalf("rc=%d out=%q", rc, out.String())
+	}
+	if b, _ := os.ReadFile(filepath.Join(state, broker.RegistryFileName)); string(b) != "junk" {
+		t.Fatal("-check modified the registry")
+	}
+}
+
+// --- final fix round: -check also covers the signers list, the used-request
+// file, repo_roots and a dry-run of the migration (all read-only) ---
+
+func stateEntries(t *testing.T, state string) []string {
+	t.Helper()
+	es, _ := os.ReadDir(state)
+	var n []string
+	for _, e := range es {
+		n = append(n, e.Name())
+	}
+	return n
+}
+
+func TestCheckRefusesMissingOrUntrustedSigners(t *testing.T) {
+	for name, mod := range map[string]func(sp string){
+		"absent":         func(sp string) { os.Remove(sp) },
+		"group writable": func(sp string) { os.Chmod(sp, 0o664) },
+		"broken json":    func(sp string) { os.WriteFile(sp, []byte("{"), 0o644) },
+		"dir writable":   func(sp string) { os.Chmod(filepath.Dir(sp), 0o777) },
+	} {
+		cfg, state, _, _, _ := checkEnv(t)
+		o := trustForTest(filepath.Dir(cfg))
+		mod(o.SignersPath)
+		var out bytes.Buffer
+		rc := checkConfig(cfg, state, o, &out)
+		os.Chmod(filepath.Dir(o.SignersPath), 0o755)
+		if rc == 0 || !strings.Contains(out.String(), "서명자 목록") {
+			t.Errorf("%s: rc=%d out=%q", name, rc, out.String())
+		}
+		if len(stateEntries(t, state)) != 0 {
+			t.Errorf("%s: -check wrote into the state dir", name)
+		}
+	}
+}
+
+func TestCheckRefusesBrokenUsedRequestsFile(t *testing.T) {
+	cfg, state, _, _, _ := checkEnv(t)
+	o := trustForTest(filepath.Dir(cfg))
+	for name, content := range map[string]string{"junk": "junk", "version": `{"version":2,"entries":{}}`, "bad id": `{"version":1,"entries":{"x":1}}`} {
+		os.WriteFile(filepath.Join(state, broker.UsedRequestsFileName), []byte(content), 0o600)
+		var out bytes.Buffer
+		if rc := checkConfig(cfg, state, o, &out); rc == 0 || !strings.Contains(out.String(), "요청 ID") {
+			t.Errorf("%s: rc=%d out=%q", name, rc, out.String())
+		}
+		if b, _ := os.ReadFile(filepath.Join(state, broker.UsedRequestsFileName)); string(b) != content {
+			t.Errorf("%s: -check modified the file", name)
+		}
+	}
+	// wrong mode is broken too
+	os.WriteFile(filepath.Join(state, broker.UsedRequestsFileName), []byte(`{"version":1,"entries":{}}`), 0o644)
+	os.Chmod(filepath.Join(state, broker.UsedRequestsFileName), 0o644)
+	var out bytes.Buffer
+	if rc := checkConfig(cfg, state, o, &out); rc == 0 {
+		t.Errorf("mode 0644 accepted: %q", out.String())
+	}
+	// a good one passes
+	os.WriteFile(filepath.Join(state, broker.UsedRequestsFileName), []byte(`{"version":1,"entries":{}}`), 0o600)
+	os.Chmod(filepath.Join(state, broker.UsedRequestsFileName), 0o600)
+	out.Reset()
+	if rc := checkConfig(cfg, state, o, &out); rc != 0 {
+		t.Errorf("good file refused: %q", out.String())
+	}
+}
+
+func TestCheckWarnsWhenRepoRootsIsEmpty(t *testing.T) {
+	cfg, state, _, _, _ := checkEnv(t)
+	set := func(v any) {
+		raw, _ := os.ReadFile(cfg)
+		var m map[string]any
+		json.Unmarshal(raw, &m)
+		if v == nil {
+			delete(m, "repo_roots")
+		} else {
+			m["repo_roots"] = v
+		}
+		b, _ := json.Marshal(m)
+		os.WriteFile(cfg, b, 0o644)
+	}
+	set(nil)
+	var out bytes.Buffer
+	if rc := checkConfig(cfg, state, trustForTest(filepath.Dir(cfg)), &out); rc != 0 || !strings.Contains(out.String(), "repo_roots") || !strings.Contains(out.String(), "path_not_allowed") {
+		t.Fatalf("rc=%d out=%q", rc, out.String())
+	}
+	set([]string{"/home/orch/repos"})
+	out.Reset()
+	if rc := checkConfig(cfg, state, trustForTest(filepath.Dir(cfg)), &out); rc != 0 || strings.Contains(out.String(), "경고") {
+		t.Fatalf("rc=%d out=%q", rc, out.String())
+	}
+}
+
+func TestCheckDryRunsMigrationAndRefusesConflict(t *testing.T) {
+	cfg, state, _, _, _ := checkEnv(t)
+	raw, _ := os.ReadFile(cfg)
+	var m map[string]any
+	json.Unmarshal(raw, &m)
+	m["context_repos"] = []string{"/srv/a/same", "/srv/b/same"} // both become the id "same"
+	m["gitlab"] = nil
+	delete(m, "gitlab")
+	b, _ := json.Marshal(m)
+	os.WriteFile(cfg, b, 0o644)
+	o := trustForTest(filepath.Dir(cfg))
+	var out bytes.Buffer
+	if rc := checkConfig(cfg, state, o, &out); rc == 0 || !strings.Contains(out.String(), "옮길 수 없습니다") {
+		t.Fatalf("rc=%d out=%q", rc, out.String())
+	}
+	if len(stateEntries(t, state)) != 0 {
+		t.Fatal("the dry run wrote something")
+	}
+	// once a registry exists the legacy entries are not migrated again: only a warning
+	if _, err := broker.OpenRegistry(state, broker.LegacySource{}, broker.RegistryOptions{OwnerOK: func(uint32) bool { return true }}); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if rc := checkConfig(cfg, state, o, &out); rc != 0 {
+		t.Fatalf("rc=%d out=%q", rc, out.String())
 	}
 }

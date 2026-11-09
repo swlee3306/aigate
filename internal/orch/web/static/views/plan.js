@@ -181,6 +181,7 @@ const REFINE_ERRORS = {
   selection_changed: '미리보기 이후 저장소나 요구사항 글이 바뀌었습니다. 미리보기를 다시 하세요.',
   selection_expired: '미리보기가 만료되었습니다. 미리보기를 다시 하세요.',
   budget_exceeded: 'AI 사용 예산 또는 호출 한도를 넘었습니다. 관리자에게 알려 주세요.',
+  registry_unavailable: '프로젝트 등록부를 사용할 수 없어 AI 전송이 꺼져 있습니다. 관리자에게 알려 주세요.',
   upstream_error: 'AI 서비스 호출에 실패했습니다. 잠시 후 다시 시도하세요.',
   bad_plan: 'AI가 계획서 형식을 지키지 않았습니다. 다시 시도하거나 요구사항 글을 바꿔 보세요.',
   bad_request: '요청을 처리할 수 없습니다. 저장소와 요구사항 글을 확인하세요.',

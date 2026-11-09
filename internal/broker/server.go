@@ -62,6 +62,20 @@ var fixedMessages = map[string]string{
 	"repo_not_mapped": "이 저장소는 GitLab 프로젝트에 연결되어 있지 않습니다.",
 	"bad_branch":      "브랜치 이름이 올바르지 않습니다.",
 	"bad_url":         "GitLab이 설정된 주소 밖의 주소를 돌려주었습니다.",
+
+	"registry_unavailable": "프로젝트 등록부를 사용할 수 없습니다. 관리자가 확인해야 합니다.",
+
+	"not_signed":          "서명이 없는 변경 요청입니다.",
+	"bad_signature":       "서명이 올바르지 않습니다.",
+	"unknown_signer":      "등록되지 않은 서명자입니다.",
+	"stale_signature":     "서명이 만료되었거나 시각이 맞지 않습니다.",
+	"signers_unavailable": "서명자 목록을 사용할 수 없습니다. 관리자가 확인해야 합니다.",
+	"request_reused":      "이미 사용된 요청입니다.",
+	"change_mismatch":     "서명한 변경 내용과 요청 내용이 다릅니다.",
+	"project_exists":      "같은 id 또는 경로의 프로젝트가 이미 있습니다.",
+	"project_unknown":     "등록되지 않은 프로젝트입니다.",
+	"path_not_allowed":    "이 경로는 프로젝트로 등록할 수 없습니다.",
+	"not_supported":       "이 버전에서는 지원하지 않는 변경입니다.",
 }
 
 // Default per-op processing time limits (decision D1).
@@ -69,6 +83,12 @@ var defaultOpTimeouts = map[string]time.Duration{
 	"refine":    60 * time.Second,
 	"create_mr": 20 * time.Second,
 	"status":    5 * time.Second,
+
+	// A `timeout` reply to a write op means the outcome is unknown: the
+	// handler may still complete. Re-read `projects` before retrying.
+	"projects":         10 * time.Second,
+	"register_project": 10 * time.Second,
+	"set_flag":         10 * time.Second,
 }
 
 // State is the broker's mutable limit state.
@@ -85,9 +105,12 @@ type Server struct {
 	Handlers map[string]HandlerFunc
 	State    State
 	Secrets  Secrets
-	OpenAI   *OpenAIClient // set by New; tests may point BaseURL at a fake
-	GitLab   *GitLabClient // set by New; tests may point BaseURL at a fake
+	OpenAI   *OpenAIClient  // set by New; tests may point BaseURL at a fake
+	GitLab   *GitLabClient  // set by New; tests may point BaseURL at a fake
+	Registry *RegistryStore // set by New: the project registry (owned by the broker)
+	Used     *UsedRequests  // set by New: one-time request IDs of signed changes
 
+	Now         func() time.Time               // nil: time.Now (test seam: broker clock of signed writes)
 	PeerUID     func(net.Conn) (uint32, error) // nil: kernel peer credentials
 	AllowUID    func(uint32) bool              // nil: Config.UIDs()
 	LookupGroup func(name string) (int, error) // nil: os/user
@@ -124,40 +147,64 @@ func New(cfg Config, o Options) (*Server, error) {
 	if dir == "" {
 		dir = DefaultStateDir
 	}
+	// Start-up order: config trust (done by the caller) -> registry (migrates a
+	// missing one) -> used request IDs -> handlers. A registry or used-request
+	// file that cannot be trusted does not stop the broker: everything that
+	// depends on it answers registry_unavailable (fail closed, no fallback).
+	sopts := RegistryOptions{OwnerOK: o.KeyOwnerOK}
+	reg, err := OpenRegistry(dir, LegacySource{ContextRepos: cfg.ContextRepos, GitLabProjects: cfg.GitLab.Projects}, sopts)
+	if err != nil && !errors.Is(err, ErrRegistryBroken) {
+		return nil, err
+	}
+	used, err := OpenUsedRequests(dir, sopts)
+	if err != nil && !errors.Is(err, ErrUsedRequestsBroken) {
+		return nil, err
+	}
 	bud, err := OpenBudget(filepath.Join(dir, "budget.json"), Micros(cfg.Limits.WeeklyBudgetUSD), o.Clock)
 	if err != nil {
 		return nil, err
 	}
 	s := &Server{
-		Config:  cfg,
-		Secrets: sec,
-		OpenAI:  &OpenAIClient{Key: sec.OpenAIKey(), Model: cfg.OpenAI.Model},
-		mrLock:  make(chan struct{}, 1),
-		GitLab:  &GitLabClient{BaseURL: cfg.GitLab.BaseURL, Token: sec.GitLabToken()},
-		Log:     o.Log,
+		Config:   cfg,
+		Secrets:  sec,
+		OpenAI:   &OpenAIClient{Key: sec.OpenAIKey(), Model: cfg.OpenAI.Model},
+		mrLock:   make(chan struct{}, 1),
+		Registry: reg,
+		Used:     used,
+		GitLab:   &GitLabClient{BaseURL: cfg.GitLab.BaseURL, Token: sec.GitLabToken()},
+		Log:      o.Log,
 		State: State{
 			Refine:   NewHourlyLimiter(cfg.Limits.RefinePerHour, o.Clock),
 			CreateMR: NewHourlyLimiter(cfg.Limits.CreateMRPerHour, o.Clock),
 			Budget:   bud,
 		},
 	}
+	if reg.Err() != nil {
+		s.logf("프로젝트 등록부를 신뢰할 수 없어 등록부가 필요한 작업을 거부합니다")
+	}
+	if used.broken {
+		s.logf("사용된 요청 ID 목록을 신뢰할 수 없어 쓰기 작업을 거부합니다")
+	}
 	bud.OnPersistError = func() { s.logf("예산 상태 저장 실패: 요청을 거부합니다") }
 	s.Handlers = map[string]HandlerFunc{
 		"status":    s.statusHandler,
 		"refine":    s.refineHandler,
 		"create_mr": s.createMRHandler,
+
+		"projects":         s.projectsHandler,
+		"register_project": s.registerProjectHandler,
+		"set_flag":         s.setFlagHandler,
 	}
 	return s, nil
 }
 
 // statusHandler is read-only and secret-free (decision D3).
 func (s *Server) statusHandler(context.Context, json.RawMessage) (any, *OpError) {
-	repos := append([]string{}, s.Config.ContextRepos...)
-	projects := make([]string, 0, len(s.Config.GitLab.Projects))
-	for repo := range s.Config.GitLab.Projects {
-		projects = append(projects, repo)
+	if s.Registry.Err() != nil {
+		return fail("registry_unavailable")
 	}
-	sortStrings(projects)
+	repos := s.Registry.AIContextPaths()
+	projects := s.Registry.GitLabPaths()
 	remaining := s.State.Budget.RemainingMicros()
 	return map[string]any{
 		"context_repos":               repos,
@@ -166,14 +213,6 @@ func (s *Server) statusHandler(context.Context, json.RawMessage) (any, *OpError)
 		"mr_projects":                 projects,
 		"weekly_budget_remaining_usd": float64(remaining) / 1e6,
 	}, nil
-}
-
-func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j] < s[j-1]; j-- {
-			s[j], s[j-1] = s[j-1], s[j]
-		}
-	}
 }
 
 func (s *Server) setup() {

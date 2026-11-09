@@ -14,6 +14,7 @@ import (
 	"os/user"
 	"syscall"
 
+	"aigate/internal/approval/signing"
 	"aigate/internal/broker"
 )
 
@@ -60,6 +61,10 @@ func run(args []string, stderr io.Writer) int {
 type checkOptions struct {
 	Load       broker.LoadOptions
 	KeyOwnerOK func(uint32) bool
+	// SignersPath and SignersOwnerOK replace the signers list location and its
+	// trusted owner (nil/empty: production defaults, root-owned /etc/aigate/signers.json).
+	SignersPath    string
+	SignersOwnerOK func(uint32) bool
 }
 
 // checkConfig is `orch-broker -check`: it applies exactly the start-up
@@ -85,6 +90,38 @@ func checkConfig(cfgPath, stateDir string, o checkOptions, out io.Writer) int {
 	}
 	if fi, err := os.Stat(stateDir); err != nil || !fi.IsDir() {
 		return refuse(errors.New("상태 폴더(state-dir)가 없거나 폴더가 아닙니다"))
+	}
+	// The signers list must load (present and trusted) or every registry write
+	// would be refused at run time; -check opens it read-only.
+	sPath, sOpts := signing.RegistryPath(), signing.DefaultOptions
+	if o.SignersPath != "" {
+		sPath, sOpts = o.SignersPath, signing.RegistryOptions{OwnerOK: o.SignersOwnerOK}
+	}
+	if _, err := signing.LoadRegistry(sPath, sOpts); err != nil {
+		return refuse(errors.New("서명자 목록(signers.json)이 없거나 신뢰할 수 없어 등록 변경이 모두 거부됩니다"))
+	}
+	// Read-only registry check: a registry that cannot be trusted is refused;
+	// legacy entries that still sit in broker.json next to an existing registry
+	// are only a warning (the registry wins, start is not blocked).
+	exists, err := broker.RegistryStatus(stateDir, broker.RegistryOptions{OwnerOK: o.KeyOwnerOK})
+	if err != nil {
+		return refuse(errors.New("프로젝트 등록부를 신뢰할 수 없습니다(깨졌거나 소유자·권한이 올바르지 않음)"))
+	}
+	if err := broker.UsedRequestsStatus(stateDir, broker.RegistryOptions{OwnerOK: o.KeyOwnerOK}); err != nil {
+		return refuse(errors.New("쓴 요청 ID 파일(used-requests.json)을 신뢰할 수 없습니다(깨졌거나 소유자·권한이 올바르지 않음)"))
+	}
+	if len(cfg.RepoRoots) == 0 {
+		fmt.Fprintln(out, "orch-broker: 경고: repo_roots가 비어 있어 프로젝트 등록이 모두 path_not_allowed가 됩니다")
+	}
+	if !exists {
+		// The registry is about to be created from the legacy entries: dry-run
+		// that in memory so an id clash is found now, not at start.
+		if err := broker.MigrationDryRun(cfg); err != nil {
+			return refuse(err)
+		}
+	}
+	if exists && (len(cfg.ContextRepos) > 0 || len(cfg.GitLab.Projects) > 0) {
+		fmt.Fprintln(out, "orch-broker: 경고: 프로젝트 등록부가 있으므로 broker.json의 context_repos·gitlab.projects는 무시됩니다. 설정에서 지워도 됩니다")
 	}
 	fmt.Fprintln(out, "orch-broker: 점검 통과 (설정·신뢰·키 모드·소켓 그룹·상태 폴더만 확인했습니다. 외부 접속은 하지 않았습니다)")
 	return 0
