@@ -226,7 +226,7 @@ func (w *wenv) signedArgsWith(who testSigner, action, subject string, fields map
 		w.t.Fatal(err)
 	}
 	msg := signing.RegistryMessage{Action: action, Subject: subject, Change: h, Request: request, Issued: issued}
-	args := map[string]any{"id": subject, "request": request, "issued": issued.Format("2006-01-02T15:04:05Z"),
+	args := map[string]any{"id": subject, "change": h, "request": request, "issued": issued.Format("2006-01-02T15:04:05Z"),
 		"signature": who.sign(w.t, msg, ns)}
 	for k, v := range fields {
 		args[k] = v
@@ -439,23 +439,40 @@ func TestRegisterChangeMismatchRefused(t *testing.T) {
 			}
 		})
 	}
-	// without the explicit hash the broker recomputes it, so a tampered request
-	// can never carry a valid signature at all
-	args := w.signedArgs(w.alice, "register_project", "proj-a", signed)
-	args["ai_context"] = true
-	w.wantCode("register_project", args, "bad_signature")
-	// the untampered request, hash included, works
-	args = w.signedArgs(w.alice, "register_project", "proj-a", signed)
-	args["change"] = h
-	if _, e := w.do("register_project", args); e != nil {
-		t.Fatalf("honest request: %v", e)
+	// `change` is required: without it the request is refused before the
+	// signers are read or the request ID is spent
+	reqID := registrymsg.NewRequestID()
+	nochange := w.signedArgsWith(w.alice, "register_project", "proj-a", signed, reqID, w.now, signing.NamespaceRegistry)
+	delete(nochange, "change")
+	w.wantCode("register_project", nochange, "change_mismatch")
+	if !bytes.Equal(before, w.regFile()) {
+		t.Fatal("registry changed")
 	}
-	// set_flag has the same check
+	honest := w.signedArgsWith(w.alice, "register_project", "proj-a", signed, reqID, w.now, signing.NamespaceRegistry)
+	if _, e := w.do("register_project", honest); e != nil {
+		t.Fatalf("same request ID after a refused no-change request: %v", e)
+	}
+	sfReq := registrymsg.NewRequestID()
+	nosf := w.signedArgsWith(w.alice, "set_flag", "proj-a", flagFields("ai_context", true), sfReq, w.now, signing.NamespaceRegistry)
+	delete(nosf, "change")
+	afterReg := w.regFile()
+	w.wantCode("set_flag", nosf, "change_mismatch")
+	if !bytes.Equal(afterReg, w.regFile()) {
+		t.Fatal("registry changed")
+	}
+	if _, e := w.do("set_flag", w.signedArgsWith(w.alice, "set_flag", "proj-a", flagFields("ai_context", true), sfReq, w.now, signing.NamespaceRegistry)); e != nil {
+		t.Fatalf("set_flag same request ID after refusal: %v", e)
+	}
+	// not_signed still comes first
+	both := w.signedArgs(w.alice, "register_project", "proj-z", regFields(other, "default", true))
+	delete(both, "change")
+	delete(both, "signature")
+	w.wantCode("register_project", both, "not_signed")
+	// set_flag tampered value (signed true, sent false) is refused; flag stays on
 	sf := w.signedArgs(w.alice, "set_flag", "proj-a", flagFields("ai_context", true))
-	sf["change"], _ = registrymsg.ChangeHash("set_flag", "proj-a", flagFields("ai_context", true))
 	sf["value"] = false
 	w.wantCode("set_flag", sf, "change_mismatch")
-	if pr, _ := w.find("proj-a"); pr.AIContext {
+	if pr, _ := w.find("proj-a"); !pr.AIContext {
 		t.Fatal("set_flag applied a tampered value")
 	}
 }
@@ -675,30 +692,35 @@ func TestWriteOpsNeverChangeRegistryOnAnyFailure(t *testing.T) {
 	type c struct {
 		op   string
 		args map[string]any
+		code string
 	}
 	cases := []c{
-		{"register_project", mut(reg, func(a map[string]any) { delete(a, "signature") })},
-		{"register_project", mut(reg, func(a map[string]any) { a["kind"] = "zzz" })},
-		{"register_project", mut(reg, func(a map[string]any) { a["extra"] = 1 })},
-		{"register_project", mut(reg, func(a map[string]any) { a["id"] = "Bad_ID" })},
-		{"register_project", mut(reg, func(a map[string]any) { a["issued"] = "yesterday" })},
-		{"register_project", mut(reg, func(a map[string]any) { a["request"] = "short" })},
-		{"register_project", mut(reg, func(a map[string]any) { delete(a, "ai_context") })},
-		{"register_project", mut(reg, func(a map[string]any) { a["path"] = "../x" })},
-		{"register_project", used},
-		{"register_project", w.register("proj-a", w.repo("proj-d"))},
-		{"set_flag", mut(sf, func(a map[string]any) { a["value"] = true })},
-		{"set_flag", mut(sf, func(a map[string]any) { a["flag"] = "auto_merge" })},
-		{"set_flag", mut(sf, func(a map[string]any) { a["id"] = "proj-b" })},
-		{"set_flag", mut(sf, func(a map[string]any) { a["signature"] = "x" })},
-		{"set_flag", w.signedArgs(w.alice, "set_flag", "ghost-project", flagFields("ai_context", true))},
+		{"register_project", mut(reg, func(a map[string]any) { delete(a, "signature") }), "not_signed"},
+		{"register_project", mut(reg, func(a map[string]any) { delete(a, "change") }), "change_mismatch"},
+		{"set_flag", mut(sf, func(a map[string]any) { delete(a, "change") }), "change_mismatch"},
+		{"register_project", mut(reg, func(a map[string]any) { a["kind"] = "zzz" }), "change_mismatch"},
+		{"register_project", mut(reg, func(a map[string]any) { a["extra"] = 1 }), "bad_request"},
+		{"register_project", mut(reg, func(a map[string]any) { a["id"] = "Bad_ID" }), "bad_request"},
+		{"register_project", mut(reg, func(a map[string]any) { a["issued"] = "yesterday" }), "bad_request"},
+		{"register_project", mut(reg, func(a map[string]any) { a["request"] = "short" }), "bad_request"},
+		{"register_project", mut(reg, func(a map[string]any) { a["change"] = "xyz" }), "bad_request"},
+		{"register_project", mut(reg, func(a map[string]any) { delete(a, "ai_context") }), "bad_request"},
+		{"register_project", mut(reg, func(a map[string]any) { a["path"] = "../x" }), "change_mismatch"},
+		{"register_project", used, "request_reused"},
+		{"register_project", w.register("proj-a", w.repo("proj-d")), "project_exists"},
+		{"set_flag", mut(sf, func(a map[string]any) { a["value"] = true }), "change_mismatch"},
+		{"set_flag", mut(sf, func(a map[string]any) { a["flag"] = "auto_merge" }), "not_supported"},
+		{"set_flag", mut(sf, func(a map[string]any) { a["id"] = "proj-b" }), "bad_signature"},
+		{"set_flag", mut(sf, func(a map[string]any) { a["signature"] = "x" }), "bad_request"},
+		{"set_flag", w.signedArgs(w.alice, "set_flag", "ghost-project", flagFields("ai_context", true)), "project_unknown"},
 		{"register_project", mut(reg, func(a map[string]any) {
 			a["signature"] = map[string]any{"signer": "alice", "alg": "ssh-ed25519", "sig": "x", "bogus": 1}
-		})},
+		}), "bad_request"},
 	}
 	for i, tc := range cases {
-		if _, e := w.do(tc.op, tc.args); e == nil {
-			t.Fatalf("case %d (%s) unexpectedly succeeded", i, tc.op)
+		_, e := w.do(tc.op, tc.args)
+		if codeOf(e) != tc.code {
+			t.Fatalf("case %d (%s): code %q, want %q", i, tc.op, codeOf(e), tc.code)
 		}
 		if !bytes.Equal(before, w.regFile()) {
 			t.Fatalf("case %d (%s) changed the registry", i, tc.op)
@@ -886,5 +908,203 @@ func TestRegisterUsesBrokerClockForUsedRequests(t *testing.T) {
 	}
 	if f.Entries[req] != w.now.Unix() {
 		t.Fatalf("stamp %d, want broker time %d", f.Entries[req], w.now.Unix())
+	}
+}
+
+// Every refusal that happens before the request ID is spent leaves it usable.
+func TestFailedRequestsDoNotConsumeRequestID(t *testing.T) {
+	w := newWEnv(t)
+	ghost := newSSHTestSigner(t, "ghost")
+	type fc struct {
+		code  string
+		build func(id, path, req string) map[string]any
+		prep  func() func()
+	}
+	valid := func(who testSigner, id, path, req string, issued time.Time, ns string) map[string]any {
+		return w.signedArgsWith(who, "register_project", id, regFields(path, "default", true), req, issued, ns)
+	}
+	cases := []fc{
+		{code: "unknown_signer", build: func(id, p, r string) map[string]any { return valid(ghost, id, p, r, w.now, signing.NamespaceRegistry) }},
+		{code: "stale_signature", build: func(id, p, r string) map[string]any {
+			return valid(w.alice, id, p, r, w.now.Add(-time.Hour), signing.NamespaceRegistry)
+		}},
+		{code: "signers_unavailable", build: func(id, p, r string) map[string]any {
+			return valid(w.alice, id, p, r, w.now, signing.NamespaceRegistry)
+		},
+			prep: func() func() {
+				os.Remove(w.signers)
+				return func() { w.writeSigners(w.alice) }
+			}},
+		{code: "not_signed", build: func(id, p, r string) map[string]any {
+			a := valid(w.alice, id, p, r, w.now, signing.NamespaceRegistry)
+			delete(a, "signature")
+			return a
+		}},
+		{code: "bad_request", build: func(id, p, r string) map[string]any {
+			a := valid(w.alice, id, p, r, w.now, signing.NamespaceRegistry)
+			a["extra"] = true
+			return a
+		}},
+		{code: "bad_signature", build: func(id, p, r string) map[string]any {
+			return valid(w.alice, id, p, r, w.now, signing.NamespaceApproval)
+		}},
+		{code: "change_mismatch", build: func(id, p, r string) map[string]any {
+			a := valid(w.alice, id, p, r, w.now, signing.NamespaceRegistry)
+			delete(a, "change")
+			return a
+		}},
+	}
+	for i, tc := range cases {
+		t.Run(tc.code, func(t *testing.T) {
+			id := fmt.Sprintf("proj-%d", i)
+			p := w.repo(id)
+			req := registrymsg.NewRequestID()
+			restore := func() {}
+			if tc.prep != nil {
+				restore = tc.prep()
+			}
+			w.wantCode("register_project", tc.build(id, p, req), tc.code)
+			restore()
+			if _, e := w.do("register_project", valid(w.alice, id, p, req, w.now, signing.NamespaceRegistry)); e != nil {
+				t.Fatalf("honest request with the same ID after %s: %v", tc.code, e)
+			}
+		})
+	}
+}
+
+func TestArgsKeysAreExactCaseAndUnique(t *testing.T) {
+	w := newWEnv(t)
+	p := w.repo("proj-a")
+	before := w.regFile()
+	rawArgs := func() string {
+		b, _ := json.Marshal(w.register("proj-a", p))
+		return string(b)
+	}
+	do := func(op, raw string) string {
+		_, e := w.s.Handlers[op](context.Background(), json.RawMessage(raw))
+		return codeOf(e)
+	}
+	cases := map[string]string{
+		"Path":          strings.Replace(rawArgs(), `"path"`, `"Path"`, 1),
+		"Signature":     strings.Replace(rawArgs(), `"signature"`, `"Signature"`, 1),
+		"Signer":        strings.Replace(rawArgs(), `"signer"`, `"Signer"`, 1),
+		"Sig":           strings.Replace(rawArgs(), `"sig"`, `"SIG"`, 1),
+		"path dup":      strings.TrimSuffix(rawArgs(), "}") + `,"path":"` + p + `"}`,
+		"Path dup":      strings.TrimSuffix(rawArgs(), "}") + `,"Path":"` + p + `"}`,
+		"request dup":   strings.TrimSuffix(rawArgs(), "}") + `,"request":"` + strings.Repeat("a", 32) + `"}`,
+		"signer dup":    strings.Replace(rawArgs(), `"signer":"alice"`, `"signer":"alice","signer":"alice"`, 1),
+		"AI_context":    strings.Replace(rawArgs(), `"ai_context"`, `"AI_Context"`, 1),
+		"not an obj":    `[1]`,
+		"nested sigstr": strings.Replace(rawArgs(), `"signature":{`, `"signature":{"Alg":"x",`, 1),
+	}
+	for name, raw := range cases {
+		if c := do("register_project", raw); c != "bad_request" {
+			t.Fatalf("%s: code %q", name, c)
+		}
+	}
+	sraw, _ := json.Marshal(w.signedArgs(w.alice, "set_flag", "repo-a", flagFields("ai_context", false)))
+	if c := do("set_flag", strings.Replace(string(sraw), `"flag"`, `"Flag"`, 1)); c != "bad_request" {
+		t.Fatalf("set_flag Flag: %q", c)
+	}
+	if !bytes.Equal(before, w.regFile()) {
+		t.Fatal("registry changed")
+	}
+	// the exact-case request still works
+	if c := do("register_project", rawArgs()); c != "" {
+		t.Fatalf("honest: %q", c)
+	}
+}
+
+func TestRegisterGitEntryRules(t *testing.T) {
+	w := newWEnv(t)
+	mk := func(name string) string {
+		p := filepath.Join(w.root, name)
+		os.MkdirAll(p, 0o755)
+		return p
+	}
+	link := mk("gitlink")
+	os.Symlink(w.repo("target"), filepath.Join(link, ".git"))
+	file := mk("gitfile")
+	os.WriteFile(filepath.Join(file, ".git"), []byte("gitdir: ../elsewhere\n"), 0o644)
+	dir := w.repo("gitdir")
+	w.wantCode("register_project", w.register("proj-link", link), "path_not_allowed")
+	if _, e := w.do("register_project", w.register("proj-file", file)); e != nil {
+		t.Fatalf(".git file (worktree/submodule): %v", e)
+	}
+	if _, e := w.do("register_project", w.register("proj-dir", dir)); e != nil {
+		t.Fatalf(".git directory: %v", e)
+	}
+}
+
+func TestWriteOpsHaveExplicitTimeouts(t *testing.T) {
+	for _, op := range []string{"projects", "register_project", "set_flag"} {
+		if d, ok := defaultOpTimeouts[op]; !ok || d != 10*time.Second {
+			t.Fatalf("op %s timeout = %v, %v", op, d, ok)
+		}
+	}
+}
+
+func TestSignatureNotReusableForOtherActionOrSubject(t *testing.T) {
+	w := newWEnv(t)
+	pa, pb := w.repo("proj-a"), w.repo("proj-b")
+	before := w.regFile()
+	// a register_project signature replayed as set_flag
+	reg := w.register("repo-a", pa)
+	sf := map[string]any{"id": "repo-a", "flag": "ai_context", "value": false, "request": reg["request"], "issued": reg["issued"], "signature": reg["signature"]}
+	sf["change"], _ = registrymsg.ChangeHash("set_flag", "repo-a", flagFields("ai_context", false))
+	w.wantCode("set_flag", sf, "bad_signature")
+	// a signature over subject A used for project B
+	a := w.register("proj-a", pa)
+	a["id"] = "proj-b"
+	a["path"] = pb
+	a["change"], _ = registrymsg.ChangeHash("register_project", "proj-b", regFields(pb, "default", true))
+	w.wantCode("register_project", a, "bad_signature")
+	// ... and the same with the signed change hash left in place
+	a2 := w.register("proj-a", pa)
+	a2["id"] = "proj-b"
+	w.wantCode("register_project", a2, "bad_signature")
+	if !bytes.Equal(before, w.regFile()) {
+		t.Fatal("registry changed")
+	}
+}
+
+func TestConcurrentIdenticalRequestsRegisterOnce(t *testing.T) {
+	w := newWEnv(t)
+	args := w.register("same", w.repo("only"))
+	raw, _ := json.Marshal(args)
+	const n = 12
+	codes := make([]string, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, e := w.s.Handlers["register_project"](context.Background(), raw)
+			codes[i] = codeOf(e)
+		}()
+	}
+	wg.Wait()
+	ok, reused := 0, 0
+	for _, c := range codes {
+		switch c {
+		case "":
+			ok++
+		case "request_reused":
+			reused++
+		default:
+			t.Fatalf("unexpected code %q", c)
+		}
+	}
+	if ok != 1 || reused != n-1 {
+		t.Fatalf("ok=%d reused=%d: %v", ok, reused, codes)
+	}
+	count := 0
+	for _, p := range w.projects() {
+		if p.ID == "same" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("%d projects", count)
 	}
 }

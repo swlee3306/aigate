@@ -83,6 +83,12 @@ var defaultOpTimeouts = map[string]time.Duration{
 	"refine":    60 * time.Second,
 	"create_mr": 20 * time.Second,
 	"status":    5 * time.Second,
+
+	// A `timeout` reply to a write op means the outcome is unknown: the
+	// handler may still complete. Re-read `projects` before retrying.
+	"projects":         10 * time.Second,
+	"register_project": 10 * time.Second,
+	"set_flag":         10 * time.Second,
 }
 
 // State is the broker's mutable limit state.

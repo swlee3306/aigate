@@ -20,6 +20,10 @@ import (
 
 const issuedLayout = "2006-01-02T15:04:05Z"
 
+// Timeouts: a `timeout` reply to register_project or set_flag means the
+// outcome is UNKNOWN (the handler may still complete); callers must re-read
+// `projects` before retrying.
+
 // opCodeErr carries a fixed code out of a RegistryStore.Update callback.
 type opCodeErr string
 
@@ -34,19 +38,69 @@ func (s *Server) now() time.Time {
 	return time.Now()
 }
 
-// decodeStrict decodes one JSON object into v: unknown fields, trailing data
-// and a missing/null body are refused.
-func decodeStrict(raw json.RawMessage, v any) bool {
-	if len(bytes.TrimSpace(raw)) == 0 {
+var (
+	registerKeys  = []string{"id", "path", "kind", "ai_context", "change", "request", "issued", "signature"}
+	setFlagKeys   = []string{"id", "flag", "value", "change", "request", "issued", "signature"}
+	signatureKeys = []string{"signer", "alg", "sig", "webauthn"}
+	webauthnKeys  = []string{"authenticator_data", "client_data_json"}
+)
+
+// exactObjectKeys reports whether raw is a JSON object whose keys are all in allowed
+// (exact case: encoding/json would also match "Path" to "path") and unique.
+// It returns the raw values by key.
+func exactObjectKeys(raw []byte, allowed []string) (map[string]json.RawMessage, bool) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+		return nil, false
+	}
+	out := map[string]json.RawMessage{}
+	for dec.More() {
+		kt, err := dec.Token()
+		key, isStr := kt.(string)
+		if err != nil || !isStr {
+			return nil, false
+		}
+		known := false
+		for _, a := range allowed {
+			known = known || a == key
+		}
+		if _, dup := out[key]; dup || !known {
+			return nil, false
+		}
+		var v json.RawMessage
+		if dec.Decode(&v) != nil {
+			return nil, false
+		}
+		out[key] = v
+	}
+	if t, err := dec.Token(); err != nil || t != json.Delim('}') {
+		return nil, false
+	}
+	_, err := dec.Token()
+	return out, err == io.EOF
+}
+
+// decodeStrict decodes the args object into v: only the exact allowed keys
+// (also inside the signature object), no duplicates, no trailing data.
+func decodeStrict(raw json.RawMessage, v any, allowed []string) bool {
+	top, ok := exactObjectKeys(raw, allowed)
+	if !ok {
 		return false
+	}
+	if sig, has := top["signature"]; has && !bytes.Equal(bytes.TrimSpace(sig), []byte("null")) {
+		sm, ok := exactObjectKeys(sig, signatureKeys)
+		if !ok {
+			return false
+		}
+		if wa, has := sm["webauthn"]; has && !bytes.Equal(bytes.TrimSpace(wa), []byte("null")) {
+			if _, ok := exactObjectKeys(wa, webauthnKeys); !ok {
+				return false
+			}
+		}
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(v); err != nil {
-		return false
-	}
-	_, err := dec.Token()
-	return err == io.EOF
+	return dec.Decode(v) == nil
 }
 
 // projectsHandler is the read-only, secret-free registry listing (D7).
@@ -89,7 +143,7 @@ type setFlagArgs struct {
 
 func (s *Server) registerProjectHandler(_ context.Context, raw json.RawMessage) (any, *OpError) {
 	var a registerArgs
-	if !decodeStrict(raw, &a) || a.AIContext == nil {
+	if !decodeStrict(raw, &a, registerKeys) || a.AIContext == nil {
 		return fail("bad_request")
 	}
 	fields := map[string]any{"path": a.Path, "kind": a.Kind, "ai_context": *a.AIContext}
@@ -120,7 +174,7 @@ func (s *Server) registerProjectHandler(_ context.Context, raw json.RawMessage) 
 
 func (s *Server) setFlagHandler(_ context.Context, raw json.RawMessage) (any, *OpError) {
 	var a setFlagArgs
-	if !decodeStrict(raw, &a) || a.Value == nil {
+	if !decodeStrict(raw, &a, setFlagKeys) || a.Value == nil {
 		return fail("bad_request")
 	}
 	// W3a changes only ai_context; auto_merge, the global switch and every
@@ -161,15 +215,17 @@ func updateFailure(err error) *OpError {
 // registry usable -> signature present -> message built from the request ->
 // signer list reloaded (every call) -> signature verified -> signed change
 // equals the change recomputed from the request -> request ID consumed.
-// claimedChange is the optional change hash the signer saw; when absent the
-// recomputed hash is signed over (a tampered request then fails as
-// bad_signature instead of change_mismatch).
+// claimedChange is the change hash the signer saw (required); the signature is
+// verified over it and it must equal the hash recomputed from the request.
 func (s *Server) verifySigned(action, subject string, fields map[string]any, claimedChange, request, issuedText string, sig *signing.Signature) *OpError {
 	if s.Registry.Err() != nil {
 		return fail1("registry_unavailable")
 	}
 	if sig == nil {
 		return fail1("not_signed")
+	}
+	if claimedChange == "" { // `change` is required: the signer's hash must travel with the request
+		return fail1("change_mismatch")
 	}
 	issued, err := time.Parse(issuedLayout, issuedText)
 	if err != nil {
@@ -179,10 +235,7 @@ func (s *Server) verifySigned(action, subject string, fields map[string]any, cla
 	if err != nil {
 		return fail1("bad_request")
 	}
-	signed := want
-	if claimedChange != "" {
-		signed = claimedChange
-	}
+	signed := claimedChange
 	msg := signing.RegistryMessage{Action: action, Subject: subject, Change: signed, Request: request, Issued: issued.UTC()}
 	if msg.Validate() != nil {
 		return fail1("bad_request")
@@ -210,7 +263,7 @@ func (s *Server) verifySigned(action, subject string, fields map[string]any, cla
 	case err == nil:
 	case errors.Is(err, ErrRequestReused):
 		return fail1("request_reused")
-	case errors.Is(err, ErrBadRequestID):
+	case errors.Is(err, ErrBadRequestID): // unreachable (msg.Validate checked the ID): defence in depth
 		return fail1("change_mismatch")
 	default: // broken file, full, cannot be saved
 		return fail1("registry_unavailable")
@@ -244,6 +297,8 @@ func (s *Server) pathAllowed(p string) bool {
 	if err != nil || fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
 		return false
 	}
-	_, err = os.Lstat(filepath.Join(p, ".git"))
-	return err == nil
+	// .git is a directory, or a regular file (worktree/submodule pointer); a
+	// symlink is refused.
+	gi, err := os.Lstat(filepath.Join(p, ".git"))
+	return err == nil && (gi.IsDir() || gi.Mode().IsRegular())
 }
