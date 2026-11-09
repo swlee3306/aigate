@@ -497,6 +497,9 @@ func (h *handler) validate(req submitRequest) (store.Task, error) {
 	if !agents[req.Agent] {
 		return t, bad("agent는 claude 또는 codex여야 합니다")
 	}
+	// NOTE: this class check runs BEFORE the idempotent replay lookup, so
+	// replaying an existing key whose class has since left the policy gets
+	// 400 unknown_class, not the recorded task (documented, docs/16 4).
 	if !classRe.MatchString(req.Class) {
 		return t, bad("class는 [a-z0-9_가-힣-] 1~32자여야 합니다")
 	}

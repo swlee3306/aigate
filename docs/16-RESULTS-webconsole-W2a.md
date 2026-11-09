@@ -5,7 +5,7 @@
 
 ## 1. 만든 것
 
-**A1. 누가 했는지 기록(스키마 v7).** `task_events`에 `actor` 열을 더했다(옛 이벤트는 비어 있음). 주체는 인증된 요청의 principal에서 한 곳(`withPrincipal`)에서만 정해진다: `socket:uid:<n>`, `session:<서명자 ID>`, `token:<서명자 ID>`, 워커·복구는 `system`. 형식(`[A-Za-z0-9_.:@-]`, 80바이트 이하, `kind:id`)에 맞지 않으면 `invalid`로 저장하고 쓰기는 실패하지 않는다. 원장(`orchd.jsonl`)의 `task_transition`, 새 `task_submitted`, `approval_granted`의 `via`·`actor`는 같은 `kind:id` 값이다(R6). `TaskView.actor`(웹 "마지막 변경"), `orch show`의 `주체:` 줄. 클라이언트가 보내는 헤더나 본문 필드로는 주체를 바꿀 수 없다(5장 적대 시험).
+**A1. 누가 했는지 기록(스키마 v7).** `task_events`에 `actor` 열을 더했다(옛 이벤트는 비어 있음). 주체는 인증된 요청의 principal에서 한 곳(`withPrincipal`)에서만 정해진다: `socket:uid:<n>`, `session:<서명자 ID>`, `token:<서명자 ID>`, 워커·복구는 `system`. 형식(`[A-Za-z0-9_.:@-]`, 80바이트 이하, `kind:id`)에 맞지 않으면 `invalid`로 저장하고 쓰기는 실패하지 않는다. 원장(`orchd.jsonl`)의 `task_transition`, 새 `task_submitted`, `approval_granted`의 `via`·`actor`는 같은 `kind:id` 값이다(R6). `TaskView.actor`(웹 "마지막 변경"), `orch show`의 `주체:` 줄. **둘 다 *가장 최근 이벤트*의 주체이지 제출자가 아니다**: 워커가 `queued`→`preparing`을 약 250 ms 안에 `system`으로 옮기므로 정상 서버에서도 곧 `system`이 된다. 제출자는 원장 `task_submitted`(또는 `task_events`의 `created` 행)에 있다. 이벤트마다의 주체를 화면에 내는 것은 하지 않았다(R10, 사용자 결정). 클라이언트가 보내는 헤더나 본문 필드로는 주체를 바꿀 수 없다(5장 적대 시험).
 
 **A2. 취소·재시도 오류 코드.** 취소: `not_found` 404, `already_final` 409, `state_changed` 409(비교-교체에 5번 진 경우; 전에는 일반 500). 재시도: `not_found`, `not_retryable` 409(+`reason`, 기계가 만든 고정 한국어 문장), `state_changed` 409. `TaskView.cancellable`은 상태 표(`machine.Allowed`)에서 계산한다.
 
@@ -137,6 +137,10 @@
 - 페이지를 새로 고치면 멱등 키 지도가 사라진다(브라우저 저장소 금지). 응답을 잃은 뒤 **새로 고침하고** 다시 제출하면 중복이 생길 수 있다. 화면 안 재시도는 안전하다.
 - 서버의 멱등 기록은 작업 삽입과 **다른 트랜잭션**이다. 삽입 뒤 기록 전에 프로세스가 죽으면 그 키의 재전송은 새 작업을 만든다(창은 짧음; 재시작 시험은 기록이 끝난 경우만 확인).
 - `/repos`는 한 저장소가 자기 5초 제한을 넘으면 조용히 빼고, 요청 전체 15초가 끝날 때만 503이다(부분 목록 대신).
+- **종류 검사는 멱등 재생 조회보다 먼저 돈다**(`validate`가 먼저, 재생 조회는 그 뒤). 그래서 이미 처리된 키의 재전송이라도 그 사이 정책에서 그 종류가 빠졌으면 기록된 작업이 아니라 `400 unknown_class`를 받는다.
+- `viaOf`(승인 `via`)는 principal이 없으면 `unknown`으로, `ActorFrom`(이벤트 주체)은 `system`으로 떨어진다. 모든 경로가 `authenticate` 뒤에 있어 닿지 않는 분기다.
+- 서버 문자열이 **속성**으로 들어가는 곳이 웹에 둘 있다: `<option value=repo.path>`와 `data-base=branch`. 둘 다 모양을 먼저 검사하고(`safePath`/`BASE_RE`) `setAttribute`로만 넣는다(파싱 없음). "텍스트 노드만"의 문자 그대로의 예외다.
+- `ops.cloud.history`는 클라우드 호출이 실패하면 `null`이 아니라 빈 배열이다.
 - 큐 상한은 주체별이 아니라 전역이다(한 세션이 20개를 다 채울 수 있다; 설계서 5장 "상한 안에서의 사용량 소모"와 같음).
 
 ## 5. 갚은 빚 (Task 1~5 검토에서 미룬 것)
@@ -167,6 +171,7 @@
 - **실제 브라우저에서 `#/new`의 키보드 전체 흐름과 스크린 리더 낭독.** DOM 대역 시험(`aria-disabled`, `aria-live`, Escape)만 했다. 이번 작업에서 화면을 다시 보지 않았다(Task 5의 ego-browser 확인은 이 수정 이전).
 - **다른 사용자 소유 저장소의 `/repos`.** `/repos`는 전역 `safe.directory`를 읽지 않으므로 orch 소유가 아닌 저장소는 빠질 것으로 예상한다(코드 읽기). orch-vm의 실제 소유자(`ls -ld /home/orch/repos/*`)는 보지 않았다.
 - **실제 `policy.yml`과의 종류 대조.** 정책에 `toy`, `sample-app`가 있다는 것은 운영 문서 3장의 기록일 뿐, 실제 파일을 이번에 읽지 않았다. CLI 제출의 동작 변화도 실서버에서 보지 않았다.
+- **`주체:`/`TaskView.actor` 기대값은 코드를 읽고 도출했다**(최근 이벤트의 주체; 정상 서버에서는 곧 `system`). 실서버에서 본 적 없다. 런북은 취소 후 상태(종결이라 `session:<ID>`)와 원장 `task_submitted`로 확인하게 했다.
 - **실제 부하에서의 큐 상한.** 시험 DB(SQLite, `_txlock=immediate`)에서의 동시 제출만 확인했다.
 - **실제 인프라 실패의 재시도.** 가짜로 만든 실패 작업(`failedTask`)으로만 시험했다. 재시도 확인 문구는 `machine.Retry` 주석에서 가져왔다.
 - **스키마 v7 마이그레이션을 실제 운영 DB로.** 시험 DB(v6→v7)로만 확인했다. 옛 `orchd`가 v7 DB를 거부하는 것은 코드(`store.go`의 버전 검사)를 읽어 확인했다.

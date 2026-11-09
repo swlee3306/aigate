@@ -291,7 +291,7 @@ sudo systemctl start orchd
 **검증 체크리스트**
 - `journalctl -u orchd -n 40`: 오류 없이 대기, `approvals: mode signed (… signers …)`(W1과 같음), `socket uids allowed: [0 <orch uid>]`, `HTTP listener on 127.0.0.1:8808 …`.
 - `orch list`: 백업 전의 작업이 모두 그대로 보인다(마지막 번호 확인).
-- `orch submit`으로 toy 작업 하나를 제출(3장 명령, 종류 `toy`) → `orch show <ID>`에 새 줄 `  주체:     socket:uid:<n>`이 있다(소켓으로 제출했으므로 `socket:uid:` + orch uid. `sudo`로 했으면 `socket:uid:0`). 옛 작업은 마이그레이션 전 이벤트라 `주체:` 줄이 없을 수 있다(정상: 옛 이벤트의 actor는 비어 있음).
+- `orch submit`으로 toy 작업 하나를 제출(3장 명령, 종류 `toy`) → 제출자는 **원장**에서 확인한다: `grep task_submitted /home/orch/orchd/gate-home/.aigate/ledger/orchd.jsonl | tail -1`의 `actor`·`via`가 `socket:uid:<n>`(소켓으로 제출했으므로 `socket:uid:` + orch uid. `sudo`로 했으면 `socket:uid:0`). 선택(orch-vm에 `sqlite3`가 있을 때만; 설치 여부 미확인): `sqlite3 /home/orch/orchd/state/orchd.db "select actor from task_events where note='created' order by id desc limit 1"`도 같은 값. **`orch show`의 `주체:` 줄로 제출자를 확인하지 않는다.** 그 줄은 *가장 최근 이벤트*의 주체이고, 워커가 `queued`→`preparing`을 약 250 ms 안에 `system`으로 옮기므로 정상 서버에서도 `system`으로 보인다(코드 읽기 기준, 실서버 미확인). 옛 작업은 마이그레이션 전 이벤트라 `주체:` 줄이 없을 수 있다(정상).
 - 새 `orchd`의 base 결과 캐시는 빌드 키가 바뀌어 첫 판정에서 한 번 다시 돈다(6장). 첫 작업이 느려도 정상.
 
 **그래도 안 되면:** 단계 3(롤백) 전체. 바이너리만 되돌리면 옛 `orchd`가 v7 DB를 거부하고 시작하지 않는다.
@@ -303,23 +303,24 @@ sudo systemctl start orchd
 |---|---|---|---|
 | 2-1 | 메뉴 "새 작업"(`#/new`) 열기 | 저장소 선택 상자에 `/home/orch/repos` 아래 저장소(`toy`, `sample-app`), 기준 커밋 칸에 그 저장소 HEAD, 종류 상자에 정책의 종류 목록 | 저장소가 비면 2-9(소유자·`safe.directory`)부터 본다. 종류가 글 상자이면 정책에 종류 목록이 없는 것(R3: 아무 종류나 받음) |
 | 2-2 | toy 작업 제출: 네 칸 중 "목표"만 적고 미리보기를 확인한 뒤 "제출" | 미리보기에 `Goal: …`, 바이트 수 표시. 제출하면 `#/tasks/<ID>`로 이동, 상태 `queued` → 진행 줄 "진행 중 · <단계> · N초 경과" | 오류 문구는 코드별 고정 문장이다(서버 원문은 보이지 않음). `queue_full`이면 큐 확인, `unknown_class`면 정책 확인 |
-| 2-3 | 그 작업 화면의 정보 칸 | "마지막 변경"에 `session:<서명자 ID>`(예: `session:mac-passkey`). 승인이 필요한 작업이면 W1 방식(웹 패스키 서명)으로 승인 → `done` | 주체가 `system`이면 단계 3을 고려(주체 전달 실패) |
+| 2-3 | 그 작업 화면의 정보 칸 | "마지막 변경"에 `session:<서명자 ID>`(예: `session:mac-passkey`). 승인이 필요한 작업이면 W1 방식(웹 패스키 서명)으로 승인 → `done` | 이 시점에는 보통 이미 `system`(워커가 옮김)이라 이 칸으로 제출자를 가리지 않는다. 제출자는 원장 `task_submitted` 줄(단계 1)로 확인하고, 취소 후 주체는 2-6에서 본다 |
 | 2-4 | 정책에 **없는** 종류로 제출해 보기. 웹은 목록에서만 고르게 하므로 Mac CLI로: `orch --server https://<FQDN> --signer mac-ssh submit … --class nosuchclass …` | `400 unknown_class` "정책에 없는 작업 종류입니다: nosuchclass", 작업이 생기지 않음(`orch list`의 마지막 번호 그대로) | 작업이 생기면 단계 3 |
 | 2-5 | 큐 상한(`queue_full`) | **컷오버에서 확인하지 않는다.** 유닛을 바꿔 상한을 낮추는 것은 이 컷오버의 범위가 아니고, 20개를 실제로 쌓는 것은 VM 시간을 쓴다. 자동 시험(`TestQueueFloodBoundedAcrossPrincipals`, `TestQueueLimitRaceNeverExceeds`)으로만 확인됨 | — |
-| 2-6 | 취소: 대기 중이거나 진행 중인 toy 작업 화면에서 "작업 취소" → 확인 칸 → "취소 실행" | 확인 칸에서 아무것도 보내지 않고(Escape나 "돌아가기"로 닫힘), 실행하면 상태 `cancelled`, 정보 칸 주체 `session:<ID>`. 이미 끝난 작업에는 취소 단추가 없다 | 409 `state_changed`가 반복되면 작업이 계속 움직이는 것: 잠시 뒤 다시 |
+| 2-6 | 취소: 대기 중이거나 진행 중인 toy 작업 화면에서 "작업 취소" → 확인 칸 → "취소 실행" | 확인 칸에서 아무것도 보내지 않고(Escape나 "돌아가기"로 닫힘), 실행하면 상태 `cancelled`, 정보 칸 주체 `session:<ID>`(`cancelled`는 종결 상태라 이 값이 남는다: **주체 전달을 가리는 믿을 만한 확인은 이 단계다**). 이미 끝난 작업에는 취소 단추가 없다 | 409 `state_changed`가 반복되면 작업이 계속 움직이는 것: 잠시 뒤 다시 |
 | 2-7 | 재시도 | **인프라 오류로 실패한 작업이 있어야만 시험할 수 있다**(복원 쿼터 413 등). 일부러 만들지 않는다. 그런 실패가 생기면 그때 "다시 시도" → 실패한 단계부터 재개되는지 본다. 그 전까지는 **"검증 못 함"** | — |
 | 2-8 | 메뉴 "서버 상태"(`#/ops`) | 클라우드 칸에 볼륨 용량·개수 쿼터(사용/한도, 예약), test-vm 이름과 상태(`ACTIVE` 등 또는 "알 수 없음"; 이름은 `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` 모양일 때만 보이고 아니면 빈칸이다 — `test-vm`은 보임), 복원 볼륨 수, 최근 복원 기록. 클라우드가 늦으면 "응답이 늦어 이번에는 건너뜁니다"가 한 번 보이고 다음 갱신(20초)에 수치가 나온다 | **[사용자] 수치 대조:** orch-vm에서 `orchd`와 같은 OpenStack 자격으로 `openstack quota show --usage -f json`을 실행해 `gigabytes`·`volumes` 줄의 `In Use`·`Limit`·`Reserved`가 화면과 같은지 본다. **키 이름**(`Resource`, `In Use`, `Limit`, `Reserved`)이 출력과 다르면 화면은 늘 "클라우드 상태를 지금 읽을 수 없습니다"가 된다(키 이름은 기존 시험의 고정 데이터에서 가져왔고 실제 CLI로 확인한 적 없음). 다르면 결과 문서에 실제 출력의 키를 기록하고 고치는 작업을 따로 한다(데이터 손상 위험은 없음: 읽기 전용) |
 | 2-9 | `#/new`의 저장소 목록 | 기대한 저장소가 모두 나온다 | **[사용자]** orch-vm에서 `ls -ld /home/orch/repos/*`로 소유자를 본다. `/repos`는 전역·시스템 git 설정을 읽지 않으므로 **orch가 아닌 사용자 소유 저장소**(전역 `safe.directory`로만 열리던 것)는 목록에서 빠진다. 그런 저장소는 CLI 제출은 여전히 된다. 소유자를 orch로 맞추거나 그대로 둔다(사용자 결정) |
 
 **검증 체크리스트(요약):** 2-2·2-3·2-6이 예상대로이고, 2-4가 거부되고, 2-8의 수치가 CLI와 같다. 2-5·2-7은 결과 문서에 "컷오버에서 확인 안 함"/"검증 못 함"으로 남긴다.
 
-**그래도 안 되면:** 화면 문제(표시·문구)만이면 롤백하지 않고 기록한다(쓰기 동작은 CLI로도 된다). 제출·취소가 잘못된 작업을 건드리거나, 주체가 남지 않거나, 거부되어야 할 제출이 통과하면 단계 3.
+**그래도 안 되면:** 화면 문제(표시·문구)만이면 롤백하지 않고 기록한다(쓰기 동작은 CLI로도 된다). 제출·취소가 잘못된 작업을 건드리거나, 2-6의 취소 주체가 `session:<ID>`가 아니거나 원장 `task_submitted`의 주체가 틀리거나, 거부되어야 할 제출이 통과하면 단계 3.
 
 ### 단계 3. 롤백 [사용자][주의]
 1. `sudo systemctl stop orchd`
 2. 바이너리: `for f in orchd orch aigate; do sudo install -o root -g root -m 0755 /usr/local/lib/aigate/$f.prev-w2a /usr/local/lib/aigate/$f; done`(세 개는 항상 같이).
 3. **DB 복원(필수):** 필요하면 지금 DB를 먼저 따로 복사한다(`sudo cp -a /home/orch/orchd/state/orchd.db* /home/orch/orchd/backup-w2a/after-v7/` — 폴더를 먼저 만든다). 그다음 `sudo rm -f /home/orch/orchd/state/orchd.db-wal /home/orch/orchd/state/orchd.db-shm && sudo cp -a /home/orch/orchd/backup-w2a/orchd.db* /home/orch/orchd/state/`. **백업 이후의 작업·이벤트·승인 대기는 사라진다.**
-4. 승인 파일은 **되돌려야 할 때만**(W1 롤백과 같다): `sudo cp -a /home/orch/orchd/backup-w2a/gate-home/. /home/orch/orchd/gate-home/`. 보통은 그대로 둔다(그 사이의 서명 승인 기록이 남는 것은 무해). gate-home을 통째로 되돌리면 원장 파일(`.aigate/ledger/`)도 백업 시점으로 돌아가 W2a 기간의 원장 줄이 사라진다 — 원장을 지키려면 `approvals.json`만 골라 되돌린다.
+4. 승인 파일은 **되돌려야 할 때만**: `sudo cp -a /home/orch/orchd/backup-w2a/gate-home/.aigate/approvals.json /home/orch/orchd/gate-home/.aigate/approvals.json`(경로는 `gate.ApprovalsPath`). 끝나면 `ls -l /home/orch/orchd/gate-home/.aigate/approvals.json`로 소유자·모드가 그대로인지 본다(`-a`가 보존하지만 확인한다). 백업에 이 파일이 없으면 W2a 이전에 파일이 없던 것이므로 복원할 것이 없다. 보통은 그대로 둔다(그 사이의 서명 승인 기록이 남는 것은 무해). **`gate-home` 전체를 되돌리지 않는다**: 원장(`.aigate/ledger/`)이 백업 시점으로 돌아가 W2a 기간의 줄이 사라진다.
+   - **DB 복원은 `sessions`·`tokens`·멱등 키 표도 백업 시점으로 되돌린다**(W1과 같다). 그래서 롤백 뒤 브라우저의 로그인이 모두 무효가 되고 다시 로그인해야 한다.
 5. 유닛(바꾸지 않았다면 생략 가능): `sudo cp /etc/systemd/system/orchd.service.pre-w2a /etc/systemd/system/orchd.service && sudo systemctl daemon-reload`.
 6. `sudo systemctl start orchd`.
 
