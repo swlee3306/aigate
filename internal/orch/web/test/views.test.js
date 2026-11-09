@@ -216,6 +216,56 @@ test('TestTaskTimelineBars', () => {
   assert.match(text(renderTimeline([], {})), /기록된 단계가 없습니다/);
 });
 
+test('TestTaskTimelineShowsActorPerStep', () => {
+  const data = fx('events.json');
+  assert.equal(data.steps[0].actor, 'session:alice', 'golden fixture carries the actor');
+  const root = renderTimeline(data.steps, {});
+  const rows = byClass(root, 'bar-r');
+  const who = rows.map((r) => byClass(r, 'bar-who').map(text));
+  assert.deepEqual(who[0], ['처리: session:alice']);
+  assert.deepEqual(who[1], ['처리: 자동'], 'system is shown as the Korean word');
+  // an empty/missing actor (events before schema v7) shows nothing at all
+  assert.deepEqual(who.slice(2), [[], [], [], []]);
+  // the actor sits in the text list (the bars stay aria-hidden decoration)
+  for (const r of rows) {
+    for (const w of byClass(r, 'bar-who')) assert.equal(w.tagName, 'SPAN');
+    assert.equal(byClass(r, 'bar-t')[0].getAttribute('aria-hidden'), 'true');
+    assert.equal(byClass(r, 'bar-t')[0].children.every((c) => !byClass(c, 'bar-who').length), true);
+  }
+  assert.match(text(rows[0]), /대기.*session:alice/);
+  // invalid, token/socket kinds, non-string values
+  const mk = (a) => byClass(renderTimeline([{ state: 'queued', seconds: 1, at: data.steps[0].at, actor: a }], {}), 'bar-who').map(text);
+  assert.deepEqual(mk('invalid'), ['처리: 알 수 없음']);
+  assert.deepEqual(mk('socket:uid:501'), ['처리: socket:uid:501']);
+  assert.deepEqual(mk('token:mac-ssh'), ['처리: token:mac-ssh']);
+  for (const a of ['', null, undefined, 7, {}, [], '   ']) assert.deepEqual(mk(a), [], String(a));
+  // the whole task view shows it too
+  assert.match(text(renderTask(data, {})), /처리: session:alice/);
+});
+
+test('TestTaskTimelineActorHostileText', () => {
+  const data = fx('events.json');
+  const cases = [...HOSTILE, 'a'.repeat(5000), 'kind:\u202e' + 'x'.repeat(200), '​‮⁦\u0000\u001b[31m'];
+  for (const a of cases) {
+    const steps = data.steps.map((s, i) => (i === 1 ? { ...s, actor: a } : s));
+    const root = renderTimeline(steps, {});
+    noHostileElements(root);
+    const w = byClass(root, 'bar-who').map(text);
+    // the actor is plain text: sanitized, and capped (80 chars + the ellipsis marker + the fixed prefix)
+    assert.doesNotMatch(w.join(''), /[\u0000-\u0008\u000b-\u001f\u007f-\u009f‪-‮⁦-⁩​]/);
+    for (const t of w) assert.ok(t.length <= '처리: '.length + 81, 'capped: ' + t.length);
+    // never in any attribute, anywhere in the tree
+    for (const e of allElements(root)) {
+      for (const [k, v] of e.attrs) {
+        assert.ok(!String(v).includes('alert') && !String(v).includes('onerror') && !/a{20}/.test(String(v)), k + ' carries the actor');
+      }
+      assert.doesNotMatch(e.className || '', /alert|onerror/);
+    }
+  }
+  assert.equal(byClass(renderTimeline(data.steps.map((s) => ({ ...s, actor: 'a'.repeat(5000) })), {}), 'bar-who').map(text)[0], '처리: ' + 'a'.repeat(80) + '…');
+  assert.match(byClass(renderTimeline([{ state: 'queued', seconds: 1, actor: '<img src=x onerror=alert(1)>' }], {}), 'bar-who').map(text)[0], /<img src=x onerror=alert\(1\)>/, 'markup stays literal text');
+});
+
 test('timeline never uses a style attribute (stub throws on setAttribute(style))', () => {
   assert.throws(() => doc.createElement('div').setAttribute('style', 'width:1%'), /forbidden/);
   assert.throws(() => el('div', { style: 'width:1%' }), /not allowed/);

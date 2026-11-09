@@ -111,6 +111,9 @@ func TestDevServer(t *testing.T) {
 		// the open step started 95 s ago, so the progress line shows a live elapsed time
 		steps := d["steps"].([]any)
 		steps[2].(map[string]any)["at"] = time.Now().Add(-95 * time.Second).UTC().Format(time.RFC3339)
+		// A8: steps 0 and 1 carry token:mac-ssh and system (golden fixture), the
+		// open step gets a hostile actor; task 38 shows session:alice, system and empty ones.
+		steps[2].(map[string]any)["actor"] = "kind:<img src=x onerror=alert(1)>\u202eevil\x1b[31m" + strings.Repeat("x", 120)
 		b, _ := stdjson.Marshal(d)
 		serve(w, b)
 	})

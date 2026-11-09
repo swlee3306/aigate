@@ -16,6 +16,10 @@ type StepTime struct {
 	Seconds float64   `json:"seconds"`
 	Note    string    `json:"note"`
 	At      time.Time `json:"at"`
+	// Actor is who moved the task INTO this step ("kind:id", "system" or
+	// "invalid"; empty for events recorded before schema v7). It is the value
+	// the server recorded, never client input.
+	Actor string `json:"actor,omitempty"`
 }
 
 // VerifyBreakdown is the timing summary parsed from a verify note.
@@ -33,7 +37,7 @@ type VerifyBreakdown struct {
 func Timeline(evs []store.Event) []StepTime {
 	out := make([]StepTime, len(evs))
 	for i, ev := range evs {
-		out[i] = StepTime{State: string(ev.To), Note: ev.Note, At: ev.At}
+		out[i] = StepTime{State: string(ev.To), Note: ev.Note, At: ev.At, Actor: ev.Actor}
 		if i+1 < len(evs) {
 			out[i].Seconds = evs[i+1].At.Sub(ev.At).Seconds()
 		}

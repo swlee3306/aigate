@@ -134,8 +134,8 @@ func TestWebFixturesGolden(t *testing.T) {
 
 	// GET /api/v1/tasks/{id}/events: steps from Timeline, verify from the note.
 	evs := []store.Event{
-		{To: store.StateQueued, Note: "created", At: t0},
-		{From: store.StateQueued, To: store.StatePreparing, Note: "worker picked up", At: t0.Add(200 * time.Millisecond)},
+		{To: store.StateQueued, Note: "created", At: t0, Actor: "session:alice"},
+		{From: store.StateQueued, To: store.StatePreparing, Note: "worker picked up", At: t0.Add(200 * time.Millisecond), Actor: store.ActorSystem},
 		{From: store.StatePreparing, To: store.StateAgentRunning, Note: "agent started", At: t0.Add(2200 * time.Millisecond)},
 		{From: store.StateAgentRunning, To: store.StateCollecting, Note: "agent exited 0", At: t0.Add(27200 * time.Millisecond)},
 		{From: store.StateCollecting, To: store.StateVerifying, Note: "head 89abcdef", At: t0.Add(28500 * time.Millisecond)},
@@ -156,8 +156,8 @@ func TestWebFixturesGolden(t *testing.T) {
 	// The same endpoint for the running task: the last step is still open.
 	rt0 := t0.Add(2 * time.Hour)
 	runEvs := []store.Event{
-		{To: store.StateQueued, Note: "created", At: rt0},
-		{From: store.StateQueued, To: store.StatePreparing, Note: "worker picked up", At: rt0.Add(200 * time.Millisecond)},
+		{To: store.StateQueued, Note: "created", At: rt0, Actor: "token:mac-ssh"},
+		{From: store.StateQueued, To: store.StatePreparing, Note: "worker picked up", At: rt0.Add(200 * time.Millisecond), Actor: store.ActorSystem},
 		{From: store.StatePreparing, To: store.StateAgentRunning, Note: "agent started", At: rt0.Add(2200 * time.Millisecond)},
 	}
 	checkFixture(t, "events-running.json", map[string]any{"task": viewOf(running), "steps": Timeline(runEvs), "verify": nil})

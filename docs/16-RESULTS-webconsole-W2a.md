@@ -5,7 +5,7 @@
 
 ## 1. 만든 것
 
-**A1. 누가 했는지 기록(스키마 v7).** `task_events`에 `actor` 열을 더했다(옛 이벤트는 비어 있음). 주체는 인증된 요청의 principal에서 한 곳(`withPrincipal`)에서만 정해진다: `socket:uid:<n>`, `session:<서명자 ID>`, `token:<서명자 ID>`, 워커·복구는 `system`. 형식(`[A-Za-z0-9_.:@-]`, 80바이트 이하, `kind:id`)에 맞지 않으면 `invalid`로 저장하고 쓰기는 실패하지 않는다. 원장(`orchd.jsonl`)의 `task_transition`, 새 `task_submitted`, `approval_granted`의 `via`·`actor`는 같은 `kind:id` 값이다(R6). `TaskView.actor`(웹 "마지막 변경"), `orch show`의 `주체:` 줄. **둘 다 *가장 최근 이벤트*의 주체이지 제출자가 아니다**: 워커가 `queued`→`preparing`을 약 250 ms 안에 `system`으로 옮기므로 정상 서버에서도 곧 `system`이 된다. 제출자는 원장 `task_submitted`(또는 `task_events`의 `created` 행)에 있다. 이벤트마다의 주체를 화면에 내는 것은 하지 않았다(R10, 사용자 결정). 클라이언트가 보내는 헤더나 본문 필드로는 주체를 바꿀 수 없다(5장 적대 시험).
+**A1. 누가 했는지 기록(스키마 v7).** `task_events`에 `actor` 열을 더했다(옛 이벤트는 비어 있음). 주체는 인증된 요청의 principal에서 한 곳(`withPrincipal`)에서만 정해진다: `socket:uid:<n>`, `session:<서명자 ID>`, `token:<서명자 ID>`, 워커·복구는 `system`. 형식(`[A-Za-z0-9_.:@-]`, 80바이트 이하, `kind:id`)에 맞지 않으면 `invalid`로 저장하고 쓰기는 실패하지 않는다. 원장(`orchd.jsonl`)의 `task_transition`, 새 `task_submitted`, `approval_granted`의 `via`·`actor`는 같은 `kind:id` 값이다(R6). `TaskView.actor`(웹 "마지막 변경"), `orch show`의 `주체:` 줄. **이 둘은 *가장 최근 이벤트*의 주체이지 제출자가 아니다**: 워커가 `queued`→`preparing`을 약 250 ms 안에 `system`으로 옮기므로 정상 서버에서도 곧 `system`이 된다. 제출자는 웹 작업 화면 타임라인의 첫 단계(대기)의 주체(A8), 또는 원장 `task_submitted`(`task_events`의 `created` 행)에서 본다. 이벤트마다의 주체는 A8에서 웹에 보이게 했다(CLI는 그대로). 클라이언트가 보내는 헤더나 본문 필드로는 주체를 바꿀 수 없다(5장 적대 시험).
 
 **A2. 취소·재시도 오류 코드.** 취소: `not_found` 404, `already_final` 409, `state_changed` 409(비교-교체에 5번 진 경우; 전에는 일반 500). 재시도: `not_found`, `not_retryable` 409(+`reason`, 기계가 만든 고정 한국어 문장), `state_changed` 409. `TaskView.cancellable`은 상태 표(`machine.Allowed`)에서 계산한다.
 
@@ -14,6 +14,8 @@
 **A4. 서버 상태의 클라우드 칸(`ops.cloud`).** Cinder 쿼터(gigabytes, volumes: 한도·사용·예약·무제한), test-vm 서버 상태, 복원 볼륨 수, 최근 복원 기록. 읽기 전용 명령 세 개만(`quota show --usage -f json`, `server show <vm> -f value -c status`, `volume list`), 60초 캐시, 한 번에 하나의 갱신, 갱신 20초 제한, `/ops`는 클라우드를 최대 6초만 기다린다(넘으면 `cloud_timeout`, 갱신은 뒤에서 계속). 실패는 고정 코드 두 개(`cloud_unavailable`, `cloud_timeout`)뿐이다. 이번 작업(A6)에서 마지막 관문을 더했다: API가 공급자의 값을 정규화해 실패면 코드 두 개 중 하나와 빈 블록, 성공이면 코드 없음·상태 단어(아니면 `unknown`)·평범한 VM 이름만 내보낸다. **VM 이름이 `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`가 아니면 빈칸이 된다**(실제 이름 `test-vm`은 보이고, 이상한 이름은 화면에 빈 이름으로 나온다). vm 쪽도 CLI 출력에서 상태 단어만 받는다.
 
 **A5. 웹 화면.** `#/new`(저장소·기준 커밋·종류·에이전트를 서버 목록에서 고르고, 네 칸(목표·범위·완료 조건·하지 말 것)을 고정 템플릿으로 합친 프롬프트를 **읽기 전용 미리보기**로 보여 준 그대로 보냄(R9), 64 KiB(UTF-8 바이트) 상한, 보이지 않는 문자·제어 문자 거부, 같은 내용은 같은 `Idempotency-Key`), 작업 화면의 취소·재시도(서버 플래그가 정확히 `true`일 때만 단추, 화면 안 확인 칸을 거쳐 요청 1번), 진행 줄("진행 중 · 단계 · N초 경과"), `#/ops`(쿼터 막대와 80% 경고, 클라우드 네 상태). 서버 문자열은 모두 텍스트 노드.
+
+**A8. 단계마다 누가 옮겼는지 웹에 표시(사용자 결정, 컷오버 전).** `StepTime.Actor`(`actor`, 비면 생략)는 **그 단계로 들어가게 한 이벤트의 주체**다(`Timeline`이 복사). 제출·전이·취소·재시도 이벤트가 각각 단계가 되고, 주체 열이 NULL인 v7 이전 이벤트는 빈 값이다. 웹 작업 화면의 시간 분포 줄 아래에 `처리: <주체>`를 **텍스트 노드**로 보인다: `system` → "자동"(워커가 옮긴 것, 정상), `invalid` → "알 수 없음", 빈 값 → 표시 없음, 그 밖(`session:<ID>`, `token:<ID>`, `socket:uid:<n>`)은 `inline()`(제어·방향 전환·너비 0 문자 치환, 80자 상한)을 거친 그대로. 막대는 여전히 `aria-hidden`이고 주체는 글자 목록 쪽에 있어 스크린 리더가 읽는다. 주체 값을 담는 새 속성은 없고, API에 더한 필드는 `actor` 하나다. 시험: `TestTimelineStepCarriesActor`, `TestTimelineActorNeverEchoesClientInput`(위조 헤더·본문 `actor`를 붙여도 응답의 주체는 서버가 기록한 값뿐, 저장된 이상한 값은 `invalid`), JS `TestTaskTimelineShowsActorPerStep`, `TestTaskTimelineActorHostileText`, 골든 `events.json`·`events-running.json`을 실제 구조체에서 다시 생성. 변이: `Timeline`의 `Actor` 복사 제거 → Go 시험 둘 실패; 웹에서 sanitizer 제거(원문) → 적대 문자 시험 실패; 주체를 `title` 속성에 넣음 → 같은 시험 실패. **차이:** 이벤트별 주체는 이제 웹에서 보이지만 `orch show`/CLI에는 여전히 없다(가장 최근 주체 한 줄뿐). 시험 수(`go test -list`/node): `internal/orch/api` 209 → 211(+2), 웹(node) 106 → 108(+2).
 
 **A6. 적대 시험·변이 시험·빚 정리(이번 작업).** 아래 2·3·5장. 적대 시험이 실제 결함 두 개를 찾아 고쳤다: (1) `encoding/json`이 잘못된 UTF-8을 U+FFFD로 조용히 바꿔 프롬프트 검사가 그것을 볼 수 없었다 → 본문 원문을 먼저 검사해 400; (2) `ops.cloud`가 공급자의 코드 문자열과 CLI 표준 출력의 상태를 그대로 내보냈다 → 정규화(위 A4).
 
@@ -177,7 +179,7 @@
 - **실제 브라우저에서 `#/new`의 키보드 전체 흐름과 스크린 리더 낭독.** DOM 대역 시험(`aria-disabled`, `aria-live`, Escape)만 했다. 이번 작업에서 화면을 다시 보지 않았다(Task 5의 ego-browser 확인은 이 수정 이전).
 - **다른 사용자 소유 저장소의 `/repos`.** `/repos`는 전역 `safe.directory`를 읽지 않으므로 orch 소유가 아닌 저장소는 빠질 것으로 예상한다(코드 읽기). orch-vm의 실제 소유자(`ls -ld /home/orch/repos/*`)는 보지 않았다.
 - **실제 `policy.yml`과의 종류 대조.** 정책에 `toy`, `sample-app`가 있다는 것은 운영 문서 3장의 기록일 뿐, 실제 파일을 이번에 읽지 않았다. CLI 제출의 동작 변화도 실서버에서 보지 않았다.
-- **`주체:`/`TaskView.actor` 기대값은 코드를 읽고 도출했다**(최근 이벤트의 주체; 정상 서버에서는 곧 `system`). 실서버에서 본 적 없다. 런북은 취소 후 상태(종결이라 `session:<ID>`)와 원장 `task_submitted`로 확인하게 했다.
+- **`주체:`/`TaskView.actor` 기대값은 코드를 읽고 도출했다**(최근 이벤트의 주체; 정상 서버에서는 곧 `system`). 실서버에서 본 적 없다. 런북은 웹 타임라인의 단계별 주체(첫 단계 = 제출자, `cancelled` 단계 = 취소자)를 1차로, 원장 `task_submitted`를 보조로 쓰게 했다. 단계별 주체 화면은 합성 데이터와 ego-browser(1280·390px)로만 봤고 실서버에서는 보지 않았다.
 - **실제 부하에서의 큐 상한.** 시험 DB(SQLite, `_txlock=immediate`)에서의 동시 제출만 확인했다.
 - **실제 인프라 실패의 재시도.** 가짜로 만든 실패 작업(`failedTask`)으로만 시험했다. 재시도 확인 문구는 `machine.Retry` 주석에서 가져왔다.
 - **스키마 v7 마이그레이션을 실제 운영 DB로.** 시험 DB(v6→v7)로만 확인했다. 옛 `orchd`가 v7 DB를 거부하는 것은 코드(`store.go`의 버전 검사)를 읽어 확인했다.

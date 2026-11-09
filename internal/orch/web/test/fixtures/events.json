@@ -4,13 +4,15 @@
       "state": "queued",
       "seconds": 0.2,
       "note": "created",
-      "at": "2026-11-09T10:00:00Z"
+      "at": "2026-11-09T10:00:00Z",
+      "actor": "session:alice"
     },
     {
       "state": "preparing",
       "seconds": 2,
       "note": "worker picked up",
-      "at": "2026-11-09T10:00:00.2Z"
+      "at": "2026-11-09T10:00:00.2Z",
+      "actor": "system"
     },
     {
       "state": "agent_running",

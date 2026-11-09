@@ -44,8 +44,23 @@ export function barWidths(seconds) {
   });
 }
 
+export const ACTOR_MAX = 80;
+
+// actorText: who moved the task into a step, as TEXT. "system" (the worker)
+// reads "자동", "invalid" (the server could not record a clean actor) reads
+// "알 수 없음", an empty or missing value shows nothing, and anything else
+// ("kind:id") goes through the sanitizer and the 80-character cap.
+export function actorText(a) {
+  if (typeof a !== 'string' || a === '') return '';
+  if (a === 'system') return '자동';
+  if (a === 'invalid') return '알 수 없음';
+  const t = inline(a, ACTOR_MAX);
+  return t.trim() === '' ? '' : t;
+}
+
 // renderTimeline: one row per step (label, bar, duration text). The bars are
-// decoration (aria-hidden); the label and the duration text carry the data.
+// decoration (aria-hidden); the label, the duration text and the actor ("처리:
+// who moved it into the step") carry the data.
 export function renderTimeline(steps, opts) {
   const list = Array.isArray(steps) ? steps.filter((s) => s && typeof s === 'object') : [];
   if (list.length === 0) return el('p', { class: 'note' }, '기록된 단계가 없습니다.');
@@ -62,10 +77,12 @@ export function renderTimeline(steps, opts) {
     const waiting = last && lastWait;
     const fill = el('div', { class: 'bar-f' });
     fill.style.width = widths[i] + '%'; // CSSOM: CSP forbids style attributes
+    const who = actorText(s.actor);
     return el('li', { class: 'bar-r', 'data-step': known ? s.state : '?' }, [
       el('span', {}, label),
       el('div', { class: 'bar-t', 'aria-hidden': 'true' }, fill),
       el('span', { class: 'mono' }, live ? '진행 중 · ' + formatSeconds(secs[i]) : waiting ? '대기 중' : formatSeconds(secs[i])),
+      who ? el('span', { class: 'bar-who' }, '처리: ' + who) : null,
     ]);
   });
   const total = secs.reduce((a, b) => a + b, 0);

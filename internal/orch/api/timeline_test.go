@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -99,4 +100,80 @@ func TestEventsEndpoint(t *testing.T) {
 	wantEnvelope(t, code, b, 404, "not_found")
 	code, b = e.do(t, "GET", "/api/v1/tasks/abc/events", "")
 	wantEnvelope(t, code, b, 400, "bad_request")
+}
+
+// Each step carries the actor of the event that ENTERED it: submit, a worker
+// transition, a cancel and a retry; a NULL column (before schema v7) is empty.
+func TestTimelineStepCarriesActor(t *testing.T) {
+	t0 := time.Date(2026, 11, 9, 10, 0, 0, 0, time.UTC)
+	evs := []store.Event{
+		{To: store.StateQueued, Note: "created", At: t0, Actor: "session:alice"},
+		{From: store.StateQueued, To: store.StatePreparing, At: t0.Add(time.Second), Actor: store.ActorSystem},
+		{From: store.StatePreparing, To: store.StateError, At: t0.Add(2 * time.Second), Actor: ""},
+		{From: store.StateError, To: store.StateQueued, Note: "retry", At: t0.Add(3 * time.Second), Actor: "token:mac-ssh"},
+		{From: store.StateQueued, To: store.StateCancelled, Note: "cancelled", At: t0.Add(4 * time.Second), Actor: "socket:uid:501"},
+		{From: store.StateCancelled, To: store.StateQueued, At: t0.Add(5 * time.Second), Actor: store.ActorInvalid},
+	}
+	got := Timeline(evs)
+	want := []string{"session:alice", "system", "", "token:mac-ssh", "socket:uid:501", "invalid"}
+	for i, s := range got {
+		if s.Actor != want[i] {
+			t.Fatalf("step %d (%s) actor %q want %q", i, s.State, s.Actor, want[i])
+		}
+	}
+	// an empty actor is omitted from the JSON, a set one is present
+	b0, _ := json.Marshal(got[2])
+	b1, _ := json.Marshal(got[0])
+	if strings.Contains(string(b0), "actor") || !strings.Contains(string(b1), `"actor":"session:alice"`) {
+		t.Fatalf("json: %s / %s", b0, b1)
+	}
+}
+
+// The actor on the timeline is only what the server recorded from the
+// authenticated principal: forged headers on submit, cancel AND the read
+// itself change nothing, and a body "actor" is refused.
+func TestTimelineActorNeverEchoesClientInput(t *testing.T) {
+	w, _ := adversaryEnv(t)
+	tok, csrf := w.newSession(t, "alice")
+	forged := hdr{"X-Actor": "socket:uid:0", "X-Orch-Actor": "system", "X-Forwarded-User": "root",
+		"Remote-User": "root", "Tailscale-User-Login": "admin@evil.example", "X-Principal": "token:root"}
+	h := with(sessionHdr(tok, csrf), forged)
+	code, _, b := w.web(t, "POST", "/api/v1/tasks", w.submitBody("p"), h)
+	var v TaskView
+	if code != 201 || json.Unmarshal(b, &v) != nil {
+		t.Fatalf("submit: %d %s", code, b)
+	}
+	if code, _, b = w.web(t, "POST", "/api/v1/tasks", strings.TrimSuffix(w.submitBody("q"), "}")+`,"actor":"system"}`, h); code != 400 {
+		t.Fatalf("body actor: %d %s", code, b)
+	}
+	if code, _, b = w.web(t, "POST", "/api/v1/tasks/"+itoa(v.ID)+"/cancel", "", h); code != 200 {
+		t.Fatalf("cancel: %d %s", code, b)
+	}
+	code, _, b = w.web(t, "GET", "/api/v1/tasks/"+itoa(v.ID)+"/events", "", h)
+	var resp struct {
+		Steps []StepTime `json:"steps"`
+	}
+	if code != 200 || json.Unmarshal(b, &resp) != nil || len(resp.Steps) != 2 {
+		t.Fatalf("events: %d %s", code, b)
+	}
+	for _, s := range resp.Steps {
+		if s.Actor != "session:alice" {
+			t.Fatalf("step %s actor %q, want session:alice: %s", s.State, s.Actor, b)
+		}
+	}
+	for _, bad := range []string{"root", "admin", "evil", "socket:uid:0", "system"} {
+		if strings.Contains(string(b), bad) {
+			t.Fatalf("response echoes client input %q: %s", bad, b)
+		}
+	}
+	// a stored actor outside the allowed characters comes back as "invalid"
+	ctx := store.WithActor(context.Background(), "alice‮<img>")
+	id, err := w.env.st.CreateTask(ctx, store.Task{Repo: w.repo, Base: "HEAD", Prompt: "p", Class: "c", Agent: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _, b = w.web(t, "GET", "/api/v1/tasks/"+itoa(id)+"/events", "", h)
+	if code != 200 || !strings.Contains(string(b), `"actor":"invalid"`) || strings.Contains(string(b), "img") {
+		t.Fatalf("invalid actor: %d %s", code, b)
+	}
 }
