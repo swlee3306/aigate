@@ -1,0 +1,47 @@
+[
+  {
+    "id": 41,
+    "repo": "/srv/repos/proj",
+    "base": "main",
+    "prompt": "로그인 화면 문구 수정",
+    "class": "docs",
+    "agent": "claude",
+    "state": "agent_running",
+    "attempts": 1,
+    "created_at": "2026-11-09T12:00:00Z",
+    "updated_at": "2026-11-09T12:03:00Z",
+    "cancellable": true,
+    "actor": "session:mac-passkey"
+  },
+  {
+    "id": 42,
+    "repo": "/srv/repos/proj",
+    "base": "main",
+    "prompt": "빌드 스크립트 정리",
+    "class": "docs",
+    "agent": "claude",
+    "state": "failed",
+    "attempts": 1,
+    "retry_state": "verifying",
+    "created_at": "2026-11-09T13:00:00Z",
+    "updated_at": "2026-11-09T13:03:00Z",
+    "error": "verify: restore failed",
+    "retryable": true,
+    "retries": 1,
+    "actor": "token:mac-ssh"
+  },
+  {
+    "id": 43,
+    "repo": "/srv/repos/proj",
+    "base": "main",
+    "prompt": "대기 중 작업",
+    "class": "docs",
+    "agent": "claude",
+    "state": "queued",
+    "attempts": 1,
+    "created_at": "2026-11-09T14:00:00Z",
+    "updated_at": "2026-11-09T14:03:00Z",
+    "cancellable": true,
+    "actor": "system"
+  }
+]

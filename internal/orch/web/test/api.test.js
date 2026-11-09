@@ -158,3 +158,67 @@ test('session(): 429 (after its one retry) and network errors are errors, not "l
   await assert.rejects(api.session(), (e) => e.code === 'network');
   assert.equal(expired, 0);
 });
+
+// ---- opts.headers: Idempotency-Key only (W2a) ----------------------------------
+
+const KEY = 'AbCdEfGh0123456789AbCdEfGh012345';
+
+test('Idempotency-Key header is sent on POST, and the same key on the 429 and CSRF retries', async () => {
+  api.setCsrf('tok');
+  stub(res(201, { id: 1 }));
+  await api.post('/api/v1/tasks', { a: 1 }, { headers: { 'Idempotency-Key': KEY } });
+  assert.equal(calls[0].init.headers['Idempotency-Key'], KEY);
+  assert.equal(calls[0].init.headers['X-Orch-CSRF'], 'tok');
+
+  stub(res(429, envelope('queue_full')), res(201, { id: 1 }));
+  await api.post('/api/v1/tasks', {}, { headers: { 'Idempotency-Key': KEY } });
+  assert.deepEqual(calls.map((c) => c.init.headers['Idempotency-Key']), [KEY, KEY]);
+
+  stub(res(403, envelope('csrf_failed')), res(200, { csrf: 'new' }), res(201, { id: 2 }));
+  await api.post('/api/v1/tasks', {}, { headers: { 'Idempotency-Key': KEY } });
+  assert.equal(calls.length, 3);
+  assert.equal(calls[0].init.headers['Idempotency-Key'], KEY);
+  assert.equal(calls[2].init.headers['Idempotency-Key'], KEY);
+  assert.equal(calls[1].init.headers['Idempotency-Key'], undefined, 'the session refresh carries no key');
+  assert.equal(calls[2].init.headers['X-Orch-CSRF'], 'new');
+});
+
+test('opts.headers: anything but a well-formed Idempotency-Key on a POST is refused before any request', async () => {
+  const bad = [
+    { 'X-Orch-CSRF': 'x' },
+    { 'x-orch-csrf': 'x' },
+    { 'Content-Type': 'text/plain' },
+    { Accept: 'text/html' },
+    { Cookie: 'a=b' },
+    { Authorization: 'Bearer x' },
+    { 'idempotency-key': KEY },
+    { 'Idempotency-Key': KEY, 'X-Orch-CSRF': 'x' },
+    { 'Idempotency-Key': 'short' },
+    { 'Idempotency-Key': KEY + '\r\nX-Evil: 1' },
+    { 'Idempotency-Key': 'a b'.repeat(8) },
+    { 'Idempotency-Key': 123 },
+    { 'Idempotency-Key': 'A'.repeat(65) },
+    {},
+    'Idempotency-Key',
+    ['Idempotency-Key'],
+  ];
+  for (const h of bad) {
+    stub(res(200, {}));
+    await assert.rejects(() => api.post('/api/v1/tasks', {}, { headers: h }), (e) => e.code === 'bad_header', JSON.stringify(h));
+    assert.equal(calls.length, 0, 'no request for ' + JSON.stringify(h));
+  }
+  stub(res(200, {}));
+  await assert.rejects(() => api.get('/api/v1/tasks', { headers: { 'Idempotency-Key': KEY } }), (e) => e.code === 'bad_header');
+  assert.equal(calls.length, 0);
+  // no headers option: unchanged
+  stub(res(200, {}));
+  await api.post('/api/v1/tasks', {});
+  assert.equal(calls[0].init.headers['Idempotency-Key'], undefined);
+});
+
+test('ApiError carries the server `reason` of a not_retryable refusal (bounded), nothing else extra', async () => {
+  stub(res(409, { error: { code: 'not_retryable', message: 'm', reason: 'R'.repeat(900) } }));
+  await assert.rejects(() => api.post('/api/v1/tasks/1/retry', {}), (e) => e.code === 'not_retryable' && e.reason.length === 500);
+  stub(res(409, { error: { code: 'not_retryable', message: 'm', reason: 42, secret: 'x' } }));
+  await assert.rejects(() => api.post('/api/v1/tasks/1/retry', {}), (e) => e.reason === undefined && e.secret === undefined);
+});

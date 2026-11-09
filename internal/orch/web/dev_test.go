@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -67,15 +68,69 @@ func TestDevServer(t *testing.T) {
 	})
 	serve := func(w http.ResponseWriter, b []byte) { json(w, string(b)) }
 	mux.HandleFunc("/api/v1/tasks", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			// submit: 201 with the first task of the actions fixture (id 41)
+			var rows []map[string]any
+			_ = stdjson.Unmarshal(fixture("tasks-actions.json"), &rows)
+			b, _ := stdjson.Marshal(rows[0])
+			w.WriteHeader(201)
+			serve(w, b)
+			return
+		}
 		var rows []map[string]any
 		if err := stdjson.Unmarshal(fixture("tasks.json"), &rows); err != nil {
 			t.Fatal(err)
 		}
+		var more []map[string]any
+		_ = stdjson.Unmarshal(fixture("tasks-actions.json"), &more)
+		rows = append(rows, more...)
 		hostile := "<img src=x onerror=alert(1)> \x1b[31mred\u202eevil\u0000"
 		rows = append(rows, map[string]any{"id": 40, "repo": hostile, "base": "main", "prompt": hostile, "class": "docs",
 			"agent": "claude", "state": hostile, "attempts": 1, "created_at": "2026-11-09T11:00:00Z", "updated_at": "2026-11-09T11:00:00Z"})
 		b, _ := stdjson.Marshal(rows)
 		serve(w, b)
+	})
+	// W2a: repos, policy classes, an in-progress task (41, cancellable), a
+	// retryable failed task (42) and the ops variants (select with
+	// /dev-set-ops?name=<fixture file>, default ops.json).
+	for _, n := range []string{"repos", "policy"} {
+		name := n + ".json"
+		mux.HandleFunc("/api/v1/"+n, func(w http.ResponseWriter, r *http.Request) { serve(w, fixture(name)) })
+	}
+	var opsMu sync.Mutex
+	opsName := "ops.json"
+	mux.HandleFunc("/api/v1/ops", func(w http.ResponseWriter, r *http.Request) {
+		opsMu.Lock()
+		n := opsName
+		opsMu.Unlock()
+		serve(w, fixture(n))
+	})
+	mux.HandleFunc("/api/v1/tasks/41/events", func(w http.ResponseWriter, r *http.Request) {
+		var d map[string]any
+		_ = stdjson.Unmarshal(fixture("events-running.json"), &d)
+		// the open step started 95 s ago, so the progress line shows a live elapsed time
+		steps := d["steps"].([]any)
+		steps[2].(map[string]any)["at"] = time.Now().Add(-95 * time.Second).UTC().Format(time.RFC3339)
+		b, _ := stdjson.Marshal(d)
+		serve(w, b)
+	})
+	mux.HandleFunc("/api/v1/tasks/42/events", func(w http.ResponseWriter, r *http.Request) {
+		var rows []map[string]any
+		_ = stdjson.Unmarshal(fixture("tasks-actions.json"), &rows)
+		var d map[string]any
+		_ = stdjson.Unmarshal(fixture("events-running.json"), &d)
+		steps := d["steps"].([]any)[:3]
+		steps = append(steps, map[string]any{"state": "failed", "seconds": 0, "note": "verify: restore failed", "at": "2026-11-09T13:03:00Z"})
+		b, _ := stdjson.Marshal(map[string]any{"task": rows[1], "steps": steps, "verify": nil})
+		serve(w, b)
+	})
+	mux.HandleFunc("/api/v1/tasks/41/cancel", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(409)
+		json(w, `{"error":{"code":"state_changed","message":"dev"}}`)
+	})
+	mux.HandleFunc("/api/v1/tasks/42/retry", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(409)
+		json(w, `{"error":{"code":"not_retryable","message":"dev","reason":"재시도 한도(3회)를 모두 썼습니다"}}`)
 	})
 	mux.HandleFunc("/api/v1/tasks/38/events", func(w http.ResponseWriter, r *http.Request) { serve(w, fixture("events.json")) })
 	mux.HandleFunc("/api/v1/tasks/38/diff", func(w http.ResponseWriter, r *http.Request) { serve(w, fixture("diff.json")) })
@@ -117,6 +172,18 @@ func TestDevServer(t *testing.T) {
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Security-Policy", api.ContentSecurityPolicy)
 			w.Header().Set("X-Content-Type-Options", "nosniff")
+			if r.URL.Path == "/dev-set-ops" {
+				n := r.URL.Query().Get("name")
+				if !strings.HasPrefix(n, "ops") || !strings.HasSuffix(n, ".json") || strings.ContainsAny(n, "/\\") {
+					http.Error(w, "bad name", 400)
+					return
+				}
+				opsMu.Lock()
+				opsName = n
+				opsMu.Unlock()
+				_, _ = w.Write([]byte("ok " + n))
+				return
+			}
 			if strings.HasPrefix(r.URL.Path, "/api/") {
 				mux.ServeHTTP(w, r)
 				return

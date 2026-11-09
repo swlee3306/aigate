@@ -11,6 +11,12 @@ const DEFAULT_RETRY_WAIT_S = 2;
 // not be sent anywhere else.
 const PATH_RE = /^\/api\/v1\/[A-Za-z0-9._~\/?=&%-]*$/;
 
+// Request headers a caller may add through opts.headers: ONLY the idempotency
+// key of a POST (a fixed shape). Everything else, the CSRF header included, is
+// api.js's own business and is refused here, not silently dropped.
+const IDEMPOTENCY_HEADER = 'Idempotency-Key';
+const IDEMPOTENCY_RE = /^[A-Za-z0-9]{16,64}$/;
+
 let csrf = null;
 const deps = {
   fetch: (...a) => globalThis.fetch(...a),
@@ -82,6 +88,7 @@ async function once(method, path, body, opts) {
     headers['Content-Type'] = 'application/json';
     init.body = JSON.stringify(body);
   }
+  if (opts.headers) headers[IDEMPOTENCY_HEADER] = opts.headers[IDEMPOTENCY_HEADER];
   if (method !== 'GET' && method !== 'HEAD' && csrf) headers['X-Orch-CSRF'] = csrf;
   const ctl = new AbortController();
   init.signal = ctl.signal;
@@ -102,11 +109,25 @@ function toError(res, data) {
   const e = data && typeof data === 'object' ? data.error : null;
   const code = e && typeof e.code === 'string' ? e.code : '';
   const msg = e && typeof e.message === 'string' ? e.message : '';
-  return new ApiError(res.status, code || 'http_' + res.status, msg || '요청을 처리하지 못했습니다');
+  const err = new ApiError(res.status, code || 'http_' + res.status, msg || '요청을 처리하지 못했습니다');
+  // `reason` is the fixed sentence of a not_retryable refusal (server-built);
+  // views show it only as sanitized text.
+  if (e && typeof e.reason === 'string' && e.reason) err.reason = e.reason.slice(0, 500);
+  return err;
+}
+
+function checkHeaders(method, h) {
+  if (h === undefined || h === null) return;
+  const proto = typeof h === 'object' ? Object.getPrototypeOf(h) : null;
+  const names = typeof h === 'object' && (proto === Object.prototype || proto === null) ? Object.keys(h) : null;
+  const ok = names !== null && names.length === 1 && names[0] === IDEMPOTENCY_HEADER && method === 'POST'
+    && typeof h[IDEMPOTENCY_HEADER] === 'string' && IDEMPOTENCY_RE.test(h[IDEMPOTENCY_HEADER]);
+  if (!ok) throw new ApiError(0, 'bad_header', '허용되지 않은 요청 헤더입니다');
 }
 
 // request performs one API call with at most one CSRF refresh (CF15) and at
-// most one rate-limit wait (CF19); it never loops. A 401 emits
+// most one rate-limit wait (CF19); it never loops. opts.headers may carry only
+// an Idempotency-Key (POST); the same key is sent on the CSRF and 429 retries. A 401 emits
 // `session-expired` unless opts.quiet401 is set (boot probe, logout).
 export async function request(method, path, body, opts) {
   opts = opts || {};
@@ -115,6 +136,7 @@ export async function request(method, path, body, opts) {
   if (opts.polling && path.startsWith('/api/v1/auth/')) {
     throw new ApiError(0, 'bad_path', '인증 경로는 주기적으로 호출하지 않습니다'); // CF19
   }
+  checkHeaders(method, opts.headers);
   let refreshed = false;
   let waited = false;
   for (;;) {

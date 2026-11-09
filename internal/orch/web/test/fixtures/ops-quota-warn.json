@@ -1,0 +1,86 @@
+{
+  "build": "rev-abc123",
+  "started": "2026-11-07T10:00:00Z",
+  "policy_hash": "0123abcd",
+  "last_restore": {
+    "phases": [
+      {
+        "name": "delete_server",
+        "seconds": 4.2,
+        "ok": true
+      },
+      {
+        "name": "create_volume",
+        "seconds": 21.5,
+        "ok": true
+      },
+      {
+        "name": "create_server",
+        "seconds": 18,
+        "ok": true
+      },
+      {
+        "name": "wait_ssh",
+        "seconds": 9.3,
+        "ok": true
+      }
+    ],
+    "seconds": 53,
+    "at": "2026-11-09T08:00:00Z",
+    "ok": true
+  },
+  "base_cache_entries": 3,
+  "cloud": {
+    "ok": true,
+    "code": "",
+    "quota": {
+      "gigabytes": {
+        "limit": 300,
+        "in_use": 230,
+        "reserved": 20,
+        "unlimited": false
+      },
+      "volumes": {
+        "limit": 20,
+        "in_use": 17,
+        "reserved": 0,
+        "unlimited": false
+      }
+    },
+    "test_vm": {
+      "name": "test-vm",
+      "status": "ACTIVE"
+    },
+    "restore_volumes": 9,
+    "history": [
+      {
+        "phases": [
+          {
+            "name": "delete_server",
+            "seconds": 4.2,
+            "ok": true
+          },
+          {
+            "name": "create_volume",
+            "seconds": 21.5,
+            "ok": true
+          },
+          {
+            "name": "create_server",
+            "seconds": 18,
+            "ok": true
+          },
+          {
+            "name": "wait_ssh",
+            "seconds": 9.3,
+            "ok": true
+          }
+        ],
+        "seconds": 53,
+        "at": "2026-11-09T08:00:00Z",
+        "ok": true
+      }
+    ],
+    "checked_at": "2026-11-09T10:00:00Z"
+  }
+}

@@ -1,4 +1,5 @@
-// task.js: task detail (#/tasks/ID): header, timeline bars from
+// task.js: task detail (#/tasks/ID): header, progress line, cancel/retry
+// buttons (with an in-page confirmation step), timeline bars from
 // GET /api/v1/tasks/{id}/events, verify timing, links to the diff and the
 // approval screen, and the saved report as TEXT (loaded on demand).
 
@@ -12,9 +13,10 @@ import { replaceContent } from '../shell.js';
 const POLL_MS = 10000;
 export const MIN_BAR_PCT = 2; // every stage stays visible
 const FINAL = new Set(['done', 'failed', 'cancelled']);
-// RUNNING states have a live timer; needs_approval, passed and error are
-// waiting for a person or a retry, so no growing timer is shown for them.
-const RUNNING = new Set(['queued', 'preparing', 'agent_running', 'collecting', 'verifying', 'publishing']);
+// RUNNING states have a live timer; queued, needs_approval, passed and error
+// are waiting (for a worker, a person or a retry), so no growing timer is
+// shown for them.
+const RUNNING = new Set(['preparing', 'agent_running', 'collecting', 'verifying', 'publishing']);
 const HEX_RE = /^[0-9a-f]{7,64}$/;
 
 const num = (x) => (typeof x === 'number' && Number.isFinite(x) && x >= 0 ? x : 0);
@@ -110,6 +112,112 @@ function reportBlock(rep, onLoadArg) {
   return textBlock(rep.text, '검증 보고서 (읽기 전용 텍스트)', { chunk: 200 });
 }
 
+const isObj = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
+
+// currentProgress: what the task is doing now, from the task state and the
+// latest event (the last step's start time): {kind:'running', state, elapsed}
+// (elapsed in seconds, null when the start time is unknown), {kind:'waiting',
+// state} (queued, needs_approval, passed, error: no timer) or {kind:'none'}
+// (final or unknown state).
+export function currentProgress(data, now) {
+  const t = data && isObj(data.task) ? data.task : {};
+  const steps = data && Array.isArray(data.steps) ? data.steps.filter(isObj) : [];
+  const lastStep = steps.length ? steps[steps.length - 1] : null;
+  const state = typeof t.state === 'string' ? t.state : lastStep && typeof lastStep.state === 'string' ? lastStep.state : '';
+  if (!Object.prototype.hasOwnProperty.call(STATE_LABELS, state) || FINAL.has(state)) return { kind: 'none' };
+  if (!RUNNING.has(state)) return { kind: 'waiting', state };
+  let elapsed = null;
+  const at = lastStep && lastStep.state === state ? Date.parse(lastStep.at) : NaN;
+  if (now instanceof Date && Number.isFinite(at) && Number.isFinite(now.getTime())) elapsed = Math.max(0, (now.getTime() - at) / 1000);
+  return { kind: 'running', state, elapsed };
+}
+
+function renderProgress(p) {
+  if (p.kind === 'none') return null;
+  if (p.kind === 'waiting') {
+    return el('p', { class: ['progress', 'wait'] }, [el('b', {}, '대기 중'), ' · ' + stateLabel(p.state)]);
+  }
+  return el('p', { class: ['progress', 'run'] }, [
+    el('b', {}, '진행 중'),
+    ' · ' + stateLabel(p.state) + (p.elapsed === null ? '' : ' · ' + formatSeconds(p.elapsed) + ' 경과'),
+  ]);
+}
+
+// Fixed confirmation texts (the impact of each action).
+const CONFIRM = {
+  cancel: {
+    title: '이 작업을 취소할까요?',
+    impact: (state) => (state === 'queued'
+      ? '대기 중인 작업이 취소됩니다. 취소는 되돌릴 수 없습니다.'
+      : '진행 중인 단계는 끝난 뒤 결과가 버려집니다. 취소는 되돌릴 수 없습니다.'),
+    run: '취소 실행',
+    open: '작업 취소',
+    key: 'act-cancel',
+  },
+  retry: {
+    title: '이 작업을 다시 시도할까요?',
+    impact: () => '실패한 단계부터 다시 실행합니다. 시도 횟수와 오류 문구는 초기화되고 기준·head 커밋은 그대로입니다. 인프라 오류로 실패한 작업만 가능하며 재시도 횟수에는 한도가 있습니다.',
+    run: '재시도 실행',
+    open: '다시 시도',
+    key: 'act-retry',
+  },
+};
+
+// actionResult maps a failed cancel/retry to a FIXED text. The one server
+// sentence shown is the retry `reason` (built by the server from fixed
+// templates), as sanitized text. reload: the page should refetch the task.
+export function actionResult(kind, err) {
+  const code = err && typeof err.code === 'string' ? err.code : '';
+  const status = err && typeof err.status === 'number' ? err.status : 0;
+  if (code === 'state_changed') {
+    return { text: '그 사이 작업 상태가 바뀌었습니다. 화면을 새로 고쳤습니다. 현재 상태를 확인하고 다시 시도하세요.', reload: true };
+  }
+  if (kind === 'cancel' && code === 'already_final') return { text: '이미 끝난 작업이라 취소할 수 없습니다. 화면을 새로 고쳤습니다.', reload: true };
+  if (kind === 'retry' && code === 'not_retryable') {
+    const reason = err && typeof err.reason === 'string' ? inline(err.reason, 300) : '';
+    return { text: reason ? '다시 시도할 수 없습니다: ' + reason : '다시 시도할 수 없는 작업입니다.', reload: true };
+  }
+  if (status === 404) return { text: '작업을 찾을 수 없습니다.', reload: false };
+  return { text: errorText(err), reload: false };
+}
+
+// actionBlock: the cancel/retry buttons (by the server's exact-true flags)
+// and, instead of a button, its in-page confirmation. act: {open, busy, msg}.
+// The "돌아가기" button shares the opener's focus key so focus lands on it
+// when the confirmation opens (replaceContent restores focus by key).
+function actionBlock(t, extras) {
+  const act = extras.act && typeof extras.act === 'object' ? extras.act : {};
+  const kinds = [];
+  if (t.cancellable === true) kinds.push('cancel');
+  if (t.retryable === true) kinds.push('retry');
+  const out = [];
+  for (const kind of kinds) {
+    const c = CONFIRM[kind];
+    if (act.open === kind) {
+      out.push(el('div', { class: 'confirm', role: 'group', 'aria-label': c.title }, [
+        el('p', { class: 'q' }, c.title),
+        el('p', { class: 'meaning' }, c.impact(t.state)),
+        el('div', { class: 'row' }, [
+          el('button', {
+            type: 'button', class: ['btn', 'primary'], 'data-focus-key': 'confirm-' + kind,
+            'aria-disabled': act.busy ? 'true' : 'false', on: { click: () => extras.onRun && extras.onRun(kind) },
+          }, act.busy ? '처리 중…' : c.run),
+          el('button', {
+            type: 'button', class: 'btn', 'data-focus-key': c.key, 'aria-disabled': act.busy ? 'true' : 'false',
+            on: { click: () => extras.onClose && extras.onClose() },
+          }, '돌아가기'),
+        ]),
+      ]));
+    } else {
+      out.push(el('button', {
+        type: 'button', class: 'btn', 'data-focus-key': c.key, 'aria-disabled': act.busy ? 'true' : 'false',
+        on: { click: () => extras.onOpen && extras.onOpen(kind) },
+      }, c.open));
+    }
+  }
+  return out;
+}
+
 // renderTask: data is the events response {task, steps, verify}. extras:
 // {report, approval, now, onLoadReport}.
 export function renderTask(data, extras) {
@@ -120,7 +228,10 @@ export function renderTask(data, extras) {
   const waiting = t.state === 'needs_approval';
   const ap = extras.approval && typeof extras.approval === 'object' ? extras.approval : null;
 
+  const act = extras.act && typeof extras.act === 'object' ? extras.act : {};
+  const actionNodes = actionBlock(t, extras);
   const actions = el('div', { class: 'filters' }, [
+    ...actionNodes.filter((n) => n.tagName === 'BUTTON'),
     id && head ? el('a', { class: 'btn', href: '#/diff/' + id, 'data-focus-key': 'to-diff' }, '변경 내용(diff) 보기') : null,
     !head ? el('span', { class: 'note' }, 'head 커밋이 아직 없어 diff를 볼 수 없습니다.') : null,
     el('a', { class: 'btn', href: '#/tasks' }, '← 목록'),
@@ -147,7 +258,10 @@ export function renderTask(data, extras) {
     el('h1', { id: 'h-task' }, [id ? '작업 #' + id : '작업', ' ', stateChip(t.state)]),
     el('p', { class: 'lead' }, [inline(t.repo, 80), ' · ', inline(t.base, 60)]),
     approval,
+    renderProgress(currentProgress(data, extras.now)),
     actions,
+    ...actionNodes.filter((n) => n.tagName !== 'BUTTON'),
+    act.msg ? el('p', { class: ['note', act.msg.kind === 'ok' ? 'ok' : 'err'], role: act.msg.kind === 'ok' ? 'status' : 'alert', 'data-focus-key': 'act-msg' }, act.msg.text) : null,
     el('div', { class: 'sec' }, [el('h2', {}, '시간 분포'), renderTimeline(data && data.steps, { now: extras.now })]),
     reason,
     el('div', { class: 'sec' }, [el('h2', {}, '요청 내용'), textBlock(t.prompt, '요청 내용', { chunk: 40 })]),
@@ -160,6 +274,8 @@ export function renderTask(data, extras) {
       el('dt', {}, '종류'), el('dd', {}, inline(t.class, 40)),
       el('dt', {}, '에이전트'), el('dd', {}, inline(t.agent, 40)),
       el('dt', {}, '시도'), el('dd', {}, Number.isFinite(t.attempts) ? String(t.attempts) : '-'),
+      el('dt', {}, '재시도'), el('dd', {}, t.retries === undefined ? '0' : Number.isSafeInteger(t.retries) && t.retries >= 0 ? String(t.retries) : '-'),
+      el('dt', {}, '마지막 변경'), el('dd', { class: 'mono' }, typeof t.actor === 'string' && t.actor ? inline(t.actor, 80) : '-'),
       el('dt', {}, 'head'), el('dd', { class: 'mono' }, head || '-'),
       el('dt', {}, '판정'), el('dd', {}, t.verdict ? inline(t.verdict, 40) : '-'),
       el('dt', {}, '만든 때'), el('dd', { class: 'mono' }, formatTime(t.created_at)),
@@ -178,9 +294,10 @@ export function taskView(ctx) {
     ctx.root.append(errorPane({ status: 404 }, '#/tasks', '← 작업 목록'));
     return;
   }
-  const st = { data: null, approval: null, report: { status: 'idle' } };
+  const st = { data: null, approval: null, report: { status: 'idle' }, act: { open: null, busy: false, msg: null } };
   const paint = () => replaceContent(ctx.root, renderTask(st.data, {
     report: st.report, approval: st.approval, now: new Date(), onLoadReport: loadReport,
+    act: st.act, onOpen: openConfirm, onClose: closeConfirm, onRun: runAction,
   }));
   async function loadReport() {
     st.report = { status: 'loading' };
@@ -195,25 +312,75 @@ export function taskView(ctx) {
     }
     paint();
   }
-  ctx.root.append(el('p', { class: 'lead' }, '불러오는 중…'));
+
+  // fetchData reads the task page data (events and, while waiting, the reason).
+  async function fetchData() {
+    const data = await ctx.get('/api/v1/tasks/' + id + '/events', { polling: true });
+    let approval = null;
+    if (data && data.task && data.task.state === 'needs_approval') {
+      try {
+        const list = await ctx.get('/api/v1/approvals', { polling: true });
+        approval = (Array.isArray(list) ? list : []).find((a) => a && String(a.task_id) === id) || null;
+      } catch { /* the banner works without the reason */ }
+    }
+    return { data, approval };
+  }
   let last = '';
+  const keyOf = ({ data, approval }) => {
+    const live = data && Array.isArray(data.steps) && data.steps.length && RUNNING.has(data.steps[data.steps.length - 1].state);
+    return JSON.stringify([data, approval, live ? Math.floor(Date.now() / POLL_MS) : 0]);
+  };
+
+  // cancel / retry: ask first (nothing is sent), then ONE request; the busy
+  // flag is set before the first await so a double click sends once.
+  function openConfirm(kind) {
+    if (st.act.busy) return;
+    st.act = { open: kind, busy: false, msg: null };
+    paint();
+  }
+  function closeConfirm() {
+    if (st.act.busy) return;
+    st.act = { open: null, busy: false, msg: null };
+    paint();
+  }
+  async function runAction(kind) {
+    if (st.act.busy || st.act.open !== kind) return;
+    st.act = { open: kind, busy: true, msg: null };
+    paint();
+    let msg;
+    let reload = true;
+    try {
+      await ctx.post('/api/v1/tasks/' + id + '/' + kind, {});
+      msg = { kind: 'ok', text: kind === 'cancel' ? '취소를 요청했습니다. 화면을 새로 고쳤습니다.' : '다시 시도를 요청했습니다. 실패한 단계부터 다시 진행됩니다.' };
+    } catch (err) {
+      const r = actionResult(kind, err);
+      msg = { kind: 'error', text: r.text };
+      reload = r.reload;
+    }
+    if (ctx.signal && ctx.signal.aborted) return;
+    st.act = { open: null, busy: false, msg };
+    if (reload) {
+      try {
+        const r = await fetchData();
+        if (ctx.signal && ctx.signal.aborted) return;
+        st.data = r.data;
+        st.approval = r.approval;
+        last = keyOf(r);
+      } catch { /* the next poll shows the failure */ }
+    }
+    paint();
+  }
+
+  ctx.root.append(el('p', { class: 'lead' }, '불러오는 중…'));
   ctx.poll(async () => {
     try {
-      const data = await ctx.get('/api/v1/tasks/' + id + '/events', { polling: true });
-      let approval = null;
-      if (data && data.task && data.task.state === 'needs_approval') {
-        try {
-          const list = await ctx.get('/api/v1/approvals', { polling: true });
-          approval = (Array.isArray(list) ? list : []).find((a) => a && String(a.task_id) === id) || null;
-        } catch { /* the banner works without the reason */ }
-      }
+      const r = await fetchData();
       if (ctx.signal && ctx.signal.aborted) return;
-      const live = data && Array.isArray(data.steps) && data.steps.length && RUNNING.has(data.steps[data.steps.length - 1].state);
-      const key = JSON.stringify([data, approval, live ? Math.floor(Date.now() / POLL_MS) : 0]);
+      const key = keyOf(r);
       if (st.data && key === last) return;
       last = key;
-      st.data = data;
-      st.approval = approval;
+      st.data = r.data;
+      st.approval = r.approval;
       paint();
     } catch (err) {
       if (!(ctx.signal && ctx.signal.aborted) && !st.data) replaceContent(ctx.root, errorPane(err, '#/tasks', '← 작업 목록'));

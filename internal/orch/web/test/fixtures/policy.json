@@ -1,0 +1,15 @@
+{
+  "hash": "0123abcd",
+  "classes": {
+    "docs": "auto",
+    "refactor": "manual",
+    "기능": "manual"
+  },
+  "allowlist": [
+    "origin"
+  ],
+  "floor": [
+    ".git/**"
+  ],
+  "base_cache": true
+}

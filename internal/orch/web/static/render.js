@@ -385,6 +385,25 @@ export function sanitize(s, opts) {
     .replace(INVISIBLE_RE, (c) => '⟨U+' + c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0') + '⟩');
 }
 
+const INVISIBLE_ONE = new RegExp(INVISIBLE_RE.source, 'u');
+
+// findHostile returns the first character of s that must never be sent as
+// input (C0/C1 controls, bidi and zero-width characters, lone surrogates) as
+// 'U+XXXX', or null. opts.allowNewline / opts.allowTab permit U+000A / U+0009.
+// Unlike sanitize it only looks: callers reject the input instead of stripping.
+export function findHostile(s, opts) {
+  opts = opts || {};
+  for (const ch of typeof s === 'string' ? s : '') {
+    const cp = ch.codePointAt(0);
+    let bad;
+    if (cp === 0x0a) bad = !opts.allowNewline;
+    else if (cp === 0x09) bad = !opts.allowTab;
+    else bad = cp < 0x20 || (cp >= 0x7f && cp <= 0x9f) || (cp >= 0xd800 && cp <= 0xdfff) || INVISIBLE_ONE.test(ch);
+    if (bad) return 'U+' + cp.toString(16).toUpperCase().padStart(4, '0');
+  }
+  return null;
+}
+
 // clip cuts s to at most max UTF-16 units without splitting a surrogate pair
 // and says how much was dropped.
 export function clip(s, max) {

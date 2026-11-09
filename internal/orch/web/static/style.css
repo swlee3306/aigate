@@ -186,3 +186,29 @@ pre.msg { font-family: var(--mono); font-size: 13px; background: var(--bg); bord
 .note.err { color: var(--red); } .note.ok { color: var(--accent); }
 .login { max-width: 640px; }
 .login .sec { display: grid; gap: 8px; margin-top: 22px; }
+
+/* submit, server status, progress and task actions (Task A5) */
+.form .field { display: grid; gap: 6px; margin: 0 0 14px; min-width: 0; }
+.form label { color: var(--muted); font-size: 13px; }
+.form select, .form input[type="text"], .form textarea { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; color: var(--text); padding: 8px 12px; font: inherit; width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box; }
+.form textarea { min-height: 84px; resize: vertical; line-height: 1.5; }
+.form select:focus-visible, .form input:focus-visible, .form textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.form .hint { color: var(--faint); font-size: 12px; }
+.form .row.chips { gap: 6px; }
+.form .fields2 { align-items: start; } .form .fields2 > .field { flex: 1 1 200px; }
+.form .row .btn { min-height: 36px; }
+pre.block-pre { font-family: var(--mono); font-size: 13px; background: var(--bg); border-radius: 12px; padding: 12px 14px; margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 280px; overflow: auto; }
+.form-result { margin-top: 10px; }
+.progress { display: flex; gap: 6px; align-items: baseline; margin: 0 0 12px; padding: 8px 14px; border-radius: 12px; background: var(--raised); }
+.progress.run b { color: var(--accent); } .progress.wait b { color: var(--amber); }
+.quota { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 12px; }
+.quota-r { display: grid; grid-template-columns: 84px minmax(0, 1fr) 240px; gap: 10px; align-items: center; }
+.quota-r > .mono:last-child { text-align: right; overflow-wrap: anywhere; }
+.bar-f.warn { background: var(--amber); }
+.quota-r.is-warn .mono { color: var(--amber); }
+.quota-warn.note.err { color: var(--text); }
+.quota-warn { background: var(--amber-bg); border-radius: 12px; padding: 10px 14px; color: var(--text); margin: 8px 0; }
+.quota-warn b { color: var(--amber); } .quota-warn code { font-family: var(--mono); overflow-wrap: anywhere; }
+@media (max-width: 760px) { .quota-r { grid-template-columns: minmax(0, 1fr) auto; } .quota-r .bar-t { grid-column: 1 / -1; order: 3; } }
+.btn[aria-disabled="true"], .btn[aria-disabled="true"]:hover { background: var(--raised-2); color: var(--faint); cursor: progress; }
+.confirm .q { font-weight: 650; margin: 0; }

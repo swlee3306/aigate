@@ -72,6 +72,23 @@ func TestWebFixturesGolden(t *testing.T) {
 	queued := fixtureTask(39, store.StateQueued, "README 오타 수정", t0.Add(time.Hour))
 	checkFixture(t, "tasks.json", []TaskView{viewOf(queued), viewOf(pending), viewOf(failed)})
 
+	// Task actions (A5): a running task (cancellable, with an actor), a failed
+	// task that may be retried (infra failure, one earlier retry) and a queued
+	// task. The 201/200 bodies of cancel/retry are these same TaskViews.
+	running := fixtureTask(41, store.StateAgentRunning, "로그인 화면 문구 수정", t0.Add(2*time.Hour))
+	running.LastActor = "session:mac-passkey"
+	retryable := fixtureTask(42, store.StateFailed, "빌드 스크립트 정리", t0.Add(3*time.Hour))
+	retryable.InfraFailed, retryable.RetryState, retryable.Retries = true, store.StateVerifying, 1
+	retryable.ErrorText = "verify: restore failed"
+	retryable.LastActor = "token:mac-ssh"
+	queuedTask := fixtureTask(43, store.StateQueued, "대기 중 작업", t0.Add(4*time.Hour))
+	queuedTask.LastActor = "system"
+	checkFixture(t, "tasks-actions.json", []TaskView{viewOf(running), viewOf(retryable), viewOf(queuedTask)})
+	// GET /api/v1/policy: classes (keys feed the submit form), allowlist, floor.
+	checkFixture(t, "policy.json", PolicyView{Hash: "0123abcd", Classes: map[string]string{"docs": "auto", "refactor": "manual", "기능": "manual"},
+		Allowlist: []string{"origin"}, Floor: []string{".git/**"}, BaseCache: true})
+	checkFixture(t, "policy-empty.json", PolicyView{Hash: "0123abcd", Classes: map[string]string{}, Allowlist: []string{}, Floor: []string{}})
+
 	// GET /api/v1/repos (sorted by path; detached HEAD has branch "", an
 	// unborn branch has head "").
 	checkFixture(t, "repos.json", []RepoView{
@@ -96,6 +113,21 @@ func TestWebFixturesGolden(t *testing.T) {
 		CheckedAt: t0}
 	opsDown := opsBase
 	opsDown.Cloud = &CloudView{Code: CloudUnavailable, History: []RestoreView{}, CheckedAt: t0}
+	// ok:true but the VM could not be read ("unknown"), no quota limit lines
+	// near the threshold, and a quota past the 80% warning line.
+	opsUnknown := opsBase
+	opsUnknown.Cloud = &CloudView{OK: true,
+		Quota:  &QuotaView{Gigabytes: CloudLimit{Limit: 300, InUse: 150, Reserved: 0}, Volumes: CloudLimit{Limit: 20, InUse: 4}},
+		TestVM: &VMState{Name: "test-vm", Status: "unknown"}, RestoreVolumes: 0, History: []RestoreView{}, CheckedAt: t0}
+	opsWarn := opsBase
+	opsWarn.Cloud = &CloudView{OK: true,
+		Quota:  &QuotaView{Gigabytes: CloudLimit{Limit: 300, InUse: 230, Reserved: 20}, Volumes: CloudLimit{Limit: 20, InUse: 17}},
+		TestVM: &VMState{Name: "test-vm", Status: "ACTIVE"}, RestoreVolumes: 9, History: []RestoreView{rv}, CheckedAt: t0}
+	opsTimeout := opsBase
+	opsTimeout.Cloud = &CloudView{Code: CloudTimeout, History: []RestoreView{}, CheckedAt: t0}
+	checkFixture(t, "ops-vm-unknown.json", opsUnknown)
+	checkFixture(t, "ops-quota-warn.json", opsWarn)
+	checkFixture(t, "ops-cloud-timeout.json", opsTimeout)
 	checkFixture(t, "ops.json", opsOK)
 	checkFixture(t, "ops-cloud-down.json", opsDown)
 	checkFixture(t, "ops-no-cloud.json", opsBase)
@@ -120,6 +152,15 @@ func TestWebFixturesGolden(t *testing.T) {
 		t.Fatal("setup: no verify note parsed")
 	}
 	checkFixture(t, "events.json", map[string]any{"task": viewOf(pending), "steps": Timeline(evs), "verify": verify})
+
+	// The same endpoint for the running task: the last step is still open.
+	rt0 := t0.Add(2 * time.Hour)
+	runEvs := []store.Event{
+		{To: store.StateQueued, Note: "created", At: rt0},
+		{From: store.StateQueued, To: store.StatePreparing, Note: "worker picked up", At: rt0.Add(200 * time.Millisecond)},
+		{From: store.StatePreparing, To: store.StateAgentRunning, Note: "agent started", At: rt0.Add(2200 * time.Millisecond)},
+	}
+	checkFixture(t, "events-running.json", map[string]any{"task": viewOf(running), "steps": Timeline(runEvs), "verify": nil})
 
 	// GET /api/v1/tasks/{id}/diff from a real repository: one changed protected
 	// file whose lines carry markup, ANSI and bidi characters, one new guarded
