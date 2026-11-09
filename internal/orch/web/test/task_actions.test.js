@@ -242,8 +242,9 @@ const keydown = (node, key) => {
   return prevented;
 };
 
-test('TestTaskConfirmEscapeCloses', async () => {
+test('TestTaskConfirmEscapeCloses', async (t) => {
   const ctx = await mount(running, { 'POST /api/v1/tasks/41/cancel': () => running.task });
+  t.after(() => ctx.leave()); // also when an assertion fails: no poll timer keeps the run alive
   click(btn(ctx.root, '작업 취소'));
   const run = btn(ctx.root, '취소 실행');
   assert.ok(run);
@@ -257,18 +258,18 @@ test('TestTaskConfirmEscapeCloses', async () => {
   assert.equal(ctx.posts.length, 0);
   // the same for retry
   const c2 = await mount(failedData());
+  t.after(() => c2.leave());
   click(btn(c2.root, '다시 시도'));
   keydown(btn(c2.root, '재시도 실행'), 'Escape');
   assert.equal(btn(c2.root, '재시도 실행'), undefined);
   assert.equal(c2.posts.length, 0);
-  ctx.leave();
-  c2.leave();
 });
 
-test('TestTaskConfirmResetWhenFlagFlips', async () => {
+test('TestTaskConfirmResetWhenFlagFlips', async (t) => {
   let flag = true;
   const data = () => ({ ...structuredClone(running), task: { ...structuredClone(running.task), cancellable: flag } });
   const ctx = fakeCtx({ '/api/v1/tasks/41/events': () => data(), '/api/v1/approvals': [] }, { params: ['41'] });
+  t.after(() => ctx.leave()); // also when an assertion fails
   taskView(ctx);
   await ctx.settle();
   const repoll = async () => { ctx.pollers[0].pause(); ctx.pollers[0].resume(); await ctx.settle(); };
@@ -285,5 +286,4 @@ test('TestTaskConfirmResetWhenFlagFlips', async () => {
   assert.equal(btn(ctx.root, '취소 실행'), undefined, 'a forgotten confirmation must not pop up again');
   assert.ok(btn(ctx.root, '작업 취소'));
   assert.equal(ctx.posts.length, 0);
-  ctx.leave();
 });
