@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"regexp"
 	"time"
 )
 
@@ -162,9 +163,42 @@ func (h *handler) cloudView(ctx context.Context) (c CloudView) {
 			c = CloudView{Code: CloudUnavailable, History: []RestoreView{}}
 		}
 	}()
-	c = h.cloud(ctx)
+	c = normalizeCloud(h.cloud(ctx))
+	return c
+}
+
+// vmStatusRe is what a server status may look like on the wire (Nova's
+// words such as ACTIVE, SHUTOFF, VERIFY_RESIZE, or "unknown").
+var vmStatusRe = regexp.MustCompile(`^[A-Za-z][A-Za-z_]{0,31}$`)
+
+// vmNameRe bounds the test VM name shown next to the status.
+var vmNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+// normalizeCloud is the last gate before ops.cloud reaches a client, whatever
+// the supplier returned: a failure carries only one of the two fixed codes
+// and no quota or VM block; a success carries no code, a status word (else
+// "unknown") and a plain VM name (else empty). No free text gets through.
+func normalizeCloud(c CloudView) CloudView {
 	if c.History == nil {
 		c.History = []RestoreView{}
+	}
+	if !c.OK {
+		if c.Code != CloudTimeout {
+			c.Code = CloudUnavailable
+		}
+		c.Quota, c.TestVM, c.RestoreVolumes, c.History = nil, nil, 0, []RestoreView{}
+		return c
+	}
+	c.Code = ""
+	if c.TestVM != nil {
+		vm := *c.TestVM
+		if !vmStatusRe.MatchString(vm.Status) {
+			vm.Status = "unknown"
+		}
+		if !vmNameRe.MatchString(vm.Name) {
+			vm.Name = ""
+		}
+		c.TestVM = &vm
 	}
 	return c
 }

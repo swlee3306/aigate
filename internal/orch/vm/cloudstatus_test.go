@@ -335,3 +335,25 @@ func TestCloudStatusReaderPanicIsUnavailable(t *testing.T) {
 		}
 	}
 }
+
+// The server status is passed on only as a plain status word: anything the
+// CLI prints that is not one (a warning, an error, several lines) is
+// "unknown", so no CLI text reaches the console.
+func TestCloudStatusVMStatusIsAWordOnly(t *testing.T) {
+	for raw, want := range map[string]string{
+		"ACTIVE":        "ACTIVE",
+		"  SHUTOFF  ":   "SHUTOFF",
+		"VERIFY_RESIZE": "VERIFY_RESIZE",
+		"ERROR: Unable to establish connection to https://keystone.secret:5000": "unknown",
+		"ACTIVE\nWARNING: password=hunter2":                                     "unknown",
+		"active-ish":                                                            "unknown",
+		strings.Repeat("A", 33):                                                 "unknown",
+		"":                                                                      "unknown",
+	} {
+		tv, f, _ := newCloudTest()
+		f.status = raw
+		if got := tv.CloudStatus(context.Background()); !got.OK || got.VMStatus != want {
+			t.Errorf("status %q: got %q ok=%v, want %q", raw, got.VMStatus, got.OK, want)
+		}
+	}
+}

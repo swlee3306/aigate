@@ -347,6 +347,12 @@ func (h *handler) submit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, bad("요청 본문을 읽을 수 없습니다"))
 		return
 	}
+	// encoding/json silently turns invalid UTF-8 into U+FFFD, so the raw
+	// body is checked first: such bytes are refused, never rewritten.
+	if !utf8.Valid(raw) {
+		writeErr(w, bad("요청 본문이 올바른 UTF-8이 아닙니다"))
+		return
+	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	var req submitRequest

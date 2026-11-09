@@ -3,6 +3,7 @@ package vm
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -68,6 +69,9 @@ type cloudFlight struct {
 	done chan struct{}
 	res  CloudInfo
 }
+
+// statusWordRe is a Nova server status (ACTIVE, SHUTOFF, VERIFY_RESIZE, ...).
+var statusWordRe = regexp.MustCompile(`^[A-Za-z][A-Za-z_]{0,31}$`)
 
 func failInfo(code string) CloudInfo { return CloudInfo{Code: code} }
 
@@ -193,10 +197,12 @@ func (t *TestVM) readCloud() CloudInfo {
 	}
 	// A server that cannot be read (for example deleted by a failed restore)
 	// is not a cloud outage: the quota above was read.
-	if sErr != nil || strings.TrimSpace(status) == "" {
+	// Only a plain status word is passed on: CLI noise, a warning or an
+	// error printed on stdout is "unknown", never shown.
+	if s := strings.TrimSpace(status); sErr != nil || !statusWordRe.MatchString(s) {
 		out.VMStatus = "unknown"
 	} else {
-		out.VMStatus = strings.TrimSpace(status)
+		out.VMStatus = s
 	}
 	return out
 }
