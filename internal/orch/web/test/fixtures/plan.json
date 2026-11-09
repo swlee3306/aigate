@@ -1,0 +1,48 @@
+{
+  "summary": "README의 오타를 고치고 설치 안내를 보강한다",
+  "items": [
+    {
+      "id": "r1",
+      "title": "README 오타 수정",
+      "description": "설치 절에 있는 오타 세 곳을 고친다.",
+      "files": [
+        "README.md"
+      ]
+    },
+    {
+      "id": "r2",
+      "title": "설치 안내 보강",
+      "description": "필요한 도구와 버전을 표로 적는다.\n표는 README 맨 위에 둔다.",
+      "files": [
+        "README.md",
+        "docs/install.md"
+      ]
+    },
+    {
+      "id": "r3",
+      "title": "CI 설정 정리",
+      "description": "사용하지 않는 단계를 제거한다.",
+      "files": [
+        ".ci/pipeline.yml"
+      ]
+    }
+  ],
+  "questions": [
+    {
+      "id": "q1",
+      "text": "영문 문서도 함께 고칠까요?"
+    },
+    {
+      "id": "q2",
+      "text": "표 형식은 어떤 것을 쓸까요?"
+    }
+  ],
+  "out_of_scope": [
+    "릴리스 노트 작성",
+    "코드 동작 변경"
+  ],
+  "usage": {
+    "input_tokens": 4200,
+    "output_tokens": 650
+  }
+}

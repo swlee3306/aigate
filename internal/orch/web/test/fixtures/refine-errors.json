@@ -1,0 +1,10 @@
+{
+  "bad_plan": 502,
+  "broker_unavailable": 503,
+  "budget_exceeded": 429,
+  "refine_rate_limited": 429,
+  "repo_not_allowed": 403,
+  "selection_changed": 409,
+  "selection_expired": 410,
+  "upstream_error": 502
+}

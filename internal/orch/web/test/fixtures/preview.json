@@ -1,0 +1,31 @@
+{
+  "allowed": true,
+  "selection_id": "sel0123456789abcdef0123456789ab",
+  "files": [
+    {
+      "path": "README.md",
+      "bytes": 2140,
+      "why": "readme"
+    },
+    {
+      "path": "docs/install.md",
+      "bytes": 5300,
+      "why": "name_match"
+    }
+  ],
+  "excluded": [
+    {
+      "path": ".env.example",
+      "reason": "secret_name"
+    },
+    {
+      "path": "docs/key.txt",
+      "reason": "looks_like_secret"
+    },
+    {
+      "path": "docs/big.md",
+      "reason": "too_large"
+    }
+  ],
+  "total_bytes": 7440
+}

@@ -5,7 +5,7 @@
 
 import {
   el, inline, stateChip, idOf, formatTime, formatSeconds, errorPane, errorText, textBlock, chunked,
-  STATE_LABELS, stateLabel,
+  STATE_LABELS, stateLabel, safeExternalHref,
 } from '../render.js';
 import { registerView } from '../router.js';
 import { replaceContent } from '../shell.js';
@@ -127,6 +127,66 @@ function reportBlock(rep, onLoadArg) {
     ]);
   }
   return textBlock(rep.text, '검증 보고서 (읽기 전용 텍스트)', { chunk: 200 });
+}
+
+// --- merge request (Draft MR on GitLab, made by the broker after publish) ----
+
+// Why a merge request failed, by the server's fixed code. Unknown or hostile
+// codes get no reason text; the code itself is never shown.
+const MR_FAIL_REASONS = {
+  upstream_error: 'GitLab 호출에 실패했습니다.',
+  timeout: '시간이 초과되었습니다.',
+  broker_unavailable: '병합 요청 서비스에 연결할 수 없었습니다.',
+  bad_request: '요청 값이 맞지 않았습니다.',
+  bad_url: 'GitLab이 돌려준 주소를 확인할 수 없어 저장하지 않았습니다. GitLab에서 직접 확인하세요.',
+  internal_error: '내부 오류가 있었습니다.',
+};
+const MR_NO_RETRY = new Set(['bad_url']); // a retry reaches the same answer
+
+// mrRetryResult maps a failed POST /tasks/{id}/mr to a FIXED text; the server's
+// message and reason are never shown. reload: refetch the task.
+export function mrRetryResult(err) {
+  const code = err && typeof err.code === 'string' ? err.code : '';
+  if (code === 'mr_not_applicable') return { text: '이 작업에는 병합 요청을 다시 만들 수 없습니다. 저장소가 GitLab에 연결되어 있는지 확인하세요.', reload: true };
+  if (code === 'mr_already_created') return { text: '병합 요청이 이미 만들어져 있습니다. 화면을 새로 고쳤습니다.', reload: true };
+  if (code === 'upstream_error') return { text: '병합 요청을 만들지 못했습니다. 작업 결과는 그대로입니다. 잠시 후 다시 시도하세요.', reload: true };
+  return { text: errorText(err), reload: false };
+}
+
+// mrBlock: the merge request area of a task. Only an exact mr_state of
+// created / failed / skipped shows anything. The link text is fixed (the
+// number is checked), the URL only becomes an href through safeExternalHref.
+function mrBlock(t, extras) {
+  const state = t && typeof t.mr_state === 'string' ? t.mr_state : '';
+  if (state !== 'created' && state !== 'failed' && state !== 'skipped') return null;
+  const mr = extras.mr && typeof extras.mr === 'object' ? extras.mr : {};
+  const msg = mr.msg ? el('p', {
+    class: ['note', mr.msg.kind === 'ok' ? 'ok' : 'err'], role: mr.msg.kind === 'ok' ? 'status' : 'alert', 'data-focus-key': 'mr-msg',
+  }, mr.msg.text) : null;
+  let body;
+  if (state === 'created') {
+    const href = safeExternalHref(t.mr_url);
+    const n = Number.isSafeInteger(t.mr_iid) && t.mr_iid > 0 ? ' !' + t.mr_iid : '';
+    body = href
+      ? [
+        el('a', { class: 'btn', href, target: '_blank', rel: 'noopener noreferrer', 'data-focus-key': 'mr-link' }, 'GitLab에서 병합 요청' + n + ' 보기 ↗'),
+        el('p', { class: 'note' }, '초안(Draft)입니다. 검토와 병합은 GitLab에서 사람이 합니다.'),
+      ]
+      : el('p', { class: 'note' }, '병합 요청이 만들어졌지만 주소를 안전하게 표시할 수 없습니다. GitLab에서 확인하세요.');
+  } else if (state === 'failed') {
+    const code = typeof t.mr_code === 'string' ? t.mr_code : '';
+    const why = Object.prototype.hasOwnProperty.call(MR_FAIL_REASONS, code) ? ' ' + MR_FAIL_REASONS[code] : '';
+    body = [
+      el('p', { class: 'note' }, '병합 요청을 만들지 못했습니다.' + why + ' 작업 결과(브랜치)는 그대로입니다.'),
+      MR_NO_RETRY.has(code) ? null : el('button', {
+        type: 'button', class: 'btn', 'data-focus-key': 'mr-retry', 'aria-disabled': mr.busy ? 'true' : 'false',
+        'aria-busy': mr.busy ? 'true' : 'false', on: { click: () => extras.onRetryMR && extras.onRetryMR() },
+      }, mr.busy ? '처리 중…' : '다시 시도'),
+    ];
+  } else {
+    body = el('p', { class: 'note' }, '이 저장소는 병합 요청을 만들지 않습니다.');
+  }
+  return el('div', { class: 'sec', 'data-section': 'mr' }, [el('h2', {}, '병합 요청'), body, msg]);
 }
 
 const isObj = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
@@ -289,6 +349,7 @@ export function renderTask(data, extras) {
     actions,
     ...actionNodes.filter((n) => n.tagName !== 'BUTTON'),
     act.msg ? el('p', { class: ['note', act.msg.kind === 'ok' ? 'ok' : 'err'], role: act.msg.kind === 'ok' ? 'status' : 'alert', 'data-focus-key': 'act-msg' }, act.msg.text) : null,
+    mrBlock(t, extras),
     el('div', { class: 'sec' }, [el('h2', {}, '시간 분포'), renderTimeline(data && data.steps, { now: extras.now })]),
     reason,
     el('div', { class: 'sec' }, [el('h2', {}, '요청 내용'), textBlock(t.prompt, '요청 내용', { chunk: 40 })]),
@@ -321,10 +382,11 @@ export function taskView(ctx) {
     ctx.root.append(errorPane({ status: 404 }, '#/tasks', '← 작업 목록'));
     return;
   }
-  const st = { data: null, approval: null, report: { status: 'idle' }, act: { open: null, busy: false, msg: null } };
+  const st = { data: null, approval: null, report: { status: 'idle' }, act: { open: null, busy: false, msg: null }, mr: { busy: false, msg: null } };
   const paint = () => replaceContent(ctx.root, renderTask(st.data, {
     report: st.report, approval: st.approval, now: new Date(), onLoadReport: loadReport,
     act: st.act, onOpen: openConfirm, onClose: closeConfirm, onRun: runAction,
+    mr: st.mr, onRetryMR: retryMR,
   }));
   async function loadReport() {
     st.report = { status: 'loading' };
@@ -386,6 +448,36 @@ export function taskView(ctx) {
     }
     if (ctx.signal && ctx.signal.aborted) return;
     st.act = { open: null, busy: false, msg };
+    if (reload) {
+      try {
+        const r = await fetchData();
+        if (ctx.signal && ctx.signal.aborted) return;
+        st.data = r.data;
+        st.approval = r.approval;
+        last = keyOf(r);
+      } catch { /* the next poll shows the failure */ }
+    }
+    paint();
+  }
+
+  // retryMR: ONE request (the busy flag is set before the first await), then
+  // the task is refetched so the new merge request state shows.
+  async function retryMR() {
+    if (st.mr.busy) return;
+    st.mr = { busy: true, msg: null };
+    paint();
+    let msg;
+    let reload = true;
+    try {
+      await ctx.post('/api/v1/tasks/' + id + '/mr', {});
+      msg = { kind: 'ok', text: '병합 요청을 만들었습니다.' };
+    } catch (err) {
+      const r = mrRetryResult(err);
+      msg = { kind: 'error', text: r.text };
+      reload = r.reload;
+    }
+    if (ctx.signal && ctx.signal.aborted) return;
+    st.mr = { busy: false, msg };
     if (reload) {
       try {
         const r = await fetchData();

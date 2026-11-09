@@ -15,6 +15,7 @@ import (
 	"aigate/internal/gate"
 	"aigate/internal/orch/approvals"
 	"aigate/internal/orch/publish"
+	"aigate/internal/orch/refine"
 	"aigate/internal/orch/steps"
 	"aigate/internal/orch/store"
 )
@@ -84,6 +85,50 @@ func TestWebFixturesGolden(t *testing.T) {
 	queuedTask := fixtureTask(43, store.StateQueued, "대기 중 작업", t0.Add(4*time.Hour))
 	queuedTask.LastActor = "system"
 	checkFixture(t, "tasks-actions.json", []TaskView{viewOf(running), viewOf(retryable), viewOf(queuedTask)})
+	// B6: the AI plan path. plan.json is the real /refine response, the preview
+	// fixtures the real /refine/preview responses (allowed and not allowed), and
+	// the task-mr-* fixtures the /events body of a done task in each merge
+	// request state (TaskView.mr_*; the retry endpoint answers with the same
+	// TaskView).
+	checkFixture(t, "plan.json", planResponse{
+		Summary: "README의 오타를 고치고 설치 안내를 보강한다",
+		Items: []planItem{
+			{ID: "r1", Title: "README 오타 수정", Description: "설치 절에 있는 오타 세 곳을 고친다.", Files: []string{"README.md"}},
+			{ID: "r2", Title: "설치 안내 보강", Description: "필요한 도구와 버전을 표로 적는다.\n표는 README 맨 위에 둔다.", Files: []string{"README.md", "docs/install.md"}},
+			{ID: "r3", Title: "CI 설정 정리", Description: "사용하지 않는 단계를 제거한다.", Files: []string{".ci/pipeline.yml"}},
+		},
+		Questions:  []planQuestion{{ID: "q1", Text: "영문 문서도 함께 고칠까요?"}, {ID: "q2", Text: "표 형식은 어떤 것을 쓸까요?"}},
+		OutOfScope: []string{"릴리스 노트 작성", "코드 동작 변경"},
+		Usage:      planUsage{InputTokens: 4200, OutputTokens: 650},
+	})
+	checkFixture(t, "preview.json", previewResponse{Allowed: true, SelectionID: "sel0123456789abcdef0123456789ab",
+		Files:      []refine.FileEntry{{Path: "README.md", Bytes: 2140, Why: refine.WhyReadme}, {Path: "docs/install.md", Bytes: 5300, Why: refine.WhyNameMatch}},
+		Excluded:   []refine.Excluded{{Path: ".env.example", Reason: refine.ReasonSecretName}, {Path: "docs/key.txt", Reason: refine.ReasonLooksLikeSecret}, {Path: "docs/big.md", Reason: refine.ReasonTooLarge}},
+		TotalBytes: 7440})
+	checkFixture(t, "preview-not-allowed.json", previewResponse{Files: []refine.FileEntry{}, Excluded: []refine.Excluded{}})
+	mrTask := func(id int64, state, code, url string, iid int64) store.Task {
+		tk := fixtureTask(id, store.StateDone, "README 오타 수정", t0)
+		tk.HeadSHA = "89abcdef0123456789abcdef0123456789abcdef"
+		tk.Verdict = "pass"
+		tk.Branch = "orch/" + strconv.FormatInt(id, 10)
+		tk.MRState, tk.MRCode, tk.MRURL, tk.MRIID = state, code, url, iid
+		return tk
+	}
+	mrEvents := func(tk store.Task) map[string]any {
+		return map[string]any{"task": viewOf(tk), "steps": Timeline([]store.Event{{To: store.StateQueued, Note: "created", At: t0, Actor: "session:alice"}}), "verify": nil}
+	}
+	checkFixture(t, "task-mr-created.json", mrEvents(mrTask(51, "created", "", "http://100.64.0.7:18082/lab/toy/-/merge_requests/7", 7)))
+	checkFixture(t, "task-mr-failed.json", mrEvents(mrTask(52, "failed", "upstream_error", "", 0)))
+	checkFixture(t, "task-mr-skipped.json", mrEvents(mrTask(53, "skipped", "", "", 0)))
+	checkFixture(t, "task-mr-none.json", mrEvents(mrTask(54, "", "", "", 0)))
+	// POST /api/v1/refine and /refine/preview: the machine code and HTTP status
+	// of each fixed error the console maps to its own text.
+	refineErrs := map[string]int{}
+	for _, e := range []*httpError{errRefineRepoNotAllowed, errBrokerUnavailable, errRefineRateLimited, errSelectionChanged,
+		errSelectionExpired, errRefineBudget, errRefineUpstream, errRefineBadPlan} {
+		refineErrs[e.v1Code] = e.code
+	}
+	checkFixture(t, "refine-errors.json", refineErrs)
 	// GET /api/v1/policy: classes (keys feed the submit form), allowlist, floor.
 	checkFixture(t, "policy.json", PolicyView{Hash: "0123abcd", Classes: map[string]string{"docs": "auto", "refactor": "manual", "기능": "manual"},
 		Allowlist: []string{"origin"}, Floor: []string{".git/**"}, BaseCache: true})

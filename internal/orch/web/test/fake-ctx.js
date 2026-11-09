@@ -41,6 +41,8 @@ export function fakeCtx(routes, extra) {
     signal: ctl.signal,
     navigate: (h) => ctx.nav.push(h),
     setCrumb() {},
+    guard: null,
+    setLeaveGuard: (fn) => { ctx.guard = typeof fn === 'function' ? fn : null; },
     onLeave: (cb) => cleanups.push(cb),
     get: (path, opts) => { ctx.calls.push(path); return track(run(path, path, undefined, opts)); },
     post: (path, body, opts) => { ctx.posts.push({ path, body, opts }); return track(run('POST ' + path, path, body, opts)); },
@@ -51,7 +53,7 @@ export function fakeCtx(routes, extra) {
       cleanups.push(() => p.stop());
       return p;
     },
-    leave() { ctl.abort(); cleanups.forEach((c) => c()); },
+    leave() { ctl.abort(); cleanups.forEach((c) => c()); ctx.guard = null; },
     async settle() {
       for (let i = 0; i < 8; i++) {
         await Promise.allSettled([...pending]);

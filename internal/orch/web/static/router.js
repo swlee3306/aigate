@@ -1,8 +1,8 @@
 // router.js: hash routes and the view registry. It has no DOM access so views
 // (loaded by app.js) can import it without a cycle with app.js.
 //
-// Routes: #/overview  #/tasks  #/tasks/ID  #/new  #/ops  #/approvals  #/approvals/ID  #/diff/ID
-// View names: overview, tasks, task, new, ops, approvals, approval, diff, login (and notfound).
+// Routes: #/overview  #/tasks  #/tasks/ID  #/new  #/new/plan  #/ops  #/approvals  #/approvals/ID  #/diff/ID
+// View names: overview, tasks, task, new, plan, ops, approvals, approval, diff, login (and notfound).
 
 import { ID_RE } from './render.js';
 
@@ -50,6 +50,8 @@ export function parseRoute(hash) {
       if (rest.length === 0) return { name: 'tasks', params: [] };
       return rest.length === 1 && ID_RE.test(rest[0]) ? { name: 'task', params: [rest[0]] } : bad;
     case 'new':
+      if (rest.length === 0) return { name: 'new', params: [] };
+      return rest.length === 1 && rest[0] === 'plan' ? { name: 'plan', params: [] } : bad;
     case 'ops':
       return rest.length === 0 ? { name: head, params: [] } : bad;
     case 'diff':
@@ -62,5 +64,5 @@ export function parseRoute(hash) {
 
 // navItem is the main-menu entry a view name highlights.
 export function navItem(name) {
-  return { task: 'tasks', diff: 'tasks', approval: 'approvals' }[name] || name;
+  return { task: 'tasks', diff: 'tasks', approval: 'approvals', plan: 'new' }[name] || name;
 }
