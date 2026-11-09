@@ -12,18 +12,22 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 
 	"aigate/internal/ledger"
 	"aigate/internal/orch/broker"
 	"aigate/internal/orch/policy"
+	"aigate/internal/orch/refine"
 	"aigate/internal/orch/steps"
 	"aigate/internal/orch/store"
+	"aigate/internal/refinesize"
 )
 
 const outsideMarker = "OUTSIDE-REPO-SECRET-MARKER-9f3a"
@@ -542,5 +546,196 @@ func TestRefineAndMRLedgerHaveNoSecrets(t *testing.T) {
 	}
 	if _, err := ledger.Verify(lp); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A preview that says "allowed" must never be refused by the broker as
+// too_large: the selection is trimmed with the broker's own size formula.
+func TestPreviewSelectionFitsBrokerLimits(t *testing.T) {
+	files := map[string]string{"README.md": "# proj\n"}
+	long := strings.Repeat("d", 60)
+	for i := 0; i < 40; i++ {
+		files[fmt.Sprintf("alpha/%s/%s/%s/alpha_%02d.go", long, long, long, i)] = strings.Repeat("x", 6500)
+	}
+	e := newRefineEnv(t, files)
+	sock := e.socket(t)
+	text := "alpha " + strings.Repeat("가", 1990)
+	if n := len([]rune(text)); n > 2000 {
+		t.Fatalf("fixture text %d runes", n)
+	}
+	p := e.preview(t, sock, text)
+	if !p.Allowed || len(p.Files) == 0 || len(p.Files) >= 41 {
+		t.Fatalf("preview kept %d files", len(p.Files))
+	}
+	capped := 0
+	for _, x := range p.Excluded {
+		if x.Reason == refine.ReasonTotalCap {
+			capped++
+		}
+	}
+	if capped == 0 {
+		t.Fatalf("nothing trimmed: %d files, excluded %+v", len(p.Files), p.Excluded)
+	}
+	if code, b := e.refine(sock, text, p.SelectionID); code != 200 {
+		t.Fatalf("refine %d %s", code, b)
+	}
+	call := e.fb.lastRefine(t)
+	var fs []refinesize.File
+	for _, f := range call.Files {
+		fs = append(fs, refinesize.File{Path: f.Path, Content: f.Content})
+	}
+	if in := refinesize.InputBytes(call.Requirement, fs); in > refinesize.DefaultMaxInputBytes {
+		t.Fatalf("input %d over the broker's %d", in, refinesize.DefaultMaxInputBytes)
+	}
+	enc, err := broker.Encode("refine", map[string]any{"repo": call.Repo, "requirement": call.Requirement, "files": call.Files, "selection": call.Selection})
+	if err != nil || len(enc) > broker.MaxRequestBytes {
+		t.Fatalf("request %d bytes (%v)", len(enc), err)
+	}
+}
+
+func (l *actorLimiter) total() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n := 0
+	for _, ts := range l.m {
+		n += len(ts)
+	}
+	return n
+}
+
+func refineEvents(t *testing.T, home string) []ledger.Event {
+	t.Helper()
+	evs, err := ledger.Events(policy.OrchLedgerPath(home))
+	if err != nil {
+		return nil
+	}
+	var out []ledger.Event
+	for _, ev := range evs {
+		if ev.Type == "refine" {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+// A browser that gives up (cancelled request, closed tab) must not get its
+// slot back while the broker keeps working: the call goes on without the
+// request's cancellation, the outcome is ledgered and the slot stays used.
+// Only a failure before the request was written refunds.
+func TestRefineCancelAfterWriteKeepsSlotAndLedgers(t *testing.T) {
+	e := newRefineEnv(t, baseFiles)
+	srv := e.httpServer(t)
+	tok := e.newToken(t, "alice")
+	text := "add a health check"
+	call := e.token(t, "alice")
+	p := e.preview(t, call, text)
+	release := make(chan struct{})
+	e.fb.mu.Lock()
+	e.fb.refineReply = func(c fakeRefineCall) string { <-release; return okPlan(c, nil) }
+	e.fb.mu.Unlock()
+	before := e.d.handler.refineLimit.total()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req, _ := http.NewRequestWithContext(ctx, "POST", srv.URL+"/api/v1/refine",
+		strings.NewReader(jsonBody(map[string]string{"repo": e.repo, "text": text, "selection_id": p.SelectionID})))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	done := make(chan error, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if resp != nil {
+			resp.Body.Close()
+		}
+		done <- err
+	}()
+	for i := 0; i < 200 && e.fb.refineCount() == 0; i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if e.fb.refineCount() != 1 {
+		t.Fatal("the broker never received the request")
+	}
+	cancel() // the browser goes away while the broker is working
+	if err := <-done; err == nil {
+		t.Fatal("request was not cancelled")
+	}
+	time.Sleep(100 * time.Millisecond)
+	if n := e.d.handler.refineLimit.total(); n != before+1 {
+		t.Fatalf("slots %d -> %d: a cancelled request must keep its slot", before, n)
+	}
+	close(release)
+	var evs []ledger.Event
+	for i := 0; i < 300; i++ {
+		if evs = refineEvents(t, e.home); len(evs) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(evs) != 1 || evs[0].Payload["ok"] != true || fmt.Sprint(evs[0].Payload["input_tokens"]) != "1200" {
+		t.Fatalf("ledger after the cancelled request: %+v", evs)
+	}
+	if n := e.d.handler.refineLimit.total(); n != before+1 {
+		t.Fatalf("slots %d", n)
+	}
+}
+
+func TestRefineRefundsOnlyWhenNothingWasSent(t *testing.T) {
+	text := "add a health check"
+	// dial failure: the socket vanished after the preview
+	e := newRefineEnv(t, baseFiles)
+	sock := e.socket(t)
+	p := e.preview(t, sock, text)
+	e.d.handler.broker.Socket = filepath.Join(shortDir(t), "gone.sock")
+	before := e.d.handler.refineLimit.total()
+	code, b := e.refine(sock, text, p.SelectionID)
+	if code != 503 || v1Code(b) != "broker_unavailable" {
+		t.Fatalf("%d %s", code, b)
+	}
+	if n := e.d.handler.refineLimit.total(); n != before {
+		t.Fatalf("dial failure kept a slot: %d -> %d", before, n)
+	}
+	// broker too_large: the broker refused before spending anything
+	e2 := newRefineEnv(t, baseFiles)
+	s2 := e2.socket(t)
+	p2 := e2.preview(t, s2, text)
+	e2.fb.mu.Lock()
+	e2.fb.refineReply = func(fakeRefineCall) string { return brokerErrReply("too_large") }
+	e2.fb.mu.Unlock()
+	before = e2.d.handler.refineLimit.total()
+	if code, b := e2.refine(s2, text, p2.SelectionID); code != 400 {
+		t.Fatalf("too_large: %d %s", code, b)
+	}
+	if n := e2.d.handler.refineLimit.total(); n != before {
+		t.Fatalf("too_large kept a slot: %d -> %d", before, n)
+	}
+	// the broker went away after the request was written: slot stays, event says ok:false
+	e3 := newRefineEnv(t, baseFiles)
+	s3 := e3.socket(t)
+	p3 := e3.preview(t, s3, text)
+	e3.fb.mu.Lock()
+	e3.fb.refineReply = func(fakeRefineCall) string { return "garbage, not json" }
+	e3.fb.mu.Unlock()
+	before = e3.d.handler.refineLimit.total()
+	if code, _ := e3.refine(s3, text, p3.SelectionID); code != 503 {
+		t.Fatalf("garbage reply: %d", code)
+	}
+	if n := e3.d.handler.refineLimit.total(); n != before+1 {
+		t.Fatalf("a failure after the write refunded: %d -> %d", before, n)
+	}
+	evs := refineEvents(t, e3.home)
+	if len(evs) != 1 || evs[0].Payload["ok"] != false {
+		t.Fatalf("ledger: %+v", evs)
+	}
+}
+
+func TestMRRetryBadURLIsTerminalOnTheServer(t *testing.T) {
+	e := newMREnv(t, true)
+	id := e.doneTask(t, "failed", "bad_url")
+	c, _, b := e.sockDo(t, "POST", mrPath(id), "", nil)
+	if c != 409 || v1Code(b) != "mr_not_applicable" || e.fake.calls != 0 {
+		t.Fatalf("%d %s calls %d", c, b, e.fake.calls)
+	}
+	other := e.doneTask(t, "failed", "upstream_error")
+	if c, _, b := e.sockDo(t, "POST", mrPath(other), "", nil); c != 200 || e.fake.calls != 1 {
+		t.Fatalf("control: %d %s calls %d", c, b, e.fake.calls)
 	}
 }

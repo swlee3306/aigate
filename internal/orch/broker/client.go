@@ -45,7 +45,14 @@ var defaultTimeouts = map[string]time.Duration{
 // OpError is a failed call. Code is the broker's registered code (a short
 // lowercase word, validated here) or one of the client's own. Nothing else
 // from the broker's reply is kept: its message text is never read.
-type OpError struct{ Code string }
+type OpError struct {
+	Code string
+	// Unsent is true when the failure happened before the request line was
+	// completely written (no broker, dial failure, request refused locally).
+	// Only then is it certain the broker did no work for this call; after a
+	// complete write the broker may have spent money even if nothing came back.
+	Unsent bool
+}
 
 func (e *OpError) Error() string { return "broker: " + e.Code }
 
@@ -86,6 +93,9 @@ func Encode(op string, args any) ([]byte, error) {
 
 func unavailable() *OpError { return &OpError{Code: CodeUnavailable} }
 
+// unsent is unavailable() for a failure before the request was fully written.
+func unsent(code string) *OpError { return &OpError{Code: code, Unsent: true} }
+
 // ValidSocketPath reports whether p may be configured: absolute and clean.
 func ValidSocketPath(p string) bool { return filepath.IsAbs(p) && filepath.Clean(p) == p }
 
@@ -94,14 +104,14 @@ func ValidSocketPath(p string) bool { return filepath.IsAbs(p) && filepath.Clean
 // escapes. The call is bounded by ctx and the op's time limit.
 func (c *Client) Do(ctx context.Context, op string, args any) (json.RawMessage, *OpError) {
 	if c == nil || c.Socket == "" || !ValidSocketPath(c.Socket) {
-		return nil, unavailable()
+		return nil, unsent(CodeUnavailable)
 	}
 	body, err := Encode(op, args)
 	if err != nil {
-		return nil, &OpError{Code: "bad_request"}
+		return nil, unsent("bad_request")
 	}
 	if len(body) > MaxRequestBytes {
-		return nil, &OpError{Code: CodeTooLarge}
+		return nil, unsent(CodeTooLarge)
 	}
 	d := c.Timeout
 	if d <= 0 {
@@ -116,7 +126,7 @@ func (c *Client) Do(ctx context.Context, op string, args any) (json.RawMessage, 
 	defer dcancel()
 	conn, err := (&net.Dialer{}).DialContext(dctx, "unix", c.Socket)
 	if err != nil {
-		return nil, unavailable()
+		return nil, unsent(CodeUnavailable)
 	}
 	defer conn.Close()
 	if dl, ok := ctx.Deadline(); ok {
@@ -126,7 +136,7 @@ func (c *Client) Do(ctx context.Context, op string, args any) (json.RawMessage, 
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
 	if _, err := conn.Write(append(body, '\n')); err != nil {
-		return nil, unavailable()
+		return nil, unsent(CodeUnavailable)
 	}
 	line, err := readLine(conn)
 	if err != nil {

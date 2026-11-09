@@ -798,3 +798,27 @@ func TestMRNoQuickActionLines(t *testing.T) {
 		}
 	}
 }
+
+func TestMRRefusesSecretLookingHintAndSummary(t *testing.T) {
+	m := newMREnv(t, nil)
+	for name, tc := range map[string][2]string{
+		"aws key in the hint":     {"Add AKIAIOSFODNN7EXAMPLE support", "fine"},
+		"aws key in the summary":  {"fine", "uses AKIAIOSFODNN7EXAMPLE to log in"},
+		"assignment in summary":   {"fine", `set api_key = "abcdefghijklmnop1234567890" first`},
+		"private key in the hint": {"-----BEGIN RSA PRIVATE KEY-----", "x"},
+	} {
+		a := m.args()
+		a["title_hint"], a["summary"] = tc[0], tc[1]
+		_, oerr := m.call(t, a)
+		wantCode(t, oerr, "looks_like_secret")
+		if n := len(m.gl.Reqs()); n != 0 {
+			t.Fatalf("%s: %d GitLab requests", name, n)
+		}
+	}
+	// refusals do not use the hourly limit (config allows 5)
+	for i := 0; i < 5; i++ {
+		if _, oerr := m.call(t, m.args()); oerr != nil {
+			t.Fatalf("call %d after refusals: %s", i, oerr.Code)
+		}
+	}
+}

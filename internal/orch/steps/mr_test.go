@@ -518,3 +518,64 @@ func TestRetryMRSkippedAgainChangesNothing(t *testing.T) {
 		t.Fatalf("calls %d", un.calls())
 	}
 }
+
+func TestBrokerMRRefusesSecretPromptWithoutCalling(t *testing.T) {
+	sock, got := brokerFake(t, `{"ok":true,"result":{"iid":1,"url":"http://gl/x","created":true}}`)
+	c := &BrokerMR{Client: &broker.Client{Socket: sock}}
+	for _, prompt := range []string{
+		"Fix login, key is AKIAIOSFODNN7EXAMPLE",
+		"first line\nsecond line with api_key = \"abcdefghijklmnop1234567890\"",
+		"-----BEGIN OPENSSH PRIVATE KEY-----",
+	} {
+		_, err := c.CreateMR(context.Background(), store.Task{ID: 3, Repo: "/r", Prompt: prompt, HeadSHA: fakeHead, Verdict: "ok"})
+		var me *MRError
+		if !errors.As(err, &me) || me.Code != "looks_like_secret" || strings.Contains(err.Error(), "AKIA") {
+			t.Fatalf("%q -> %v", prompt, err)
+		}
+	}
+	if n := len(got()); n != 0 {
+		t.Fatalf("the broker was called %d times", n)
+	}
+	if _, err := c.CreateMR(context.Background(), store.Task{ID: 3, Repo: "/r", Prompt: "plain prompt", HeadSHA: fakeHead, Verdict: "ok"}); err != nil || len(got()) != 1 {
+		t.Fatalf("control: %v", err)
+	}
+	// through the hook: stored as failed with that code, the task stays done
+	un := &fakeMR{err: &MRError{Code: "looks_like_secret"}}
+	e := newEnv(t, withMR(un))
+	e.drain()
+	tk, _ := e.st.GetTask(context.Background(), e.id)
+	if tk.State != machine.StateDone || tk.MRState != store.MRFailed || tk.MRCode != "looks_like_secret" {
+		t.Fatalf("%+v", tk)
+	}
+}
+
+func TestRetryMRBadURLIsTerminal(t *testing.T) {
+	f := &fakeMR{res: MRResult{IID: 5, URL: "https://gl.example/g/p/-/merge_requests/5", Created: true}}
+	e := newEnv(t, withMR(f))
+	e.drain()
+	e.sql(`UPDATE tasks SET mr_state='failed', mr_code='bad_url', mr_iid=NULL, mr_url=NULL WHERE id=?`, e.id)
+	before := f.calls()
+	if _, err := e.p.RetryMR(context.Background(), e.id); !errors.Is(err, ErrMRNotApplicable) {
+		t.Fatalf("retry of bad_url: %v", err)
+	}
+	if f.calls() != before {
+		t.Fatal("the creator was called for a terminal bad_url task")
+	}
+	tk, _ := e.st.GetTask(context.Background(), e.id)
+	if tk.MRState != store.MRFailed || tk.MRCode != "bad_url" {
+		t.Fatalf("state changed: %+v", tk)
+	}
+	// other failure codes are still retryable
+	e.sql(`UPDATE tasks SET mr_code='upstream_error' WHERE id=?`, e.id)
+	if tk, err := e.p.RetryMR(context.Background(), e.id); err != nil || tk.MRState != store.MRCreated {
+		t.Fatalf("upstream_error retry: %+v %v", tk, err)
+	}
+}
+
+func TestMRHookTimeoutOutlastsTheBrokerCreateMRLimit(t *testing.T) {
+	// the broker answers create_mr within 20 s (or says timeout): the hook must
+	// not give up before that.
+	if mrHookTimeout <= 20*time.Second {
+		t.Fatalf("hook timeout %s", mrHookTimeout)
+	}
+}

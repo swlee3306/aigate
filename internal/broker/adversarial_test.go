@@ -18,6 +18,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"aigate/internal/orch/refine"
+	"aigate/internal/refinesize"
 )
 
 // capture is an HTTP fake that records every request (host, path, body, auth).
@@ -727,5 +730,69 @@ func TestPromptInjectionCannotChangeSchemaOrDestination(t *testing.T) {
 	}
 	if posts != 1 {
 		t.Fatalf("%d POSTs", posts)
+	}
+}
+
+// orchd measures a selection with the shared refinesize package and trims it
+// (refine.Fit) so the broker never answers too_large to something the preview
+// called allowed. The numbers must agree with the handler exactly.
+func TestPreviewSelectionIsAcceptedByTheBroker(t *testing.T) {
+	req := strings.Repeat("가", 2000)
+	var rfiles []refinesize.File
+	sel := refine.Selection{Head: strings.Repeat("a", 40), Files: []refine.FileEntry{}, Excluded: []refine.Excluded{}}
+	for i := 0; i < 40; i++ {
+		p := "README.md"
+		if i > 0 {
+			p = strings.Repeat("d", 190) + "/f" + string(rune('a'+i%26)) + string(rune('a'+i/26)) + ".go"
+		}
+		c := strings.Repeat("나", 2000) // 6000 bytes of UTF-8
+		sel.Files = append(sel.Files, refine.FileEntry{Path: p, Bytes: len(c)})
+		sel.Contents = append(sel.Contents, refine.File{Path: p, Content: c})
+		sel.TotalBytes += len(c)
+		rfiles = append(rfiles, refinesize.File{Path: p, Content: c})
+	}
+	oa := newFakeHTTP(t, okHandler(goodPlan, 10, 10))
+	r := newRefineEnv(t, oa, nil)
+	send := func(s refine.Selection) *OpError {
+		fs := make([]map[string]string, len(s.Contents))
+		for i, f := range s.Contents {
+			fs[i] = map[string]string{"path": f.Path, "content": f.Content}
+		}
+		_, oerr := r.call(t, map[string]any{"repo": r.repo, "requirement": req, "files": fs, "selection": strings.Repeat("0", 32)})
+		return oerr
+	}
+	// the whole selection is more than the broker takes ...
+	if oerr := send(sel); oerr == nil || oerr.Code != "too_large" {
+		t.Fatalf("untrimmed selection: %+v", oerr)
+	}
+	// ... the trimmed one is accepted
+	fit := refine.Fit(sel, r.repo, req)
+	if len(fit.Files) == 0 || len(fit.Files) >= 40 {
+		t.Fatalf("fit kept %d files", len(fit.Files))
+	}
+	if oerr := send(fit); oerr != nil {
+		t.Fatalf("trimmed selection refused: %s", oerr.Code)
+	}
+	if oa.Hits() != 1 {
+		t.Fatalf("openai hits %d", oa.Hits())
+	}
+	// refinesize agrees with the handler to the byte: the limit set exactly at
+	// the computed size accepts, one byte less refuses.
+	n := refinesize.InputBytes(req, rfiles[:len(fit.Files)])
+	for _, tc := range []struct {
+		limit int
+		ok    bool
+	}{{n, true}, {n - 1, false}} {
+		r2 := newRefineEnv(t, newFakeHTTP(t, okHandler(goodPlan, 10, 10)), func(e *testEnv, t *testing.T) {
+			e.set(t, []string{"openai", "max_input_bytes"}, tc.limit)
+		})
+		fs := make([]map[string]string, len(fit.Contents))
+		for i, f := range fit.Contents {
+			fs[i] = map[string]string{"path": f.Path, "content": f.Content}
+		}
+		_, oerr := r2.call(t, map[string]any{"repo": r2.repo, "requirement": req, "files": fs, "selection": "s"})
+		if tc.ok != (oerr == nil) {
+			t.Fatalf("limit %d: err %+v", tc.limit, oerr)
+		}
 	}
 }

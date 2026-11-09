@@ -301,6 +301,9 @@ func (h *handler) refinePreview(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, collectError(err))
 		return
 	}
+	// What the broker will count is known here: trim the selection so a preview
+	// that says "allowed" is never refused as too large.
+	sel = refine.Fit(sel, repo, text)
 	id, err := h.refineStore.Put(store.ActorFrom(r.Context()), repo, text, sel)
 	if errors.Is(err, refine.ErrStoreFull) {
 		writeErr(w, errRefineRateLimited)
@@ -466,16 +469,20 @@ func (h *handler) refinePlan(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, errRefineRateLimited)
 		return
 	}
-	res, oerr := h.broker.Do(ctx, "refine", args)
+	// The call goes on even if the browser goes away: cancelling the request
+	// must not close the socket early, give the slot back and leave the broker
+	// (which may already be spending) unrecorded. The client's own time limit
+	// bounds it.
+	res, oerr := h.broker.Do(context.WithoutCancel(ctx), "refine", args)
 	var plan planResponse
 	var perr error
 	if oerr != nil {
 		perr = brokerError(oerr)
-		// Nothing reached the AI service (no broker, busy, not allowed to
-		// connect): the slot is given back. Failures that may have cost
-		// something keep it.
-		switch oerr.Code {
-		case broker.CodeUnavailable, "busy", "forbidden":
+		// Only a failure that provably cost nothing gives the slot back: the
+		// request never completely left (no broker, dial failure, refused
+		// locally) or the broker itself refused before doing anything (busy,
+		// not allowed, too large). Anything after a complete write keeps it.
+		if oerr.Unsent || oerr.Code == "busy" || oerr.Code == "forbidden" || oerr.Code == broker.CodeTooLarge {
 			h.refineLimit.refund(actor, slotAt)
 		}
 	} else {

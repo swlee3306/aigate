@@ -19,6 +19,7 @@ import (
 	"aigate/internal/orch/machine"
 	"aigate/internal/orch/policy"
 	"aigate/internal/orch/publish"
+	"aigate/internal/orch/refine"
 	"aigate/internal/orch/store"
 )
 
@@ -65,11 +66,13 @@ const (
 	mrCodeBadRequest = "bad_request"
 	mrCodeInternal   = "internal_error"
 	mrCodeNotMapped  = "repo_not_mapped"
+	mrCodeSecret     = "looks_like_secret"
 )
 
 const (
-	// mrHookTimeout bounds the hook that runs after the done transition.
-	mrHookTimeout = 15 * time.Second
+	// mrHookTimeout bounds the hook that runs after the done transition. It
+	// must outlast the broker's own create_mr limit (20 s).
+	mrHookTimeout = 25 * time.Second
 	// mrRetryTimeout bounds one retry request (the broker's own limit is 20 s).
 	mrRetryTimeout = 25 * time.Second
 	maxMRURL       = 2048
@@ -146,6 +149,11 @@ func (p *Provider) RetryMR(ctx context.Context, id int64) (store.Task, error) {
 		return t, ErrMRAlreadyCreated
 	}
 	if p.cfg.MR == nil || t.State != machine.StateDone || (t.MRState != store.MRFailed && t.MRState != store.MRSkipped) {
+		return t, ErrMRNotApplicable
+	}
+	// bad_url is terminal: the MR exists on GitLab and the broker would answer
+	// the same foreign URL again. No broker call, no MR slot.
+	if t.MRState == store.MRFailed && t.MRCode == mrCodeBadURL {
 		return t, ErrMRNotApplicable
 	}
 	state, code, serr := p.attemptMR(ctx, t, []string{store.MRFailed, store.MRSkipped}, mrRetryTimeout)
@@ -288,6 +296,11 @@ type BrokerMR struct {
 func (b *BrokerMR) CreateMR(ctx context.Context, t store.Task) (MRResult, error) {
 	if !headRe.MatchString(t.HeadSHA) || t.ID < 1 || t.ID > 999999999 {
 		return MRResult{}, &MRError{Code: mrCodeBadRequest}
+	}
+	// The prompt becomes the MR description summary and goes to GitLab: the
+	// broker scans it too, this stops it before leaving orchd.
+	if refine.LooksLikeSecret(normalizeText(t.Prompt)) || refine.LooksLikeSecret(oneLine(t.Prompt)) {
+		return MRResult{}, &MRError{Code: mrCodeSecret}
 	}
 	actor := store.ActorFrom(ctx)
 	if actor == store.ActorSystem || actor == store.ActorInvalid {

@@ -147,6 +147,11 @@ func (s *Server) createMRHandler(ctx context.Context, raw json.RawMessage) (any,
 	if !utf8.ValidString(a.TitleHint) || !utf8.ValidString(a.Summary) || !utf8.ValidString(a.Verdict) {
 		return fail("bad_request")
 	}
+	// The summary is the task's request text, which a person wrote: the same
+	// best-effort secret scan as for files applies before it is sent to GitLab.
+	if LooksLikeSecret(a.TitleHint) || LooksLikeSecret(a.Summary) {
+		return fail("looks_like_secret")
+	}
 	hint := cleanLine(a.TitleHint, maxTitleHintRunes)
 	summary := cleanLine(a.Summary, maxMRSummaryRunes)
 	verdict := cleanLine(a.Verdict, maxVerdictRunes)
@@ -159,6 +164,9 @@ func (s *Server) createMRHandler(ctx context.Context, raw json.RawMessage) (any,
 	}
 	if actor == "" {
 		actor = "-"
+	}
+	if LooksLikeSecret(hint) || LooksLikeSecret(summary) {
+		return fail("looks_like_secret")
 	}
 	if !s.State.CreateMR.Allow() {
 		return fail("rate_limited")
