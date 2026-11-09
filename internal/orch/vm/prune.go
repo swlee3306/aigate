@@ -482,11 +482,22 @@ func (o *OpenStackCLI) RestoreFits(ctx context.Context) (bool, string, error) {
 	return quotaFits(quotaOut, size)
 }
 
-// quotaFits applies the headroom rule to the JSON of `quota show --usage`.
-func quotaFits(doc string, size int) (bool, string, error) {
+// quotaRow is one gigabytes*/volumes* row of `quota show --usage -f json`.
+// A Limit of -1 is unlimited.
+type quotaRow struct {
+	Name                   string
+	Limit, InUse, Reserved int64
+}
+
+// parseQuota reads the gigabytes, gigabytes_<type>, volumes and
+// volumes_<type> rows of the JSON of `quota show --usage` (other resources
+// are ignored). It is the one parser shared by the prune gate (quotaFits) and
+// the status view (TestVM.CloudStatus). Unreadable or implausible numbers are
+// an error.
+func parseQuota(doc string) ([]quotaRow, error) {
 	var rows []map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(doc), &rows); err != nil {
-		return false, "", fmt.Errorf("unreadable quota: %w", err)
+		return nil, fmt.Errorf("unreadable quota: %w", err)
 	}
 	num := func(row map[string]json.RawMessage, key string) (int64, error) {
 		for k, raw := range row {
@@ -500,44 +511,57 @@ func quotaFits(doc string, size int) (bool, string, error) {
 		}
 		return 0, fmt.Errorf("quota row has no %q", key)
 	}
-	seenGB, seenVol := false, false
-	fits, detail := true, ""
+	var out []quotaRow
 	for _, row := range rows {
 		var name string
 		for k, raw := range row {
 			if strings.EqualFold(k, "resource") && json.Unmarshal(raw, &name) != nil {
-				return false, "", errors.New("unreadable quota resource name")
+				return nil, errors.New("unreadable quota resource name")
 			}
 		}
-		var need int64
-		switch {
-		case name == "gigabytes" || strings.HasPrefix(name, "gigabytes_"):
-			need, seenGB = 2*int64(size), seenGB || name == "gigabytes"
-		case name == "volumes" || strings.HasPrefix(name, "volumes_"):
-			need, seenVol = 2, seenVol || name == "volumes"
-		default:
+		if name != "gigabytes" && !strings.HasPrefix(name, "gigabytes_") && name != "volumes" && !strings.HasPrefix(name, "volumes_") {
 			continue
 		}
 		limit, err := num(row, "limit")
 		if err != nil {
-			return false, "", err
+			return nil, err
 		}
 		used, err := num(row, "in use")
 		if err != nil {
-			return false, "", err
+			return nil, err
 		}
 		reserved, err := num(row, "reserved")
 		if err != nil {
-			return false, "", err
+			return nil, err
 		}
 		if used < 0 || reserved < 0 || limit < -1 {
-			return false, "", fmt.Errorf("implausible quota numbers for %s", name)
+			return nil, fmt.Errorf("implausible quota numbers for %s", name)
 		}
-		if limit == -1 {
+		out = append(out, quotaRow{Name: name, Limit: limit, InUse: used, Reserved: reserved})
+	}
+	return out, nil
+}
+
+// quotaFits applies the headroom rule to the JSON of `quota show --usage`.
+func quotaFits(doc string, size int) (bool, string, error) {
+	rows, err := parseQuota(doc)
+	if err != nil {
+		return false, "", err
+	}
+	seenGB, seenVol := false, false
+	fits, detail := true, ""
+	for _, r := range rows {
+		var need int64
+		if r.Name == "gigabytes" || strings.HasPrefix(r.Name, "gigabytes_") {
+			need, seenGB = 2*int64(size), seenGB || r.Name == "gigabytes"
+		} else {
+			need, seenVol = 2, seenVol || r.Name == "volumes"
+		}
+		if r.Limit == -1 {
 			continue // unlimited
 		}
-		if head := limit - used - reserved; head < need {
-			fits, detail = false, fmt.Sprintf("%s headroom %d < %d", name, head, need)
+		if head := r.Limit - r.InUse - r.Reserved; head < need {
+			fits, detail = false, fmt.Sprintf("%s headroom %d < %d", r.Name, head, need)
 		}
 	}
 	if !seenGB || !seenVol {

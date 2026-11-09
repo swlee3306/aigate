@@ -180,6 +180,7 @@ func run(args []string) int {
 	}
 	cfg.Policy = policySupplier(vf.live, vf.baseCacheDir != "")
 	cfg.Ops = opsSupplier(buildID(), time.Now(), cfg.PolicyHash, vf.restoreRecord, vf.baseCacheDir)
+	cfg.CloudStatus = cloudSupplier(vf.cloudStatus) // nil without a VM: /ops has no "cloud"
 	d, err := api.NewDaemon(cfg, st, provider)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "orchd:", err)

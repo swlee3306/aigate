@@ -43,6 +43,7 @@ type vmFlags struct {
 	live *policy.Live
 	// Set by provider() for the /ops view (zero without VM flags).
 	restoreRecord                                                              func() (vm.RestoreRecord, bool)
+	cloudStatus                                                                func(context.Context) vm.CloudInfo
 	baseCacheDir                                                               string
 	PublishAllow, GitRemote, GitLabURL, GitLabProject, GitLabTarget, TokenFile string
 	GitRemoteFor                                                               stringList
@@ -198,6 +199,7 @@ func (v *vmFlags) provider(st *store.Store, dbPath string) (api.StepProvider, er
 	cfg.ReportDir, cfg.GateHome = reportDir, gateHome
 	cfg.Policy = v.live
 	v.restoreRecord = test.LastRestore
+	v.cloudStatus = test.CloudStatus
 	if v.BaseCache && v.BaseCacheTTL > 0 {
 		cfg.BaseCache = &steps.BaseCache{Dir: filepath.Join(gateHome, ".aigate", "base-cache"), TTL: v.BaseCacheTTL, Scope: buildID()}
 		v.baseCacheDir = cfg.BaseCache.Dir

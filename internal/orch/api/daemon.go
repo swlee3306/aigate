@@ -42,6 +42,10 @@ type Config struct {
 	// both endpoints answer an empty object).
 	Policy func() PolicyView
 	Ops    func() OpsView
+	// CloudStatus supplies ops.cloud (quota and test VM status). It must be
+	// cached and bounded by the caller (the vm package does both); nil omits
+	// the "cloud" key from /ops.
+	CloudStatus func(ctx context.Context) CloudView
 	// SocketUIDs are the uids whose processes may use the unix socket (read
 	// and general write), checked with the kernel's peer credentials on every
 	// connection. The daemon process's own uid is always added (CF9); root is
@@ -158,7 +162,7 @@ func NewDaemon(cfg Config, st *store.Store, p StepProvider) (*Daemon, error) {
 		h.onSubmitted = sr.RecordSubmitted
 	}
 	h.reportDir = cfg.ReportDir
-	h.policy, h.ops = cfg.Policy, cfg.Ops
+	h.policy, h.ops, h.cloud = cfg.Policy, cfg.Ops, cfg.CloudStatus
 	h.socketUIDs = socketUIDSet(cfg.SocketUIDs)
 	h.auth = cfg.Auth
 	h.rpID, h.origin = cfg.RPID, cfg.Origin

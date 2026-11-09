@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"time"
 )
@@ -34,13 +35,55 @@ type RestoreView struct {
 	OK      bool           `json:"ok"`
 }
 
-// OpsView is the operations summary. W1 has no VM or quota numbers.
+// Fixed failure codes of CloudView (no error text ever reaches the client).
+const (
+	CloudUnavailable = "cloud_unavailable"
+	CloudTimeout     = "cloud_timeout"
+)
+
+// CloudLimit is one Cinder quota line: Limit, InUse and Reserved are the raw
+// numbers (the limit is -1 when Unlimited).
+type CloudLimit struct {
+	Limit     int  `json:"limit"`
+	InUse     int  `json:"in_use"`
+	Reserved  int  `json:"reserved"`
+	Unlimited bool `json:"unlimited"`
+}
+
+// QuotaView is the part of the Cinder quota that fails restores (HTTP 413):
+// gigabytes counts volumes and snapshots together.
+type QuotaView struct {
+	Gigabytes CloudLimit `json:"gigabytes"`
+	Volumes   CloudLimit `json:"volumes"`
+}
+
+// VMState is the test VM's name and server status.
+type VMState struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
+// CloudView is the cached cloud picture of /ops. On failure only OK=false and
+// a fixed Code are set; there is never error text, host name or CLI output.
+type CloudView struct {
+	OK             bool          `json:"ok"`
+	Code           string        `json:"code"`
+	Quota          *QuotaView    `json:"quota,omitempty"`
+	TestVM         *VMState      `json:"test_vm,omitempty"`
+	RestoreVolumes int           `json:"restore_volumes"`
+	History        []RestoreView `json:"history"`
+	CheckedAt      time.Time     `json:"checked_at"`
+}
+
+// OpsView is the operations summary. Cloud is present only when a cloud
+// status supplier is configured.
 type OpsView struct {
 	Build            string       `json:"build"`
 	Started          time.Time    `json:"started"`
 	PolicyHash       string       `json:"policy_hash"`
 	LastRestore      *RestoreView `json:"last_restore,omitempty"`
 	BaseCacheEntries int          `json:"base_cache_entries"`
+	Cloud            *CloudView   `json:"cloud,omitempty"`
 }
 
 type projectRow struct {
@@ -94,5 +137,25 @@ func (h *handler) opsView(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, struct{}{})
 		return
 	}
-	writeJSON(w, 200, h.ops())
+	v := h.ops()
+	if h.cloud != nil {
+		c := h.cloudView(r.Context())
+		v.Cloud = &c
+	}
+	writeJSON(w, 200, v)
+}
+
+// cloudView asks the supplier; a panic in it is a plain cloud_unavailable and
+// never takes the rest of /ops down.
+func (h *handler) cloudView(ctx context.Context) (c CloudView) {
+	defer func() {
+		if recover() != nil {
+			c = CloudView{Code: CloudUnavailable, History: []RestoreView{}}
+		}
+	}()
+	c = h.cloud(ctx)
+	if c.History == nil {
+		c.History = []RestoreView{}
+	}
+	return c
 }

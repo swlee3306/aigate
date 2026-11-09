@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"time"
@@ -38,15 +39,50 @@ func opsSupplier(build string, started time.Time, policyHash func() string,
 		}
 		if restore != nil {
 			if rec, ok := restore(); ok {
-				rv := &api.RestoreView{Seconds: rec.Duration.Seconds(), At: rec.At, OK: rec.Err == "",
-					Phases: []api.RestorePhase{}}
-				for _, ph := range rec.Phases {
-					rv.Phases = append(rv.Phases, api.RestorePhase{Name: ph.Name, Seconds: ph.Dur.Seconds(), OK: ph.Err == ""})
-				}
+				rv := restoreView(rec)
 				v.LastRestore = rv
 			}
 		}
 		return v
+	}
+}
+
+// restoreView is the API shape of a restore record (no error text, no ids).
+func restoreView(rec vm.RestoreRecord) *api.RestoreView {
+	rv := &api.RestoreView{Seconds: rec.Duration.Seconds(), At: rec.At, OK: rec.Err == "",
+		Phases: []api.RestorePhase{}}
+	for _, ph := range rec.Phases {
+		rv.Phases = append(rv.Phases, api.RestorePhase{Name: ph.Name, Seconds: ph.Dur.Seconds(), OK: ph.Err == ""})
+	}
+	return rv
+}
+
+// cloudSupplier adapts the (cached, single-flight, time-bounded)
+// TestVM.CloudStatus to the API's CloudView. status is nil without a VM.
+func cloudSupplier(status func(context.Context) vm.CloudInfo) func(context.Context) api.CloudView {
+	if status == nil {
+		return nil
+	}
+	return func(ctx context.Context) api.CloudView {
+		in := status(ctx)
+		if !in.OK {
+			code := in.Code
+			if code != api.CloudTimeout {
+				code = api.CloudUnavailable
+			}
+			return api.CloudView{Code: code, History: []api.RestoreView{}, CheckedAt: in.CheckedAt}
+		}
+		lim := func(l vm.CloudLimit) api.CloudLimit {
+			return api.CloudLimit{Limit: l.Limit, InUse: l.InUse, Reserved: l.Reserved, Unlimited: l.Unlimited}
+		}
+		out := api.CloudView{OK: true, RestoreVolumes: in.RestoreVolumes, CheckedAt: in.CheckedAt,
+			Quota:   &api.QuotaView{Gigabytes: lim(in.Gigabytes), Volumes: lim(in.Volumes)},
+			TestVM:  &api.VMState{Name: in.VMName, Status: in.VMStatus},
+			History: []api.RestoreView{}}
+		for _, rec := range in.History {
+			out.History = append(out.History, *restoreView(rec))
+		}
+		return out
 	}
 }
 

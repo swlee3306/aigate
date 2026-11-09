@@ -94,10 +94,17 @@ type TestVM struct {
 	// prune before it deletes the server (default 2 minutes). After the bound
 	// it goes on, with a warning phase; prunes still never overlap (pruneMu).
 	PruneWait time.Duration
+	// CloudTimeout bounds one CloudStatus refresh (default 20 s).
+	CloudTimeout time.Duration
 
 	pruneMu ctxMutex // at most one prune of any kind at a time
 	bgMu    sync.Mutex
 	bgDone  chan struct{} // closed when the latest background prune has finished and reported
+
+	cloudMu     sync.Mutex // guards the CloudStatus cache
+	cloudRes    CloudInfo
+	cloudAt     time.Time
+	cloudFlight *cloudFlight
 
 	mu       sync.Mutex
 	broken   error // set by a failed restore, cleared by a successful one

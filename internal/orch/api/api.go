@@ -165,6 +165,7 @@ type handler struct {
 	// policy and ops supply the /policy and /ops views (nil: empty object).
 	policy func() PolicyView
 	ops    func() OpsView
+	cloud  func(ctx context.Context) CloudView
 	// socketUIDs is the socket peer allowlist; auth resolves HTTP credentials
 	// (nil: every HTTP request is unauthenticated).
 	socketUIDs map[uint32]bool

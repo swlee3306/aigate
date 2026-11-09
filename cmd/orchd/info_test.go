@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -36,5 +37,28 @@ func TestOpsSupplier(t *testing.T) {
 	}
 	if v := policySupplier(nil, true)(); v.Hash != "" {
 		t.Errorf("nil live: %+v", v)
+	}
+}
+
+func TestCloudSupplierMapsAndHidesText(t *testing.T) {
+	if cloudSupplier(nil) != nil {
+		t.Fatal("no VM must give a nil supplier (no cloud block in /ops)")
+	}
+	at := time.Date(2026, 11, 9, 10, 0, 0, 0, time.UTC)
+	ok := cloudSupplier(func(context.Context) vm.CloudInfo {
+		return vm.CloudInfo{OK: true, Gigabytes: vm.CloudLimit{Limit: 300, InUse: 180, Reserved: 30},
+			Volumes: vm.CloudLimit{Limit: -1, InUse: 7, Unlimited: true}, VMName: "test-vm", VMStatus: "ACTIVE",
+			RestoreVolumes: 2, CheckedAt: at,
+			History: []vm.RestoreRecord{{At: at, Duration: 53 * time.Second, Err: "secret host text"}}}
+	})(context.Background())
+	if !ok.OK || ok.Quota.Gigabytes.Limit != 300 || !ok.Quota.Volumes.Unlimited || ok.TestVM.Status != "ACTIVE" ||
+		ok.RestoreVolumes != 2 || len(ok.History) != 1 || ok.History[0].OK || ok.History[0].Seconds != 53 {
+		t.Errorf("%+v", ok)
+	}
+	for in, want := range map[string]string{vm.CloudTimeout: "cloud_timeout", vm.CloudUnavailable: "cloud_unavailable", "weird: host x": "cloud_unavailable"} {
+		v := cloudSupplier(func(context.Context) vm.CloudInfo { return vm.CloudInfo{Code: in} })(context.Background())
+		if v.OK || v.Code != want || v.Quota != nil || v.TestVM != nil {
+			t.Errorf("%q -> %+v", in, v)
+		}
 	}
 }

@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -123,5 +125,100 @@ func TestOpsNoSecrets(t *testing.T) {
 				t.Errorf("%s leaks %q: %s", p, s, b)
 			}
 		}
+	}
+}
+
+func okCloud() CloudView {
+	return CloudView{OK: true,
+		Quota:  &QuotaView{Gigabytes: CloudLimit{Limit: 300, InUse: 180, Reserved: 30}, Volumes: CloudLimit{Limit: -1, InUse: 7, Unlimited: true}},
+		TestVM: &VMState{Name: "test-vm", Status: "ACTIVE"}, RestoreVolumes: 2,
+		History: []RestoreView{}, CheckedAt: time.Date(2026, 11, 9, 10, 0, 0, 0, time.UTC)}
+}
+
+func TestOpsCloudBlock(t *testing.T) {
+	e := newEnv(t, noSteps{}, 1, func(c *Config) {
+		c.Ops = func() OpsView { return OpsView{Build: "rev1", Started: time.Now()} }
+		c.CloudStatus = func(context.Context) CloudView { return okCloud() }
+	})
+	code, b := e.do(t, "GET", "/api/v1/ops", "")
+	if code != 200 {
+		t.Fatalf("%d %s", code, b)
+	}
+	var raw struct {
+		Cloud map[string]json.RawMessage `json:"cloud"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"ok", "code", "quota", "test_vm", "restore_volumes", "history", "checked_at"} {
+		if _, ok := raw.Cloud[k]; !ok {
+			t.Errorf("cloud.%s missing: %s", k, b)
+		}
+	}
+}
+
+func TestOpsWithoutCloudSupplierStillWorks(t *testing.T) {
+	e := newEnv(t, noSteps{}, 1, func(c *Config) {
+		c.Ops = func() OpsView { return OpsView{Build: "rev1", Started: time.Now(), BaseCacheEntries: 3} }
+	})
+	code, b := e.do(t, "GET", "/api/v1/ops", "")
+	if code != 200 || strings.Contains(string(b), `"cloud"`) || !strings.Contains(string(b), `"build":"rev1"`) {
+		t.Fatalf("%d %s", code, b)
+	}
+}
+
+func TestCloudStatusFailureIsPartial(t *testing.T) {
+	const secret = "ssh: connect to host jump.internal.example port 22: Connection refused"
+	for _, code := range []string{CloudUnavailable, CloudTimeout} {
+		e := newEnv(t, noSteps{}, 1, func(c *Config) {
+			c.Ops = func() OpsView {
+				return OpsView{Build: "rev1", Started: time.Now(), PolicyHash: "ph", BaseCacheEntries: 4,
+					LastRestore: &RestoreView{Seconds: 12.5, OK: true, Phases: []RestorePhase{}}}
+			}
+			c.CloudStatus = func(context.Context) CloudView { return CloudView{Code: code} }
+		})
+		status, b := e.do(t, "GET", "/api/v1/ops", "")
+		if status != 200 {
+			t.Fatalf("%s: %d %s", code, status, b)
+		}
+		var got OpsView
+		if err := json.Unmarshal(b, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.Build != "rev1" || got.PolicyHash != "ph" || got.BaseCacheEntries != 4 || got.LastRestore == nil {
+			t.Errorf("%s: rest of /ops changed: %s", code, b)
+		}
+		if got.Cloud == nil || got.Cloud.OK || got.Cloud.Code != code || got.Cloud.Quota != nil || got.Cloud.TestVM != nil {
+			t.Errorf("%s: cloud %+v", code, got.Cloud)
+		}
+		if strings.Contains(string(b), secret) || strings.Contains(string(b), "jump.internal") {
+			t.Errorf("error text leaked: %s", b)
+		}
+	}
+}
+
+func TestCloudStatusPanicIsPartial(t *testing.T) {
+	e := newEnv(t, noSteps{}, 1, func(c *Config) {
+		c.Ops = func() OpsView { return OpsView{Build: "rev1", Started: time.Now()} }
+		c.CloudStatus = func(context.Context) CloudView { panic("boom: secret-host") }
+	})
+	code, b := e.do(t, "GET", "/api/v1/ops", "")
+	if code != 200 || !strings.Contains(string(b), CloudUnavailable) || strings.Contains(string(b), "secret-host") {
+		t.Fatalf("%d %s", code, b)
+	}
+}
+
+func TestOpsCloudRequiresAuth(t *testing.T) {
+	var calls atomic.Int32
+	f := newLoginFixtureWith(t, func(c *Config) {
+		c.Ops = func() OpsView { return OpsView{Build: "rev1", Started: time.Now()} }
+		c.CloudStatus = func(context.Context) CloudView { calls.Add(1); return okCloud() }
+	})
+	code, _, b := httpDo(t, f.srv, "GET", "/api/v1/ops", "", nil)
+	if code != http.StatusUnauthorized || strings.Contains(string(b), "quota") {
+		t.Fatalf("%d %s", code, b)
+	}
+	if calls.Load() != 0 {
+		t.Errorf("the cloud supplier ran for an unauthenticated request")
 	}
 }

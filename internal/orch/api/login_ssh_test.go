@@ -73,11 +73,13 @@ type loginFixture struct {
 	clock      *testClock
 }
 
-func newLoginFixture(t *testing.T) *loginFixture {
+func newLoginFixture(t *testing.T) *loginFixture { return newLoginFixtureWith(t) }
+
+func newLoginFixtureWith(t *testing.T, opts ...func(*Config)) *loginFixture {
 	t.Helper()
 	alice, bob := newTestSigner(t, "alice"), newTestSigner(t, "bob")
 	reg := useTestRegistry(t, []signing.Signer{alice.signer, bob.signer})
-	e := newEnv(t, noSteps{}, 1)
+	e := newEnv(t, noSteps{}, 1, opts...)
 	e.d.pauseWorkers()
 	f := &loginFixture{e: e, alice: alice, bob: bob, reg: reg, clock: &testClock{}}
 	// Set before the first request (same pattern as handler.grants).

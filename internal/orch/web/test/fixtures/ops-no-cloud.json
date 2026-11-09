@@ -1,0 +1,33 @@
+{
+  "build": "rev-abc123",
+  "started": "2026-11-07T10:00:00Z",
+  "policy_hash": "0123abcd",
+  "last_restore": {
+    "phases": [
+      {
+        "name": "delete_server",
+        "seconds": 4.2,
+        "ok": true
+      },
+      {
+        "name": "create_volume",
+        "seconds": 21.5,
+        "ok": true
+      },
+      {
+        "name": "create_server",
+        "seconds": 18,
+        "ok": true
+      },
+      {
+        "name": "wait_ssh",
+        "seconds": 9.3,
+        "ok": true
+      }
+    ],
+    "seconds": 53,
+    "at": "2026-11-09T08:00:00Z",
+    "ok": true
+  },
+  "base_cache_entries": 3
+}

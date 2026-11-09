@@ -80,6 +80,26 @@ func TestWebFixturesGolden(t *testing.T) {
 		{Path: "/srv/repos/new", Head: "", Branch: "main", Branches: []string{}},
 	})
 
+	// GET /api/v1/ops with the cloud block (quota and test VM status), a
+	// failed-cloud variant and the no-cloud-supplier variant.
+	restoreAt := t0.Add(-2 * time.Hour)
+	rv := RestoreView{Phases: []RestorePhase{{Name: "delete_server", Seconds: 4.2, OK: true},
+		{Name: "create_volume", Seconds: 21.5, OK: true}, {Name: "create_server", Seconds: 18, OK: true},
+		{Name: "wait_ssh", Seconds: 9.3, OK: true}}, Seconds: 53, At: restoreAt, OK: true}
+	opsBase := OpsView{Build: "rev-abc123", Started: t0.Add(-48 * time.Hour), PolicyHash: "0123abcd", LastRestore: &rv, BaseCacheEntries: 3}
+	opsOK := opsBase
+	opsOK.Cloud = &CloudView{OK: true,
+		Quota:  &QuotaView{Gigabytes: CloudLimit{Limit: 300, InUse: 180, Reserved: 30}, Volumes: CloudLimit{Limit: -1, InUse: 7, Unlimited: true}},
+		TestVM: &VMState{Name: "test-vm", Status: "ACTIVE"}, RestoreVolumes: 2,
+		History: []RestoreView{rv, {Phases: []RestorePhase{{Name: "delete_server", Seconds: 3.9, OK: true}, {Name: "create_volume", Seconds: 60, OK: false}},
+			Seconds: 64, At: restoreAt.Add(-3 * time.Hour), OK: false}},
+		CheckedAt: t0}
+	opsDown := opsBase
+	opsDown.Cloud = &CloudView{Code: CloudUnavailable, History: []RestoreView{}, CheckedAt: t0}
+	checkFixture(t, "ops.json", opsOK)
+	checkFixture(t, "ops-cloud-down.json", opsDown)
+	checkFixture(t, "ops-no-cloud.json", opsBase)
+
 	// GET /api/v1/tasks/{id}/events: steps from Timeline, verify from the note.
 	evs := []store.Event{
 		{To: store.StateQueued, Note: "created", At: t0},
