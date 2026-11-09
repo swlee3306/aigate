@@ -170,3 +170,55 @@ func TestCreateTaskLimitedLegacyAndSystemCountTotalOnly(t *testing.T) {
 		t.Fatalf("legacy/system tasks must count toward the total: %v", err)
 	}
 }
+
+// The per-actor count follows the CREATING event (earliest note='created'),
+// never a later event: a later event by another actor, by "system" or with no
+// actor does not move a queued task out of its owner's bucket.
+func TestCreateTaskLimitedCountsByCreatingActor(t *testing.T) {
+	s, _ := openTemp(t)
+	task := Task{Repo: "r", Base: "abc", Prompt: "p", Class: "docs", Agent: "claude"}
+	a, b := actorCtx("session:alice"), actorCtx("token:bob")
+	var ids []int64
+	for i := 0; i < 3; i++ {
+		id, err := s.CreateTaskLimited(a, task, 3, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	ev := func(id int64, note string, actor any) {
+		t.Helper()
+		if _, err := s.db.Exec(`INSERT INTO task_events(task_id, from_state, to_state, note, at, actor) VALUES (?,'queued','queued',?,9999,?)`, id, note, actor); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ev(ids[0], "retry", "token:bob")   // later event by another actor
+	ev(ids[1], "moved", nil)           // later event with no actor
+	ev(ids[2], "moved", ActorSystem)   // later event by system
+	ev(ids[2], "created", "token:bob") // a LATER 'created' note by B must not steal it either
+	if _, err := s.CreateTaskLimited(a, task, 3, 100); !errors.Is(err, ErrQueueFull) {
+		t.Fatalf("alice must still be charged for all 3 tasks: %v", err)
+	}
+	// B is not charged for them: it can fill its own limit.
+	for i := 0; i < 3; i++ {
+		if _, err := s.CreateTaskLimited(b, task, 3, 100); err != nil {
+			t.Fatalf("bob %d: %v", i, err)
+		}
+	}
+	if _, err := s.CreateTaskLimited(b, task, 3, 100); !errors.Is(err, ErrQueueFull) {
+		t.Fatalf("bob over: %v", err)
+	}
+	// Only the note='created' event decides, not simply the first event: a task
+	// whose first event row is some other note (by bob) but whose creating event
+	// is alice's belongs to alice.
+	res, err := s.db.Exec(`INSERT INTO tasks(repo, base, prompt, class, agent, state, created_at, updated_at) VALUES ('r','b','odd','docs','claude','queued',1,1)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oid, _ := res.LastInsertId()
+	ev(oid, "other", "token:bob")
+	ev(oid, "created", "session:carol")
+	if _, err := s.CreateTaskLimited(actorCtx("session:carol"), task, 1, 100); !errors.Is(err, ErrQueueFull) {
+		t.Fatalf("carol owns the odd task by its created event: %v", err)
+	}
+}
