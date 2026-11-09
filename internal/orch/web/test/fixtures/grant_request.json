@@ -13,9 +13,9 @@
     "kind": "protected_modified",
     "task_id": 38,
     "base": "1111111111111111111111111111111111111111",
-    "hash": "3273763058ed7862",
-    "message": "aigate-approval-v1\nkind: protected_modified\nrepo: 0e22c6a35c36\ntask: 38\nbase: 1111111111111111111111111111111111111111\nhash: 3273763058ed7862\nissued: 2026-11-09T10:04:05Z\n",
-    "digest": "0b33c2d4ccc9c4a5c32605b23a9d708ad614638fac9449207def3100e47c82e7",
+    "hash": "3273763058ed786269abfd318c01a425c417aeb4b196118f5c43206a0396f4ef",
+    "message": "aigate-approval-v1\nkind: protected_modified\nrepo: 0e22c6a35c36\ntask: 38\nbase: 1111111111111111111111111111111111111111\nhash: 3273763058ed786269abfd318c01a425c417aeb4b196118f5c43206a0396f4ef\nissued: 2026-11-09T10:04:05Z\n",
+    "digest": "995d153572aa24b38677c50f035493e591eeab1c2a180adc7bb8e3df2c583fae",
     "issued": "2026-11-09T10:04:05Z",
     "requires_signature": true,
     "truncated": false
@@ -23,11 +23,11 @@
   "request": {
     "signer": "phone",
     "alg": "webauthn-es256",
-    "sig": "MEUCIQCtLxnwO5VyZRrXu8I8Z9G3TR-ZtSJkfhNzwT5KAN2p6QIgOflsdFGOi_f7q6_6t_kmTRRBGyw2sGNJaGb10K_HAUw",
+    "sig": "MEUCIQDiCP2ni4ENocGzZN80BAL54DSnTxMalLCjAwe5zUJ9rgIgEl804TvR1PESYKE4mTw5AD83-vCEUcIJ5r2wixXJ62M",
     "issued": "2026-11-09T10:04:05Z",
     "webauthn": {
       "authenticator_data": "XUw6fg_K4MiEGyiyzD5i-92KOyGKGm3TFsYp6PUT6nkFAAAABw",
-      "client_data_json": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiQ3pQQzFNekp4S1hESmdXeU9wMXdpdFlVWTQtc2xFa2dmZTh4QU9SOGd1YyIsIm9yaWdpbiI6Imh0dHBzOi8vb3JjaC5leGFtcGxlLnRlc3QiLCJjcm9zc09yaWdpbiI6ZmFsc2V9"
+      "client_data_json": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoibVYwVk5YS3FKTE9HZDhVUEExU1Q1Wkh1cXh3cUdBcmNlN2pqM3l4WVA2NCIsIm9yaWdpbiI6Imh0dHBzOi8vb3JjaC5leGFtcGxlLnRlc3QiLCJjcm9zc09yaWdpbiI6ZmFsc2V9"
     }
   }
 }

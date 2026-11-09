@@ -13,7 +13,7 @@ func goldenMessage() Message {
 		Repo:   "0123456789ab",
 		Task:   42,
 		Base:   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		Hash:   "0123456789abcdef",
+		Hash:   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		Issued: time.Date(2026, 11, 9, 12, 34, 56, 0, time.UTC),
 	}
 }
@@ -23,7 +23,7 @@ const goldenText = "aigate-approval-v1\n" +
 	"repo: 0123456789ab\n" +
 	"task: 42\n" +
 	"base: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n" +
-	"hash: 0123456789abcdef\n" +
+	"hash: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n" +
 	"issued: 2026-11-09T12:34:56Z\n"
 
 func TestMessageTextGolden(t *testing.T) {
@@ -35,7 +35,7 @@ func TestMessageTextGolden(t *testing.T) {
 
 func TestDigestGolden(t *testing.T) {
 	d := goldenMessage().Digest()
-	const want = "4fdf05d0a777b308890c27c9e4c3b8c4a41a3ea6ad41382a678ee7122df0c619"
+	const want = "be7299ee50ed90eaa665df97a672381a3c06c624415cac2af7aaf0cac382ef96"
 	if got := hex.EncodeToString(d[:]); got != want {
 		t.Fatalf("digest = %s, want %s", got, want)
 	}
@@ -118,9 +118,11 @@ func TestParseRejects(t *testing.T) {
 		"base uppercase":    replace(4, "base: "+strings.Repeat("A", 40)+"\n"),
 		"base empty":        replace(4, "base: \n"),
 		"hash empty":        replace(5, "hash: \n"),
-		"hash wrong length": replace(5, "hash: 0123456789abcde\n"),
+		"hash wrong length": replace(5, "hash: "+strings.Repeat("a", 63)+"\n"),
+		"hash 65 chars":     replace(5, "hash: "+strings.Repeat("a", 65)+"\n"),
+		"hash 16 chars":     replace(5, "hash: 0123456789abcdef\n"), // pre-2026-11-09 diff hash
 		"hash 32 chars":     replace(5, "hash: "+strings.Repeat("a", 32)+"\n"),
-		"hash uppercase":    replace(5, "hash: 0123456789ABCDEF\n"),
+		"hash uppercase":    replace(5, "hash: "+strings.Repeat("0123456789ABCDEF", 4)+"\n"),
 		"time offset":       replace(6, "issued: 2026-11-09T21:34:56+09:00\n"),
 		"time zero offset":  replace(6, "issued: 2026-11-09T12:34:56+00:00\n"),
 		"time fraction":     replace(6, "issued: 2026-11-09T12:34:56.5Z\n"),
@@ -139,6 +141,36 @@ func TestParseRejects(t *testing.T) {
 	}
 }
 
+// TestHashMustBeFull64HexForEveryKind: since 2026-11-09 the diff hash is the
+// full SHA-256, so every kind's hash is exactly 64 lowercase hex. A 16-hex
+// hash (the old diff hash format) is refused by Validate and ParseMessage
+// for every kind, so nobody can sign or replay a downgraded short hash.
+func TestHashMustBeFull64HexForEveryKind(t *testing.T) {
+	for _, kind := range []string{KindProtectedModified, KindPublishOutsideAllowlist} {
+		m := goldenMessage()
+		m.Kind = kind
+		if err := m.Validate(); err != nil {
+			t.Fatalf("%s: 64-hex hash refused: %v", kind, err)
+		}
+		if _, err := ParseMessage(m.Text()); err != nil {
+			t.Fatalf("%s: 64-hex message does not parse: %v", kind, err)
+		}
+		text := m.Text()
+		m.Hash = "0123456789abcdef"
+		err := m.Validate()
+		if err == nil || !strings.Contains(err.Error(), "64 lowercase hex") {
+			t.Fatalf("%s: 16-hex hash accepted or wrong error: %v", kind, err)
+		}
+		short := strings.Replace(text, "hash: "+goldenMessage().Hash+"\n", "hash: 0123456789abcdef\n", 1)
+		if short == text {
+			t.Fatal("test bug: hash line not replaced")
+		}
+		if _, err := ParseMessage(short); err == nil {
+			t.Fatalf("%s: ParseMessage accepted a 16-hex hash", kind)
+		}
+	}
+}
+
 func TestTextRejectsInvalidMessage(t *testing.T) {
 	mut := map[string]func(*Message){
 		"kind":         func(m *Message) { m.Kind = "nope" },
@@ -146,11 +178,12 @@ func TestTextRejectsInvalidMessage(t *testing.T) {
 		"task":         func(m *Message) { m.Task = 0 },
 		"base":         func(m *Message) { m.Base = "abc" },
 		"hash":         func(m *Message) { m.Hash = "" },
-		"hash newline": func(m *Message) { m.Hash = "0123456789abcde\n" },
+		"hash newline": func(m *Message) { m.Hash = strings.Repeat("a", 63) + "\n" },
+		"hash 16":      func(m *Message) { m.Hash = "0123456789abcdef" },
 		"zero time":    func(m *Message) { m.Issued = time.Time{} },
 		"non-utc":      func(m *Message) { m.Issued = m.Issued.In(time.FixedZone("KST", 9*3600)) },
 		"fraction":     func(m *Message) { m.Issued = m.Issued.Add(time.Millisecond) },
-		"injection":    func(m *Message) { m.Repo = "0123456789ab\nhash: 0123456789abcdef" },
+		"injection":    func(m *Message) { m.Repo = "0123456789ab\nhash: " + strings.Repeat("a", 64) },
 	}
 	for name, f := range mut {
 		t.Run(name, func(t *testing.T) {

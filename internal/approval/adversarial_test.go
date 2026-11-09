@@ -471,12 +471,12 @@ func TestRegistryDeletedFallsBackOnlyWhenAbsentNotWhenBroken(t *testing.T) {
 			p := useRegistry(t, []signing.Signer{alice.signer})
 			s := legacyStore(t)
 			// A genuine signed entry too: neither kind may count.
-			msgC := msgFor(tRepo, tBase, strings.Repeat("f", 16))
+			msgC := msgFor(tRepo, tBase, strings.Repeat("f", 64))
 			if err := s.GrantSigned(msgC, alice.sign(t, msgC), tNow, verifyOpts); err != nil {
 				t.Fatal(err)
 			}
 			breakIt(t, p)
-			if s.Valid(tRepo, tBase, strings.Repeat("f", 16)) {
+			if s.Valid(tRepo, tBase, strings.Repeat("f", 64)) {
 				t.Fatal("signed entry counted with a broken registry")
 			}
 			assertClosed(t, s, alice, name) // checks the legacy entry (tHashA) and both grants
@@ -531,7 +531,7 @@ func TestStaleIssuedRejected(t *testing.T) {
 	// A stored entry whose message was issued years ago (or in the future)
 	// still counts: approvals do not expire once written.
 	for _, issued := range []time.Time{time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC), time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)} {
-		m := msgFor(tRepo, tBase, strings.Repeat("9", 16))
+		m := msgFor(tRepo, tBase, strings.Repeat("9", 64))
 		m.Issued = issued
 		appendRaw(t, s, sshEntry(tRepo, tBase, m.Hash, m.Text(), "alice", alice.sign(t, m).Sig))
 		if !s.Valid(tRepo, tBase, m.Hash) {
@@ -605,7 +605,7 @@ func TestConcurrentGrantsOneEntry(t *testing.T) {
 		jobs = append(jobs, job{m, phone.assert(t, "phone", m)})
 	}
 	for i := 0; i < distinct; i++ {
-		m := msgFor(tRepo, tBase, fmt.Sprintf("%016x", 1000+i))
+		m := msgFor(tRepo, tBase, fmt.Sprintf("%064x", 1000+i))
 		jobs = append(jobs, job{m, phone.assert(t, "phone", m)})
 	}
 	start := make(chan struct{})
@@ -639,7 +639,7 @@ func TestConcurrentGrantsOneEntry(t *testing.T) {
 		t.Fatalf("want %d entries, got %d", 1+distinct, len(f.Approvals))
 	}
 	for i := 0; i < distinct; i++ {
-		h := fmt.Sprintf("%016x", 1000+i)
+		h := fmt.Sprintf("%064x", 1000+i)
 		if count[h] != 1 || !s.Valid(tRepo, tBase, h) {
 			t.Fatalf("triple %s: %d entries", h, count[h])
 		}

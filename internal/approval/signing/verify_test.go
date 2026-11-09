@@ -22,7 +22,7 @@ func approvalMsg(issued time.Time) Message {
 		Repo:   "0123456789ab",
 		Task:   7,
 		Base:   strings.Repeat("a", 40),
-		Hash:   strings.Repeat("b", 16),
+		Hash:   strings.Repeat("b", 64),
 		Issued: issued,
 	}
 }
@@ -230,7 +230,7 @@ func TestSkipFreshnessStillVerifiesSignature(t *testing.T) {
 	skip := VerifyOptions{Now: testNow, SkipFreshness: true}
 	msg := approvalMsg(testNow.AddDate(-1, 0, 0))
 	other := msg
-	other.Hash = strings.Repeat("c", 16)
+	other.Hash = strings.Repeat("c", 64)
 
 	garbageWA := a.assert(t, "phone", msg)
 	garbageWA.Sig = b64u([]byte("not a der signature"))
@@ -321,7 +321,7 @@ func TestLoginSignatureNotAcceptedAsApproval(t *testing.T) {
 	wantErr(t, Verify(reg, msg, f.sign(t, "aigate-login", msg.Text()), fixedOpts), ErrBadSignature)
 
 	other := msg
-	other.Hash = strings.Repeat("c", 16)
+	other.Hash = strings.Repeat("c", 64)
 	wantErr(t, Verify(reg, msg, f.sign(t, NamespaceApproval, other.Text()), fixedOpts), ErrBadSignature)
 	// A login-style text (different prefix) signed in the approval namespace.
 	login := strings.Replace(msg.Text(), "aigate-approval-v1", "aigate-login-v1", 1)
@@ -342,7 +342,7 @@ func TestWebAuthnWrongChallengeForOtherMessage(t *testing.T) {
 	reg := Registry{Signers: []Signer{a.signer(t, "phone")}}
 	msgA := approvalMsg(testNow)
 	msgB := msgA
-	msgB.Hash = strings.Repeat("c", 16)
+	msgB.Hash = strings.Repeat("c", 64)
 	sigA := a.assert(t, "phone", msgA)
 	if err := Verify(reg, msgA, sigA, fixedOpts); err != nil {
 		t.Fatalf("precondition: %v", err)

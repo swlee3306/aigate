@@ -263,7 +263,7 @@ func TestGrantWrongHashConflict409(t *testing.T) {
 	base := git(t, f.e.repo, "rev-parse", "HEAD")
 	head := commitChange(t, f.e, "tests/spec.txt", "line1\nCHANGED\n")
 	// The entry waits for a hash that is not the current diff's.
-	tid, aid := f.waiting(t, store.KindProtectedModified, base, head, strings.Repeat("d", 16))
+	tid, aid := f.waiting(t, store.KindProtectedModified, base, head, strings.Repeat("d", 64))
 	issued := nowSec()
 	m := f.message(t, aid, issued) // a valid signature over the entry's message
 	code, b := f.post(t, aid, f.body(f.alice.signText(t, m.Text()), issued))
@@ -329,7 +329,7 @@ func TestGrantNotPending409(t *testing.T) {
 	tid2, aid2, _ := f.protectedTask(t, "line1\nTWO\n")
 	sig2 := f.alice.signText(t, f.message(t, aid2, issued).Text())
 	if _, err := f.e.st.AddApproval(context.Background(), store.Approval{TaskID: tid2, Kind: store.KindProtectedModified,
-		Hash: strings.Repeat("e", 16), Base: f.base, Head: strings.Repeat("f", 40)}); err != nil {
+		Hash: strings.Repeat("e", 64), Base: f.base, Head: strings.Repeat("f", 40)}); err != nil {
 		t.Fatal(err)
 	}
 	code, b = f.post(t, aid2, f.body(sig2, issued))
@@ -398,7 +398,7 @@ func TestGrantMessageRebuiltServerSide(t *testing.T) {
 	// The client claims other values for every message field. They must be
 	// ignored: only issued (and the signature) come from the body.
 	client := server
-	client.Hash = strings.Repeat("9", 16)
+	client.Hash = strings.Repeat("9", 64)
 	client.Base = strings.Repeat("8", 40)
 	client.Repo = "abcdefabcdef"
 	client.Task = tid + 100
@@ -500,7 +500,7 @@ func TestGrantNotSignedMode400(t *testing.T) {
 	alice := newTestSigner(t, "alice")
 	useTestRegistry(t, nil)
 	e := newEnv(t, noSteps{}, 1)
-	tid, aid, _ := parked(t, e, store.KindProtectedModified, strings.Repeat("a", 16))
+	tid, aid, _ := parked(t, e, store.KindProtectedModified, strings.Repeat("a", 64))
 	code, b := e.do(t, "GET", "/api/v1/approvals/"+strconv.FormatInt(aid, 10), "")
 	var d ApprovalDetail
 	if code != 200 || json.Unmarshal(b, &d) != nil || d.RequiresSignature {
@@ -735,4 +735,27 @@ func TestGrantLedgerOnlyForResolvingRequest(t *testing.T) {
 	if err != nil || len(evs) != 1 || evs[0].Type != "approval_granted" {
 		t.Fatalf("ledger %v: %d events %+v", err, len(evs), evs)
 	}
+}
+
+// TestOldShortHashEntryDetailAndGrant: a pending row from a build before
+// 2026-11-09 holds the 16-hex prefix of the diff hash. The detail still
+// renders (no message to sign, since the current 64-hex hash differs) and a
+// grant is refused as hash_changed; nothing is written.
+func TestOldShortHashEntryDetailAndGrant(t *testing.T) {
+	f := newGrantFixture(t)
+	base := git(t, f.e.repo, "rev-parse", "HEAD")
+	head := commitChange(t, f.e, "tests/spec.txt", "line1\nCHANGED\n")
+	p, err := gate.Prepare(gate.Options{Repo: f.e.repo, Base: base, Head: head})
+	if err != nil || len(p.Diff.Hash) != 64 {
+		t.Fatalf("prepare: %v %q", err, p.Diff.Hash)
+	}
+	tid, aid := f.waiting(t, store.KindProtectedModified, base, head, p.Diff.Hash[:16])
+	d := f.detail(t, aid)
+	if d.Hash != p.Diff.Hash[:16] || d.Message != "" || d.Digest != "" || !d.RequiresSignature {
+		t.Fatalf("detail of a 16-hex entry: %+v", d)
+	}
+	issued := nowSec()
+	code, b := f.post(t, aid, f.body("garbage", issued))
+	wantEnvelope(t, code, b, http.StatusConflict, "hash_changed")
+	f.unchanged(t, tid, aid)
 }

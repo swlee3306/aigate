@@ -3,7 +3,7 @@
     "id": 9,
     "task_id": 38,
     "kind": "protected_modified",
-    "hash": "3273763058ed7862",
+    "hash": "3273763058ed786269abfd318c01a425c417aeb4b196118f5c43206a0396f4ef",
     "base": "1111111111111111111111111111111111111111",
     "head": "89abcdef0123456789abcdef0123456789abcdef",
     "reason": "보호 파일 변경 \u003cb\u003etests/spec.txt\u003c/b\u003e",

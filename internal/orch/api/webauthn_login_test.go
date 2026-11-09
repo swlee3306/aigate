@@ -595,7 +595,7 @@ func TestLogoutInvalidates(t *testing.T) {
 func TestApprovalAssertionNotAcceptedAsLogin(t *testing.T) {
 	f := newWAFixture(t)
 	msg := signing.Message{Kind: signing.KindProtectedModified, Repo: "0123456789ab", Task: 1,
-		Base: strings.Repeat("a", 40), Hash: strings.Repeat("b", 16), Issued: time.Now().UTC().Truncate(time.Second)}
+		Base: strings.Repeat("a", 40), Hash: strings.Repeat("b", 64), Issued: time.Now().UTC().Truncate(time.Second)}
 	if err := msg.Validate(); err != nil {
 		t.Fatal(err)
 	}

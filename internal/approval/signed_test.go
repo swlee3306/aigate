@@ -35,8 +35,8 @@ const (
 
 var (
 	tBase  = strings.Repeat("a", 40)
-	tHashA = strings.Repeat("b", 16)
-	tHashB = strings.Repeat("c", 16)
+	tHashA = strings.Repeat("b", 64)
+	tHashB = strings.Repeat("c", 64)
 )
 
 func msgFor(repo, base, hash string) signing.Message {
@@ -495,7 +495,7 @@ func TestGrantSignedIdempotentAndConcurrent(t *testing.T) {
 	// in update, read-modify-write races lose entries.
 	s := newStore(t)
 	const n, dup = 24, 6
-	hash := func(i int) string { return fmt.Sprintf("%016x", i+1) }
+	hash := func(i int) string { return fmt.Sprintf("%064x", i+1) }
 	type job struct {
 		msg signing.Message
 		sig signing.Signature

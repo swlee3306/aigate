@@ -97,8 +97,8 @@ func TestDevServer(t *testing.T) {
 		return b
 	}
 	mux.HandleFunc("/api/v1/approvals", func(w http.ResponseWriter, r *http.Request) {
-		json(w, `[{"id":9,"task_id":38,"kind":"protected_modified","hash":"3273763058ed7862","base":"1111111111111111111111111111111111111111","head":"89abcdef0123456789abcdef0123456789abcdef","status":"pending","reason":"r"},
-{"id":10,"task_id":38,"kind":"protected_modified","hash":"3273763058ed7862","base":"1111111111111111111111111111111111111111","head":"89abcdef0123456789abcdef0123456789abcdef","status":"pending","reason":"r"},
+		json(w, `[{"id":9,"task_id":38,"kind":"protected_modified","hash":"3273763058ed786269abfd318c01a425c417aeb4b196118f5c43206a0396f4ef","base":"1111111111111111111111111111111111111111","head":"89abcdef0123456789abcdef0123456789abcdef","status":"pending","reason":"r"},
+{"id":10,"task_id":38,"kind":"protected_modified","hash":"3273763058ed786269abfd318c01a425c417aeb4b196118f5c43206a0396f4ef","base":"1111111111111111111111111111111111111111","head":"89abcdef0123456789abcdef0123456789abcdef","status":"pending","reason":"r"},
 {"id":11,"task_id":38,"kind":"publish_outside_allowlist","hash":"dafbe2fdc61a991ad960a71e7d456a2e817b5ed26af792479b6b7e35f8fbe7d6","base":"1111111111111111111111111111111111111111","head":"89abcdef0123456789abcdef0123456789abcdef","status":"pending","reason":"push"}]`)
 	})
 	mux.HandleFunc("/api/v1/approvals/9", func(w http.ResponseWriter, r *http.Request) { serve(w, detail("approval.json", 9)) })

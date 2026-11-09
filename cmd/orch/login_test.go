@@ -417,7 +417,7 @@ func TestCLILoginRefusesHostileMessage(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	nonce := strings.Repeat("ab", 32)
 	approval := "aigate-approval-v1\nkind: protected_modified\nrepo: 0123456789ab\ntask: 1\nbase: " +
-		strings.Repeat("a", 40) + "\nhash: " + strings.Repeat("b", 16) + "\nissued: " + now.Format(time.RFC3339) + "\n"
+		strings.Repeat("a", 40) + "\nhash: " + strings.Repeat("b", 64) + "\nissued: " + now.Format(time.RFC3339) + "\n"
 	cases := map[string]func(string) string{
 		"approval message": func(string) string { return approval },
 		"other signer":     func(string) string { return api.LoginMessage("mallory", nonce, now) },

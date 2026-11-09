@@ -42,7 +42,7 @@ type Message struct {
 	Repo   string // gate.RepoID: 12 lowercase hex
 	Task   int64
 	Base   string // 40 or 64 lowercase hex
-	Hash   string // 16 (diff hash) or 64 (publish hash) lowercase hex
+	Hash   string // 64 lowercase hex for every kind (full SHA-256 diff hash or publish hash)
 	Issued time.Time
 }
 
@@ -76,8 +76,11 @@ func (m Message) Validate() error {
 		return errors.New("signing: task must be positive")
 	case !isLowerHex(m.Base, 40, 64):
 		return errors.New("signing: base must be 40 or 64 lowercase hex characters")
-	case !isLowerHex(m.Hash, 16, 64):
-		return errors.New("signing: hash must be 16 or 64 lowercase hex characters")
+	case !isLowerHex(m.Hash, 64):
+		// Every kind carries a full SHA-256. The 16-hex diff hash of builds
+		// before 2026-11-09 is refused, so a message cannot be downgraded to
+		// a short, collision-prone hash.
+		return errors.New("signing: hash must be 64 lowercase hex characters")
 	case m.Issued.IsZero() || m.Issued.Location() != time.UTC || m.Issued.Nanosecond() != 0:
 		return errors.New("signing: issued must be a UTC time with whole seconds")
 	}

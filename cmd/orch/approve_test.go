@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"aigate/internal/approval"
 	"aigate/internal/gate"
 	"aigate/internal/orch/api"
 	"aigate/internal/orch/approvals"
@@ -338,6 +339,51 @@ func TestApproveHashMismatchRejected(t *testing.T) {
 	// The superseded entry cannot be approved either.
 	if code, _, errS = e.orch(strings.NewReader("yes\n"), "approve", "1"); code != 64 || !strings.Contains(errS, "대기 중인 항목이 아닙니다") {
 		t.Fatalf("superseded: %d %q", code, errS)
+	}
+}
+
+// TestOldShortHashPendingEntry: a pending row written by a build before
+// 2026-11-09 carries the 16-hex prefix of the diff hash, and approvals.json may
+// hold a grant of that short hash. Nothing migrates them: listing and the
+// approve screen handle the row without crashing, and it can never be granted
+// or count as approved (the gate's full 64-hex hash does not match it).
+func TestOldShortHashPendingEntry(t *testing.T) {
+	e := newE2E(t, map[string]string{"tests/spec.txt": "line1\nline2\n"}, nil)
+	id := e.submit()
+	e.waitState(id, store.StateNeedsApproval)
+	real, err := e.st.GetApproval(context.Background(), 1)
+	if err != nil || len(real.Hash) != 64 {
+		t.Fatalf("the gate's entry must carry a 64-hex hash: %+v %v", real, err)
+	}
+	old := real.Hash[:16]
+	if _, err := e.st.AddApproval(context.Background(), store.Approval{TaskID: id, Kind: store.KindProtectedModified,
+		Hash: old, Base: e.base, Head: e.head, Reason: "from an old build"}); err != nil {
+		t.Fatal(err)
+	}
+	// An old build's grant of the short hash in approvals.json.
+	rid, _, _ := gate.RepoID(e.repo)
+	if err := (approval.Store{Path: approvalsFile(e)}).Grant(rid, e.base, old, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := (approvals.Grants{Home: e.home}).Granted(e.repo, real); err != nil || ok {
+		t.Fatalf("an old 16-hex grant must not count for the full hash: %v %v", ok, err)
+	}
+	code, out, errS := e.orch(nil, "approvals")
+	if code != 0 || !strings.Contains(out, old[:12]) || !strings.Contains(out, "from an old build") {
+		t.Fatalf("approvals listing: %d %q %q", code, out, errS)
+	}
+	code, out, errS = e.orch(nil, "--json", "approvals")
+	var list []api.ApprovalView
+	if code != 0 || json.Unmarshal([]byte(out), &list) != nil || len(list) != 1 || list[0].Hash != old {
+		t.Fatalf("json approvals: %d %q %q", code, out, errS)
+	}
+	fakeTTY(t)
+	code, out, errS = e.orch(strings.NewReader("yes\n"), "approve", "2")
+	if code != 64 || !strings.Contains(errS, "해시") || strings.Contains(out, "approved.") {
+		t.Fatalf("approve of a 16-hex entry: code %d out %q err %q", code, out, errS)
+	}
+	if got, _ := e.st.GetTask(context.Background(), id); got.State != store.StateNeedsApproval {
+		t.Fatalf("task moved to %s", got.State)
 	}
 }
 

@@ -365,7 +365,7 @@ func TestApprovalSignatureNotAcceptedAsLogin(t *testing.T) {
 	// A login-namespace signature over different text (an approval message).
 	c = f.challenge(t, "alice")
 	approvalText := "aigate-approval-v1\nkind: protected_modified\nrepo: 0123456789ab\ntask: 1\n" +
-		"base: " + strings.Repeat("a", 40) + "\nhash: " + strings.Repeat("b", 16) + "\nissued: 2026-11-09T00:00:00Z\n"
+		"base: " + strings.Repeat("a", 40) + "\nhash: " + strings.Repeat("b", 64) + "\nissued: 2026-11-09T00:00:00Z\n"
 	code, b = f.token(t, c.ChallengeID, f.alice.signNS(t, signing.NamespaceLogin, approvalText))
 	wantCode(t, "other text", code, b, http.StatusUnauthorized, "bad_signature")
 }
