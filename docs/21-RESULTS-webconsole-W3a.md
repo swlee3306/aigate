@@ -7,7 +7,7 @@
 ## 1. 만든 것
 
 **A1. 서명 메시지 `aigate-registry-v1`.** 줄 순서가 고정된 정규 텍스트(`action`, `subject`, `change`, `request`, `issued`). `change`는 화면 문구가 아니라 **정규 JSON(키 사전순·공백 없음)의 SHA-256**이다(`internal/registrymsg`: broker와 orchd가 같이 쓰는 입출력 없는 작은 패키지). 알려진 필드만 받고(`register_project`: `path`·`kind`·`ai_context`, `set_flag`: `flag`·`value`), 중복 키·실수·null·중첩·뒤 데이터·제어/방향 전환 문자·잘못된 UTF-8을 거부한다. `signing.VerifyRegistry`는 `Verify`와 같은 의미(서명자 목록, 알고리즘 일치, 5분 신선도, 신선도 생략 불가)에 SSH 네임스페이스만 **`aigate-registry`**(승인은 `aigate-approval`)로 하고 WebAuthn은 메시지 SHA-256을 challenge로 쓴다. 기존 `Verify`의 동작과 시험은 바뀌지 않았다.
-**A2. broker의 프로젝트 등록부.** `<state-dir>/registry.json`(v1, `orch-broker` 소유 0600, 폴더 0700, 원자적 쓰기: 임시 파일 0600 + fsync + rename + 폴더 fsync), `used-requests.json`(쓴 요청 ID, 1시간, 최대 5000, 재시작에도 유지). 파일이 **없을 때만** `broker.json`의 `context_repos`·`gitlab.projects`를 한 번 옮기고(`link()`로 배타적 생성: 늦게 생긴 파일을 덮어쓰지 않음), 그 뒤 옛 항목은 무시한다. 깨진·소유자/모드가 틀린·심볼릭 링크·1 MiB 초과 파일은 "없음"이 아니라 **깨짐**으로 보고 모든 op를 `registry_unavailable`로 거부한다(옛 설정으로 되돌아가지 않음). `refine`의 허용 목록, `create_mr`의 GitLab 프로젝트, `status`의 `context_repos`는 등록부에서 읽는다. `orch-broker -check`는 읽기 전용으로 등록부를 검사한다(깨졌으면 거부, 등록부가 있는데 옛 항목이 남았으면 경고만).
+**A2. broker의 프로젝트 등록부.** `<state-dir>/registry.json`(v1, `orch-broker` 소유 0600, 폴더 0700, 원자적 쓰기: 임시 파일 0600 + fsync + rename + 폴더 fsync), `used-requests.json`(쓴 요청 ID, 1시간, 최대 5000, 재시작에도 유지). 파일이 **없을 때만** `broker.json`의 `context_repos`·`gitlab.projects`를 한 번 옮기고(`link()`로 배타적 생성: 늦게 생긴 파일을 덮어쓰지 않음), 그 뒤 옛 항목은 무시한다. 깨진·소유자/모드가 틀린·심볼릭 링크·1 MiB 초과 파일은 "없음"이 아니라 **깨짐**으로 보고 모든 op를 `registry_unavailable`로 거부한다(옛 설정으로 되돌아가지 않음). `refine`의 허용 목록, `create_mr`의 GitLab 프로젝트, `status`의 `context_repos`는 등록부에서 읽는다. `orch-broker -check`는 읽기 전용으로 등록부를 검사한다(깨졌으면 거부, 등록부가 있는데 옛 항목이 남았으면 경고만). **최종 수정 라운드(9장)에서** 서명자 목록 로드, `used-requests.json`, `repo_roots` 비어 있음(경고), 마이그레이션 시험 실행(id 충돌 거부)도 검사한다.
 **A3. broker의 `projects`·`register_project`·`set_flag`.** `projects`는 읽기·서명 불필요·비밀 없음. 쓰기 op의 순서: 엄격한 인자 파싱(정확한 대소문자의 유일한 키) → `set_flag`의 flag가 `ai_context`가 아니면 `not_supported`(서명 전) → 등록부 사용 가능 → 서명 있음(`not_signed`) → **`change` 필수**(없으면 `change_mismatch`, ID 소비 없음) → 서명자 목록을 **호출마다 다시 읽음**(`signers_unavailable`) → `VerifyRegistry`(broker 시계 기준) → 서명된 change == 요청에서 다시 계산한 change(`change_mismatch`) → **그제야** 요청 ID 소비(`request_reused`) → 경로 규칙 → 등록부 갱신. 경로 규칙(수정 라운드 뒤)은 **문법뿐**이다: 4096바이트 이하, 절대·정리된 경로, **`repo_roots` 항목과 글자 그대로 같은 부모의 바로 한 단계 아래**(루트 자체는 거부). **broker는 등록 경로의 파일 시스템을 보지 않는다**(저장소·링크 검증은 orchd의 propose·apply). 오류는 전부 고정 코드·고정 문장이고 서명 검증 오류 문구는 전달하지 않는다. 쓰기 op의 시간 제한은 10초이며 `timeout`은 "결과 모름"이다.
 **A4. orchd 엔드포인트.** `GET /api/v1/projects/registry`(등록부 목록, 한 항목이라도 이상하면 전체가 `broker_error`), `GET /projects/candidates`(허용 루트 바로 아래의 등록되지 않은 저장소와 정책 클래스 이름 `kinds`), `POST /projects/propose`(정규 메시지·`change`·`request`·`issued`·화면용 한국어 문장 `preview`를 만들 뿐 **broker를 부르지 않고 아무것도 저장하지 않는다**), `POST /projects/apply`(서버가 `fields`에서 `change`를 다시 계산해 맞을 때만, 서명은 모양만 검사하고 그대로 broker로 전달: **서명이 유효한지는 broker의 몫**). 쓰기 실패 중 실제로 적용됐을 수 있는 것(`timeout`, 요청을 다 쓴 뒤 끊김, 알 수 없는 코드)은 `outcome_unknown` 504로 알리고 다시 보내지 않는다. 주체별 한도 `propose` 60/h, `apply` 30/h. 경로 글자는 인쇄 가능한 ASCII와 한글 음절만. 원장 `project_change` 이벤트는 `{actor, action, subject, ok, code}`뿐(경로·서명·내용 없음). `GET /api/v1/projects`(저장소별 작업 요약)는 그대로다.
 **A5. 웹.** `#/projects`: 목록(id, 경로, 종류, AI 전송 허용 여부, GitLab 이름·자동 병합은 읽기 전용 표시), "프로젝트 추가"(후보 → 설정 → **변경 내용 전체 확인 화면** → 패스키 서명 → 결과), 행별 AI 전송 켜기/끄기(같은 흐름). 확인 화면의 서명 단추는 **브라우저가 자기 값으로 다시 계산한 정규 JSON·SHA-256·메시지가 서버가 준 것과 모두 같을 때만** 열리고, 서버 문장은 텍스트 노드로만 넣으며 AI 문장 하나가 브라우저의 AI 값과 일치해야 한다. 서명 뒤에는 어떤 결과든 결과 화면으로 가고 같은 제안을 다시 서명하지 못한다. 저장소(localStorage 등)·`confirm/alert`·인라인 스크립트·스타일 없음.
@@ -18,16 +18,16 @@
 실행: 2026-11-10, macOS(Apple Silicon), Go 1.27.1, Node v26.5.0, 코드·시험의 마지막 커밋: 초판 `55672a7`(시험)·`de481fb`(문서), 수정 라운드(8장)의 커밋이 마지막. 세는 방식은 W2b(18번 문서 2장)와 같다: 최상위 시험 함수와 하위 시험(`t.Run`)을 따로 센다(`go test -json` 결과 줄에서 집계).
 
 - `go vet ./...`, `GOOS=darwin go vet ./cmd/... ./internal/...`, `GOOS=linux go vet ./cmd/... ./internal/...`: 통과. `gofmt -l .`: 출력 없음.
-- `go test ./... -count=1 -race`: **종료 코드 0**, 표준 오류 출력 없음. 최상위 시험 함수 1196개 중 **1194 통과, 0 실패, 2 건너뜀**(하위 시험 804개 모두 통과). 건너뜀 2개는 W1~W2b와 같다: `internal/orch/web` `TestDevServer`(수동 개발 서버), `internal/pathfold` `TestCollectionsPerformance`(-race 빌드에서만 건너뛰는 시간 검사).
+- `go test ./... -count=1 -race`: **종료 코드 0**, 표준 오류 출력 없음. 최상위 시험 함수 1200개 중 **1198 통과, 0 실패, 2 건너뜀**(하위 시험 804개 모두 통과). 건너뜀 2개는 W1~W2b와 같다: `internal/orch/web` `TestDevServer`(수동 개발 서버), `internal/pathfold` `TestCollectionsPerformance`(-race 빌드에서만 건너뛰는 시간 검사).
 - `node --test "internal/orch/web/test/*.test.js"`: **165개 전부 통과**(W2b 137개 + W3a 28개).
 - **A5 게이트:** `go test -run TestConstantsAgreeWithWeb -v ./internal/orch/api` → `--- PASS: TestConstantsAgreeWithWeb`, **`SKIP` 없음**(웹 파일이 없거나 상수가 어긋나면 `t.Fatal`이므로 건너뛰는 경로가 없다). 이 명령은 런북 12장 1-0(빌드 전 확인)에도 들어 있다.
-- W2b(18번 문서) 대비 최상위 통과 1084 → 1194(+110). 새 패키지: `internal/registrymsg`(4개). 늘어난 곳: `internal/broker` 74 → 139, `internal/orch/api` 238 → 265, `internal/approval/signing` 55 → 63, `cmd/orch-broker` 5 → 7, `internal/orch/refine` 13 → 17.
+- W2b(18번 문서) 대비 최상위 통과 1084 → 1198(+114). 새 패키지: `internal/registrymsg`(4개). 늘어난 곳: `internal/broker` 74 → 139, `internal/orch/api` 238 → 265, `internal/approval/signing` 55 → 63, `cmd/orch-broker` 5 → 11, `internal/orch/refine` 13 → 17.
 
 | 패키지 | 통과 | 실패 | 건너뜀 | 하위 시험 |
 |---|---|---|---|---|
 | `cmd/aigate` | 56 | 0 | 0 | 103 |
 | `cmd/orch` | 53 | 0 | 0 | 44 |
-| `cmd/orch-broker` | 7 | 0 | 0 | 0 |
+| `cmd/orch-broker` | 11 | 0 | 0 | 0 |
 | `cmd/orchd` | 31 | 0 | 0 | 0 |
 | `e2e` | 9 | 0 | 0 | 147 |
 | `internal/adapter` | 13 | 0 | 0 | 0 |
@@ -144,6 +144,10 @@
 | W3a-15 | orchd는 서명의 **모양만** 검사한다(알고리즘·서명자 ID의 값은 판정하지 않음). 판정은 broker의 몫(`TestOrchdForwardsSignatureAndNeverJudgesIt`) | 이상한 값이 broker까지 갔다가 거부됨 |
 | W3a-16 | broker 상태 폴더 검사(소유 + 그룹·기타 비트 없음)는 등록부·사용 ID 파일에 적용된다. **`budget.json`은 이 폴더 검사와 별개로 읽는다**(브리프·보고의 "폴더 검사가 `budget.json`도 포함"은 코드와 맞지 않아 이 문서·런북은 코드대로 적었다) | 없음 |
 | 로 | `-check`는 등록부가 **아직 없는 첫 점검에서는 경고하지 않는다**(아무것도 쓰지 않으므로). 경고는 마이그레이션 뒤에 나온다 | 없음 |
+| W3a-17 | **쓰기 op의 `registry_unavailable`은 orchd에서 `outcome_unknown`**: broker가 rename 뒤 디렉터리 fsync에 실패하면 변경이 적용된 채로 `registry_unavailable`을 줄 수 있다. 읽기는 그대로 `registry_unavailable`. (A4의 매핑 시험은 이를 "확정 실패"로 고정하고 있었고 **의도적으로 바꿨다**: `TestApplyForwardsSignatureAndMapsErrors`의 `registry_unavailable` 행이 503 → 504 `outcome_unknown`) | 등록부 고장 때도 화면이 "목록을 다시 읽어 확인"이라고 말함 |
+| W3a-18 | refine·미리보기의 broker `registry_unavailable`은 고정 문장 503 `registry_unavailable`("…AI 전송이 모두 꺼져 있습니다")로 보인다(전에는 `upstream_error`). MR 훅은 `mr_state=failed`, `mr_code=registry_unavailable`을 저장한다(재시도 가능) | 없음 |
+| W3a-19 | 프로젝트 화면의 propose·apply는 **명시적 25초 제한시간**(기본 15초는 orchd의 최악 시간(broker 쓰기 15초 + 검사)보다 짧아 화면이 먼저 포기할 수 있었다) | 없음 |
+| W3a-20 | **`set_flag` 서명은 프로젝트 id를 묶고 경로는 묶지 않는다.** 지금은 삭제·이름 변경·재등록 op가 없어 안전하다. **앞으로 그런 op를 만들면 경로 또는 등록부 세대를 `change`에 넣어야 한다**(서명된 AI 켜기가 다른 경로의 같은 id에 재사용되는 것을 막기 위해). 설계서 19번 문서에도 경고를 적었다 | W3b 이후 설계 때 놓치면 서명 재사용 틈 |
 
 ## 5. 실서버에서 확인하지 못한 것
 
@@ -169,7 +173,7 @@
 4. 마이그레이션 뒤 `broker.json`의 옛 `context_repos`·`gitlab.projects`를 **언제 지울지**(롤백을 쉽게 하려면 지우지 않는다. 지워도 동작에는 영향 없음, `-check` 경고만 남는다).
 5. **WebAuthn 카운터 없이 가는 것**(신선도 + 요청 ID 1회성)을 받아들일지, 카운터 상태를 따로 만드는 작업을 할지(W3a-2).
 6. 마이그레이션된 프로젝트의 `kind: legacy`를 이후에 **정책 클래스와 어떻게 이을지**(W3c의 `registered` 클래스와 함께 정할지).
-7. 컷오버가 안정되면 백업(`/home/orch/orchd/backup-w3a`, `*.prev-w3a`)을 **언제 지울지**(`backup-w3a`에 `openai.key` 사본이 들어 있으므로 `shred`로 지운다).
+7. 컷오버가 안정되면 백업(`/root/backup-w3a`, root 전용 0700)을 **언제 지울지**(`backup-w3a`에 `openai.key` 사본이 들어 있으므로 `shred`로 지운다).
 8. 다음 단계(W3b 토큰 등)로 갈지.
 
 ## 7. 컷오버 기록
@@ -180,3 +184,11 @@
 - **수정:** `pathAllowed`는 문법만(길이·절대·`Clean`·`repo_roots` 항목과 글자 그대로 같은 부모, 루트 자체 거부, `repo_roots` 없음 거부). `lstat`·`.git`·폴더 여부 검사를 모두 지웠다(broker의 다른 코드, 마이그레이션도 등록 경로를 stat하지 않음을 확인). orchd `candidatePath`는 이미 링크·폴더·`ownRepo`·HEAD를 검사했고 `.git`이 **심볼릭 링크이면 거부**하는 규칙을 더했다(broker가 하던 것을 이어받음).
 - **시험(먼저 실패를 확인):** broker `TestRegisterPathRules`(링크·`.git` 없음·없는 경로·일반 파일은 이제 **수락**하는 것을 문서화된 동작으로 고정, 문법 거부는 그대로), `TestRegisterGitEntryRules`(모든 `.git` 모양 수락), 새 `TestRegisterDoesNoFilesystemAccess`(존재하지 않는 루트 아래 존재하지 않는 경로를 유효한 서명으로 등록 → 성공, 생성되지 않음). orchd 새 `TestRegisterTargetFilesystemRulesAtProposeAndApply`(propose와 apply 모두, broker 호출 0: 링크 폴더, 폴더 아님, 없는 경로, `.git` 없음, HEAD 없는 저장소, `.git`이 링크, `.git`이 루트 밖을 가리킴, 루트 밖, 두 단계 아래, 루트 자체). 사용 시점 방어 `TestRegisteredPathReplacedBySymlinkRefusedAtUse`는 그대로 통과.
 - **남은 위험:** 등록된 경로가 존재하지 않거나 이상한 폴더일 수 있다(무해: orchd가 사용 시점에 거부). 실서버의 `/home/orch/repos`에서 orchd 검증이 동작하는지는 컷오버에서 처음 본다.
+
+## 9. 최종 수정 라운드 (2026-11-10, 전체 브랜치 검토 뒤)
+검토에서 치명적 문제는 없었고 중요 2건과 사소한 항목을 한 번에 고쳤다.
+- **I1 백업·롤백(문서).** 계획이 쓰던 `/home/orch/orchd/backup-w3a`는 `orch`가 쓸 수 있는 폴더(부모에 sticky 비트 없음)라서 롤백이 root가 신뢰하는 `broker.json`을 `orch`가 바꿔치기할 수 있는 곳에서 복원하게 된다. **모든 W3a 백업을 `sudo install -d -m 0700` 으로 만든 `/root/backup-w3a`로 옮겼다**(`broker.json`, `/etc/orch-broker`·`/var/lib/orch-broker` 복사본, 옛 바이너리). 롤백 A는 바이너리와 `broker.json`을 **한 쌍으로** 거기서 복원한다. "`$B`는 root만 읽는다"는 거짓 문장을 지웠고(이제 실제로 root 전용), 키 사본은 `orch`가 쓸 수 있는 폴더에 두지 않는다.
+- **I2 `orch-broker -check`(코드+시험).** 읽기 전용·무네트워크·쓰기 없음을 지키면서 추가로: 서명자 목록을 `signing.LoadRegistry`로 열어 **없거나 신뢰할 수 없으면 거부**, `used-requests.json`을 읽기 전용으로 읽어 **깨졌으면 거부**(`broker.UsedRequestsStatus`), `repo_roots`가 비어 있으면 **경고**(종료 코드 0), 등록부가 없으면 마이그레이션을 메모리에서만 시험 실행해 **id 충돌이면 거부**(`broker.MigrationDryRun`). 시험: `TestCheckRefusesMissingOrUntrustedSigners`(없음·그룹 쓰기·깨진 JSON·폴더 쓰기 가능), `TestCheckRefusesBrokenUsedRequestsFile`, `TestCheckWarnsWhenRepoRootsIsEmpty`, `TestCheckDryRunsMigrationAndRefusesConflict`(모두 상태 폴더에 아무것도 생기지 않음을 확인). 기존 `-check` 시험은 서명자 파일 시임과 `repo_roots`를 설정에 추가했을 뿐 의미는 그대로다. 시험은 구현보다 먼저 썼고 새 필드 때문에 컴파일 실패(적색)를 본 뒤 구현했다. 런북 1-4는 이 점검을 **유닛의 샌드박스와 같은 옵션**(`systemd-run --wait --pipe -p User=orch-broker -p SupplementaryGroups=orch -p ProtectSystem=strict -p ProtectHome=yes -p SystemCallFilter=@system-service`)으로 실행한다: 유닛 샌드박스 안에서 `signers.json`을 열 수 있는지가 시작 전에 드러난다. **이 명령 자체는 서버에서 실행해 보지 않았다.**
+- **사소한 항목.** (3) 런북의 glob `stat`을 `sudo sh -c`로 감싸고 `used-requests.json`의 `stat`을 따로 둠. (4) 런북 순서를 정지 → 바이너리·`broker.json` 한 쌍 설치 → `-check` → 시작으로 바꾸고, 롤백도 한 쌍으로 하도록 명시(옛 바이너리는 `repo_roots`가 있는 설정을 거부). (5) refine·미리보기의 `registry_unavailable`을 고정 문장으로(W3a-18, `TestRefineErrorsAreFixedAndNeverEchoBrokerText`에 행 추가: 적색 확인), 런북 3-2의 증상 문구와 MR 훅 저장 값(`mr_code=registry_unavailable`)을 적음. (6) 쓰기의 `registry_unavailable` → `outcome_unknown`(W3a-17, 적색 확인). (7) 런북 한도 항목이 사실대로 쓰임: 로컬 `checkRegisterTarget` 거부는 슬롯을 돌려주지 않고 원장 줄도 없다. (8) 25초 제한시간(W3a-19, `TestNoRetry429ForProjectWrites`에 단언 추가: 적색 확인). (9) `set_flag` 서명이 id를 묶는다는 경고(W3a-20, 설계서 19번에도).
+- **런북에 추가:** "컷오버에서만 확인할 수 있는 것" 목록(실제 패스키 서명 검증, 샌드박스 안의 `signers.json`, `link(2)`·`fsync`, 마이그레이션 뒤 `projects` 출력(정확히 `toy`·`sample-app`, `legacy`, `ai_context` true, `gitlab` null), `/tmp` noexec·`sudo -u orch-broker`·`systemd-run` 동작, `readlink -f /home/orch/repos`와 정책 철자).
+- **실행:** `go vet ./...`, `gofmt -l .`, darwin/linux vet 통과, `go test ./... -count=1 -race` 종료 코드 0(1198 통과, 0 실패, 2 건너뜀, 하위 804), node 165/165, `TestConstantsAgreeWithWeb` PASS(SKIP 없음).
