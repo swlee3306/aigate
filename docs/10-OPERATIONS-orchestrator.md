@@ -589,7 +589,7 @@ sudo ls -lR $B | head -40
 
 **1-2. 설정에 `repo_roots` 더하기.** `sudo cp /etc/orch-broker/broker.json /tmp/w3a/broker.json`으로 복사해 편집한다(기존 키는 그대로, `context_repos`·`gitlab`도 **지우지 않는다**). 마지막에 `"repo_roots": ["/home/orch/repos"]`를 더한다(사전 점검 c의 철자). 알 수 없는 키는 거부되므로 철자를 확인한다. **아직 설치하지 않는다.**
 
-**1-3. 옛 broker 정지 → 바이너리와 설정을 한 쌍으로 설치.**
+**1-3. 옛 broker 정지 → 바이너리와 설정을 한 쌍으로 설치.** (정지한 뒤 1-4의 점검이 실패하면 **broker는 멈춘 채로** 남는다. 그때는 곧바로 단계 4의 A로 옛 짝을 복원해 시작한다.)
 ```
 sudo systemctl stop orch-broker
 sudo install -o root -g root -m 0755 /tmp/w3a/orch-broker /usr/local/bin/orch-broker
@@ -601,7 +601,7 @@ sudo install -o root -g root -m 0644 /tmp/w3a/broker.json /etc/orch-broker/broke
 ```
 sudo systemd-run --wait --pipe -p User=orch-broker -p Group=orch-broker -p SupplementaryGroups=orch -p ProtectSystem=strict -p ProtectHome=yes -p SystemCallFilter=@system-service /usr/local/bin/orch-broker -check -config /etc/orch-broker/broker.json -state-dir /var/lib/orch-broker
 ```
-예상: `orch-broker: 점검 통과 (설정·신뢰·키 모드·소켓 그룹·상태 폴더만 확인했습니다. 외부 접속은 하지 않았습니다)` 한 줄(**경고는 없다**: 등록부가 아직 없고 `repo_roots`가 있다)과 `Finished with result: success`(종료 코드 0). `-check`는 아무것도 쓰지 않는다(`sudo ls /var/lib/orch-broker`에 `registry.json`이 아직 없어야 한다). 이 점검은 이제 다음을 모두 본다: 설정·키 신뢰, 소켓 그룹, 상태 폴더, **`/etc/aigate/signers.json`이 로드되는지(없거나 신뢰할 수 없으면 거부)**, **`used-requests.json`이 깨지지 않았는지**, **옛 항목을 등록부로 옮길 수 있는지(id 충돌이면 거부)**, 그리고 `repo_roots`가 비어 있으면 **경고**(`…path_not_allowed가 됩니다`). 실패 문장 하나가 나오면 **시작하지 않고 멈춘다 → 단계 4의 A(바이너리와 설정을 한 쌍으로 복원하고 옛 broker 시작).**
+예상: `orch-broker: 점검 통과 (설정·신뢰·키 모드·소켓 그룹·상태 폴더만 확인했습니다. 외부 접속은 하지 않았습니다)` 한 줄(`systemd-run --wait --pipe`가 `Running as unit: …`과 실행 시간·CPU 줄을 함께 찍으니 그 줄들은 정상이다)(**경고는 없다**: 등록부가 아직 없고 `repo_roots`가 있다)과 `Finished with result: success`(종료 코드 0). `-check`는 아무것도 쓰지 않는다(`sudo ls /var/lib/orch-broker`에 `registry.json`이 아직 없어야 한다). 이 점검은 이제 다음을 모두 본다: 설정·키 신뢰, 소켓 그룹, 상태 폴더, **`/etc/aigate/signers.json`이 로드되는지(없거나 신뢰할 수 없으면 거부)**, **`used-requests.json`이 깨지지 않았는지**, **옛 항목을 등록부로 옮길 수 있는지(id 충돌이면 거부)**, 그리고 `repo_roots`가 비어 있으면 **경고**(`…path_not_allowed가 됩니다`). 실패 문장 하나가 나오면 **시작하지 않고 멈춘다 → 단계 4의 A(바이너리와 설정을 한 쌍으로 복원하고 옛 broker 시작).**
 
 **1-5. 시작(마이그레이션이 여기서 일어난다).**
 ```
