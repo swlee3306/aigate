@@ -19,7 +19,7 @@ if ssh -o BatchMode=yes -o ConnectTimeout=8 openstack-host true 2>/dev/null; the
 else bad "homeserver not reachable"; fi
 echo "== orch-vm"
 if orchssh true 2>/dev/null; then
-  orchssh 'systemctl is-active orchd >/dev/null && echo "ok    orchd service active ($(systemctl show orchd -p NRestarts --value) restarts)" || echo "FAIL  orchd service not active"; sudo -u orch /home/orch/bin/orch --socket /home/orch/orchd/run/orchd.sock list 2>&1 | awk "NR>1{print \$2}" | sort | uniq -c | tr "\n" " " | sed "s/^/ok    tasks in DB: /"; echo; sudo nft list ruleset 2>/dev/null | grep -c "policy drop" | sed "s/^/ok    nft default-drop chains loaded: /"' | tee /dev/stderr | grep -q '^FAIL' && fail=1
+  orchssh 'systemctl is-active orchd >/dev/null && echo "ok    orchd service active ($(systemctl show orchd -p NRestarts --value) restarts)" || echo "FAIL  orchd service not active"; sudo -u orch /usr/local/lib/aigate/orch --socket /home/orch/orchd/run/orchd.sock list 2>&1 | awk "NR>1{print \$2}" | sort | uniq -c | tr "\n" " " | sed "s/^/ok    tasks in DB: /"; echo; sudo nft list ruleset 2>/dev/null | grep -c "policy drop" | sed "s/^/ok    nft default-drop chains loaded: /"' | tee /dev/stderr | grep -q '^FAIL' && fail=1
 else bad "orch-vm not reachable"; fi
 echo "== gpu-pc (gpu-server)"
 if ssh -o BatchMode=yes -o ConnectTimeout=8 gpu-server true 2>/dev/null; then

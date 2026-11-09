@@ -65,7 +65,7 @@ runner() { orchssh "$(runner_cmd "$1")"; }
 orchssh_line() { printf '%s' "ssh -i $(q "$K") -o IdentitiesOnly=yes -o BatchMode=yes -o ProxyCommand='ssh -o BatchMode=yes $OSH -W %h:%p' $ORCH $(q "$1")"; }
 
 # --- every remote command string is built exactly once ---
-CMD_TASKS="sudo -u orch /home/orch/bin/orch --socket /home/orch/orchd/run/orchd.sock list"
+CMD_TASKS="sudo -u orch /usr/local/lib/aigate/orch --socket /home/orch/orchd/run/orchd.sock list"
 CMD_REPO="sudo -u orch git -C /home/orch/repos/$REPO rev-parse --git-dir"
 CMD_UNIT_COUNT="grep -c -- --test-snapshot $UNIT || true"
 BUNDLE_INNER="git -C /home/orch/repos/$REPO bundle create - HEAD | ssh $RSSH_OPTS runner@$VMIP 'cat > /tmp/warm.bundle'"

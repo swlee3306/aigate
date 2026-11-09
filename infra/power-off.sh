@@ -7,7 +7,7 @@ set -eu
 K=${AIGATE_ADMIN_KEY:-$HOME/.ssh/aigate_admin_ed25519}; APPLY=0; [ "${1:-}" = "--apply" ] && APPLY=1
 # orch-vm only accepts ssh from fixed LAN addresses (the Mac gets a new DHCP address now and then), so go through the homeserver (allowed source)
 orchssh() { ssh -i "$K" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10 -o ProxyCommand="ssh -o BatchMode=yes openstack-host -W %h:%p" ubuntu@192.168.1.200 "$@"; }
-busy=$(orchssh 'sudo -u orch /home/orch/bin/orch --socket /home/orch/orchd/run/orchd.sock list' 2>/dev/null | awk 'NR>1 && $2 ~ /^(queued|preparing|agent_running|collecting|verifying|publishing|passed|error)$/ {print $1":"$2}' | tr '\n' ' ')
+busy=$(orchssh 'sudo -u orch /usr/local/lib/aigate/orch --socket /home/orch/orchd/run/orchd.sock list' 2>/dev/null | awk 'NR>1 && $2 ~ /^(queued|preparing|agent_running|collecting|verifying|publishing|passed|error)$/ {print $1":"$2}' | tr '\n' ' ')
 [ -z "$busy" ] && echo "ok   no orchestrator task is running" || { echo "STOP orchestrator tasks still active: $busy"; [ $APPLY = 1 ] && exit 1; }
 echo "plan: 1) gpu-pc: sudo shutdown -h now   2) wait until it stops answering   3) homeserver: sudo shutdown -h now"
 [ $APPLY = 1 ] || { echo "dry-run: nothing was shut down. Re-run with --apply."; exit 0; }

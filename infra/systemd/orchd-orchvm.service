@@ -14,7 +14,7 @@ User=orch
 Group=orch
 Environment=HOME=/home/orch
 WorkingDirectory=/home/orch
-ExecStart=/home/orch/bin/orchd \
+ExecStart=/usr/local/lib/aigate/orchd \
   --db /home/orch/orchd/state/orchd.db \
   --socket /home/orch/orchd/run/orchd.sock \
   --policy /home/orch/orchd/policy.yml \
