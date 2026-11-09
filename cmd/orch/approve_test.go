@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -384,6 +385,34 @@ func TestOldShortHashPendingEntry(t *testing.T) {
 	}
 	if got, _ := e.st.GetTask(context.Background(), id); got.State != store.StateNeedsApproval {
 		t.Fatalf("task moved to %s", got.State)
+	}
+	// Legacy mode: the old grant matches the old row, so reverify lets the
+	// gate re-judge; the gate's full hash is not granted, so the task comes
+	// back to needs_approval with the 64-hex entry pending, and a human
+	// approves that one.
+	if code, out, errS = e.orch(nil, "reverify", "2"); code != 0 {
+		t.Fatalf("reverify of the old row: %d %q %q", code, out, errS)
+	}
+	e.waitState(id, store.StateNeedsApproval)
+	var again []api.ApprovalView
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		code, out, _ = e.orch(nil, "--json", "approvals")
+		again = nil
+		_ = json.Unmarshal([]byte(out), &again)
+		if len(again) == 1 && again[0].Hash == real.Hash || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if len(again) != 1 || again[0].Hash != real.Hash {
+		t.Fatalf("after re-judging, want the 64-hex entry pending: %q", out)
+	}
+	if code, out, errS = e.orch(strings.NewReader("yes\n"), "approve", strconv.FormatInt(again[0].ID, 10)); code != 0 {
+		t.Fatalf("re-approval: %d %q %q", code, out, errS)
+	}
+	if done := e.waitState(id, store.StateDone); done.Verdict != "ok" {
+		t.Fatalf("verdict after re-approval %q", done.Verdict)
 	}
 }
 
