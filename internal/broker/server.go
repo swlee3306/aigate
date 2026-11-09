@@ -51,6 +51,13 @@ var fixedMessages = map[string]string{
 	"internal_error":  "내부 오류가 발생했습니다.",
 	"not_implemented": "아직 구현되지 않은 작업입니다.",
 	"budget_exceeded": "AI 사용 예산 또는 호출 한도를 초과했습니다.",
+
+	"repo_not_allowed":  "이 저장소는 AI 전송이 허용되어 있지 않습니다.",
+	"bad_file":          "보낼 파일 경로나 내용이 올바르지 않습니다.",
+	"looks_like_secret": "비밀 값처럼 보이는 내용이 있어 보낼 수 없습니다.",
+	"rate_limited":      "AI 호출 횟수 한도를 초과했습니다. 잠시 후 다시 시도하세요.",
+	"upstream_error":    "AI 서비스 호출에 실패했습니다.",
+	"bad_plan":          "AI 응답이 계획서 형식을 지키지 않았습니다.",
 }
 
 // Default per-op processing time limits (decision D1).
@@ -74,6 +81,7 @@ type Server struct {
 	Handlers map[string]HandlerFunc
 	State    State
 	Secrets  Secrets
+	OpenAI   *OpenAIClient // set by New; tests may point BaseURL at a fake
 
 	PeerUID     func(net.Conn) (uint32, error) // nil: kernel peer credentials
 	AllowUID    func(uint32) bool              // nil: Config.UIDs()
@@ -117,6 +125,7 @@ func New(cfg Config, o Options) (*Server, error) {
 	s := &Server{
 		Config:  cfg,
 		Secrets: sec,
+		OpenAI:  &OpenAIClient{Key: sec.OpenAIKey(), Model: cfg.OpenAI.Model},
 		Log:     o.Log,
 		State: State{
 			Refine:   NewHourlyLimiter(cfg.Limits.RefinePerHour, o.Clock),
@@ -127,7 +136,7 @@ func New(cfg Config, o Options) (*Server, error) {
 	bud.OnPersistError = func() { s.logf("예산 상태 저장 실패: 요청을 거부합니다") }
 	s.Handlers = map[string]HandlerFunc{
 		"status":    s.statusHandler,
-		"refine":    notImplemented,
+		"refine":    s.refineHandler,
 		"create_mr": notImplemented,
 	}
 	return s, nil

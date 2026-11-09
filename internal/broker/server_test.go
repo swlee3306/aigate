@@ -248,11 +248,14 @@ func TestStatusIsReadOnlyAndSecretFree(t *testing.T) {
 func TestPlaceholdersNotImplemented(t *testing.T) {
 	e := newTestEnv(t)
 	e.newServer(t, nil)
-	for _, op := range []string{"refine", "create_mr"} {
-		r, out := call(t, e.Raw["socket"].(string), `{"v":1,"op":"`+op+`","args":{}}`)
-		if r.OK || r.Code != "not_implemented" {
-			t.Fatalf("%s: %s", op, out)
-		}
+	// refine is implemented since B2: empty args are refused before any call.
+	r, out := call(t, e.Raw["socket"].(string), `{"v":1,"op":"refine","args":{}}`)
+	if r.OK || r.Code != "repo_not_allowed" {
+		t.Fatalf("refine: %s", out)
+	}
+	r, out = call(t, e.Raw["socket"].(string), `{"v":1,"op":"create_mr","args":{}}`)
+	if r.OK || r.Code != "not_implemented" {
+		t.Fatalf("create_mr: %s", out)
 	}
 }
 
