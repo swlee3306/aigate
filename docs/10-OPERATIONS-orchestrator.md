@@ -537,12 +537,12 @@ ExecStart=<systemctl cat orchd 의 기존 ExecStart 줄 전체> --broker-socket 
   - **(a) 상태 폴더 모드.** `/var/lib/orch-broker`는 **`orch-broker` 소유 0700이어야 하고 그렇게 유지해야 한다**: `sudo stat -c '%U:%G %a' /var/lib/orch-broker`가 `orch-broker:orch-broker 700`. 이 폴더의 소유·모드 검사가 어긋나면(그룹·기타 권한 비트가 하나라도 있거나 소유자가 다르면) 등록부를 "신뢰할 수 없음"으로 보고 **등록부에 의존하는 모든 것(`status`, `projects`, `refine`, `create_mr`, 등록·변경)이 `registry_unavailable`로 꺼진다**. 등록부 파일은 0600, `used-requests.json`도 0600이다.
   - **(b) 서명자 목록 읽기.** `sudo -u orch-broker test -r /etc/aigate/signers.json && echo READABLE || echo denied` → **`READABLE`이어야 한다.** (파일은 root 소유 0644, 폴더 `/etc/aigate`는 root 0755: 읽기 가능함은 이 저장소 쪽 점검으로 확인함. **broker가 실제로 이 파일을 읽어 서명을 검증하는지는 서버에서 처음 확인한다.**) 유닛의 `ProtectSystem=strict`는 `/etc`를 읽기 전용으로 보이게 할 뿐 읽기를 막지 않는다(코드·유닛 읽기 기준, 미확인).
   - **(c) `repo_roots` 철자.** broker 설정의 `repo_roots`는 **orchd가 쓰는 정책의 `repo_roots`와 글자 그대로 같아야 한다**(현재 `policy.yml`은 `repo_roots: [/home/orch/repos]`): `sudo grep -n repo_roots /home/orch/orchd/policy.yml`(실제 정책 파일 위치는 `systemctl cat orchd`의 `--policy`로 확인). orchd가 후보로 보여 주는 경로는 orchd가 정리한 실제 경로 아래이고 broker는 자기 설정의 철자와 **정확히 한 단계 아래**만 허용하므로, 한쪽이 심볼릭 링크 철자(`/home/orch/../orch/repos` 등)나 끝 `/`를 쓰면 broker가 모든 등록을 `path_not_allowed`로 거부한다.
-  - **(d) [사용자 결정] broker 샌드박스가 저장소 경로를 볼 수 있는지.** `infra/systemd/orch-broker.service`는 **`ProtectHome=yes`**다. 이 옵션이면 broker 프로세스에게 `/home`이 비어 보이므로, 등록 때 broker가 하는 경로 검사(`lstat`로 `/home/orch/repos/<이름>`과 `<이름>/.git` 확인)가 **실서버에서는 항상 실패해 모든 등록이 `path_not_allowed`가 될 것으로 코드와 유닛을 읽고 추정한다(미확인: 이 저장소는 리눅스 systemd에서 시험한 적이 없다)**. 이미 등록된 프로젝트의 AI 전송 켜기/끄기(`set_flag`)와 마이그레이션은 경로를 검사하지 않으므로 영향이 없다. **확인:** 단계 1-6 뒤에 `sudo nsenter -t "$(systemctl show -p MainPID --value orch-broker)" -m ls -ld /home/orch/repos`가 목록을 보여 주는지(`No such file`이면 샌드박스가 막고 있음). **막혀 있다면 멈추고 사용자에게 알린다: 유닛을 바꿔야 한다.** 후보 한 가지(**미검증 제안**, 사용자가 정한다): 드롭인 `/etc/systemd/system/orch-broker.service.d/repos.conf`에 `[Service]` `TemporaryFileSystem=/home:ro` 와 `BindReadOnlyPaths=/home/orch/repos`를 두면 `/home/orch/repos`만 읽기 전용으로 보이게 되어 `ProtectHome=yes`의 나머지 효과(다른 홈 폴더 차단)가 유지될 것이다. 다른 후보는 `ProtectHome=read-only`(더 넓게 열림, `SupplementaryGroups=orch` 때문에 `orch` 그룹이 읽을 수 있는 홈 파일이 보임: 11.0 "알아둘 것" 5 참고). **유닛을 임의로 바꾸지 않는다.** 이 결정이 나기 전에는 등록 흐름(3-3)을 시험하지 못하지만 나머지 단계는 진행할 수 있다.
+  - **(d) (결정 불필요) 저장소 경로와 broker의 권한.** 실서버에서 `/home/orch/repos`는 `drwx------ orch:orch`이고 그 아래 `toy`도 `drwx------`이다(컨트롤러가 서버에서 직접 확인: `ls -ld`와 `systemd-run` 임시 유닛으로 읽기 전용 시험. 유닛의 `ProtectHome=yes`이든 `TemporaryFileSystem`·`BindReadOnlyPaths`를 더하든 `orch-broker` 계정은 `lstat`도 못 한다). 그래서 **broker는 등록 경로에 대해 파일 시스템을 전혀 보지 않고 문법만 검사한다**(정리된 절대 경로, `repo_roots` 항목의 바로 아래 한 단계). 저장소인지·링크인지는 orchd가 propose·apply에서 검사한다. **유닛 변경이 필요 없다: `ProtectHome=yes`를 그대로 둔다.** 이 점검에서 할 일은 없다.
 
 **알아둘 것 (코드 읽기와 시험 기준, 실서버 미확인).**
 1. **WebAuthn 서명 카운터는 어디서도 검사하지 않는다**(`signing.Verify`에도 없다). 재전송 방어는 **서명 5분 신선도 + 요청 ID 1회성**(broker가 `used-requests.json`에 시각과 함께 저장, 1시간 보관, broker를 재시작해도 유지)이다. 복제된 패스키는 카운터로 걸러지지 않는다.
 2. **상태 폴더 `/var/lib/orch-broker`는 `orch-broker` 소유 0700을 유지한다**(위 사전 점검 a). 이 검사는 등록부와 `used-requests.json`에 적용된다(코드 읽기 기준: `budget.json`은 이 폴더 검사와 별개로 읽는다). 모드가 틀리면 등록부가 꺼진 것으로 보이므로 컷오버 뒤에도 `stat`으로 확인한다.
-3. **`broker.json`의 `repo_roots`는 orchd가 해석한 정책의 `repo_roots`와 철자가 같아야 한다**(사전 점검 c). 값이 없으면 모든 등록이 `path_not_allowed`다(안전한 기본). 이 값에 심볼릭 링크가 들어 있어도 broker는 풀지 않고 최종 요소만 `lstat`한다.
+3. **`broker.json`의 `repo_roots`는 orchd가 해석한 정책의 `repo_roots`와 철자가 같아야 한다**(사전 점검 c). 값이 없으면 모든 등록이 `path_not_allowed`다(안전한 기본). broker는 이 값을 글자 그대로만 비교하고 파일 시스템은 보지 않는다.
 4. **마이그레이션된 프로젝트의 `kind`는 `legacy`다.** 옛 설정에는 정책 클래스가 없었기 때문이다. W3a에서는 화면에 그대로 표시만 하며, **작업을 제출할 때 정책 클래스는 orchd가 제출 시점에 정한다**(등록부의 `kind`를 쓰지 않음).
 5. **등록 경로 검사는 등록하는 순간의 검사다.** 등록 뒤에 그 경로를 심볼릭 링크로 바꿔치기해도 등록부는 그대로지만, **사용 시점에 거부된다**: AI 계획서 미리보기가 `allowed: false`(다른 저장소로의 링크) 또는 403(허용 루트 밖으로의 링크)이 되고 아무것도 전송되지 않는다(`TestRegisteredPathReplacedBySymlinkRefusedAtUse`). `repo_roots` 자체의 상위 경로 심볼릭 링크는 풀지 않는다.
 6. **쓰기 op의 `timeout`은 "결과를 모른다"는 뜻이다.** 화면은 고정 문장(목록을 다시 읽어 확인)과 `outcome_unknown`(504)을 보이고 목록을 다시 읽는다. **목록을 다시 읽어 확인하기 전에는 같은 변경을 다시 시도하지 않는다**(broker가 뒤늦게 적용했을 수 있다). 서명이 끝난 변경은 한 번 쓰고 나면 같은 서명으로 다시 보낼 수 없다.
@@ -604,7 +604,7 @@ sudo -u orch-broker /usr/local/bin/orch-broker -check -config /etc/orch-broker/b
 ```
 예상: **`orch-broker: 경고: 프로젝트 등록부가 있으므로 broker.json의 context_repos·gitlab.projects는 무시됩니다…` 한 줄**과 `점검 통과`, 종료 코드 0. 경고가 없으면 마이그레이션이 일어나지 않은 것이다(1-4를 다시 본다).
 
-**1-7. 서명자 목록과 샌드박스 경로 확인.** 사전 점검 (b)와 (d)를 지금 다시 한다(`READABLE`, 그리고 `nsenter ... ls -ld /home/orch/repos`가 목록을 보여 주는지). (d)가 막혀 있으면 **여기서 사용자에게 알린다.**
+**1-7. 서명자 목록 확인.** 사전 점검 (b)를 지금 다시 한다(`READABLE`).
 
 **검증 체크리스트:** 1-3 통과(경고 없음), 1-4의 유닛 active·등록부 600·폴더 700, 1-5의 `projects`와 `status`가 단계 1 이전의 허용 범위와 같음, 1-6의 경고 한 줄, 1-7의 `READABLE`. **그래도 안 되면:** 단계 4의 A. 다른 서비스에는 영향이 없다(이 단계는 `orchd`를 건드리지 않았다).
 
@@ -630,7 +630,7 @@ journalctl -u orchd -n 40 --no-pager
 |---|---|---|---|
 | 3-1 | 메뉴 "프로젝트"(`#/projects`) | 목록에 `toy`·`sample-app`(종류 `legacy`, AI 전송 허용 "예"). GitLab 연결·자동 병합은 읽기 전용 표시(자리표시). **주소 표시줄의 해시는 `#/projects` 그대로** | 목록이 안 뜨면 `broker_unavailable`/`registry_unavailable`: 단계 1-4·1-5. 메뉴가 없으면 브라우저 캐시(새로고침) |
 | 3-2 | **회귀: AI 계획서.** "새 작업" → "AI로 계획서 만들기", 저장소 `toy`, 한 줄을 적고 미리보기까지만 | 11장 3-1과 같다: 보낼 파일 목록, 제외 사유, "이 내용을 AI로 보냅니다" 단추(**누르지 않아도 된다**: 실제 OpenAI 호출은 비용이 든다) | "허용되어 있지 않습니다"면 `status`의 `context_repos`(1-5)가 단계 1 이전과 다른 것이다 → 단계 4의 A |
-| 3-3 | **[사용자 결정] 등록 흐름.** 후보 저장소가 있으면(허용 루트 아래 아직 등록되지 않은 저장소가 후보로 보인다): "프로젝트 추가" → 후보 고르기 → 종류(정책 클래스) → AI 전송 허용(기본 꺼짐) → "변경 내용 확인" | 확인 화면이 id·경로·종류·AI 여부를 보여 주고, AI를 켜면 노란 강조 문장이 하나 더 나온다. 서버 문장이 전체 변경 내용을 말한다. 서명 단추는 **브라우저가 다시 계산한 해시가 서버 것과 같을 때만** 열린다 | 경고 문장과 서명 단추 없음 = 내용 불일치(서명하지 않는다, 기록한다). 사전 점검 (d)가 막혀 있으면 서명 뒤 `path_not_allowed`(실서버 첫 확인) |
+| 3-3 | **[사용자 결정] 등록 흐름.** 후보 저장소가 있으면(허용 루트 아래 아직 등록되지 않은 저장소가 후보로 보인다): "프로젝트 추가" → 후보 고르기 → 종류(정책 클래스) → AI 전송 허용(기본 꺼짐) → "변경 내용 확인" | 확인 화면이 id·경로·종류·AI 여부를 보여 주고, AI를 켜면 노란 강조 문장이 하나 더 나온다. 서버 문장이 전체 변경 내용을 말한다. 서명 단추는 **브라우저가 다시 계산한 해시가 서버 것과 같을 때만** 열린다 | 경고 문장과 서명 단추 없음 = 내용 불일치(서명하지 않는다, 기록한다). 경로가 저장소가 아니면(링크·HEAD 없음 등) **서명 전에** orchd가 거부한다 |
 | 3-4 | **서명(사용자가 할지 정한다).** 서명하면 **실제로 broker의 등록부가 바뀐다.** 패스키로 서명 → 완료 | 목록에 새 행. broker가 **실제 패스키 서명을 처음으로 검증**한다(미확인 항목). 원장에 `project_change`(행위자·동작·id·성공 여부·코드, **경로·내용 없음**) | `bad_signature`/`unknown_signer`/`signers_unavailable`: 서명자 목록(사전 점검 b), 패스키 등록. `stale_signature`: 시계(5분)와 확인 화면에서 서명까지 걸린 시간. **같은 변경을 곧바로 다시 시도하지 않는다**(화면은 새 제안부터 다시 한다) |
 | 3-5 | **AI 전송 켜기/끄기 시험(등록하지 않을 때의 대안, 사용자가 정한다).** 이미 등록된 두 프로젝트 중 하나(권장: 덜 중요한 쪽)의 AI 전송을 끄고 → 다시 켠다 | 각각 확인 화면(경로와 "예 → 아니오" 표시) → 패스키 서명 → 목록 갱신. 끈 동안 그 저장소로 AI 미리보기는 "허용되어 있지 않습니다". **끝나면 원래 상태(켜짐)로 되돌린다** | 같은 오류 코드 설명은 3-4와 같다 |
 | 3-6 | **서명 거부 확인.** 잘못된 서명으로 변경을 시도하는 것은 **자동 시험으로만 확인**한다(실서버에서 일부러 위조 서명을 만들지 않는다) | 시험: `TestRegistryNeverWrittenWithoutValidSignature`, `TestSignatureOverDifferentChangeRefused` 등 | — |
@@ -659,7 +659,7 @@ journalctl -u orchd -n 40 --no-pager
 ### 요약표: 누가·되돌림
 | 단계 | 사용자 작업·승인 | 되돌리기 | 재시작 |
 |---|---|---|---|
-| 0 사전 점검(상태 폴더 0700, `signers.json` 읽기, `repo_roots` 철자, **`ProtectHome` 결정**) | **사용자 결정**(유닛 변경은 임의로 하지 않음) | — | — |
+| 0 사전 점검(상태 폴더 0700, `signers.json` 읽기, `repo_roots` 철자) | 확인만(유닛 변경 없음) | — | — |
 | 1 broker 갱신·마이그레이션 | 승인 | A(바이너리·`broker.json` 복원 + 등록부 삭제, 컷오버 뒤 등록부 변경은 사라짐) | broker만 |
 | 2 `orchd` 갱신 | 승인 | B(바이너리만, DB 복원 불필요) | 필요(stop/start) |
 | 3 웹 확인 | **사용자 직접**(로그인, 등록·켜기/끄기 **서명할지 결정**) | 등록한 프로젝트는 A로 사라짐. AI 켜기/끄기는 같은 화면으로 되돌림 | 불필요(3-7만 broker 재시작) |

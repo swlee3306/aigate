@@ -567,10 +567,6 @@ func TestRegisterPathRules(t *testing.T) {
 		"root itself":    w.root,
 		"root parent":    filepath.Dir(w.root),
 		"two levels":     deep,
-		"symlink":        filepath.Join(w.root, "link"),
-		"no .git":        filepath.Join(w.root, "nogit"),
-		"missing":        filepath.Join(w.root, "absent"),
-		"plain file":     filepath.Join(w.root, "afile"),
 		"too long":       filepath.Join(w.root, strings.Repeat("a", 4100)),
 		"filesystem /":   "/",
 	}
@@ -581,6 +577,19 @@ func TestRegisterPathRules(t *testing.T) {
 	}
 	if !bytes.Equal(before, w.regFile()) {
 		t.Fatal("registry changed")
+	}
+	// The broker is syntactic only (it cannot read /home/orch/repos by design):
+	// what only the filesystem can tell (symlink, no .git, missing, plain file)
+	// is orchd's job and the broker accepts it. Pinned on purpose.
+	for name, p := range map[string]string{
+		"symlink":    filepath.Join(w.root, "link"),
+		"no .git":    filepath.Join(w.root, "nogit"),
+		"missing":    filepath.Join(w.root, "absent"),
+		"plain file": filepath.Join(w.root, "afile"),
+	} {
+		if _, e := w.do("register_project", w.register("fs-"+strings.ReplaceAll(strings.ReplaceAll(name, " ", "-"), ".", ""), p)); e != nil {
+			t.Fatalf("%s: the broker must not judge the filesystem: %v", name, e)
+		}
 	}
 	if _, e := w.do("register_project", w.register("proj-ok", good)); e != nil {
 		t.Fatalf("a good path must work: %v", e)
@@ -1026,6 +1035,7 @@ func TestArgsKeysAreExactCaseAndUnique(t *testing.T) {
 }
 
 func TestRegisterGitEntryRules(t *testing.T) {
+	// The broker no longer looks at .git at all: every shape is accepted.
 	w := newWEnv(t)
 	mk := func(name string) string {
 		p := filepath.Join(w.root, name)
@@ -1036,13 +1046,34 @@ func TestRegisterGitEntryRules(t *testing.T) {
 	os.Symlink(w.repo("target"), filepath.Join(link, ".git"))
 	file := mk("gitfile")
 	os.WriteFile(filepath.Join(file, ".git"), []byte("gitdir: ../elsewhere\n"), 0o644)
-	dir := w.repo("gitdir")
-	w.wantCode("register_project", w.register("proj-link", link), "path_not_allowed")
-	if _, e := w.do("register_project", w.register("proj-file", file)); e != nil {
-		t.Fatalf(".git file (worktree/submodule): %v", e)
+	for id, p := range map[string]string{"proj-link": link, "proj-file": file, "proj-dir": w.repo("gitdir")} {
+		if _, e := w.do("register_project", w.register(id, p)); e != nil {
+			t.Fatalf("%s: %v", id, e)
+		}
 	}
-	if _, e := w.do("register_project", w.register("proj-dir", dir)); e != nil {
-		t.Fatalf(".git directory: %v", e)
+}
+
+func TestRegisterDoesNoFilesystemAccess(t *testing.T) {
+	// A valid signature for a path that exists nowhere, under a root that exists
+	// nowhere: accepted, so the broker did not stat anything.
+	w := newWEnv(t)
+	ghostRoot := "/nonexistent-aigate-root-w3a"
+	w.e.set(t, []string{"repo_roots"}, []string{ghostRoot})
+	s := w.restart(nil)
+	args := w.register("ghost", ghostRoot+"/ghost")
+	raw, _ := json.Marshal(args)
+	if _, e := s.Handlers["register_project"](context.Background(), raw); e != nil {
+		t.Fatalf("register under a non-existent root: %v", e)
+	}
+	if _, err := os.Lstat(ghostRoot); err == nil {
+		t.Fatal("the broker created the path")
+	}
+	// Still syntactic: not one level below the root, or the root itself.
+	for _, p := range []string{ghostRoot, ghostRoot + "/a/b", "/nonexistent-aigate-root-w3b/x"} {
+		raw, _ := json.Marshal(w.register("g2", p))
+		if _, e := s.Handlers["register_project"](context.Background(), raw); codeOf(e) != "path_not_allowed" {
+			t.Fatalf("%s: %v", p, e)
+		}
 	}
 }
 

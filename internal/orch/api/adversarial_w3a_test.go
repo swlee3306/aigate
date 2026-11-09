@@ -350,3 +350,61 @@ func TestOrchdForwardsSignatureAndNeverJudgesIt(t *testing.T) {
 		}
 	}
 }
+
+// The broker is syntactic only (its account cannot read /home/orch/repos), so
+// orchd carries the whole filesystem validation, at propose AND apply, before
+// the broker is called.
+func TestRegisterTargetFilesystemRulesAtProposeAndApply(t *testing.T) {
+	e := newProjEnv(t)
+	mk := func(name string) string {
+		p := filepath.Join(e.root, name)
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	noHead := mk("nohead")
+	git(t, noHead, "init", "-q", "-b", "main") // a repo without a commit: no HEAD
+	plainDir := mk("plaindir")
+	aFile := filepath.Join(e.root, "afile")
+	os.WriteFile(aFile, []byte("x"), 0o644)
+	link := filepath.Join(e.root, "lnk2")
+	os.Symlink(e.other, link)
+	gitLinkDir := mk("gitlinkdir") // .git is a symlink to a real repo's .git
+	os.Symlink(filepath.Join(e.other, ".git"), filepath.Join(gitLinkDir, ".git"))
+	gitFileOut := mk("gitfileout") // .git file pointing outside every root
+	os.WriteFile(filepath.Join(gitFileOut, ".git"), []byte("gitdir: "+filepath.Join(e.outside, ".git")+"\n"), 0o644)
+	nested := filepath.Join(e.other, "sub")
+	os.MkdirAll(nested, 0o755)
+	cases := map[string]string{
+		"symlinked directory":     link,
+		"not a directory":         aFile,
+		"does not exist":          filepath.Join(e.root, "ghost"),
+		"no .git":                 plainDir,
+		"repository without HEAD": noHead,
+		".git is a symlink":       gitLinkDir,
+		".git points outside":     gitFileOut,
+		"outside the roots":       e.outside,
+		"two levels below":        nested,
+		"the root itself":         e.root,
+	}
+	for name, p := range cases {
+		fields := map[string]any{"path": p, "kind": "docs", "ai_context": false}
+		pb := jsonBody(map[string]any{"action": "register_project", "subject": "other", "fields": fields})
+		if code, b := e.sock(t, "POST", "/api/v1/projects/propose", pb); code < 400 || code >= 500 {
+			t.Errorf("propose %s: %d %s", name, code, b)
+		}
+		h, _ := registrymsg.ChangeHash("register_project", "other", fields)
+		ab := jsonBody(map[string]any{"action": "register_project", "subject": "other", "fields": fields, "change": h,
+			"request": registrymsg.NewRequestID(), "issued": time.Now().UTC().Format("2006-01-02T15:04:05Z"), "signature": webauthnSig})
+		if code, b := e.apply(t, ab); code < 400 || code >= 500 {
+			t.Errorf("apply %s: %d %s", name, code, b)
+		}
+	}
+	e.assertBrokerUntouched(t, "a refused target")
+	// Control: a real repository one level below the root passes both.
+	p := e.propose(t, "register_project", "other", e.registerFields())
+	if code, b := e.apply(t, jsonBody(applyBodyOf(p, webauthnSig))); code != 200 {
+		t.Fatalf("control: %d %s", code, b)
+	}
+}

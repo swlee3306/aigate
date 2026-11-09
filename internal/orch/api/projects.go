@@ -323,7 +323,11 @@ func (h *handler) candidatePath(ctx context.Context, path string) bool {
 	if err != nil || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
 		return false
 	}
-	if _, err := os.Lstat(filepath.Join(path, ".git")); err != nil {
+	// .git is a directory or a regular file (worktree/submodule pointer), never
+	// a symlink: the broker no longer stats registered paths, so this is the
+	// only place that refuses it.
+	gi, err := os.Lstat(filepath.Join(path, ".git"))
+	if err != nil || !(gi.IsDir() || gi.Mode().IsRegular()) {
 		return false
 	}
 	cctx, cancel := context.WithTimeout(ctx, reposPerRepoTimeout)

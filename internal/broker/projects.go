@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -271,10 +270,14 @@ func (s *Server) verifySigned(action, subject string, fields map[string]any, cla
 	return nil
 }
 
-// pathAllowed enforces the registration path rules; the broker never reads
-// file contents. The path must be clean, absolute, at most maxPathBytes long,
-// exactly one directory below a configured repo_roots entry, a real directory
-// (not a symlink) and contain .git.
+// pathAllowed enforces the SYNTACTIC registration path rules; the broker never
+// touches the filesystem for a registered path (its account cannot read
+// /home/orch/repos by design, and the property it protects is only that the AI
+// context applies to exactly the path the signer approved). The path must be at
+// most maxPathBytes long, absolute, clean and exactly one level below a
+// configured repo_roots entry (exact string match; the root itself is refused).
+// Whether it is a real, non-symlink git repository is orchd's check at propose
+// and apply time, and use time refuses a path that was swapped later.
 func (s *Server) pathAllowed(p string) bool {
 	if len(p) == 0 || len(p) > maxPathBytes || !filepath.IsAbs(p) || filepath.Clean(p) != p {
 		return false
@@ -283,22 +286,10 @@ func (s *Server) pathAllowed(p string) bool {
 	if parent == p {
 		return false
 	}
-	under := false
 	for _, r := range s.Config.RepoRoots {
 		if r == parent {
-			under = true
-			break
+			return true
 		}
 	}
-	if !under {
-		return false
-	}
-	fi, err := os.Lstat(p)
-	if err != nil || fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
-		return false
-	}
-	// .git is a directory, or a regular file (worktree/submodule pointer); a
-	// symlink is refused.
-	gi, err := os.Lstat(filepath.Join(p, ".git"))
-	return err == nil && (gi.IsDir() || gi.Mode().IsRegular())
+	return false
 }
