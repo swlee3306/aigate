@@ -49,7 +49,7 @@ Answer with the plan only, matching the required JSON schema: a short summary; 1
 
 // refineSchema is the structured-output schema (D4). Ids are not part of it:
 // the broker assigns them.
-var refineSchema = json.RawMessage(`{
+var refineSchema = compactJSON(`{
  "type":"object","additionalProperties":false,
  "required":["summary","items","questions","out_of_scope"],
  "properties":{
@@ -61,6 +61,16 @@ var refineSchema = json.RawMessage(`{
     "required":["text"],"properties":{"text":{"type":"string"}}}},
   "out_of_scope":{"type":"array","items":{"type":"string"}}
  }}`)
+
+// compactJSON returns s without insignificant whitespace, so len() is the
+// number of bytes actually sent.
+func compactJSON(s string) json.RawMessage {
+	var b bytes.Buffer
+	if err := json.Compact(&b, []byte(s)); err != nil {
+		panic("bad built-in schema")
+	}
+	return b.Bytes()
+}
 
 func fail(code string) (any, *OpError) { return nil, &OpError{Code: code} }
 
@@ -76,7 +86,7 @@ func badText(s string, allowNL bool) bool {
 			if !allowNL {
 				return true
 			}
-		case unicode.IsControl(r):
+		case unicode.IsControl(r), unicode.Is(unicode.Cf, r): // Cf: zero-width, bidi, soft hyphen, BOM, ...
 			return true
 		case r == 0x061C || r == 0x200E || r == 0x200F || (r >= 0x202A && r <= 0x202E) || (r >= 0x2066 && r <= 0x2069),
 			r == 0x2028 || r == 0x2029, r == 0xFEFF:
@@ -124,7 +134,6 @@ func (s *Server) refineHandler(ctx context.Context, raw json.RawMessage) (any, *
 		return fail("too_large")
 	}
 	seen := map[string]bool{}
-	total := int64(len(a.Requirement))
 	for _, f := range a.Files {
 		if !safeRelPath(f.Path) || seen[f.Path] {
 			return fail("bad_file")
@@ -136,17 +145,13 @@ func (s *Server) refineHandler(ctx context.Context, raw json.RawMessage) (any, *
 		if !utf8.ValidString(f.Content) || strings.IndexByte(f.Content, 0) >= 0 {
 			return fail("bad_file")
 		}
-		total += int64(len(f.Content)) + int64(len(f.Path))
-	}
-	if total > s.Config.OpenAI.MaxInputBytes {
-		return fail("too_large")
 	}
 	// 4. secret scan (second line after orchd's own).
 	if LooksLikeSecret(a.Requirement) {
 		return fail("looks_like_secret")
 	}
 	for _, f := range a.Files {
-		if LooksLikeSecret(f.Content) {
+		if LooksLikeSecret(f.Content) || LooksLikeSecret(f.Path) {
 			return fail("looks_like_secret")
 		}
 	}
@@ -156,7 +161,9 @@ func (s *Server) refineHandler(ctx context.Context, raw json.RawMessage) (any, *
 	}
 	system := strings.ReplaceAll(refineSystemPrompt, "%[1]s", nonce)
 	user := buildUserMessage(nonce, a)
-	if int64(len(user)) > s.Config.OpenAI.MaxInputBytes {
+	// max_input_bytes counts everything sent as input: instructions, user
+	// message (with markers) and the schema.
+	if int64(len(system)+len(user)+len(refineSchema)) > s.Config.OpenAI.MaxInputBytes {
 		return fail("too_large")
 	}
 	// 5. hourly limit, then the reservation (worst case, before the call).
@@ -175,13 +182,16 @@ func (s *Server) refineHandler(ctx context.Context, raw json.RawMessage) (any, *
 	// 6. the call. Whatever happens, settle by reported usage or keep the
 	// reservation.
 	text, usage, cerr := s.OpenAI.Complete(ctx, system, user, cfg.MaxOutputTokens, refineSchema)
+	if usage.InputTokens != nil && *usage.InputTokens == 0 {
+		usage = Usage{} // a non-trivial request cannot have used 0 input tokens: treat as missing
+	}
 	if err := s.State.Budget.SettleUsage(id, cfg.Pricing, usage); err != nil {
 		s.logf("예산 정산 실패: 예약값이 남습니다")
 	}
 	if cerr != nil {
 		return fail("upstream_error")
 	}
-	plan, ok := parsePlan(text)
+	plan, ok := parsePlan(text, seen)
 	if !ok {
 		return fail("bad_plan")
 	}
@@ -269,11 +279,55 @@ type rawPlan struct {
 	OutOfScope []string `json:"out_of_scope"`
 }
 
+// exactKeys checks the field names case-sensitively (encoding/json matches
+// them case-insensitively).
+func exactKeys(text string) bool {
+	var top map[string]json.RawMessage
+	if json.Unmarshal([]byte(text), &top) != nil {
+		return false
+	}
+	okKeys := func(m map[string]json.RawMessage, allowed ...string) bool {
+		for k := range m {
+			found := false
+			for _, a := range allowed {
+				if k == a {
+					found = true
+				}
+			}
+			if !found {
+				return false
+			}
+		}
+		return true
+	}
+	if !okKeys(top, "summary", "items", "questions", "out_of_scope") {
+		return false
+	}
+	var items, qs []map[string]json.RawMessage
+	if raw, ok := top["items"]; ok && json.Unmarshal(raw, &items) != nil {
+		return false
+	}
+	if raw, ok := top["questions"]; ok && json.Unmarshal(raw, &qs) != nil {
+		return false
+	}
+	for _, m := range items {
+		if !okKeys(m, "id", "title", "description", "files") {
+			return false
+		}
+	}
+	for _, m := range qs {
+		if !okKeys(m, "id", "text") {
+			return false
+		}
+	}
+	return true
+}
+
 func runes(s string) int { return utf8.RuneCountInString(s) }
 
 // parsePlan strictly validates the model's text. It returns no detail on
 // failure: the model's text must never reach an error.
-func parsePlan(text string) (Plan, bool) {
+func parsePlan(text string, sent map[string]bool) (Plan, bool) {
 	var rp rawPlan
 	dec := json.NewDecoder(strings.NewReader(text))
 	dec.DisallowUnknownFields()
@@ -281,6 +335,9 @@ func parsePlan(text string) (Plan, bool) {
 		return Plan{}, false
 	}
 	if _, err := dec.Token(); err != io.EOF {
+		return Plan{}, false
+	}
+	if !exactKeys(text) {
 		return Plan{}, false
 	}
 	if rp.Summary == nil || *rp.Summary == "" || runes(*rp.Summary) > 600 || badText(*rp.Summary, true) {
@@ -300,7 +357,9 @@ func parsePlan(text string) (Plan, bool) {
 			if !safeRelPath(f) {
 				return Plan{}, false
 			}
-			files = append(files, f)
+			if sent[f] { // paths that were not sent are dropped
+				files = append(files, f)
+			}
 		}
 		p.Items = append(p.Items, PlanItem{ID: "r" + itoa(i+1), Title: *it.Title, Description: it.Description, Files: files})
 	}
