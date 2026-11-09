@@ -55,12 +55,22 @@ func Verify(reg Registry, msg Message, sig Signature, o VerifyOptions) error {
 	if msg.Validate() != nil {
 		return ErrInvalidMessage
 	}
+	signer, err := checkSignerAndFreshness(reg, msg.Issued, sig, o)
+	if err != nil {
+		return err
+	}
+	return verifySignature(signer, NamespaceApproval, msg.Text(), msg.Digest(), sig)
+}
+
+// checkSignerAndFreshness is the part of verification shared by Verify and
+// VerifyRegistry: signer lookup, algorithm match and the freshness window.
+func checkSignerAndFreshness(reg Registry, issued time.Time, sig Signature, o VerifyOptions) (Signer, error) {
 	signer, ok := reg.Find(sig.Signer)
 	if !ok {
-		return ErrUnknownSigner
+		return Signer{}, ErrUnknownSigner
 	}
 	if sig.Alg != signer.Type {
-		return ErrBadSignature
+		return Signer{}, ErrBadSignature
 	}
 	if !o.SkipFreshness {
 		now, maxAge := o.Now, o.MaxAge
@@ -70,24 +80,30 @@ func Verify(reg Registry, msg Message, sig Signature, o VerifyOptions) error {
 		if maxAge == 0 {
 			maxAge = defaultMaxAge
 		}
-		if d := now.Sub(msg.Issued); d > maxAge || d < -maxAge {
-			return ErrStale
+		if d := now.Sub(issued); d > maxAge || d < -maxAge {
+			return Signer{}, ErrStale
 		}
 	}
+	return signer, nil
+}
+
+// verifySignature checks the cryptographic signature: SSH over text in the
+// given namespace, or a WebAuthn assertion whose challenge is digest.
+func verifySignature(signer Signer, namespace, text string, digest [32]byte, sig Signature) error {
 	switch signer.Type {
 	case TypeSSHEd25519:
-		if VerifySSHSig(signer.PublicKey, NamespaceApproval, []byte(msg.Text()), sig.Sig) != nil {
+		if VerifySSHSig(signer.PublicKey, namespace, []byte(text), sig.Sig) != nil {
 			return ErrBadSignature
 		}
 		return nil
 	case TypeWebAuthnES256:
-		return verifyWebAuthn(signer, msg, sig)
+		return verifyWebAuthnDigest(signer, digest, sig)
 	default:
 		return ErrBadSignature
 	}
 }
 
-func verifyWebAuthn(signer Signer, msg Message, sig Signature) error {
+func verifyWebAuthnDigest(signer Signer, digest [32]byte, sig Signature) error {
 	if sig.WebAuthn == nil || signer.RPID == "" || signer.Origin == "" {
 		return ErrBadSignature
 	}
@@ -102,7 +118,6 @@ func verifyWebAuthn(signer Signer, msg Message, sig Signature) error {
 	if err != nil {
 		return ErrBadSignature
 	}
-	digest := msg.Digest()
 	if webauthn.VerifyAssertion(webauthn.AssertionInput{
 		PublicKey:         pub,
 		AuthenticatorData: authData,
