@@ -225,7 +225,7 @@ test('TestSignApprovalUsesDigestAsChallenge', async () => {
 test('message fields must equal the detail fields (kind, task, base, hash, issued)', async () => {
   const cases = [
     detailWith({}, (m) => m.replace('task: 38', 'task: 39')),
-    detailWith({}, (m) => m.replace(/hash: [0-9a-f]+/, 'hash: ' + 'f'.repeat(16))),
+    detailWith({}, (m) => m.replace(/hash: [0-9a-f]+/, 'hash: ' + 'f'.repeat(64))),
     detailWith({}, (m) => m.replace(/base: [0-9a-f]+/, 'base: ' + '2'.repeat(40))),
     detailWith({}, (m) => m.replace('protected_modified', 'publish_outside_allowlist')),
     detailWith({}, (m) => m.replace('10:04:05Z', '10:04:06Z')),
@@ -237,6 +237,11 @@ test('message fields must equal the detail fields (kind, task, base, hash, issue
     detailWith({}, (m) => m.replace('aigate-approval-v1', 'aigate-approval-v2')),
     detailWith({}, (m) => m.slice(0, -1)),
     detailWith({}, (m) => m.replace('\nrepo:', '\n repo:')),
+    // a 16-hex hash (the pre-2026-11-09 diff hash) is not canonical, even when
+    // the detail carries the same short hash
+    detailWith({ hash: 'f'.repeat(16) }, (m) => m.replace(/hash: [0-9a-f]+/, 'hash: ' + 'f'.repeat(16))),
+    detailWith({ hash: 'f'.repeat(63) }, (m) => m.replace(/hash: [0-9a-f]+/, 'hash: ' + 'f'.repeat(63))),
+    detailWith({ hash: 'F'.repeat(64) }, (m) => m.replace(/hash: [0-9a-f]+/, 'hash: ' + 'F'.repeat(64))),
   ]) {
     await assert.rejects(wa.signApproval(d, signerOf(auth)), (e) => e.code === 'bad_message');
   }

@@ -162,13 +162,15 @@ function timeoutOf(v) {
 // --- canonical approval message ----------------------------------------
 
 // The whole text of a valid aigate-approval-v1 message (signing.Message.Text):
-// seven lines in a fixed order, each ending with \n, nothing else.
+// seven lines in a fixed order, each ending with \n, nothing else. The hash is
+// a full SHA-256 (64 hex) for every kind; a 16-hex diff hash (builds before
+// 2026-11-09) is refused, like signing.Message.Validate.
 const MESSAGE_RE = new RegExp('^aigate-approval-v1\\n' +
   'kind: (protected_modified|publish_outside_allowlist)\\n' +
   'repo: ([0-9a-f]{12})\\n' +
   'task: ([1-9][0-9]{0,17})\\n' +
   'base: ([0-9a-f]{40}|[0-9a-f]{64})\\n' +
-  'hash: ([0-9a-f]{16}|[0-9a-f]{64})\\n' +
+  'hash: ([0-9a-f]{64})\\n' +
   'issued: ([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)\\n$');
 // Characters that never occur in a canonical message but can change what a
 // human sees: controls other than \n, bidi/zero-width/format characters.
