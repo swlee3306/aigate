@@ -1,6 +1,6 @@
 # W3 설계: 프로젝트 등록·생성, 토큰 관리, 조건부 자동 병합
 
-상태: **초안 v0.3 (2026-11-09), 사용자 1·2차 검토 반영(11장), 승인 전.** 구현 계획과 코드는 아직 없다. 이 문서의 "확인함"은 이 저장소와 orch-vm에서 직접 읽은 것이고, "가정"과 "추정"은 확인하지 못한 것이다.
+상태: **초안 v0.4 (2026-11-09), 사용자 1~3차 검토 반영, GitLab 서버 설정·GitHub 공식 문서 확인 반영(3장, 4.6), 승인 전.** 구현 계획과 코드는 아직 없다. 이 문서의 "확인함"은 이 저장소와 orch-vm에서 직접 읽은 것이고, "가정"과 "추정"은 확인하지 못한 것이다.
 앞선 문서: `11`(W1 인증·서명), `14`(W2·`orch-broker`), `17`·`18`(W2b 계획·결과·컷오버).
 
 ## 1. 배경과 사용자 결정 (2026-11-09)
@@ -24,6 +24,7 @@ W2b 컷오버 중 MR을 켜려다 사용자가 이렇게 정했다: 프로젝트
 **비범위:** 프로젝트·브랜치·MR **삭제**(broker에 삭제 기능을 아예 두지 않는다), 정책 등급(L0~L2) 편집, 사람이 아닌 서명자, 계획서·분해(W4·W5). (여러 서버·GitLab과 GitHub 지원은 2차 검토에서 **범위에 넣었다**, 4.6)
 
 ## 3. 현재 코드·서버 사실 (확인함)
+- **GitLab 서버(19.0.8) 설정(2026-11-09 서버 읽기 전용 조회로 확인)**: 최상위 그룹은 `example-group` 하나, **관리자 계정 9명**, 새 사용자도 최상위 그룹을 만들 수 있음(`can_create_group: true`, 관리자는 항상 가능), 새 그룹 기본 공개 범위 비공개, **개인 액세스 토큰은 만료일 지정 필수**(최대 수명 제한 없음), **새 프로젝트 기본 브랜치 보호: push·병합 Maintainer 이상, 강제 push 금지, 개발자의 최초 push 불가**.
 - `/etc/aigate/signers.json`은 `root:root 0644`, 폴더 `/etc/aigate`는 `root:root 0755`라서 **broker 계정(`orch-broker`)이 읽을 수 있다**(2026-11-09 서버에서 `test -r`/`test -x` 확인). `orch`도 읽지만 쓰지는 못한다.
 - 작업 판정 값은 `rules.Category`(`ok`, `behavior_failure`, `check_weakened`, `verification_incomplete`)이고, **`ok`일 때만 작업이 게시 단계로 간다**(steps.go). 그래서 자동 병합의 "판정 통과"는 `verdict == ok`다.
 - 저장소 하나를 추가하려면 지금은 이 파일들을 손으로 고쳐야 한다: 정책 `policy.yml`의 `classes`, `orchd` 유닛의 `--git-remote-for`, broker 설정의 `context_repos`와 `gitlab.projects`, 토큰 파일, 서비스 재시작(docs/10 11장).
@@ -90,7 +91,16 @@ W2b의 broker는 병합 코드가 아예 없었다. W3는 이를 **좁게** 바�
 - 제공자 추가·변경·삭제·토큰 교체는 **모두 서명 승인**이다(`aigate-registry-v1`의 `action`에 `set_provider` 추가). 서버 주소를 사용자가 자유롭게 정할 수 있게 하는 대신, **주소는 서명된 변경으로만 바뀌고 요청 하나로 바뀌지 않는다.**
 - **주소 검증**(broker): `http`/`https`만, 사용자 정보·쿼리·조각 금지, 호스트 이름은 정규화해 비교, **리다이렉트를 따르지 않음**, 연결 대상 IP가 **루프백·링크 로컬(`169.254.0.0/16`, 메타데이터 주소 포함)**이면 거부(사설망 IP와 tailnet은 허용: 사내 GitLab이 그렇다). OpenAI 주소는 계속 코드 상수로 고정하고 이 목록에서 바꿀 수 없다.
 - **제공자별 API 호출 허용 목록**을 따로 둔다(4.5의 목록은 GitLab 몫). 허용 목록 밖 호출을 만드는 코드 경로는 없고 시험이 가짜 서버에서 모든 요청을 확인한다.
-- **GitHub 쪽 가정(구현 때 공식 문서로 확인, 지금은 추정)**: 생성은 `POST /orgs/{org}/repos` 또는 `POST /user/repos`, PR은 `POST /repos/{o}/{r}/pulls`(`draft: true`), 병합은 `PUT …/pulls/{n}/merge`(`sha` 인자로 head 고정), 배포 키는 `POST …/keys`(`read_only: false`), 브랜치 보호는 `PUT …/branches/{b}/protection`. **REST API로는 PR의 Draft를 해제할 수 없어** GraphQL 변이(`markPullRequestReadyForReview`) 한 가지 고정 질의가 필요할 수 있다(추정). **github.com에서는 API로 조직을 새로 만들 수 없다**(추정) → GitHub는 "새 그룹 만들기"를 지원하지 않고 기존 조직·사용자 안에만 저장소를 만든다.
+- **GitHub 쪽(공식 문서 `docs.github.com`로 2026-11-09 확인함. 요약 모델이 읽은 것이라 정확한 문구는 구현 때 다시 읽는다. API를 직접 호출해 본 것은 아니다)**:
+  - 저장소 생성은 `POST /user/repos`, `POST /orgs/{org}/repos`(조직 구성원이어야 함). 클래식 토큰은 공개는 `public_repo`나 `repo`, 비공개는 `repo` 범위. 빈 저장소가 기본(`auto_init` 기본값 거짓).
+  - **github.com에는 조직 생성 REST 엔드포인트가 문서에 없다**(`/admin/organizations`는 Enterprise Server 전용). 따라서 GitHub는 "새 그룹 만들기"를 지원하지 않고 **기존 조직·사용자 안에만** 저장소를 만든다.
+  - PR은 `POST /repos/{o}/{r}/pulls`의 `draft` 인자로 Draft 생성이 된다. **그러나 Draft를 "준비됨"으로 바꾸는 REST 엔드포인트는 문서에서 찾지 못했다**(PR 수정 API에 `draft` 필드가 없다). 그래서 GitHub에서는 **자동 병합을 켠 프로젝트는 Draft 없이 일반 PR로 만들고**, 자동 병합을 끈 프로젝트만 Draft로 만든다(GraphQL 변이 `markPullRequestReadyForReview`는 이번 설계에서 쓰지 않는다. 존재와 동작은 이 조사에서 확인하지 못했다). GitHub가 Draft PR 병합을 막는 것은 추정이다.
+  - 병합은 `PUT …/pulls/{n}/merge`: `sha`는 "PR head가 일치해야 병합 허용"이고 **불일치면 409**, `merge_method`는 `merge|squash|rebase`. 필요한 세분화 권한은 Contents(write).
+  - 배포 키는 `POST …/keys`의 `read_only: false`로 쓰기 가능(문서의 경고: 쓰기 배포 키는 admin 협업자와 같은 행동이 가능). 세분화 권한 Administration(write).
+  - 브랜치 보호 `PUT …/branches/{b}/protection`은 저장소 admin 권한 필요. **공개 저장소는 무료 요금제에서도 가능, 비공개는 유료 요금제 필요**(문서 기준). 룰셋(`/repos/{o}/{r}/rulesets`)은 대안이지만 무료 요금제 가능 여부는 문서에서 확인하지 못했다.
+  - **빈 저장소의 첫 커밋**: 콘텐츠 API(`PUT …/contents/{path}`)와 Git 데이터 API가 빈 저장소에서 동작하는지는 **문서에서 찾지 못했다**(Git 커밋 생성 API는 `parents`를 비우면 루트 커밋을 만든다고 문서에 있다). W3e 구현 전에 실험한다.
+  - 토큰: 세분화 토큰은 "선택한 저장소만"으로 제한할 수 있고(문서), 한 리소스 소유자(사용자 또는 조직 하나)에만 묶이며 **새 저장소를 만드는 데 쓸 수 있는지는 문서로 확인하지 못했다**. 클래식 토큰이 위 동작 전체를 덮는다는 명시적 문서는 찾지 못했다(일부 엔드포인트의 클래식 범위가 문서에 없음). → **GitHub 토큰 종류와 필요한 범위는 W3e에서 실제로 시험해 정한다.**
+  - 사용자가 "GitHub 쪽은 비공개 저장소가 아니다"라고 했다(2026-11-09). 공개 저장소를 가정하면 브랜치 보호가 무료 요금제에서 가능하고 AI 전송의 기밀 부담이 작지만, **AI 전송 허용(`ai_context`)은 여전히 프로젝트별 명시 설정**으로 둔다(공개 여부를 자동으로 믿지 않는다).
 - 구현 순서: 등록부 구조는 처음부터 `providers`를 갖고(W3a), **GitLab 어댑터만 먼저** 만들며, GitHub 어댑터는 W3e로 따로 한다(10장).
 
 ### 4.5 broker의 새 작업(op)
@@ -107,7 +117,7 @@ W2b의 broker는 병합 코드가 아예 없었다. W3는 이를 **좁게** 바�
 | `create_mr` | (W2b, 유지) | 불필요(작업 경로) | — |
 | `merge_mr` | 조건 충족 시 Draft 해제 후 병합(4.4) | 불필요(조건이 서명으로 켜진 등록부) | 그룹 토큰 사용 |
 - 삭제 계열(`delete_project`, `delete_group`, 브랜치·MR 삭제)은 **만들지 않는다**.
-- **GitLab API 호출 허용 목록**: broker 코드는 아래 (메서드, 경로 모양)만 호출할 수 있고 그 밖의 호출을 만드는 코드 경로가 없다 — `GET /groups`(목록), `POST /groups`, `POST /projects`, `POST /projects/:id/deploy_keys`, `POST|PUT /projects/:id/protected_branches`, `GET|POST /projects/:id/merge_requests`, `PUT /projects/:id/merge_requests/:iid`(Draft 해제), `PUT /projects/:id/merge_requests/:iid/merge`. 시험이 모든 HTTP 요청을 가짜 서버에서 가로채 이 목록에 있는 것만 나가는지 확인한다(W2b의 `TestMRClientNeverMerges`와 같은 방식).
+- **GitLab API 호출 허용 목록**: broker 코드는 아래 (메서드, 경로 모양)만 호출할 수 있고 그 밖의 호출을 만드는 코드 경로가 없다 — `GET /groups`(목록), `POST /groups`, `POST /projects`, `POST /projects/:id/repository/commits`(첫 커밋, 5.3), `POST /projects/:id/deploy_keys`, `POST|PUT /projects/:id/protected_branches`, `GET|POST /projects/:id/merge_requests`, `PUT /projects/:id/merge_requests/:iid`(Draft 해제), `PUT /projects/:id/merge_requests/:iid/merge`. 시험이 모든 HTTP 요청을 가짜 서버에서 가로채 이 목록에 있는 것만 나가는지 확인한다(W2b의 `TestMRClientNeverMerges`와 같은 방식).
 - `status`는 그대로 두고 `weekly_budget` 등에 더해 토큰 만료 임박 여부를 알려 준다(7장 위협과 6장).
 - 제공자 관련 op: `set_provider`(서명), `list_providers`(읽기, 비밀 없음). 위 표의 GitLab 전용 이름(`list_groups` 등)은 제공자 id를 인자로 받는 일반 op가 된다.
 
@@ -125,9 +135,10 @@ W2b의 broker는 병합 코드가 아예 없었다. W3는 이를 **좁게** 바�
 0. **그룹 선택**: 화면에서 `list_groups`로 받은 기존 그룹 중 하나를 고르거나 "새 그룹 만들기"(이름·경로(정규식 `^[a-z][a-z0-9-]{1,40}$`)·상위 그룹 선택)를 고른다. 새 그룹은 **비공개**로만 만들고, 만들기도 서명 승인(`create_group`)을 거친다.
 1. 이름·설명 입력 → 서명 승인(메시지에 이름, 그룹, AI 전송·자동 병합 설정이 모두 들어간다).
 2. broker가 GitLab에 프로젝트를 만든다(`POST /projects`, 선택한 그룹의 `namespace_id`, 이름은 정규식 `^[a-z][a-z0-9-]{1,40}$`, 빈 프로젝트, `main` 보호를 **broker가 명시적으로 설정**: push·병합 Maintainer만).
-3. broker가 `orchd`가 알려 준 **배포 키 공개 키**를 프로젝트에 읽기·쓰기 배포 키로 등록한다(`POST /projects/:id/deploy_keys`, `can_push: true`). 공개 키는 비밀이 아니다.
-4. orchd가 `/home/orch/repos/<name>`에 `git init`, 첫 커밋(`.aigate.yml`·`.gitignore`·README 정도의 최소 파일), 원격 추가, `main` push를 한다. 실패하면 **GitLab에 만든 프로젝트는 지우지 않고**(삭제 기능이 없다) 등록을 `failed`로 표시해 사용자에게 알린다(고아 프로젝트는 사용자가 GitLab에서 정리).
-5. 성공하면 broker가 등록부에 쓰고 orchd의 정책은 `kind: registered`로 인식한다. **전제(한 번만)**: `policy.yml`에 `registered: {level: L1}` 클래스를 사람이 한 번 넣는다(5.4).
+3. **첫 커밋은 broker가 GitLab의 커밋 API로 만든다**(`POST /projects/:id/repository/commits`, `branch: main`, 파일은 선택한 템플릿의 `.aigate.yml`, `.gitignore`, README). 이유: GitLab의 기본 보호(3장)는 개발자·배포 키의 최초 push를 막으므로 orchd가 배포 키로 `main`을 push하는 방식은 새 프로젝트에서 막힐 가능성이 크다. 관리자 토큰(Maintainer 이상)의 커밋 API는 보호 규칙을 풀지 않고 쓴다. **빈 저장소에 이 API로 첫 커밋을 만드는 동작은 추정이고 확인하지 못했다**(11장 구현 전 실험).
+4. broker가 `orchd`가 알려 준 **배포 키 공개 키**를 프로젝트에 **읽기 전용** 배포 키로 등록한다(clone만 필요하므로 `can_push: false`. 작업 브랜치 `orch/<번호>` 게시에는 쓰기가 필요하므로 **게시를 켠 프로젝트는 쓰기 배포 키**로 등록하되, 이 선택은 생성 화면에서 묻고 서명에 포함한다). 공개 키는 비밀이 아니다.
+5. orchd가 `/home/orch/repos/<name>`에 `git clone`(배포 키)한다. 실패하면 **GitLab에 만든 프로젝트는 지우지 않고**(삭제 기능이 없다) 등록을 `failed`로 표시해 사용자에게 알린다(고아 프로젝트는 사용자가 GitLab에서 정리).
+6. 성공하면 broker가 등록부에 쓰고 orchd의 정책은 `kind: registered`로 인식한다. **전제(한 번만)**: `policy.yml`에 `registered: {level: L1}` 클래스를 사람이 한 번 넣는다(5.4).
 
 ### 5.4 정책과의 연결
 - 웹에서 등록한 프로젝트는 모두 `kind: registered`(L1, 허용 동작은 기존 `allowlist`인 `push_branch`만)다. L1보다 높은 등급이나 다른 허용 동작은 이 메뉴가 주지 않는다.
@@ -198,9 +209,8 @@ issued: <RFC 3339 UTC>
 7. **토큰 종류(결정함)**: 관리자 토큰. 6장의 위험 표 참고. **제공자별로 토큰을 따로 둘 수 있다**(4.6).
 
 ## 12. 아직 모르는 것(구현 전 실험)
-- 실제 GitLab(이 서버 버전)의 `POST /groups`(최상위 그룹 생성 권한), `POST /projects`, `deploy_keys`, `protected_branches`, `merge` API 동작과 토큰 권한(가짜 서버로는 형식만 시험).
+- 실제 GitLab(19.0.8)의 `POST /projects/:id/repository/commits`가 **빈 저장소**에 첫 커밋을 만드는지, 그 뒤 보호된 `main`과 배포 키 clone이 문제없는지, `POST /groups`·`POST /projects`·`deploy_keys`·`protected_branches`·`merge` 동작(최상위 그룹 생성 권한은 서버 설정으로 확인됨: 가능)과 Draft 해제(제목의 `Draft:` 접두 제거로 가능한지)를 W3c·W3d 구현 전에 실험(가짜 서버로는 형식만 시험).
 - WebAuthn 검증을 broker 프로세스(`MemoryDenyWriteExecute`, 소켓 외 샌드박스 등)에서 문제없이 도는지.
-- GitHub API(생성·PR·Draft 해제·병합·배포 키·보호)의 실제 동작과 필요한 토큰 범위(구현 때 공식 문서로 확인, W3e).
-- 사용자가 줄 관리자 토큰이 GitLab에서 최상위 그룹을 만들 수 있는지(인스턴스 설정 의존).
+- GitHub API의 **실제 호출** 동작(공식 문서 확인은 4.6에 반영, 문서로 못 찾은 항목: Draft 해제, 빈 저장소 첫 커밋, 토큰 범위)과 필요한 토큰 종류(W3e에서 시험).
 - orchd의 `repo_roots` 아래 새 디렉터리를 만들 때 `ProtectSystem=strict`·`ReadWritePaths` 규칙이 충분한지(`ReadWritePaths=/home/orch/repos`로 가능해 보이나 시험 안 함).
 - 웹 → orchd → broker 토큰 경로가 W1 CSRF·세션 규칙과 충돌하지 않는지.
