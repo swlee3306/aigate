@@ -74,6 +74,7 @@ var (
 	errProjRegistryGone   = apiErr(http.StatusServiceUnavailable, "registry_unavailable", "프로젝트 등록부를 사용할 수 없습니다. 관리자가 확인해야 합니다")
 	errProjBrokerBad      = apiErr(http.StatusBadGateway, "broker_error", "프로젝트 등록부 서비스가 예상하지 못한 응답을 했습니다")
 	errProjUnknownResult  = apiErr(http.StatusGatewayTimeout, "outcome_unknown", "변경이 적용되었는지 알 수 없습니다. 자동으로 다시 시도하지 않았습니다. 프로젝트 목록을 다시 읽어 확인한 뒤 필요하면 다시 변경하세요")
+	errProjRateLimited    = apiErr(http.StatusTooManyRequests, "project_rate_limited", "프로젝트 변경 요청 횟수 한도를 초과했습니다. 잠시 후 다시 시도하세요")
 	errProjListFailed     = apiErr(http.StatusServiceUnavailable, "repos_unavailable", "저장소 목록을 지금 읽을 수 없습니다. 잠시 후 다시 시도하세요")
 )
 
@@ -114,7 +115,12 @@ func projectsBrokerError(e *broker.OpError, write bool) *httpError {
 	case broker.CodeUnavailable, "forbidden", "busy", "unknown_op", "not_implemented":
 		return errBrokerUnavailable
 	}
-	// timeout on a read, internal_error, anything unregistered.
+	// timeout on a read, internal_error, anything unregistered. A WRITE that
+	// got an answer orchd cannot interpret (bad_reply, internal_error, an
+	// unregistered code) may still have been applied: unknown outcome.
+	if write {
+		return errProjUnknownResult
+	}
 	return errProjBrokerBad
 }
 
@@ -133,6 +139,22 @@ func hostileText(s string) bool {
 		}
 	}
 	return false
+}
+
+// safeProjectPath admits the paths a signing screen may show: printable ASCII
+// and Hangul syllables only (no NBSP or other spaces besides ASCII space, no
+// combining marks, variation selectors, zero-width or bidirectional
+// characters), at most maxPathBytes.
+func safeProjectPath(s string) bool {
+	if s == "" || len(s) > maxPathBytes || !utf8.ValidString(s) {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= 0x20 && r < 0x7f) && !(r >= 0xAC00 && r <= 0xD7A3) {
+			return false
+		}
+	}
+	return true
 }
 
 // objectKeys splits a JSON object into its raw values by key. Only the
@@ -224,6 +246,9 @@ func parseChange(rawAction, rawSubject, rawFields json.RawMessage) (registryChan
 			return registryChange{}, errProjBadBody
 		}
 	}
+	if path, has := fields["path"].(string); has && !safeProjectPath(path) {
+		return registryChange{}, errProjBadBody
+	}
 	if action == registrymsg.ActionSetFlag {
 		if f, _ := fields["flag"].(string); f != "ai_context" {
 			if _, err := registrymsg.CanonicalChange(action, subject, fields); err != nil {
@@ -288,7 +313,7 @@ func (h *handler) checkRegisterTarget(ctx context.Context, fields map[string]any
 }
 
 func (h *handler) candidatePath(ctx context.Context, path string) bool {
-	if path == "" || len(path) > maxPathBytes || !filepath.IsAbs(path) || filepath.Clean(path) != path || !safePath(path) || hostileText(path) {
+	if path == "" || len(path) > maxPathBytes || !filepath.IsAbs(path) || filepath.Clean(path) != path || !safeProjectPath(path) {
 		return false
 	}
 	if !h.directUnderRoot(path) {
@@ -358,7 +383,12 @@ func projectView(p broker.Project) (ProjectView, bool) {
 	return v, true
 }
 
-// registryList reads the registry through the broker.
+// registryList reads the registry through the broker. It is all or nothing:
+// if one entry does not look like a project (bad id, kind or path text) the
+// whole list is refused as broker_error rather than shown partially, because
+// a partial list would also make candidates offer an already registered
+// repository. A broker only reports entries it validated itself, so this
+// signals a broken or newer registry that an operator should look at.
 func (h *handler) registryList(ctx context.Context) ([]ProjectView, broker.AutoMergeGlobal, error) {
 	if h.broker == nil || h.broker.Socket == "" {
 		return nil, broker.AutoMergeGlobal{}, errBrokerUnavailable
@@ -421,7 +451,7 @@ func (h *handler) projectsCandidates(w http.ResponseWriter, r *http.Request) {
 	}
 	var paths []string
 	for _, p := range h.findRepos(ctx) {
-		if h.directUnderRoot(p) && !registered[p] {
+		if h.directUnderRoot(p) && safeProjectPath(p) && !registered[p] {
 			paths = append(paths, p)
 		}
 	}
@@ -525,6 +555,11 @@ func (h *handler) projectsPropose(w http.ResponseWriter, r *http.Request) {
 	c, err := parseChange(top["action"], top["subject"], top["fields"])
 	if err != nil {
 		writeErr(w, err)
+		return
+	}
+	// Proposing sends nothing anywhere, so the slot is never given back.
+	if !h.proposeLimit.take(store.ActorFrom(r.Context()), h.clock()) {
+		writeErr(w, errProjRateLimited)
 		return
 	}
 	if c.Action == registrymsg.ActionRegisterProject {
@@ -673,15 +708,21 @@ func (h *handler) projectsApply(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	if h.broker == nil || h.broker.Socket == "" {
+		writeErr(w, errBrokerUnavailable)
+		return
+	}
+	actor := store.ActorFrom(r.Context())
+	slotAt := h.clock()
+	if !h.applyLimit.take(actor, slotAt) {
+		writeErr(w, errProjRateLimited)
+		return
+	}
 	if c.Action == registrymsg.ActionRegisterProject {
 		if err := h.checkRegisterTarget(r.Context(), c.Fields); err != nil {
 			writeErr(w, err)
 			return
 		}
-	}
-	if h.broker == nil || h.broker.Socket == "" {
-		writeErr(w, errBrokerUnavailable)
-		return
 	}
 	args := map[string]any{"id": c.Subject, "change": change, "request": request, "issued": issuedText, "signature": sig}
 	for k, v := range c.Fields {
@@ -691,8 +732,14 @@ func (h *handler) projectsApply(w http.ResponseWriter, r *http.Request) {
 	// early would leave a change that may have happened unrecorded. The
 	// client's own time limit bounds it. One attempt, never retried.
 	p, oerr := h.broker.Write(context.WithoutCancel(r.Context()), c.Action, args)
-	actor := store.ActorFrom(r.Context())
 	if oerr != nil {
+		// Only a failure that provably cost nothing gives the slot back (same
+		// rule as refine): the request never completely left, or the broker
+		// refused before looking at it. A refusal after the broker read the
+		// signature keeps it.
+		if oerr.Unsent || oerr.Code == "busy" || oerr.Code == "forbidden" {
+			h.applyLimit.refund(actor, slotAt)
+		}
 		herr := projectsBrokerError(oerr, true)
 		h.recordProjectChange(actor, c.Action, c.Subject, false, herr.v1Code)
 		writeErr(w, herr)
@@ -702,7 +749,7 @@ func (h *handler) projectsApply(w http.ResponseWriter, r *http.Request) {
 	if !ok || v.ID != c.Subject {
 		// The broker said ok, so the change may well have happened.
 		h.recordProjectChange(actor, c.Action, c.Subject, false, errProjUnknownResult.v1Code)
-		writeErr(w, errProjBrokerBad)
+		writeErr(w, errProjUnknownResult)
 		return
 	}
 	h.recordProjectChange(actor, c.Action, c.Subject, true, "ok")

@@ -455,33 +455,40 @@ func TestProposeRejectsBadFieldsAndHostileText(t *testing.T) {
 		}
 	}
 	bodies := map[string]map[string]any{
-		"unknown action":         with("action", "delete_project"),
-		"subject upper":          with("subject", "Other"),
-		"subject empty":          with("subject", ""),
-		"subject too long":       with("subject", strings.Repeat("a", 41)),
-		"subject newline":        with("subject", "ab\ncd"),
-		"missing fields":         with("fields", map[string]any{"path": e.other}),
-		"extra field":            withField("token", "x"),
-		"path relative":          withField("path", "other"),
-		"path with dotdot":       withField("path", e.root+"/other/../other"),
-		"path newline":           withField("path", e.other+"\n"),
-		"path control":           withField("path", e.other+"\x01"),
-		"path bidi override":     withField("path", e.other+"\u202e"),
-		"path bidi isolate":      withField("path", e.other+"\u2066"),
-		"path zero width":        withField("path", e.other+"\u200b"),
-		"path bom":               withField("path", e.other+"\ufeff"),
-		"path line separator":    withField("path", e.other+"\u2028"),
-		"path too long":          withField("path", "/"+long+long),
-		"path outside the roots": withField("path", e.outside),
-		"path is the root":       withField("path", e.root),
-		"path nested":            withField("path", e.other+"/sub"),
-		"path not a repository":  withField("path", filepath.Join(e.root, "nothing")),
-		"kind unknown to policy": withField("kind", "nopolicy"),
-		"kind bidi":              withField("kind", "docs\u202e"),
-		"kind newline":           withField("kind", "docs\n"),
-		"kind upper":             withField("kind", "Docs"),
-		"kind too long":          withField("kind", strings.Repeat("a", 33)),
-		"kind korean":            withField("kind", "버그수정"),
+		"unknown action":          with("action", "delete_project"),
+		"subject upper":           with("subject", "Other"),
+		"subject empty":           with("subject", ""),
+		"subject too long":        with("subject", strings.Repeat("a", 41)),
+		"subject newline":         with("subject", "ab\ncd"),
+		"missing fields":          with("fields", map[string]any{"path": e.other}),
+		"extra field":             withField("token", "x"),
+		"path relative":           withField("path", "other"),
+		"path with dotdot":        withField("path", e.root+"/other/../other"),
+		"path newline":            withField("path", e.other+"\n"),
+		"path control":            withField("path", e.other+"\x01"),
+		"path bidi override":      withField("path", e.other+"\u202e"),
+		"path bidi isolate":       withField("path", e.other+"\u2066"),
+		"path zero width":         withField("path", e.other+"\u200b"),
+		"path bom":                withField("path", e.other+"\ufeff"),
+		"path line separator":     withField("path", e.other+"\u2028"),
+		"path nbsp":               withField("path", e.other+"\u00a0"),
+		"path ideographic space":  withField("path", e.other+"\u3000"),
+		"path em space":           withField("path", e.other+"\u2003"),
+		"path combining acute":    withField("path", e.other+"\u0301"),
+		"path variation selector": withField("path", e.other+"\ufe0f"),
+		"path emoji":              withField("path", e.other+"\U0001F600"),
+		"path latin accent":       withField("path", e.other+"\u00e9"),
+		"path too long":           withField("path", "/"+long+long),
+		"path outside the roots":  withField("path", e.outside),
+		"path is the root":        withField("path", e.root),
+		"path nested":             withField("path", e.other+"/sub"),
+		"path not a repository":   withField("path", filepath.Join(e.root, "nothing")),
+		"kind unknown to policy":  withField("kind", "nopolicy"),
+		"kind bidi":               withField("kind", "docs\u202e"),
+		"kind newline":            withField("kind", "docs\n"),
+		"kind upper":              withField("kind", "Docs"),
+		"kind too long":           withField("kind", strings.Repeat("a", 33)),
+		"kind korean":             withField("kind", "버그수정"),
 		"set_flag other flag": {"action": "set_flag", "subject": "reg",
 			"fields": map[string]any{"flag": "auto_merge", "value": true}},
 		"set_flag value string": {"action": "set_flag", "subject": "reg",
@@ -588,9 +595,10 @@ func TestApplyForwardsSignatureAndMapsErrors(t *testing.T) {
 		// a broker-side or client-side failure that is not a registry code
 		"busy":           {503, "broker_unavailable"},
 		"forbidden":      {503, "broker_unavailable"},
-		"internal_error": {502, "broker_error"},
-		"upstream_error": {502, "broker_error"},
-		"something_new":  {502, "broker_error"},
+		"internal_error": {504, "outcome_unknown"},
+		"upstream_error": {504, "outcome_unknown"},
+		"bad_reply":      {504, "outcome_unknown"},
+		"something_new":  {504, "outcome_unknown"},
 		"timeout":        {504, "outcome_unknown"},
 	}
 	msgs := map[string]string{}
@@ -624,7 +632,7 @@ func TestApplyForwardsSignatureAndMapsErrors(t *testing.T) {
 			t.Errorf("%s and %s share a sentence", prev, env.Error.Code)
 		}
 		msgs[env.Error.Message] = env.Error.Code
-		if code == "timeout" && !strings.Contains(env.Error.Message, "목록") {
+		if w.code == "outcome_unknown" && !strings.Contains(env.Error.Message, "목록") {
 			t.Errorf("outcome_unknown must tell the user to re-read the list: %q", env.Error.Message)
 		}
 	}
@@ -675,8 +683,26 @@ func TestApplyForwardsSignatureAndMapsErrors(t *testing.T) {
 	e.rb.reply = func(string, json.RawMessage) string { return `{"ok":true,"result":{"id":"BAD ID","path":"/x"}}` }
 	e.rb.mu.Unlock()
 	p = e.propose(t, "register_project", "other", e.registerFields())
-	if status, b := e.sock(t, "POST", "/api/v1/projects/apply", jsonBody(applyBodyOf(p, webauthnSig))); status != 502 || v1Code(b) != "broker_error" {
+	if status, b := e.sock(t, "POST", "/api/v1/projects/apply", jsonBody(applyBodyOf(p, webauthnSig))); status != 504 || v1Code(b) != "outcome_unknown" {
 		t.Fatalf("bad result: %d %s", status, b)
+	}
+	// An ok whose project does not decode (wrong type) is the same.
+	e.rb.mu.Lock()
+	e.rb.reply = func(string, json.RawMessage) string { return `{"ok":true,"result":{"id":5}}` }
+	e.rb.mu.Unlock()
+	p = e.propose(t, "register_project", "other", e.registerFields())
+	if status, b := e.sock(t, "POST", "/api/v1/projects/apply", jsonBody(applyBodyOf(p, webauthnSig))); status != 504 || v1Code(b) != "outcome_unknown" {
+		t.Fatalf("undecodable result: %d %s", status, b)
+	}
+	// ...and an ok naming another project than the one changed.
+	e.rb.mu.Lock()
+	e.rb.reply = func(string, json.RawMessage) string {
+		return `{"ok":true,"result":{"id":"someone-else","path":"/x/y","kind":"docs","ai_context":false}}`
+	}
+	e.rb.mu.Unlock()
+	p = e.propose(t, "register_project", "other", e.registerFields())
+	if status, b := e.sock(t, "POST", "/api/v1/projects/apply", jsonBody(applyBodyOf(p, webauthnSig))); status != 504 || v1Code(b) != "outcome_unknown" {
+		t.Fatalf("foreign result: %d %s", status, b)
 	}
 }
 
@@ -999,6 +1025,15 @@ func TestConstantsAgreeWithWeb(t *testing.T) {
 	// The browser's copy (A5) is compared once it exists.
 	src, err := os.ReadFile("../web/static/views/projects.js")
 	if err != nil {
+		// Loud sentinel: if the shell already loads the view, a missing file
+		// must fail, not skip. (A5: turn this Skip into Fatal and extend the
+		// comparison to the length caps.)
+		for _, f := range []string{"router.js", "shell.js", "app.js", "index.html", "render.js"} {
+			b, rerr := os.ReadFile(filepath.Join("../web/static", f))
+			if rerr == nil && strings.Contains(string(b), "views/projects.js") {
+				t.Fatalf("%s loads views/projects.js but the file is missing", f)
+			}
+		}
 		t.Skip("web/static/views/projects.js does not exist yet (A5); the comparison runs once it does")
 	}
 	js := string(src)
@@ -1014,5 +1049,202 @@ func TestConstantsAgreeWithWeb(t *testing.T) {
 	}
 	if got, want := jsRegex("KIND_RE"), kindPattern; got != want {
 		t.Errorf("KIND_RE %q != %q", got, want)
+	}
+}
+
+// A path is shown on a signing screen: only printable ASCII and Hangul
+// syllables, at propose, apply and in the candidate list (no dead ends).
+func TestProjectPathTextRule(t *testing.T) {
+	e := newProjEnv(t)
+	hangul := filepath.Join(e.root, "프로젝트")
+	mkRepo(t, hangul)
+	for _, name := range []string{"zw\u200bx", "wide\u3000x", "nb\u00a0x", "comb\u0065\u0301x", "vs\ufe0fx"} {
+		mkRepo(t, filepath.Join(e.root, name))
+	}
+	code, b := e.sock(t, "GET", "/api/v1/projects/candidates", "")
+	if code != 200 {
+		t.Fatalf("%d %s", code, b)
+	}
+	var got struct {
+		Candidates []struct{ Path string } `json:"candidates"`
+	}
+	_ = json.Unmarshal(b, &got)
+	listed := map[string]bool{}
+	for _, c := range got.Candidates {
+		listed[c.Path] = true
+	}
+	if !listed[hangul] || !listed[e.other] || !listed[e.repo] || len(listed) != 3 {
+		t.Fatalf("candidates %v", listed)
+	}
+	// The Hangul path can be proposed and applied.
+	f := map[string]any{"path": hangul, "kind": "docs", "ai_context": false}
+	p := e.propose(t, "register_project", "hangul", f)
+	if code, b := e.sock(t, "POST", "/api/v1/projects/apply", jsonBody(applyBodyOf(p, webauthnSig))); code != 200 {
+		t.Fatalf("%d %s", code, b)
+	}
+	// The hostile ones are refused by apply too, signature or not.
+	for _, name := range []string{"zw\u200bx", "wide\u3000x", "nb\u00a0x"} {
+		f := map[string]any{"path": filepath.Join(e.root, name), "kind": "docs", "ai_context": false}
+		change, _ := registrymsg.ChangeHash("register_project", "hostile", f)
+		m := map[string]any{"action": "register_project", "subject": "hostile", "fields": f, "change": change,
+			"request": p.Request, "issued": p.Issued, "signature": webauthnSig}
+		if code, b := e.sock(t, "POST", "/api/v1/projects/apply", jsonBody(m)); code != 400 {
+			t.Errorf("%q: %d %s", name, code, b)
+		}
+	}
+	if n := len(e.rb.writes()); n != 1 {
+		t.Fatalf("%d broker writes", n)
+	}
+}
+
+func (e *projEnv) tokenCaller(t *testing.T, name string) func(path, body string) (int, []byte) {
+	srv := e.httpServer(t)
+	tok := e.newToken(t, name)
+	return func(path, body string) (int, []byte) {
+		c, _, b := httpDo(t, srv, "POST", path, body, hdr{"Authorization": "Bearer " + tok})
+		return c, b
+	}
+}
+
+func (e *projEnv) proposeBody() string {
+	return jsonBody(map[string]any{"action": "register_project", "subject": "other", "fields": e.registerFields()})
+}
+
+func TestProjectProposeRateLimit(t *testing.T) {
+	e := newProjEnv(t)
+	clk := &testClock{}
+	e.d.handler.now = clk.now
+	// A refused body takes no slot.
+	if code, _ := e.sock(t, "POST", "/api/v1/projects/propose", `{"action":"nope"}`); code != 400 {
+		t.Fatal(code)
+	}
+	for i := 0; i < ProjectProposePerActorHour; i++ {
+		if code, b := e.sock(t, "POST", "/api/v1/projects/propose", e.proposeBody()); code != 200 {
+			t.Fatalf("propose %d: %d %s", i+1, code, b)
+		}
+	}
+	code, b := e.sock(t, "POST", "/api/v1/projects/propose", e.proposeBody())
+	if code != 429 || v1Code(b) != "project_rate_limited" {
+		t.Fatalf("%d %s", code, b)
+	}
+	other := e.tokenCaller(t, "mac-ssh")
+	if code, b := other("/api/v1/projects/propose", e.proposeBody()); code != 200 {
+		t.Fatalf("second actor: %d %s", code, b)
+	}
+	// Separate bucket: apply is not affected by exhausted proposals.
+	clk.set(0)
+	p := proposeOut{Action: "set_flag", Subject: "reg", Fields: map[string]any{"flag": "ai_context", "value": true}}
+	p.Change, _ = registrymsg.ChangeHash(p.Action, p.Subject, p.Fields)
+	p.Request, p.Issued = registrymsg.NewRequestID(), time.Now().UTC().Format("2006-01-02T15:04:05Z")
+	if code, b := e.sock(t, "POST", "/api/v1/projects/apply", jsonBody(applyBodyOf(p, webauthnSig))); code != 200 {
+		t.Fatalf("apply with exhausted propose bucket: %d %s", code, b)
+	}
+	clk.set(time.Hour + time.Minute)
+	if code, b := e.sock(t, "POST", "/api/v1/projects/propose", e.proposeBody()); code != 200 {
+		t.Fatalf("after an hour: %d %s", code, b)
+	}
+}
+
+func (e *projEnv) applyBody(t *testing.T) string {
+	t.Helper()
+	p := e.propose(t, "set_flag", "reg", map[string]any{"flag": "ai_context", "value": true})
+	return jsonBody(applyBodyOf(p, webauthnSig))
+}
+
+func TestProjectApplyRateLimit(t *testing.T) {
+	e := newProjEnv(t)
+	clk := &testClock{}
+	e.d.handler.now = clk.now
+	bodies := make([]string, ProjectApplyPerActorHour+3)
+	for i := range bodies {
+		clk.set(time.Duration(i) * time.Millisecond) // keep propose under its own limit
+		bodies[i] = e.applyBody(t)
+	}
+	clk.set(0)
+	for i := 0; i < ProjectApplyPerActorHour; i++ {
+		if code, b := e.sock(t, "POST", "/api/v1/projects/apply", bodies[i]); code != 200 {
+			t.Fatalf("apply %d: %d %s", i+1, code, b)
+		}
+	}
+	before := len(e.rb.writes())
+	code, b := e.sock(t, "POST", "/api/v1/projects/apply", bodies[ProjectApplyPerActorHour])
+	if code != 429 || v1Code(b) != "project_rate_limited" || len(e.rb.writes()) != before {
+		t.Fatalf("%d %s writes %d->%d", code, b, before, len(e.rb.writes()))
+	}
+	other := e.tokenCaller(t, "mac-ssh")
+	if code, b := other("/api/v1/projects/apply", bodies[ProjectApplyPerActorHour+1]); code != 200 {
+		t.Fatalf("second actor: %d %s", code, b)
+	}
+	// Separate bucket: proposals still work.
+	if code, b := e.sock(t, "POST", "/api/v1/projects/propose", e.proposeBody()); code != 200 {
+		t.Fatalf("propose with exhausted apply bucket: %d %s", code, b)
+	}
+	clk.set(time.Hour + time.Minute)
+	if code, b := e.sock(t, "POST", "/api/v1/projects/apply", bodies[ProjectApplyPerActorHour+2]); code != 200 {
+		t.Fatalf("after an hour: %d %s", code, b)
+	}
+}
+
+// A call that provably cost nothing gives its slot back; one that reached the
+// broker keeps it, whatever the broker said.
+func TestProjectApplyRefundRules(t *testing.T) {
+	// Dead socket: the request never left, so no number of tries is limited.
+	dead := newEnv(t, noSteps{}, 1, func(c *Config) {
+		c.BrokerSocket = filepath.Join(shortDir(t), "none.sock")
+		c.Policy = func() PolicyView { return PolicyView{Classes: map[string]string{"docs": "L1"}} }
+	})
+	dead.d.pauseWorkers()
+	f := map[string]any{"flag": "ai_context", "value": true}
+	change, _ := registrymsg.ChangeHash("set_flag", "reg", f)
+	body := jsonBody(map[string]any{"action": "set_flag", "subject": "reg", "fields": f, "change": change,
+		"request": registrymsg.NewRequestID(), "issued": time.Now().UTC().Format("2006-01-02T15:04:05Z"), "signature": webauthnSig})
+	for i := 0; i < ProjectApplyPerActorHour+5; i++ {
+		c, _, b := dead.sockDo(t, "POST", "/api/v1/projects/apply", body, nil)
+		if c != 503 || v1Code(b) != "broker_unavailable" {
+			t.Fatalf("try %d: %d %s", i+1, c, b)
+		}
+	}
+	// Refusals the broker made after looking at the signature keep the slot.
+	for _, code := range []string{"bad_signature", "stale_signature", "unknown_signer", "request_reused", "change_mismatch", "timeout"} {
+		e := newProjEnv(t)
+		e.rb.mu.Lock()
+		e.rb.reply = func(string, json.RawMessage) string { return brokerErrReply(code) }
+		e.rb.mu.Unlock()
+		for i := 0; i < ProjectApplyPerActorHour; i++ {
+			if c, b := e.sock(t, "POST", "/api/v1/projects/apply", e.applyBody(t)); c == 429 {
+				t.Fatalf("%s: limited early at %d: %s", code, i+1, b)
+			}
+		}
+		if c, b := e.sock(t, "POST", "/api/v1/projects/apply", e.applyBody(t)); c != 429 || v1Code(b) != "project_rate_limited" {
+			t.Errorf("%s kept no slot: %d %s", code, c, b)
+		}
+	}
+	// busy and forbidden (the broker did nothing) give it back.
+	for _, code := range []string{"busy", "forbidden"} {
+		e := newProjEnv(t)
+		e.rb.mu.Lock()
+		e.rb.reply = func(string, json.RawMessage) string { return brokerErrReply(code) }
+		e.rb.mu.Unlock()
+		for i := 0; i < ProjectApplyPerActorHour+3; i++ {
+			if c, b := e.sock(t, "POST", "/api/v1/projects/apply", e.applyBody(t)); c != 503 {
+				t.Fatalf("%s try %d: %d %s", code, i+1, c, b)
+			}
+		}
+	}
+}
+
+// The registry list is all or nothing: one entry that does not look like a
+// project makes the whole list broker_error (fail closed), never a partial list.
+func TestRegistryListFailsClosedOnOneBadEntry(t *testing.T) {
+	e := newProjEnv(t)
+	e.rb.mu.Lock()
+	e.rb.projects = append(e.rb.projects, map[string]any{"id": "BAD ID", "path": "/x", "kind": "docs", "ai_context": true,
+		"provider": nil, "gitlab": nil, "auto_merge": map[string]any{"enabled": false}})
+	e.rb.mu.Unlock()
+	for _, path := range []string{"/api/v1/projects/registry", "/api/v1/projects/candidates"} {
+		code, b := e.sock(t, "GET", path, "")
+		if code != 502 || v1Code(b) != "broker_error" || strings.Contains(string(b), "BAD ID") {
+			t.Errorf("%s: %d %s", path, code, b)
+		}
 	}
 }

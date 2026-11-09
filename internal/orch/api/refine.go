@@ -28,6 +28,11 @@ import (
 const (
 	// RefinePerActorHour is D8's per-actor limit of AI plan requests.
 	RefinePerActorHour = 5
+	// ProjectProposePerActorHour and ProjectApplyPerActorHour bound the
+	// registry endpoints per actor (propose builds a signing message; apply
+	// reaches the broker, which spends a one-time request id per signed try).
+	ProjectProposePerActorHour = 60
+	ProjectApplyPerActorHour   = 30
 	// PreviewPerActorHour bounds previews per actor (they cost git reads and a
 	// stored selection, not AI spend).
 	PreviewPerActorHour = 30
