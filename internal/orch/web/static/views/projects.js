@@ -37,6 +37,12 @@ export const ACTION_REGISTER = 'register_project';
 export const ACTION_SET_FLAG = 'set_flag';
 export const FLAG_AI_CONTEXT = 'ai_context';
 
+// Marks of the server's two AI sentences (internal/orch/api previewSentences;
+// TestConstantsAgreeWithWeb pins them): the preview must say what the browser's
+// own AI line says.
+export const AI_ON_MARK = '전송될 수 있게 허용합니다';
+export const AI_OFF_MARK = 'AI 서비스로 전송되지 않습니다';
+
 const MAX_PREVIEW_LINES = 12;
 const MAX_PREVIEW_CHARS = 600;
 const MAX_KINDS = 64;
@@ -145,6 +151,15 @@ const STATUS_TEXT = {
   429: ERROR_TEXT.project_rate_limited,
 };
 
+// checkList: the fixed text for this failure tells the user to look at the list.
+export function checkList(err) {
+  const code = err && typeof err.code === 'string' ? err.code : '';
+  if (code === 'outcome_unknown' || code === 'broker_error' || code === 'project_unknown') return true;
+  if (has(ERROR_TEXT, code)) return false;
+  const st = err && typeof err.status === 'number' ? err.status : 0;
+  return st >= 500;
+}
+
 // failureText: the fixed sentence for an ApiError. Unknown codes fall back to
 // the HTTP status, never to the server's message.
 export function failureText(err) {
@@ -222,6 +237,13 @@ async function analyze(sent, resp) {
       pv.some((x) => typeof x !== 'string' || x === '' || x.length > MAX_PREVIEW_CHARS || findHostile(x) !== null)) {
     problems.push('preview');
   }
+  // the server's AI sentences agree with the browser's own AI line
+  if (Array.isArray(pv)) {
+    const aiNew = sent.action === ACTION_REGISTER ? sent.fields.ai_context : sent.fields.value;
+    const on = pv.filter((x) => typeof x === 'string' && x.includes(AI_ON_MARK)).length;
+    const off = pv.filter((x) => typeof x === 'string' && x.includes(AI_OFF_MARK)).length;
+    if (aiNew ? !(on === 1 && off === 0) : !(off === 1 && on === 0)) problems.push('preview_ai');
+  }
   return problems;
 }
 
@@ -238,6 +260,7 @@ export function projectsView(ctx) {
     kinds: [],
     form: null, // persistent controls of the register form
     sent: null, // {action, subject, fields}: what this page asked for
+    view: null, // for a set_flag: {path, old} of the list row it came from
     resp: null,
     problems: [],
     signer: null,
@@ -246,7 +269,8 @@ export function projectsView(ctx) {
     result: null, // {error, text}
   };
   let signerP = null;
-  let seq = 0;
+  let listSeq = 0; // list loads: a newer load or an apply makes older answers stale
+  let propSeq = 0; // proposals: a cancel or a newer proposal makes older answers stale
   const gone = () => !!(ctx.signal && ctx.signal.aborted);
 
   function paint() {
@@ -255,14 +279,14 @@ export function projectsView(ctx) {
 
   // ---- list ----
   async function loadList() {
-    const my = ++seq;
+    const my = ++listSeq;
     try {
       const r = await ctx.get('/api/v1/projects/registry');
-      if (gone() || my !== seq) return;
+      if (gone() || my !== listSeq) return;
       st.list = r && Array.isArray(r.projects) ? r.projects.filter(isObj) : [];
       st.listFailed = null;
     } catch (err) {
-      if (gone() || my !== seq) return;
+      if (gone() || my !== listSeq) return;
       st.listFailed = err;
     }
     if (st.step === 'loading' || st.step === 'list') {
@@ -271,7 +295,16 @@ export function projectsView(ctx) {
     }
   }
 
+  // backToList is the way out of a result: it always shows a freshly read list.
+  async function backToList() {
+    toList();
+    st.step = 'loading';
+    paint();
+    await loadList();
+  }
+
   function toList() {
+    propSeq++; // a proposal still in flight is for an abandoned change
     st.step = 'list';
     st.note = null;
     st.sent = null;
@@ -358,16 +391,18 @@ export function projectsView(ctx) {
   }
 
   // ---- propose -> confirmation ----
-  async function propose(sent) {
+  async function propose(sent, view) {
     if (st.busy) return;
     st.busy = true;
     st.note = null;
-    const my = ++seq;
+    const my = ++propSeq;
+    st.view = view || null;
+    if (st.step === 'list') paint(); // disables the reload button while the proposal is out
     let resp;
     try {
       resp = await ctx.post('/api/v1/projects/propose', sent, { noRetry429: true });
     } catch (err) {
-      if (gone()) return;
+      if (gone() || my !== propSeq) return; // left or cancelled: toList already cleared busy
       st.busy = false;
       const text = err && err.status === 0 ? TEXT.connect : failureText(err);
       if (st.form && st.step === 'form') {
@@ -379,9 +414,9 @@ export function projectsView(ctx) {
       }
       return;
     }
-    if (gone() || my !== seq) return;
+    if (gone() || my !== propSeq) return;
     st.problems = await analyze(sent, resp);
-    if (gone() || my !== seq) return;
+    if (gone() || my !== propSeq) return;
     st.sent = sent;
     st.resp = resp;
     st.step = 'confirm';
@@ -440,6 +475,7 @@ export function projectsView(ctx) {
       change: cur.resp.change, request: cur.resp.request, issued: cur.resp.issued, signature,
     };
     // From here the proposal is spent: whatever the answer, it is never signed or sent again.
+    listSeq++; // a list load that started before this change must not paint over the next one
     st.step = 'result';
     st.note = null;
     st.result = { error: false, text: '서버로 변경을 보내는 중…', pending: true };
@@ -452,7 +488,8 @@ export function projectsView(ctx) {
       st.busy = false;
       st.result = { error: true, text: unknown ? TEXT.unknownOutcome : failureText(err) };
       paint();
-      if (unknown) await loadList();
+      // Every fixed text that tells the user to check the list also reads it again.
+      if (unknown || checkList(err)) await loadList();
       return;
     }
     if (gone()) return;
@@ -508,7 +545,7 @@ export function projectsView(ctx) {
       el('div', { class: 'row' }, [
         el('button', { type: 'button', class: ['btn', 'primary'], 'data-focus-key': 'add', on: { click: startRegister } }, '프로젝트 추가'),
         ' ',
-        el('button', { type: 'button', class: 'btn', 'data-focus-key': 'reload', on: { click: reload } }, '목록 새로고침'),
+        el('button', { type: 'button', class: 'btn', 'data-focus-key': 'reload', disabled: st.busy, on: { click: reload } }, '목록 새로고침'),
       ]),
       noteNode(),
       st.list.length > 0 ? el('div', { class: 'card' }, [table]) : null,
@@ -517,6 +554,7 @@ export function projectsView(ctx) {
   }
 
   async function reload() {
+    if (st.busy) return;
     st.note = null;
     await loadList();
   }
@@ -527,7 +565,11 @@ export function projectsView(ctx) {
     const toggle = idOk
       ? el('button', {
         type: 'button', class: 'btn', 'data-focus-key': 'toggle-' + i,
-        on: { click: () => { if (!st.busy) propose({ action: ACTION_SET_FLAG, subject: p.id, fields: { flag: FLAG_AI_CONTEXT, value: !ai } }); } },
+        on: {
+          click: () => {
+            if (!st.busy) propose({ action: ACTION_SET_FLAG, subject: p.id, fields: { flag: FLAG_AI_CONTEXT, value: !ai } }, { path: typeof p.path === 'string' ? p.path : '', old: ai });
+          },
+        },
       }, [ai ? 'AI 전송 끄기' : 'AI 전송 켜기', el('span', { class: 'sr' }, ' (' + inline(p.id, 64) + ')')])
       : el('span', { class: 'note' }, '-');
     const gl = isObj(p.gitlab) && typeof p.gitlab.project === 'string' ? inline(p.gitlab.project, 120) : '연결 없음';
@@ -578,8 +620,11 @@ export function projectsView(ctx) {
       facts.push(li('경로', s.fields.path), li('종류', s.fields.kind));
     } else {
       facts.push(li('바꿀 설정', 'AI 전송 허용'));
+      if (st.view && st.view.path) facts.push(li('경로', inline(st.view.path, MAX_PATH_BYTES)));
     }
-    facts.push(li('AI 전송 허용', aiNew ? '예' : '아니오', { 'data-field': 'ai_context' }));
+    const yn = (b) => (b ? '예' : '아니오');
+    const aiValue = s.action === ACTION_SET_FLAG && st.view ? yn(st.view.old) + ' → ' + yn(aiNew) : yn(aiNew);
+    facts.push(li('AI 전송 허용', aiValue, { 'data-field': 'ai_context' }));
 
     let controls;
     if (st.problems.length > 0) {
@@ -598,7 +643,7 @@ export function projectsView(ctx) {
     return el('div', { class: ['panel', 'canvas'] }, [
       el('h1', { id: 'h-projects' }, '변경 내용 확인'),
       el('p', { class: 'lead' }, '아래 내용이 전부입니다. 서명하면 바로 적용됩니다.'),
-      el('ul', { class: 'plan-rows', 'aria-label': '바뀌는 내용' }, facts),
+      el('ul', { class: 'pfacts', 'aria-label': '바뀌는 내용' }, facts),
       aiNew ? el('div', { class: 'trunc', 'data-emph': 'ai-on', role: 'note' }, TEXT.aiOn) : null,
       st.problems.length === 0
         ? el('section', { class: 'sec', 'aria-labelledby': 'h-says' }, [
@@ -624,7 +669,7 @@ export function projectsView(ctx) {
     return el('div', { class: ['panel', 'canvas'] }, [
       el('h1', { id: 'h-projects' }, r.pending ? '적용하는 중' : r.error ? '변경하지 못했습니다' : '완료'),
       el('p', { class: r.error ? ['note', 'err'] : ['note', 'ok'], role: r.error ? 'alert' : 'status', 'data-result': r.error ? 'error' : r.pending ? 'pending' : 'ok' }, r.text),
-      r.pending ? null : el('p', {}, [el('button', { type: 'button', class: ['btn', 'primary'], 'data-focus-key': 'back', on: { click: toList } }, '목록으로')]),
+      r.pending ? null : el('p', {}, [el('button', { type: 'button', class: ['btn', 'primary'], 'data-focus-key': 'back', on: { click: backToList } }, '목록으로')]),
     ]);
   }
 

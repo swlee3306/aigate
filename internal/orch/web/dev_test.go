@@ -229,7 +229,15 @@ func TestDevServer(t *testing.T) {
 		b, _ := stdjson.Marshal(map[string]any{"projects": projects, "providers": []any{}, "auto_merge_global": map[string]any{"enabled": false, "max_per_day": 5}})
 		serve(w, b)
 	})
-	mux.HandleFunc("/api/v1/projects/candidates", func(w http.ResponseWriter, r *http.Request) { serve(w, fixture("projects-candidates.json")) })
+	mux.HandleFunc("/api/v1/projects/candidates", func(w http.ResponseWriter, r *http.Request) {
+		if os.Getenv("ORCH_WEB_LONGPATH") != "" { // a 300-character candidate path, for the 390px check
+			long := "/home/orch/repos/" + strings.Repeat("abcdefghij", 28) + "x"
+			b, _ := stdjson.Marshal(map[string]any{"candidates": []map[string]any{{"path": long, "head": "0123456789abcdef0123456789abcdef01234567"}}, "kinds": []string{"docs"}})
+			serve(w, b)
+			return
+		}
+		serve(w, fixture("projects-candidates.json"))
+	})
 	type projBody struct {
 		Action  string         `json:"action"`
 		Subject string         `json:"subject"`

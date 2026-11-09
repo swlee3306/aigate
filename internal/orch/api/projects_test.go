@@ -1125,6 +1125,123 @@ func TestConstantsAgreeWithWeb(t *testing.T) {
 			t.Errorf("webauthn.js REGISTRY_MESSAGE_RE lacks %q", key)
 		}
 	}
+	// The browser's message regex: every piece derives from the Go definitions.
+	waText := string(wa)
+	bare := func(p string) string { return strings.TrimSuffix(strings.TrimPrefix(p, "^"), "$") }
+	for _, piece := range []string{
+		"action: (" + registrymsg.ActionRegisterProject + "|" + registrymsg.ActionSetFlag + ")",
+		"subject: (" + bare(subjectPattern) + ")",
+		"change: ([0-9a-f]{64})",
+		"request: ([0-9a-f]{32})",
+		"issued: ([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)",
+	} {
+		if !strings.Contains(waText, piece) {
+			t.Errorf("webauthn.js REGISTRY_MESSAGE_RE lacks %q", piece)
+		}
+	}
+	// ... and the quantifiers are the Go rules: 64 hex change, 32 hex request.
+	okMsg := signing.RegistryMessage{Action: "set_flag", Subject: "a", Change: strings.Repeat("a", 64), Request: strings.Repeat("b", 32),
+		Issued: time.Date(2026, 11, 9, 10, 4, 5, 0, time.UTC)}
+	if okMsg.Validate() != nil {
+		t.Fatal("base message must be valid")
+	}
+	for _, mut := range []func(*signing.RegistryMessage){
+		func(m *signing.RegistryMessage) { m.Change = strings.Repeat("a", 63) },
+		func(m *signing.RegistryMessage) { m.Change = strings.Repeat("a", 65) },
+		func(m *signing.RegistryMessage) { m.Request = strings.Repeat("b", 31) },
+		func(m *signing.RegistryMessage) { m.Request = strings.Repeat("b", 33) },
+		func(m *signing.RegistryMessage) { m.Change = strings.Repeat("A", 64) },
+	} {
+		m := okMsg
+		mut(&m)
+		if m.Validate() == nil {
+			t.Errorf("Go accepts a message the browser regex refuses: %+v", m)
+		}
+	}
+	// The browser's SCHEMA (allowed fields per action and their types) is the registrymsg one.
+	for action, goFields := range map[string]map[string]string{
+		registrymsg.ActionRegisterProject: {"path": "s", "kind": "s", "ai_context": "b"},
+		registrymsg.ActionSetFlag:         {"flag": "s", "value": "b"},
+	} {
+		key := "[ACTION_REGISTER]"
+		if action == registrymsg.ActionSetFlag {
+			key = "[ACTION_SET_FLAG]"
+		}
+		m := regexp.MustCompile(`(?m)^\s*` + regexp.QuoteMeta(key) + `: \{([^}]*)\},?\s*$`).FindStringSubmatch(js)
+		if m == nil {
+			t.Fatalf("JS SCHEMA entry %s not found", key)
+		}
+		jsFields := map[string]string{}
+		for _, part := range strings.Split(m[1], ",") {
+			name, typ, ok := strings.Cut(strings.TrimSpace(part), ": ")
+			if !ok {
+				t.Fatalf("SCHEMA %s: bad entry %q", key, part)
+			}
+			jsFields[name] = strings.Trim(typ, "'")
+		}
+		if len(jsFields) != len(goFields) {
+			t.Errorf("SCHEMA %s fields %v != %v", key, jsFields, goFields)
+		}
+		for name, typ := range goFields {
+			if jsFields[name] != typ {
+				t.Errorf("SCHEMA %s field %s: %q != %q", key, name, jsFields[name], typ)
+			}
+		}
+		// Go really takes exactly these fields: all of them, none missing, none extra.
+		sample := func(name, typ string) any {
+			if typ == "b" {
+				return true
+			}
+			return map[string]string{"path": "/a", "kind": "docs", "flag": "ai_context"}[name]
+		}
+		full := map[string]any{}
+		for name, typ := range jsFields {
+			full[name] = sample(name, typ)
+		}
+		if _, err := registrymsg.CanonicalChange(action, "a", full); err != nil {
+			t.Errorf("registrymsg refuses the browser's %s fields: %v", action, err)
+		}
+		for name := range full {
+			less := map[string]any{}
+			for k, v := range full {
+				if k != name {
+					less[k] = v
+				}
+			}
+			if _, err := registrymsg.CanonicalChange(action, "a", less); err == nil {
+				t.Errorf("registrymsg accepts %s without %s", action, name)
+			}
+		}
+		full["extra"] = "x"
+		if _, err := registrymsg.CanonicalChange(action, "a", full); err == nil {
+			t.Errorf("registrymsg accepts an extra field for %s", action)
+		}
+	}
+	// The AI sentences the browser looks for are the ones the server writes.
+	onMark, offMark := jsString("AI_ON_MARK"), jsString("AI_OFF_MARK")
+	count := func(c registryChange, mark string) int {
+		n := 0
+		for _, line := range previewSentences(c) {
+			if strings.Contains(line, mark) {
+				n++
+			}
+		}
+		return n
+	}
+	for _, c := range []struct {
+		c  registryChange
+		on bool
+	}{
+		{registryChange{Action: "register_project", Subject: "a", Fields: map[string]any{"path": "/a", "kind": "docs", "ai_context": true}}, true},
+		{registryChange{Action: "register_project", Subject: "a", Fields: map[string]any{"path": "/a", "kind": "docs", "ai_context": false}}, false},
+		{registryChange{Action: "set_flag", Subject: "a", Fields: map[string]any{"flag": "ai_context", "value": true}}, true},
+		{registryChange{Action: "set_flag", Subject: "a", Fields: map[string]any{"flag": "ai_context", "value": false}}, false},
+	} {
+		on, off := count(c.c, onMark), count(c.c, offMark)
+		if c.on && (on != 1 || off != 0) || !c.on && (off != 1 || on != 0) {
+			t.Errorf("preview of %v: on=%d off=%d marks (%q, %q)", c.c, on, off, onMark, offMark)
+		}
+	}
 	// Shipped, loaded and routed: the shell must know the view.
 	for _, f := range []struct{ file, needle string }{
 		{"app.js", "'projects'"}, {"router.js", "case 'projects':"}, {"index.html", `href="#/projects"`},

@@ -17,6 +17,7 @@ const CANDS = fx('projects-candidates.json');
 const PROP_REG = fx('projects-propose-register.json');
 const PROP_AI = fx('projects-propose-register-ai.json');
 const PROP_FLAG = fx('projects-propose-setflag.json');
+const PROP_FLAG_OFF = fx('projects-propose-setflag-off.json');
 const APPLIED = fx('projects-apply-ok.json');
 const SECRET = '<img src=x onerror=alert(1)> javascript:alert(1) ‮evil';
 
@@ -71,7 +72,7 @@ beforeEach(() => {
 // and builds the change hash and message from it (the golden vector test pins
 // computeChange to Go; the preview sentences are the golden ones).
 async function proposalFor(body) {
-  const base = body.action === 'set_flag' ? PROP_FLAG : (body.fields.ai_context ? PROP_AI : PROP_REG);
+  const base = body.action === 'set_flag' ? (body.fields.value ? PROP_FLAG : PROP_FLAG_OFF) : (body.fields.ai_context ? PROP_AI : PROP_REG);
   const change = await P.computeChange(body.action, body.subject, body.fields);
   return {
     action: body.action, subject: body.subject, fields: structuredClone(body.fields), change, request: base.request, issued: base.issued,
@@ -291,7 +292,7 @@ test('TestToggleAIContextGoesThroughSignature', async () => {
   for (const [row, label, value] of [['docs', 'AI 전송 켜기', true], ['calc', 'AI 전송 끄기', false]]) {
     auth = new Auth();
     wa.configure({ credentials: auth, subtle: webcrypto.subtle });
-    const prop = structuredClone(PROP_FLAG);
+    const prop = structuredClone(value ? PROP_FLAG : PROP_FLAG_OFF);
     prop.subject = row;
     prop.fields.value = value;
     prop.change = await P.computeChange('set_flag', row, prop.fields);
@@ -486,7 +487,7 @@ test('TestNoRetry429ForProjectWrites', async () => {
 });
 
 test('TestPreviewSentencesAreTextNodes', async () => {
-  const preview = ['<img src=x onerror=alert(1)> 보통 문장', 'javascript:alert(1)', '<b>굵게</b>'];
+  const preview = ['<img src=x onerror=alert(1)> 보통 문장', 'javascript:alert(1)', '<b>굵게</b> AI 서비스로 전송되지 않습니다'];
   const prop = { preview };
   const ctx = await mount({ 'POST /api/v1/projects/propose': async (body) => ({ ...(await proposalFor(body)), preview }) });
   await toConfirm(ctx);
@@ -591,4 +592,168 @@ test('TestProjectsConstantsAndPathRule', () => {
   assert.ok(ok('/가') && ok('/힣'));
   assert.ok(ok('/' + 'a'.repeat(4095)) && !ok('/' + 'a'.repeat(4096)));
   assert.ok(!ok('/' + '가'.repeat(1366)), 'length counts UTF-8 bytes');
+});
+
+// ---- Fix round 1 ------------------------------------------------------------------
+
+const gate = () => { let release; const p = new Promise((r) => { release = r; }); return { p, release }; };
+
+test('TestReloadDuringProposeDoesNotLockUp', async () => {
+  const g = gate();
+  const ctx = await mount({ 'POST /api/v1/projects/propose': async (body) => { await g.p; return proposalFor(body); } });
+  click(byLabel(ctx.root, 'AI 전송 켜기')[0]);
+  await until(() => posts(ctx, '/api/v1/projects/propose').length === 1, 'propose started');
+  const before = ctx.calls.filter((c) => c === '/api/v1/projects/registry').length;
+  // the reload button is disabled while a change is being proposed, and a click does nothing
+  const rb = byLabel(ctx.root, '목록 새로고침')[0];
+  assert.ok(rb.hasAttribute('disabled'), 'reload disabled while busy');
+  click(rb);
+  await sleep(20); // not ctx.settle(): the gated proposal is still pending
+  assert.equal(ctx.calls.filter((c) => c === '/api/v1/projects/registry').length, before, 'no reload while busy');
+  g.release();
+  await until(() => !!signBtn(ctx), 'confirmation after a reload attempt');
+  assert.ok(!signBtn(ctx).hasAttribute('disabled'), 'busy cleared: the sign button is usable');
+  click(signBtn(ctx));
+  await until(() => posts(ctx, '/api/v1/projects/apply').length === 1, 'apply');
+});
+
+test('TestSlowListLoadDoesNotBlockPropose', async () => {
+  // a list load that is still running when a change is proposed must not
+  // cancel the proposal or leave the page busy
+  let n = 0;
+  const g = gate();
+  const ctx = await mount({ '/api/v1/projects/registry': async () => { n++; if (n === 2) await g.p; return structuredClone(REGISTRY); } });
+  click(byLabel(ctx.root, '목록 새로고침')[0]); // load #2 hangs
+  await until(() => n === 2, 'slow load');
+  click(byLabel(ctx.root, 'AI 전송 켜기')[0]);
+  await until(() => !!signBtn(ctx), 'confirmation while the list load is pending');
+  assert.ok(!signBtn(ctx).hasAttribute('disabled'));
+  g.release();
+  await ctx.settle();
+  assert.ok(signBtn(ctx), 'the late list did not replace the confirmation');
+});
+
+test('TestCancelDuringProposeDropsConfirmation', async () => {
+  const g = gate();
+  const ctx = await mount({ 'POST /api/v1/projects/propose': async (body) => { await g.p; return proposalFor(body); } });
+  await openForm(ctx);
+  click(byLabel(ctx.root, '변경 내용 확인')[0]);
+  await until(() => posts(ctx, '/api/v1/projects/propose').length === 1, 'propose in flight');
+  click(byLabel(ctx.root, '취소')[0]);
+  await until(() => byLabel(ctx.root, '프로젝트 추가').length === 1, 'back at the list');
+  g.release();
+  await ctx.settle();
+  await sleep(20);
+  assert.equal(byLabel(ctx.root, '패스키로 서명').length, 0, 'no confirmation for an abandoned change');
+  assert.equal(findAll(ctx.root, (e) => e.tagName === 'H1' && /변경 내용 확인/.test(text(e))).length, 0);
+  assert.equal(auth.gets.length, 0);
+  // the page is not stuck busy: a new change can be proposed
+  g.release();
+  click(byLabel(ctx.root, 'AI 전송 켜기')[0]);
+  await until(() => !!signBtn(ctx), 'a fresh proposal works after the cancel');
+});
+
+test('TestSlowListAfterApplyIsNotPainted', async () => {
+  let data = structuredClone(REGISTRY);
+  let n = 0;
+  const g = gate();
+  const ctx = await mount({
+    '/api/v1/projects/registry': async () => { n++; const snap = structuredClone(data); if (n === 2) await g.p; return snap; },
+    'POST /api/v1/projects/apply': () => { data.projects[0].ai_context = true; return APPLIED; },
+  });
+  const aiOf = () => [...findAll(ctx.root, (e) => e.tagName === 'TR')].map((r) => text(r)).join('|');
+  click(byLabel(ctx.root, '목록 새로고침')[0]); // load #2 (old data) hangs
+  await until(() => n === 2, 'slow load');
+  click(byLabel(ctx.root, 'AI 전송 켜기')[0]);
+  await until(() => !!signBtn(ctx), 'confirm');
+  click(signBtn(ctx));
+  await until(() => /변경했습니다/.test(text(ctx.root)), 'result');
+  click(byLabel(ctx.root, '목록으로')[0]);
+  await until(() => byLabel(ctx.root, 'AI 전송 끄기').length === 2, 'fresh list shows docs on');
+  g.release(); // the old load finishes last
+  await ctx.settle();
+  await sleep(20);
+  assert.equal(byLabel(ctx.root, 'AI 전송 끄기').length, 2, 'stale list did not repaint: ' + aiOf());
+});
+
+test('TestLongPathOnConfirmation', async () => {
+  const long = '/home/orch/repos/' + 'a'.repeat(283); // 300 characters
+  assert.equal(long.length, 300);
+  const ctx = await mount({ '/api/v1/projects/candidates': { candidates: [{ path: long, head: 'x' }], kinds: ['docs'] } });
+  await toConfirm(ctx);
+  await waitSignable(ctx);
+  assert.ok(text(ctx.root).includes('경로: ' + long), 'the whole path is on the confirmation screen');
+  const mono = findAll(ctx.root, (e) => e.className.split(/\s+/).includes('mono') && text(e) === long);
+  assert.equal(mono.length, 1);
+  // CSS: the path wraps instead of overflowing (390px visual check is in the report)
+  const css = src('style.css');
+  assert.match(css, /\.pfacts[^{]*\.mono[^{]*\{[^}]*overflow-wrap:\s*anywhere/);
+  assert.match(css, /\.pfacts[^{]*\{[^}]*min-width:\s*0/);
+  assert.match(css, /\.ptable td\.mono[^{]*\{[^}]*overflow-wrap:\s*anywhere/);
+});
+
+test('TestSetFlagConfirmationShowsPathAndOldToNew', async () => {
+  const on = await mount();
+  click(byLabel(on.root, 'AI 전송 켜기')[0]); // docs: off -> on
+  await until(() => !!signBtn(on), 'confirm');
+  let t = text(on.root);
+  assert.match(t, /프로젝트 ID: docs/);
+  assert.match(t, /경로: \/home\/orch\/repos\/docs/);
+  assert.match(t, /AI 전송 허용: 아니오 → 예/);
+  const off = await mount();
+  click(byLabel(off.root, 'AI 전송 끄기')[0]); // calc: on -> off
+  await until(() => !!signBtn(off), 'confirm');
+  t = text(off.root);
+  assert.match(t, /경로: \/home\/orch\/repos\/calc/);
+  assert.match(t, /AI 전송 허용: 예 → 아니오/);
+  assert.equal(findAll(off.root, (e) => e.getAttribute('data-emph') === 'ai-on').length, 0, 'turning it off is not highlighted');
+});
+
+test('TestPreviewMustAgreeWithAILine', async () => {
+  const ON = '[중요] 이 저장소의 파일 내용이 외부 AI 서비스(OpenAI)로 전송될 수 있게 허용합니다. AI 계획 기능을 쓰면 요구사항과 저장소의 일부 파일 내용이 서비스 밖으로 나갑니다';
+  const OFF = '이 저장소의 파일 내용은 AI 서비스로 전송되지 않습니다(전송 허용 꺼짐)';
+  const other = '서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다';
+  const cases = [
+    ['off asked, server says on', false, [OFF.slice(0, 5), ON, other]],
+    ['neither', false, ['새 프로젝트를 등록합니다', other]],
+    ['both', false, [ON, OFF, other]],
+    ['on asked, server says off', true, ['x', OFF, other]],
+    ['on asked, neither', true, ['x', other]],
+  ];
+  for (const [name, ai, preview] of cases) {
+    const ctx = await mount({ 'POST /api/v1/projects/propose': async (body) => ({ ...(await proposalFor(body)), preview }) });
+    await openForm(ctx);
+    const b = byId(ctx.root, 'p-ai');
+    b.checked = ai; fire(b, 'change');
+    click(byLabel(ctx.root, '변경 내용 확인')[0]);
+    await until(() => findAll(ctx.root, (e) => e.getAttribute('data-warn') === 'mismatch').length === 1, name);
+    assert.equal(byLabel(ctx.root, '패스키로 서명').length, 0, name);
+  }
+  // a set_flag whose sentences contradict the new value
+  const ctx = await mount({ 'POST /api/v1/projects/propose': async (body) => ({ ...(await proposalFor(body)), preview: PROP_FLAG_OFF.preview }) });
+  click(byLabel(ctx.root, 'AI 전송 켜기')[0]);
+  await until(() => findAll(ctx.root, (e) => e.getAttribute('data-warn') === 'mismatch').length === 1, 'set_flag contradiction');
+  assert.equal(byLabel(ctx.root, '패스키로 서명').length, 0);
+});
+
+test('TestListReloadedAfterCheckTheListErrors', async () => {
+  const cases = [['broker_error', 502, true], ['odd_code', 500, true], ['outcome_unknown', 504, true], ['bad_signature', 403, false], ['project_exists', 409, false]];
+  for (const [code, status, reload] of cases) {
+    auth = new Auth();
+    wa.configure({ credentials: auth, subtle: webcrypto.subtle });
+    const ctx = await mount({ 'POST /api/v1/projects/apply': () => { throw apiError(status, code, SECRET); } });
+    await toConfirm(ctx);
+    await waitSignable(ctx);
+    click(signBtn(ctx));
+    await until(() => findAll(ctx.root, (e) => e.getAttribute('data-result') === 'error').length === 1, code);
+    await ctx.settle();
+    await sleep(10);
+    const n = () => ctx.calls.filter((c) => c === '/api/v1/projects/registry').length;
+    assert.equal(n(), reload ? 2 : 1, code + ' reload');
+    // the way back always shows a freshly read list
+    const before = n();
+    click(byLabel(ctx.root, '목록으로')[0]);
+    await until(() => byLabel(ctx.root, '프로젝트 추가').length === 1, 'list after ' + code);
+    assert.equal(n(), before + 1, code + ': the way back reads the list again');
+  }
 });

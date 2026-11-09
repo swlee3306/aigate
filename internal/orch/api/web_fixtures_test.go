@@ -357,9 +357,11 @@ func TestWebFixturesProjects(t *testing.T) {
 	reg := propose("register_project", "notes", map[string]any{"path": "/home/orch/repos/notes", "kind": "docs", "ai_context": false})
 	regAI := propose("register_project", "notes", map[string]any{"path": "/home/orch/repos/notes", "kind": "docs", "ai_context": true})
 	flag := propose("set_flag", "docs", map[string]any{"flag": "ai_context", "value": true})
+	flagOff := propose("set_flag", "calc", map[string]any{"flag": "ai_context", "value": false})
 	checkFixture(t, "projects-propose-register.json", reg)
 	checkFixture(t, "projects-propose-register-ai.json", regAI)
 	checkFixture(t, "projects-propose-setflag.json", flag)
+	checkFixture(t, "projects-propose-setflag-off.json", flagOff)
 	checkFixture(t, "projects-apply-ok.json", ProjectView{ID: "notes", Path: "/home/orch/repos/notes", Kind: "docs"})
 
 	e := newProjEnv(t)
