@@ -104,6 +104,21 @@ func TestApprovalAndRegistryMessagesRefuseEachOther(t *testing.T) {
 	if _, err := ParseRegistryMessage(approvalMsg(testNow).Text()); err == nil {
 		t.Fatal("ParseRegistryMessage accepted an approval message")
 	}
+	checkMagicDiffersAndShapesRefused(t)
+}
+
+func checkMagicDiffersAndShapesRefused(t *testing.T) {
+	if registryMagic == magic {
+		t.Fatal("registry and approval magic must differ")
+	}
+	six := strings.Replace(regMsg(testNow).Text(), registryMagic, magic, 1)
+	if _, err := ParseRegistryMessage(six); err == nil {
+		t.Fatal("6-line body with approval magic accepted")
+	}
+	seven := strings.Replace(approvalMsg(testNow).Text(), magic, registryMagic, 1)
+	if _, err := ParseMessage(seven); err == nil {
+		t.Fatal("7-line approval-shaped text with registry magic accepted")
+	}
 }
 
 func TestVerifyRegistrySSH(t *testing.T) {
@@ -138,10 +153,14 @@ func TestVerifyRegistryWebAuthn(t *testing.T) {
 	other := msg
 	other.Request = strings.Repeat("2", 32)
 	wantErr(t, VerifyRegistry(reg, msg, a.assertRegistry(t, "phone", other), fixedOpts), ErrBadSignature)
-	// Challenge is the digest of the approval-style text, not Digest().
+	// Challenge is the digest of different text (text+"x"), not Digest().
 	text := msg.Text()
 	raw := sha256Sum([]byte(text + "x"))
 	wantErr(t, VerifyRegistry(reg, msg, a.assertFor(t, "phone", raw[:], a.rpID, a.origin), fixedOpts), ErrBadSignature)
+	// Reverse cross: a genuine assertion over an approval message digest.
+	am := approvalMsg(testNow)
+	ad := am.Digest()
+	wantErr(t, VerifyRegistry(reg, msg, a.assertFor(t, "phone", ad[:], a.rpID, a.origin), fixedOpts), ErrBadSignature)
 	// Wrong origin / missing webauthn data.
 	d := msg.Digest()
 	wantErr(t, VerifyRegistry(reg, msg, a.assertFor(t, "phone", d[:], a.rpID, "https://evil.example"), fixedOpts), ErrBadSignature)

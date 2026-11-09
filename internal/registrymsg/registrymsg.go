@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -142,9 +143,13 @@ func NewRequestID() string {
 }
 
 // ParseFields strictly decodes a JSON object of change fields: duplicate keys,
-// numbers, nulls, arrays, nested objects and trailing data are refused. (A Go
+// numbers, nulls, arrays, nested objects, trailing data, invalid UTF-8 and
+// lone surrogate escapes (U+FFFD) are refused. (A Go
 // map cannot carry duplicate keys, so they must be caught while parsing.)
 func ParseFields(raw []byte) (map[string]any, error) {
+	if !utf8.Valid(raw) {
+		return nil, errors.New("registrymsg: fields are not valid UTF-8")
+	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
 		return nil, errors.New("registrymsg: fields must be a JSON object")
@@ -159,6 +164,9 @@ func ParseFields(raw []byte) (map[string]any, error) {
 		if !ok {
 			return nil, errors.New("registrymsg: malformed fields")
 		}
+		if strings.ContainsRune(key, utf8.RuneError) {
+			return nil, errors.New("registrymsg: invalid character in fields")
+		}
 		if _, dup := out[key]; dup {
 			return nil, errors.New("registrymsg: duplicate field")
 		}
@@ -167,7 +175,14 @@ func ParseFields(raw []byte) (map[string]any, error) {
 			return nil, errors.New("registrymsg: malformed fields")
 		}
 		switch v := vt.(type) {
-		case string, bool:
+		case string:
+			// A lone surrogate escape decodes to U+FFFD, which a browser
+			// would keep as a lone surrogate: refuse rather than diverge.
+			if strings.ContainsRune(v, utf8.RuneError) {
+				return nil, errors.New("registrymsg: invalid character in fields")
+			}
+			out[key] = v
+		case bool:
 			out[key] = v
 		default:
 			return nil, errors.New("registrymsg: field must be a string or boolean")

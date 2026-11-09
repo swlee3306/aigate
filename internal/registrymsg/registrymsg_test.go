@@ -1,9 +1,11 @@
 package registrymsg
 
 import (
+	"aigate/internal/approval/signing"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 func regFields() map[string]any {
@@ -44,6 +46,18 @@ func TestCanonicalChangeStableAndStrict(t *testing.T) {
 		t.Fatalf("html escaping: %s %v", c, err)
 	}
 
+	// Golden: exactly what a browser's JSON.stringify produces.
+	g := regFields()
+	g["path"] = "a\"b\\c<d>한글😀"
+	gold, err := CanonicalChange("register_project", "my-proj", g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGold := `{"action":"register_project","fields":{"ai_context":false,"kind":"registered","path":"a\"b\\c<d>한글😀"},"subject":"my-proj"}`
+	if string(gold) != wantGold {
+		t.Fatalf("golden: got %s\nwant %s", gold, wantGold)
+	}
+
 	bad := map[string]struct {
 		action, subject string
 		fields          map[string]any
@@ -60,7 +74,9 @@ func TestCanonicalChangeStableAndStrict(t *testing.T) {
 		"empty path":        {"register_project", "p", map[string]any{"path": "", "kind": "registered", "ai_context": false}},
 		"control in path":   {"register_project", "p", map[string]any{"path": "/x\n", "kind": "registered", "ai_context": false}},
 		"invalid utf8":      {"register_project", "p", map[string]any{"path": "/x\xff", "kind": "registered", "ai_context": false}},
-		"line separator":    {"register_project", "p", map[string]any{"path": "/x ", "kind": "registered", "ai_context": false}},
+		"U+2029":            {"register_project", "p", map[string]any{"path": "/x\u2029", "kind": "registered", "ai_context": false}},
+		"DEL":               {"register_project", "p", map[string]any{"path": "/x\x7f", "kind": "registered", "ai_context": false}},
+		"line separator":    {"register_project", "p", map[string]any{"path": "/x\u2028", "kind": "registered", "ai_context": false}},
 		"set_flag bad flag": {"set_flag", "p", map[string]any{"flag": "Auto Merge", "value": true}},
 		"set_flag no value": {"set_flag", "p", map[string]any{"flag": "ai_context"}},
 		"set_flag float":    {"set_flag", "p", map[string]any{"flag": "ai_context", "value": 1.0}},
@@ -77,14 +93,17 @@ func TestCanonicalChangeStableAndStrict(t *testing.T) {
 
 	// Raw JSON strictness: duplicate keys, floats, non-objects, trailing data.
 	for name, raw := range map[string]string{
-		"duplicate key": `{"path":"/a","path":"/b","kind":"registered","ai_context":false}`,
-		"float":         `{"flag":"ai_context","value":1.5}`,
-		"integer":       `{"flag":"ai_context","value":1}`,
-		"array":         `[]`,
-		"null":          `null`,
-		"trailing":      `{"flag":"ai_context","value":true} {}`,
-		"nested":        `{"flag":{"a":1},"value":true}`,
-		"empty":         ``,
+		"duplicate key":      `{"path":"/a","path":"/b","kind":"registered","ai_context":false}`,
+		"float":              `{"flag":"ai_context","value":1.5}`,
+		"integer":            `{"flag":"ai_context","value":1}`,
+		"array":              `[]`,
+		"null":               `null`,
+		"trailing":           `{"flag":"ai_context","value":true} {}`,
+		"nested":             `{"flag":{"a":1},"value":true}`,
+		"empty":              ``,
+		"invalid utf8":       "{\"flag\":\"a\xff\",\"value\":true}",
+		"lone surrogate":     `{"flag":"a\ud800","value":true}`,
+		"lone low surrogate": `{"flag":"a\udc00","value":true}`,
 	} {
 		if m, err := ParseFields([]byte(raw)); err == nil {
 			// Duplicate/float rejection must happen in the parser itself.
@@ -133,5 +152,27 @@ func TestNewRequestID(t *testing.T) {
 	a, b := NewRequestID(), NewRequestID()
 	if !re.MatchString(a) || !re.MatchString(b) || a == b {
 		t.Fatalf("bad ids: %q %q", a, b)
+	}
+}
+
+// The registry action constants and subject rule are duplicated in signing
+// (which must not import this package); this keeps them from drifting.
+func TestSigningDefinitionsDoNotDrift(t *testing.T) {
+	if ActionRegisterProject != signing.RegistryActionRegisterProject || ActionSetFlag != signing.RegistryActionSetFlag {
+		t.Fatal("action constants differ between registrymsg and signing")
+	}
+	corpus := []string{
+		"a", "my-proj", "a1-b2", "a" + strings.Repeat("b", 39), "a" + strings.Repeat("b", 40),
+		"", "A", "1a", "-a", "a_b", "a b", "a\n", "a.b", "é", "a/b", "../x", "ab-", "x\x00",
+	}
+	valid := strings.Repeat("c", 64)
+	for _, s := range corpus {
+		m := signing.RegistryMessage{
+			Action: ActionSetFlag, Subject: s, Change: valid, Request: strings.Repeat("1", 32),
+			Issued: time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC),
+		}
+		if got, want := m.Validate() == nil, ValidSubject(s); got != want {
+			t.Errorf("subject %q: signing accepts=%v registrymsg accepts=%v", s, got, want)
+		}
 	}
 }
