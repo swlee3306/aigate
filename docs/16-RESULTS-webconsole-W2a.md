@@ -174,14 +174,55 @@
 
 ## 6. 실서버에서 확인하지 못한 것
 
-**컷오버 전이므로 orch-vm에 관한 것은 전부 확인하지 않았다.** 특히:
-- **실제 `openstack quota show --usage -f json`의 키 이름.** `Resource`, `In Use`, `Limit`, `Reserved`는 이 저장소의 기존 고정 데이터(`vm/prune_test.go` 등)에서 가져왔고 실제 CLI 출력과 대조한 적이 없다. 다르면 `#/ops`가 늘 `cloud_unavailable`이 된다(런북 10장 2-8에서 사용자가 대조). `server show … -f value -c status`의 실제 출력도 같다.
+**아래는 컷오버 전 상태의 기록이다. 2026-11-09 컷오버 1단계에서 확인된 것은 7장에 있고, 그에 따라 여기 항목 중 일부는 해소되었다(해당 줄 끝에 표시).** 특히:
+- **실제 `openstack quota show --usage -f json`의 키 이름.** `Resource`, `In Use`, `Limit`, `Reserved`는 이 저장소의 기존 고정 데이터(`vm/prune_test.go` 등)에서 가져왔고 실제 CLI 출력과 대조한 적이 없다. 다르면 `#/ops`가 늘 `cloud_unavailable`이 된다(런북 10장 2-8에서 사용자가 대조). `server show … -f value -c status`의 실제 출력도 같다. **→ 해소(7장): 실제 키는 그대로였고 상태는 `ACTIVE`.**
 - **실제 브라우저에서 `#/new`의 키보드 전체 흐름과 스크린 리더 낭독.** DOM 대역 시험(`aria-disabled`, `aria-live`, Escape)만 했다. 이번 작업에서 화면을 다시 보지 않았다(Task 5의 ego-browser 확인은 이 수정 이전).
-- **다른 사용자 소유 저장소의 `/repos`.** `/repos`는 전역 `safe.directory`를 읽지 않으므로 orch 소유가 아닌 저장소는 빠질 것으로 예상한다(코드 읽기). orch-vm의 실제 소유자(`ls -ld /home/orch/repos/*`)는 보지 않았다.
-- **실제 `policy.yml`과의 종류 대조.** 정책에 `toy`, `sample-app`가 있다는 것은 운영 문서 3장의 기록일 뿐, 실제 파일을 이번에 읽지 않았다. CLI 제출의 동작 변화도 실서버에서 보지 않았다.
+- **다른 사용자 소유 저장소의 `/repos`.** `/repos`는 전역 `safe.directory`를 읽지 않으므로 orch 소유가 아닌 저장소는 빠질 것으로 예상한다(코드 읽기). orch-vm의 실제 소유자(`ls -ld /home/orch/repos/*`)는 보지 않았다. **→ 해소(7장): 모두 orch 소유, 전역 git 설정 없이도 열림.**
+- **실제 `policy.yml`과의 종류 대조.** 정책에 `toy`, `sample-app`가 있다는 것은 운영 문서 3장의 기록일 뿐, 실제 파일을 이번에 읽지 않았다. CLI 제출의 동작 변화도 실서버에서 보지 않았다. **→ 부분 해소(7장): 실제 정책 파일을 읽어 종류가 `toy`·`sample-app`뿐임을 확인했다. 미등록 종류 거부는 실서버에서 시험하지 않았다.**
 - **`주체:`/`TaskView.actor` 기대값은 코드를 읽고 도출했다**(최근 이벤트의 주체; 정상 서버에서는 곧 `system`). 실서버에서 본 적 없다. 런북은 웹 타임라인의 단계별 주체(첫 단계 = 제출자, `cancelled` 단계 = 취소자)를 1차로, 원장 `task_submitted`를 보조로 쓰게 했다. 단계별 주체 화면은 합성 데이터와 ego-browser(1280·390px)로만 봤고 실서버에서는 보지 않았다.
 - **실제 부하에서의 큐 상한.** 시험 DB(SQLite, `_txlock=immediate`)에서의 동시 제출만 확인했다.
 - **실제 인프라 실패의 재시도.** 가짜로 만든 실패 작업(`failedTask`)으로만 시험했다. 재시도 확인 문구는 `machine.Retry` 주석에서 가져왔다.
-- **스키마 v7 마이그레이션을 실제 운영 DB로.** 시험 DB(v6→v7)로만 확인했다. 옛 `orchd`가 v7 DB를 거부하는 것은 코드(`store.go`의 버전 검사)를 읽어 확인했다.
+- **스키마 v7 마이그레이션을 실제 운영 DB로.** 시험 DB(v6→v7)로만 확인했다. **→ 해소(7장): 운영 DB v6→v7 성공.** 옛 `orchd`가 v7 DB를 거부하는 것은 코드(`store.go`의 버전 검사)를 읽어 확인했다.
 - **`tailscale serve`가 클라이언트의 `Tailscale-User-*` 헤더를 지우는지**(W1부터 남은 것). orchd는 주체를 그 헤더에서 읽지 않으므로(적대 시험으로 확인) 주체에는 영향이 없다.
 - **ego-browser 시각 확인은 이번 작업에서 하지 않았다**(바뀐 것은 단추 속성·live 영역·키 처리·이름 자르기·칩 하나).
+
+## 7. 컷오버 실행 기록 (2026-11-09, orch-vm)
+
+`10-OPERATIONS-orchestrator.md` 10장 단계 1을 실제 서버에서 실행했다(`main` 10bd046, 작업 7·8까지 포함). 단계 2(웹 확인)는 **사용자의 브라우저 확인이 일부만 끝났다**.
+
+### 단계 1 (백업·배포·재시작): 완료
+- 시작 조건 확인: 진행·대기 작업 0, 승인 대기 0, 스키마 v6, `backup-w2a` 없음, VM `x86_64`, Mac–VM 시계 차이 3초.
+- Mac에서 만든 세 바이너리의 체크섬이 VM에 복사된 것과 일치.
+- 백업: `/usr/local/lib/aigate/*.prev-w2a`(root 소유 0755), `/home/orch/orchd/backup-w2a`(orchd.db — 스키마 v6, 작업 42건 확인 —, gate-home), `/etc/systemd/system/orchd.service.pre-w2a`.
+- 배포 후 시작은 오류 없이 성공. 서명 모드 유지(서명자 3명), 소켓 허용 uid `[0 1000]`, 웹 창구 정상, `healthz` 정상.
+- **운영 DB가 v7로 올라감:** `schema_version` 7, `task_events.actor` 열이 생겼고 기존 이벤트 390건은 모두 NULL(v7 이전). 작업 목록 보존(완료 40, 실패 2, 마지막 번호 42).
+- 시험 작업 #43(toy, 소켓 제출): 제출부터 `done`까지 약 80초. 첫 이벤트 주체 `socket:uid:1000`, 이후 7개 이벤트 모두 `system`, 원장 `task_submitted`의 `actor`·`via`가 `socket:uid:1000`. `orch show`의 `주체:`는 `system`(마지막 이벤트)으로, 정정된 런북의 설명과 일치.
+
+### 서버에서 직접 확인한 항목 (사용자의 브라우저 없이)
+| 항목 | 확인한 방법 | 결과 |
+|---|---|---|
+| 실제 `openstack quota show --usage -f json`의 키 이름 | orch 계정으로 읽기 전용 조회 | 항목 키가 `Resource`, `Limit`, `In Use`, `Reserved` — 가정과 같음 |
+| `ops.cloud` 쿼터 수치 | `/api/v1/ops`를 소켓으로 호출해 CLI와 비교 | gigabytes 한도 300·사용 150, volumes 한도 20·사용 5 — **CLI와 일치** |
+| 테스트 VM 상태 | `server show test-vm -f value -c status`와 비교 | `ACTIVE` — 일치 |
+| `restore_volumes` | `volume list` 이름과 비교 | 5개 볼륨 중 `test-vm-root-…` 형식 2개 — 일치(나머지 3개는 `agent-vm-root`, `orch-vm-root`, `k8s-migration-backup-30g`) |
+| `ops` 응답 시간 | 소켓 호출 | 캐시가 따뜻할 때 약 0.5ms |
+| 정책 파일 | 읽기 | 종류 `toy`·`sample-app`(둘 다 L1), `default_level L0`, `repo_roots [/home/orch/repos]` |
+| 저장소 소유자 | `ls -ld`, `git rev-parse`(전역 설정 없이) | `sample-app`·`toy`는 orch 소유이고 열림. `remote.git`은 bare라 목록에 안 나옴(정상) |
+
+### 웹에서 사용자가 제출한 작업 #44 (실패)
+- 웹에서 패스키로 제출한 작업. 요청 내용은 `Goal: 계산기 기능 생성` 한 줄뿐이었다.
+- 에이전트가 오류 없이(종료 코드 0) 끝났지만 커밋을 만들지 않아 `agent made no commit`으로 `failed`. 인프라 오류가 아니라 판정 실패(요청이 모호)이므로 재시도 대상이 아니다.
+- **확인된 것:** 웹 제출의 첫 이벤트 주체가 `session:mac-passkey`로 기록되었다(런북 2-3의 예상과 일치). 이후 이벤트는 `system`. 서버 로그에 오류 없음.
+- **교훈:** 런북 2-2의 "목표 칸만 적고 제출"은 구체적이지 않은 요청이라 에이전트가 아무것도 만들지 않는다. 런북 예시를 구체적인 요청으로 고쳤다. (W2b의 "한 줄 → AI 계획서" 기능이 이 문제를 푸는 것이다.)
+
+### 아직 확인되지 않은 것 (사용자의 브라우저 확인 대기)
+- 작업 화면의 시간 분포 타임라인에서 첫 단계의 `처리:` 줄이 `session:<ID>`, 나머지가 `처리: 자동`으로 보이는지.
+- `#/ops`(서버 상태) 화면이 위의 서버 값(쿼터 150/300, 5/20, test-vm ACTIVE, 복원 볼륨 2)을 보여 주는지. (서버의 응답은 확인했고 화면 표시는 확인하지 못했다.)
+- 진행 중인 작업을 웹에서 취소했을 때 확인 칸, `cancelled` 단계의 `처리:`.
+- `#/new`의 키보드 조작·스크린 리더, 저장소 목록이 웹에서 보이는지.
+- #44 화면에 "다시 시도" 버튼이 **없는지**(인프라 오류가 아니므로 없어야 정상).
+
+### 끝내 확인하지 못한 것
+- **재시도**(인프라 오류로 실패한 작업이 있어야 시험 가능, 일부러 만들지 않음).
+- **큐 상한**(실제 부하): 자동 시험만.
+- **정책에 없는 종류의 제출 거부**를 실서버에서 시험하지 않음(시험 코드와 정책 파일 읽기로만).
