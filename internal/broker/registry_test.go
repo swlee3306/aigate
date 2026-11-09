@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func anyOwner(uint32) bool { return true }
@@ -552,5 +553,237 @@ func TestConfigRepoRootsOptionalAndClean(t *testing.T) {
 		if _, err := LoadConfigOpts(e.CfgPath, e.loadOpts()); err == nil {
 			t.Fatalf("repo_roots %v accepted", bad)
 		}
+	}
+}
+
+// --- fix round 1 ---
+
+func TestRegistryMigrationDoesNotClobberLateFile(t *testing.T) {
+	legacy := LegacySource{ContextRepos: []string{"/srv/wide-open"}}
+	good := mustMarshalRegistry(func() Registry {
+		r := emptyRegistry()
+		r.Projects = []Project{{ID: "late", Path: "/srv/late", Kind: "k"}}
+		return r
+	}())
+	cases := map[string]struct {
+		content string
+		broken  bool
+	}{
+		"valid late file":  {content: string(good)},
+		"broken late file": {content: "junk", broken: true},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := stateDirFor(t)
+			path := filepath.Join(dir, RegistryFileName)
+			o := regOpts()
+			o.beforeCreate = func() { os.WriteFile(path, []byte(c.content), 0o600) }
+			st, err := OpenRegistry(dir, legacy, o)
+			if string(readFile(t, path)) != c.content {
+				t.Fatal("late registry file was overwritten")
+			}
+			if c.broken {
+				if !errors.Is(err, ErrRegistryBroken) || len(st.AIContextPaths()) != 0 {
+					t.Fatalf("err=%v paths=%v", err, st.AIContextPaths())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p := st.Snapshot().Projects; len(p) != 1 || p[0].ID != "late" {
+				t.Fatalf("projects %+v (legacy-derived?)", p)
+			}
+		})
+	}
+}
+
+func TestRegistryConcurrentOpenCreatesExactlyOne(t *testing.T) {
+	dir := stateDirFor(t)
+	var wg sync.WaitGroup
+	res := make([]*RegistryStore, 8)
+	for i := range res {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			st, err := OpenRegistry(dir, LegacySource{ContextRepos: []string{"/srv/a"}}, regOpts())
+			if err != nil {
+				t.Error(err)
+			}
+			res[i] = st
+		}(i)
+	}
+	wg.Wait()
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		t.Fatalf("dir holds %v", entries)
+	}
+	for _, st := range res {
+		if st == nil || len(st.Snapshot().Projects) != 1 {
+			t.Fatal("an opener did not see the single registry")
+		}
+	}
+}
+
+func TestReadStateFileFailureBranches(t *testing.T) {
+	dir := stateDirFor(t)
+	path := filepath.Join(dir, RegistryFileName)
+	good := string(mustMarshalRegistry(emptyRegistry()))
+	open := func(o RegistryOptions) error {
+		_, err := OpenRegistry(dir, LegacySource{ContextRepos: []string{"/srv/wide"}}, o)
+		return err
+	}
+	os.MkdirAll(dir, 0o700)
+	t.Run("file owner rejected, dir owner accepted", func(t *testing.T) {
+		os.WriteFile(path, []byte(good), 0o600)
+		o := regOpts()
+		o.fileOwnerOK = func(uint32) bool { return false }
+		if err := open(o); !errors.Is(err, ErrRegistryBroken) {
+			t.Fatalf("err %v", err)
+		}
+		os.Remove(path)
+	})
+	t.Run("unreadable (EACCES on lstat)", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root ignores modes")
+		}
+		os.WriteFile(path, []byte(good), 0o600)
+		os.Chmod(dir, 0o600)
+		defer func() { os.Chmod(dir, 0o700); os.Remove(path) }()
+		if err := open(regOpts()); !errors.Is(err, ErrRegistryBroken) {
+			t.Fatalf("err %v", err)
+		}
+	})
+	t.Run("directory in place of file", func(t *testing.T) {
+		os.Mkdir(path, 0o700)
+		defer os.Remove(path)
+		if err := open(regOpts()); !errors.Is(err, ErrRegistryBroken) {
+			t.Fatalf("err %v", err)
+		}
+	})
+	t.Run("oversize file", func(t *testing.T) {
+		os.WriteFile(path, bytes.Repeat([]byte(" "), maxStateFile+1), 0o600)
+		defer os.Remove(path)
+		if err := open(regOpts()); !errors.Is(err, ErrRegistryBroken) {
+			t.Fatalf("err %v", err)
+		}
+	})
+}
+
+func TestRegistryCaps(t *testing.T) {
+	mk := func(i int, pathLen int) Project {
+		n := strings.Repeat("a", pathLen-4) + string(rune('a'+i%26)) + string(rune('a'+i/26%26)) + string(rune('a'+i/676))
+		return Project{ID: "p" + strings.Repeat("x", 0) + string(rune('a'+i%26)) + string(rune('a'+i/26%26)) + string(rune('a'+i/676)), Path: "/" + n, Kind: "k"}
+	}
+	t.Run("500 ok 501 refused", func(t *testing.T) {
+		st := mustOpen(t, stateDirFor(t), LegacySource{})
+		if err := st.Update(func(r *Registry) error {
+			for i := 0; i < 500; i++ {
+				r.Projects = append(r.Projects, mk(i, 20))
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("500: %v", err)
+		}
+		if err := st.Update(func(r *Registry) error { r.Projects = append(r.Projects, mk(500, 20)); return nil }); err == nil {
+			t.Fatal("501 accepted")
+		}
+		if len(st.Snapshot().Projects) != 500 {
+			t.Fatal("state changed")
+		}
+	})
+	t.Run("path length", func(t *testing.T) {
+		st := mustOpen(t, stateDirFor(t), LegacySource{})
+		if err := st.Update(func(r *Registry) error { r.Projects = append(r.Projects, mk(0, 4096)); return nil }); err != nil {
+			t.Fatalf("4096: %v", err)
+		}
+		if err := st.Update(func(r *Registry) error { r.Projects = append(r.Projects, mk(1, 4097)); return nil }); err == nil {
+			t.Fatal("4097 accepted")
+		}
+	})
+	t.Run("serialized size", func(t *testing.T) {
+		dir := stateDirFor(t)
+		st := mustOpen(t, dir, LegacySource{})
+		before := readFile(t, filepath.Join(dir, RegistryFileName))
+		err := st.Update(func(r *Registry) error {
+			for i := 0; i < 300; i++ {
+				r.Projects = append(r.Projects, mk(i, 4096))
+			}
+			return nil
+		})
+		if err == nil {
+			t.Fatal("over-size registry accepted")
+		}
+		if !bytes.Equal(before, readFile(t, filepath.Join(dir, RegistryFileName))) || len(st.Snapshot().Projects) != 0 {
+			t.Fatal("state changed")
+		}
+	})
+}
+
+func TestWriteAtomicDirSyncFailureKeepsMemoryEqualToDisk(t *testing.T) {
+	dir := stateDirFor(t)
+	st := mustOpen(t, dir, LegacySource{})
+	st.opts.failAt = func(s string) error {
+		if s == "dir-synced" {
+			return errors.New("injected")
+		}
+		return nil
+	}
+	err := st.Update(func(r *Registry) error {
+		r.Projects = append(r.Projects, Project{ID: "a", Path: "/srv/a", Kind: "k"})
+		return nil
+	})
+	if err == nil {
+		t.Fatal("dir fsync failure not reported")
+	}
+	disk := mustOpen(t, dir, LegacySource{}).Snapshot()
+	if len(disk.Projects) != 1 || len(st.Snapshot().Projects) != 1 {
+		t.Fatalf("disk %d memory %d", len(disk.Projects), len(st.Snapshot().Projects))
+	}
+	// a failure before the rename still rolls back
+	st.opts.failAt = func(s string) error {
+		if s == "synced" {
+			return errors.New("injected")
+		}
+		return nil
+	}
+	st.Update(func(r *Registry) error {
+		r.Projects = append(r.Projects, Project{ID: "b", Path: "/srv/b", Kind: "k"})
+		return nil
+	})
+	if len(st.Snapshot().Projects) != 1 {
+		t.Fatal("pre-rename failure not rolled back")
+	}
+}
+
+func TestOpenRegistrySweepsStaleTempFiles(t *testing.T) {
+	dir := stateDirFor(t)
+	mustOpen(t, dir, LegacySource{})
+	old := time.Now().Add(-time.Hour)
+	stale := filepath.Join(dir, ".state-stale")
+	fresh := filepath.Join(dir, ".state-fresh")
+	other := filepath.Join(dir, "other.txt")
+	outside := filepath.Join(shortTempDir(t), "victim")
+	os.WriteFile(stale, []byte("x"), 0o600)
+	os.WriteFile(fresh, []byte("x"), 0o600)
+	os.WriteFile(other, []byte("x"), 0o600)
+	os.WriteFile(outside, []byte("keep"), 0o600)
+	os.Chtimes(stale, old, old)
+	os.Chtimes(other, old, old)
+	os.Chtimes(outside, old, old)
+	link := filepath.Join(dir, ".state-link")
+	os.Symlink(outside, link)
+	os.Mkdir(filepath.Join(dir, ".state-dir"), 0o700)
+	mustOpen(t, dir, LegacySource{})
+	if _, err := os.Lstat(stale); err == nil {
+		t.Fatal("stale temp not swept")
+	}
+	for _, p := range []string{fresh, other, link, filepath.Join(dir, ".state-dir"), outside, filepath.Join(dir, RegistryFileName)} {
+		if _, err := os.Lstat(p); err != nil {
+			t.Fatalf("%s wrongly removed", filepath.Base(p))
+		}
+	}
+	if b, _ := os.ReadFile(outside); string(b) != "keep" {
+		t.Fatal("symlink target touched")
 	}
 }

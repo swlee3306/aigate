@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 )
 
 // The project registry (decision D1) is owned by the broker: one JSON file in
@@ -33,6 +34,7 @@ const (
 	registryVersion = 1
 	maxStateFile    = 1 << 20
 	maxProjects     = 500
+	maxPathBytes    = 4096
 )
 
 var (
@@ -99,6 +101,11 @@ type RegistryOptions struct {
 	// failAt, when set, is called at the named write stage ("temp-written",
 	// "synced"); a non-nil result aborts the write there. Tests only.
 	failAt func(stage string) error
+	// beforeCreate runs after OpenRegistry saw no registry file and before it
+	// creates one (simulates a file appearing late). Tests only.
+	beforeCreate func()
+	// fileOwnerOK, when set, replaces OwnerOK for state files (not the dir). Tests only.
+	fileOwnerOK func(uint32) bool
 }
 
 func (o RegistryOptions) ownerOK() func(uint32) bool {
@@ -107,6 +114,13 @@ func (o RegistryOptions) ownerOK() func(uint32) bool {
 	}
 	euid := uint32(os.Geteuid())
 	return func(uid uint32) bool { return uid == euid }
+}
+
+func (o RegistryOptions) fileOwner() func(uint32) bool {
+	if o.fileOwnerOK != nil {
+		return o.fileOwnerOK
+	}
+	return o.ownerOK()
 }
 
 // RegistryStore is the in-memory registry plus its file. Safe for concurrent use.
@@ -131,29 +145,42 @@ func OpenRegistry(dir string, legacy LegacySource, o RegistryOptions) (*Registry
 		}
 		return nil, err
 	}
-	data, exists, err := readStateFile(st.path, o.ownerOK())
-	if err != nil {
-		st.broken = true
-		return st, ErrRegistryBroken
-	}
-	if exists {
-		reg, err := parseRegistry(data)
+	sweepStaleTemps(dir)
+	for attempt := 0; attempt < 2; attempt++ {
+		data, exists, err := readStateFile(st.path, o.fileOwner())
 		if err != nil {
 			st.broken = true
 			return st, ErrRegistryBroken
 		}
+		if exists {
+			reg, err := parseRegistry(data)
+			if err != nil {
+				st.broken = true
+				return st, ErrRegistryBroken
+			}
+			st.reg = reg
+			return st, nil
+		}
+		reg, err := migrateLegacy(legacy)
+		if err != nil {
+			return nil, err
+		}
+		if o.beforeCreate != nil {
+			o.beforeCreate()
+		}
+		// Exclusive create: never replaces a file that appeared after the
+		// absence check. If one did, judge it by the normal load rules.
+		_, err = writeAtomic(st.path, mustMarshalRegistry(reg), o.failAt, true)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return nil, errors.New("프로젝트 등록부를 저장할 수 없습니다")
+		}
 		st.reg = reg
 		return st, nil
 	}
-	reg, err := migrateLegacy(legacy)
-	if err != nil {
-		return nil, err
-	}
-	if err := writeAtomic(st.path, mustMarshalRegistry(reg), o.failAt); err != nil {
-		return nil, errors.New("프로젝트 등록부를 저장할 수 없습니다")
-	}
-	st.reg = reg
-	return st, nil
+	return nil, errors.New("프로젝트 등록부를 저장할 수 없습니다")
 }
 
 // Err is ErrRegistryBroken when the registry cannot be trusted, else nil.
@@ -191,10 +218,20 @@ func (s *RegistryStore) Update(fn func(*Registry) error) error {
 	if err := validateRegistry(&next); err != nil {
 		return err
 	}
+	data := mustMarshalRegistry(next)
+	if len(data) > maxStateFile {
+		return errRegTooBig
+	}
 	prev := s.reg
 	s.reg = next
-	if err := writeAtomic(s.path, mustMarshalRegistry(next), s.opts.failAt); err != nil {
-		s.reg = prev
+	renamed, err := writeAtomic(s.path, data, s.opts.failAt, false)
+	if err != nil {
+		// If the rename already happened (only the directory fsync failed) the
+		// new content is on disk: keep memory equal to disk and still report
+		// the failure. Otherwise the file is untouched: roll back.
+		if !renamed {
+			s.reg = prev
+		}
 		return errors.New("프로젝트 등록부를 저장할 수 없습니다")
 	}
 	return nil
@@ -261,7 +298,7 @@ func RegistryStatus(dir string, o RegistryOptions) (exists bool, err error) {
 	if err := checkStateDir(dir, o.ownerOK()); err != nil {
 		return false, ErrRegistryBroken
 	}
-	data, exists, rerr := readStateFile(filepath.Join(dir, RegistryFileName), o.ownerOK())
+	data, exists, rerr := readStateFile(filepath.Join(dir, RegistryFileName), o.fileOwner())
 	if rerr != nil {
 		return false, ErrRegistryBroken
 	}
@@ -342,6 +379,7 @@ var (
 	errRegDupID    = errors.New("등록부에 같은 프로젝트 id가 중복되어 있습니다")
 	errRegDupPath  = errors.New("등록부에 같은 경로가 중복되어 있습니다")
 	errRegAutoOff  = errors.New("자동 병합은 이 버전에서 켤 수 없습니다")
+	errRegTooBig   = errors.New("등록부가 너무 커서 저장할 수 없습니다")
 	errRegProvider = errors.New("제공자(provider) 항목은 이 버전에서 비어 있어야 합니다")
 )
 
@@ -364,7 +402,7 @@ func validateRegistry(r *Registry) error {
 	ids := map[string]bool{}
 	paths := map[string]bool{}
 	for _, p := range r.Projects {
-		if !projectIDRE.MatchString(p.ID) || !projectKindRE.MatchString(p.Kind) || !cleanAbs(p.Path) {
+		if len(p.Path) > maxPathBytes || !projectIDRE.MatchString(p.ID) || !projectKindRE.MatchString(p.Kind) || !cleanAbs(p.Path) {
 			return errRegProject
 		}
 		if p.Provider != nil {
@@ -517,10 +555,33 @@ func readStateFile(path string, ownerOK func(uint32) bool) (data []byte, exists 
 	return data, true, nil
 }
 
+// sweepStaleTemps removes leftover temp files of interrupted writes: plain
+// files named .state-* older than a minute (younger ones may belong to a
+// concurrent writer). Symlinks and directories are never touched. Errors are
+// ignored.
+func sweepStaleTemps(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), ".state-") || !e.Type().IsRegular() {
+			continue
+		}
+		if fi, err := e.Info(); err == nil && time.Since(fi.ModTime()) > time.Minute {
+			os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
+}
+
 // writeAtomic is the only file-writing routine of the state stores: temp file
-// in the same directory (0600), write, fsync, rename, fsync of the directory.
-// On any failure the temp file is removed and the old file is untouched.
-func writeAtomic(path string, data []byte, failAt func(string) error) error {
+// in the same directory (0600), write, fsync, then either rename over the
+// target or, with exclusive, os.Link (fails with os.ErrExist instead of
+// replacing an existing target), then fsync of the directory. renamed reports
+// that the target now holds the new content; on err with renamed false the old
+// file is untouched and the temp file is removed. err with renamed true means
+// only the directory fsync failed (content is on disk, durability unconfirmed).
+func writeAtomic(path string, data []byte, failAt func(string) error, exclusive bool) (renamed bool, err error) {
 	stage := func(name string) error {
 		if failAt != nil {
 			return failAt(name)
@@ -530,41 +591,48 @@ func writeAtomic(path string, data []byte, failAt func(string) error) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".state-*")
 	if err != nil {
-		return err
+		return false, err
 	}
 	name := tmp.Name()
-	done := false
 	defer func() {
-		if !done {
-			tmp.Close()
-			os.Remove(name)
-		}
+		tmp.Close()
+		os.Remove(name) // after a successful rename the name is gone: harmless
 	}()
 	if err := tmp.Chmod(0o600); err != nil {
-		return err
+		return false, err
 	}
 	if _, err := tmp.Write(data); err != nil {
-		return err
+		return false, err
 	}
 	if err := stage("temp-written"); err != nil {
-		return err
+		return false, err
 	}
 	if err := tmp.Sync(); err != nil {
-		return err
+		return false, err
 	}
 	if err := stage("synced"); err != nil {
-		return err
+		return false, err
 	}
 	if err := tmp.Close(); err != nil {
-		return err
+		return false, err
 	}
-	if err := os.Rename(name, path); err != nil {
-		return err
+	if exclusive {
+		if err := os.Link(name, path); err != nil {
+			return false, err
+		}
+	} else if err := os.Rename(name, path); err != nil {
+		return false, err
 	}
-	done = true
-	if d, err := os.Open(dir); err == nil {
-		d.Sync()
-		d.Close()
+	d, err := os.Open(dir)
+	if err != nil {
+		return true, errors.New("상태 폴더를 열 수 없습니다")
 	}
-	return nil
+	defer d.Close()
+	if err := d.Sync(); err != nil {
+		return true, errors.New("상태 폴더를 동기화할 수 없습니다")
+	}
+	if err := stage("dir-synced"); err != nil {
+		return true, err
+	}
+	return true, nil
 }

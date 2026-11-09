@@ -61,7 +61,7 @@ func OpenUsedRequests(dir string, o RegistryOptions) (*UsedRequests, error) {
 		}
 		return nil, err
 	}
-	data, exists, err := readStateFile(u.path, o.ownerOK())
+	data, exists, err := readStateFile(u.path, o.fileOwner())
 	if err != nil {
 		u.broken = true
 		return u, ErrUsedRequestsBroken
@@ -124,9 +124,14 @@ func (u *UsedRequests) Mark(id string, now time.Time) error {
 	if err != nil {
 		return errUsedSave
 	}
-	if err := writeAtomic(u.path, append(b, '\n'), u.opts.failAt); err != nil {
+	renamed, err := writeAtomic(u.path, append(b, '\n'), u.opts.failAt, false)
+	if renamed {
+		// The entry is on disk (even if the directory fsync failed): keep
+		// memory equal to disk so the ID cannot be used again, and fail closed.
+		u.entries = next
+	}
+	if err != nil {
 		return errUsedSave
 	}
-	u.entries = next
 	return nil
 }
