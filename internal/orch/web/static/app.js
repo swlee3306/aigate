@@ -21,12 +21,13 @@
 import { get, post, session, logout, onSessionExpired, setCsrf, ApiError } from './api.js';
 import { el, clear, poll, formatLive, renderStageMenu, renderOverview } from './render.js';
 import { registerView, getView, parseRoute, navItem, shouldRoute } from './router.js';
+import { makeHashGuard } from './guard.js';
 import { bindSkipLink, showNotice, replaceContent, renderBootFailure } from './shell.js';
 
 export { registerView };
 
 // Files under /views/ that register views (added by later tasks).
-const VIEW_MODULES = ['tasks', 'task', 'new', 'ops', 'diff', 'approvals', 'login'];
+const VIEW_MODULES = ['tasks', 'task', 'new', 'plan', 'ops', 'diff', 'approvals', 'login'];
 
 const POLL_MS = 10000;
 const $ = (id) => document.getElementById(id);
@@ -38,6 +39,8 @@ const state = {
   ctl: null,
   livePoll: null,
   seq: 0,
+  guard: null, // a view holding unsaved work: () => boolean (true = do not leave)
+  hash: '',
 };
 
 function banner(msg, kind) {
@@ -88,6 +91,7 @@ function bindPoll(fn, ms) {
 // --- views ------------------------------------------------------------
 
 function leave() {
+  state.guard = null;
   if (state.ctl) state.ctl.abort();
   state.ctl = null;
   const cs = state.cleanups;
@@ -125,6 +129,7 @@ function makeCtx(params, authed) {
     poll: bindPoll,
     setCrumb: (s) => { $('crumb').textContent = ''; $('crumb').append(el('b', {}, String(s))); },
     onLeave: (cb) => { if (typeof cb === 'function') state.cleanups.push(cb); },
+    setLeaveGuard: (fn) => { state.guard = typeof fn === 'function' ? fn : null; },
     signal: state.ctl.signal,
     onAuthenticated: (s) => enter(s),
   };
@@ -132,6 +137,7 @@ function makeCtx(params, authed) {
 
 async function show() {
   const seq = ++state.seq;
+  state.hash = location.hash;
   leave();
   const main = clear($('main'));
   banner('');
@@ -221,7 +227,17 @@ async function boot() {
     showLogin('로그아웃했습니다.', 'info');
   });
   onSessionExpired(() => showLogin('세션이 만료되었습니다. 다시 로그인하세요.'));
-  window.addEventListener('hashchange', () => { if (shouldRoute(location.hash)) show(); });
+  const hashGuard = makeHashGuard({
+    guard: () => state.guard,
+    current: () => state.hash,
+    restore: (h) => history.replaceState(null, '', h),
+    notice: (t) => banner(t, 'info'),
+  });
+  window.addEventListener('hashchange', () => {
+    if (!shouldRoute(location.hash)) return;
+    if (hashGuard()) return; // a view holding unsaved work: the hash went back
+    show();
+  });
   bindSkipLink(document.querySelector('.skip'), $('main'));
 
   for (const name of VIEW_MODULES) {

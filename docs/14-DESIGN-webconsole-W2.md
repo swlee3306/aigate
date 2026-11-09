@@ -1,6 +1,6 @@
 # 웹 콘솔 W2 설계서: 구현 루프 화면 (초안 v0.2, 2026-11-09)
 
-> 상태: **W2a 구현됨(컷오버 대기).** 결과·시험·실서버 미확인 항목은 `16-RESULTS-webconsole-W2a.md`, 컷오버 절차는 `10-OPERATIONS-orchestrator.md` 10장. W2b는 아직 설계 단계.
+> 상태: **W2a 컷오버 완료**(결과·실서버 기록은 `16-RESULTS-webconsole-W2a.md`, 절차는 `10-OPERATIONS-orchestrator.md` 10장). **W2b 구현됨(컷오버 대기, 실서버에는 아무것도 배포하지 않음)**: 결과·시험·변이 표·실서버 미확인 항목은 `18-RESULTS-webconsole-W2b.md`, 컷오버 절차는 `10-OPERATIONS-orchestrator.md` 11장.
 > 상위: `11-DESIGN-webconsole-W1.md`(시나리오·서브프로젝트 분해), 결과·한계는 `13-RESULTS-webconsole-W1.md`, 운영은 `10-OPERATIONS-orchestrator.md`.
 > **확정**은 사용자가 정했거나 코드로 확인한 것, **제안**은 이 문서의 기본안(승인 필요).
 

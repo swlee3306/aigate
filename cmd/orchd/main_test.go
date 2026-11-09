@@ -310,3 +310,29 @@ func TestQueueFlagsValidation(t *testing.T) {
 		t.Fatalf("flag %+v", f)
 	}
 }
+
+// --broker-socket wires the merge request creator into the provider; without
+// it every done task's MR is skipped.
+func TestBrokerSocketWiresMR(t *testing.T) {
+	for sock, want := range map[string]bool{"/run/orch-broker/broker.sock": true, "": false} {
+		var vf vmFlags
+		fs := flag.NewFlagSet("t", flag.ContinueOnError)
+		vf.register(fs)
+		if err := fs.Parse(fullVMArgs("")); err != nil {
+			t.Fatal(err)
+		}
+		vf.BrokerSocket = sock
+		st, err := store.Open(filepath.Join(t.TempDir(), "o.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, err := vf.provider(st, filepath.Join(t.TempDir(), "o.db"))
+		st.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := p.(*steps.Provider).MRConfigured(); got != want {
+			t.Fatalf("socket %q: MRConfigured %v, want %v", sock, got, want)
+		}
+	}
+}

@@ -3,6 +3,8 @@ package main
 import (
 	"errors"
 	"flag"
+	"io"
+	"os"
 	"strings"
 	"testing"
 
@@ -111,5 +113,36 @@ func TestPruneLogLineHasCountsAndNamesOnly(t *testing.T) {
 	}
 	if strings.Count(out, "\n") != 1 || strings.Contains(out, "0000-4000") {
 		t.Errorf("want one line without ids: %q", out)
+	}
+}
+
+// --broker-socket must be an absolute clean path; empty leaves the AI plan
+// feature off (and orchd otherwise unchanged).
+func TestBrokerFlagValidation(t *testing.T) {
+	for _, bad := range []string{"broker.sock", "./b.sock", "run/b.sock", "/run/orch-broker/../b.sock", "/run//b.sock", "/run/b.sock/"} {
+		if err := checkBrokerFlag(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+		dir := t.TempDir()
+		if rc := run([]string{"--db", dir + "/db/o.db", "--socket", dir + "/s", "--broker-socket", bad}); rc != 2 {
+			t.Errorf("%q: rc %d, want 2", bad, rc)
+		}
+	}
+	for _, ok := range []string{"", "/run/orch-broker/broker.sock"} {
+		if err := checkBrokerFlag(ok); err != nil {
+			t.Errorf("%q refused: %v", ok, err)
+		}
+	}
+	// The refusal comes from our check (not from an unknown flag): stderr names the flag.
+	r, w, _ := os.Pipe()
+	old := os.Stderr
+	os.Stderr = w
+	dir := t.TempDir()
+	rc := run([]string{"--db", dir + "/db/o.db", "--socket", dir + "/s", "--broker-socket", "relative.sock"})
+	os.Stderr = old
+	w.Close()
+	msg, _ := io.ReadAll(r)
+	if rc != 2 || !strings.Contains(string(msg), "--broker-socket") || strings.Contains(string(msg), "flag provided but not defined") {
+		t.Fatalf("rc %d stderr %q", rc, msg)
 	}
 }

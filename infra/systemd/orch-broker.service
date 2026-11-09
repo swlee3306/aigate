@@ -1,0 +1,42 @@
+[Unit]
+Description=orch-broker: AI key and GitLab token holder for the orchestrator
+After=network.target
+
+[Service]
+Type=simple
+User=orch-broker
+Group=orch-broker
+# Needed so the socket file can be given the group named by socket_group in broker.json.
+SupplementaryGroups=orch
+ExecStart=/usr/local/bin/orch-broker -config /etc/orch-broker/broker.json -state-dir /var/lib/orch-broker
+Restart=on-failure
+RestartSec=3
+
+RuntimeDirectory=orch-broker
+RuntimeDirectoryMode=0755
+StateDirectory=orch-broker
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/orch-broker /run/orch-broker
+UMask=0077
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target

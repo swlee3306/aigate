@@ -92,6 +92,14 @@ async function once(method, path, body, opts) {
   if (method !== 'GET' && method !== 'HEAD' && csrf) headers['X-Orch-CSRF'] = csrf;
   const ctl = new AbortController();
   init.signal = ctl.signal;
+  // opts.signal: the caller's own abort (a cancel button). Aborting it aborts
+  // the fetch; the caller treats the resulting error as its own doing.
+  const ext = opts.signal && typeof opts.signal.addEventListener === 'function' ? opts.signal : null;
+  const onExt = () => ctl.abort();
+  if (ext) {
+    if (ext.aborted) throw new ApiError(0, 'aborted', '요청이 취소되었습니다');
+    ext.addEventListener('abort', onExt);
+  }
   const timer = setTimeout(() => ctl.abort(), opts.timeoutMs || DEFAULT_TIMEOUT_MS);
   try {
     const res = await deps.fetch(path, init);
@@ -102,6 +110,7 @@ async function once(method, path, body, opts) {
     throw new ApiError(0, ctl.signal.aborted ? 'timeout' : 'network', '서버에 연결할 수 없습니다');
   } finally {
     clearTimeout(timer);
+    if (ext) ext.removeEventListener('abort', onExt);
   }
 }
 
@@ -126,7 +135,8 @@ function checkHeaders(method, h) {
 }
 
 // request performs one API call with at most one CSRF refresh (CF15) and at
-// most one rate-limit wait (CF19); it never loops. opts.headers may carry only
+// most one rate-limit wait (CF19; opts.noRetry429 skips the wait and the second
+// request, for calls that cost money or a quota slot); it never loops. opts.headers may carry only
 // an Idempotency-Key (POST); the same key is sent on the CSRF and 429 retries. A 401 emits
 // `session-expired` unless opts.quiet401 is set (boot probe, logout).
 export async function request(method, path, body, opts) {
@@ -146,12 +156,12 @@ export async function request(method, path, body, opts) {
       return data;
     }
     const err = toError(res, data === undefined ? null : data);
-    if (res.status === 429 && !waited) {
+    if (res.status === 429 && !waited && !opts.noRetry429) {
       waited = true;
       await deps.sleep(retryWaitSeconds(res) * 1000);
       continue;
     }
-    if (res.status === 429) {
+    if (res.status === 429) { // still limited, or the caller opted out of the wait (noRetry429)
       err.retryAfter = retryWaitSeconds(res);
       throw err; // still limited: report it, do not treat it as logged out
     }

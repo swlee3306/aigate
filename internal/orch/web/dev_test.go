@@ -135,6 +135,43 @@ func TestDevServer(t *testing.T) {
 		w.WriteHeader(409)
 		json(w, `{"error":{"code":"not_retryable","message":"dev","reason":"재시도 한도(3회)를 모두 썼습니다"}}`)
 	})
+	// B6: the AI plan flow (preview: /srv/repos/docs is "not allowed", any other
+	// repository is allowed; refine: plan.json, or a hostile plan when the
+	// requirement contains "hostile") and the merge request states of tasks
+	// 51 (created), 52 (failed) and 53 (skipped).
+	mux.HandleFunc("/api/v1/refine/preview", func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Repo string }
+		_ = stdjson.NewDecoder(r.Body).Decode(&req)
+		if req.Repo == "/srv/repos/docs" {
+			serve(w, fixture("preview-not-allowed.json"))
+			return
+		}
+		serve(w, fixture("preview.json"))
+	})
+	mux.HandleFunc("/api/v1/refine", func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Text string }
+		_ = stdjson.NewDecoder(r.Body).Decode(&req)
+		time.Sleep(1500 * time.Millisecond) // so the loading text can be looked at
+		if strings.Contains(req.Text, "hostile") {
+			hostile := "<img src=x onerror=alert(1)> javascript:alert(1) \x1b[31mred\u202eevil\u0000"
+			b, _ := stdjson.Marshal(map[string]any{"summary": hostile + strings.Repeat("A", 3000),
+				"items": []map[string]any{{"id": "r1", "title": hostile + strings.Repeat("B", 400), "description": hostile + "\n" + strings.Repeat("C", 2000),
+					"files": []string{hostile, "javascript:alert(1)", "../../etc/passwd"}}, {"id": "r2\"><img src=x onerror=alert(1)>", "title": "둘째", "description": "", "files": []string{}}},
+				"questions": []map[string]any{{"id": "q1", "text": hostile}}, "out_of_scope": []string{hostile},
+				"usage": map[string]int{"input_tokens": 1, "output_tokens": 1}})
+			serve(w, b)
+			return
+		}
+		serve(w, fixture("plan.json"))
+	})
+	for id, name := range map[string]string{"51": "task-mr-created.json", "52": "task-mr-failed.json", "53": "task-mr-skipped.json"} {
+		file := name
+		mux.HandleFunc("/api/v1/tasks/"+id+"/events", func(w http.ResponseWriter, r *http.Request) { serve(w, fixture(file)) })
+	}
+	mux.HandleFunc("/api/v1/tasks/52/mr", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(502)
+		json(w, `{"error":{"code":"upstream_error","message":"dev <img src=x onerror=alert(1)>","reason":"코드: upstream_error"}}`)
+	})
 	mux.HandleFunc("/api/v1/tasks/38/events", func(w http.ResponseWriter, r *http.Request) { serve(w, fixture("events.json")) })
 	mux.HandleFunc("/api/v1/tasks/38/diff", func(w http.ResponseWriter, r *http.Request) { serve(w, fixture("diff.json")) })
 	mux.HandleFunc("/api/v1/tasks/37/events", func(w http.ResponseWriter, r *http.Request) { serve(w, fixture("events.json")) })

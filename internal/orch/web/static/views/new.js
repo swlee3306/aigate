@@ -31,6 +31,10 @@ const BASE_RE = /^[A-Za-z0-9][A-Za-z0-9._/~^@{}+-]{0,199}$/;
 const KEY_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 const KEY_LEN = 32;
 
+// The plan screen (plan.js) shares these validators.
+// (Kept as plain `const` lines: api's constants_agree_test reads them by that spelling.)
+export { AGENTS, CLASS_RE, BASE_RE };
+
 export class PromptError extends Error {
   constructor(code, message, extra) {
     super(message);
@@ -134,13 +138,13 @@ export function repoLabel(path, max) {
   return cps.slice(0, head).join('') + '…' + cps.slice(cps.length - tail).join('');
 }
 
-function cleanRepos(list) {
+export function cleanRepos(list) {
   return (Array.isArray(list) ? list : []).filter((r) => r && typeof r === 'object' && typeof r.path === 'string' && r.path !== '');
 }
 
 // classChoices: the keys of policy.classes that are valid class names,
 // sorted; empty means "free text" (the server accepts any regex-valid class).
-function classChoices(policy) {
+export function classChoices(policy) {
   const c = policy && typeof policy === 'object' && policy.classes && typeof policy.classes === 'object' && !Array.isArray(policy.classes)
     ? policy.classes : {};
   return Object.keys(c).filter((k) => CLASS_RE.test(k)).sort();
@@ -350,6 +354,10 @@ function renderNewForm(env) {
     el('div', { class: ['panel', 'canvas', 'form'] }, [
       el('h1', { id: 'h-new' }, '새 작업'),
       el('p', { class: 'lead' }, '요구사항을 네 칸에 나누어 적으면 고정 템플릿으로 프롬프트를 만듭니다. 아래 미리보기가 그대로 전송됩니다.'),
+      el('p', { class: 'row' }, [
+        el('a', { class: 'btn', href: '#/new/plan', 'data-focus-key': 'to-plan' }, 'AI로 계획서 만들기'),
+        el('span', { class: 'note' }, '한 줄만 적으면 AI가 체크리스트 계획서를 만듭니다.'),
+      ]),
       el('div', { class: 'sec' }, [
         el('h2', {}, '어디에'),
         labeled('f-repo', '저장소', h.repo),

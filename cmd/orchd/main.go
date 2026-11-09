@@ -18,6 +18,7 @@ import (
 	"aigate/internal/approval/signing"
 	"aigate/internal/orch/api"
 	"aigate/internal/orch/approvals"
+	"aigate/internal/orch/broker"
 	"aigate/internal/orch/machine"
 	"aigate/internal/orch/policy"
 	"aigate/internal/orch/store"
@@ -92,6 +93,7 @@ func run(args []string) int {
 	var allowedHosts stringList
 	fs.Var(&allowedHosts, "allowed-host", "Host header the HTTP listener accepts (repeatable; must include the --origin host)")
 	registerQueueLimit(fs, &cfg)
+	fs.StringVar(&cfg.BrokerSocket, "broker-socket", "", "orch-broker unix socket, the only path to the AI plan service (absolute clean path; empty = AI plan feature off)")
 	fs.DurationVar(&cfg.SessionTTL, "session-ttl", api.SessionIdleTTL, "idle expiry of a browser session (5m..24h; the absolute cap stays 24h)")
 	signersFile := fs.String("signers-file", signing.DefaultRegistryPath, "signers registry (root-owned); present = signed approvals only")
 	var vf vmFlags
@@ -112,6 +114,11 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stderr, "orchd:", err)
 		return 2
 	}
+	if err := checkBrokerFlag(cfg.BrokerSocket); err != nil {
+		fmt.Fprintln(os.Stderr, "orchd:", err)
+		return 2
+	}
+	vf.BrokerSocket = cfg.BrokerSocket
 	if err := checkQueueLimit(cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "orchd:", err)
 		return 2
@@ -271,6 +278,15 @@ func checkStateDirWritable(statePath string) error {
 
 // checkWebAuthnFlags validates --rp-id, --origin and --pending-file before
 // anything is opened.
+// checkBrokerFlag refuses a --broker-socket that is not an absolute clean
+// path; empty is fine (feature off).
+func checkBrokerFlag(p string) error {
+	if p != "" && !broker.ValidSocketPath(p) {
+		return errors.New("--broker-socket은 정리된 절대 경로여야 합니다")
+	}
+	return nil
+}
+
 // registerQueueLimit adds --queue-limit (Config.QueueLimit, per principal)
 // and --queue-limit-total (Config.QueueLimitTotal, the server-wide ceiling).
 func registerQueueLimit(fs *flag.FlagSet, cfg *api.Config) {

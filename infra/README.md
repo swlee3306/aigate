@@ -100,3 +100,8 @@ orchd의 HTTP 리스너(루프백)를 `tailscale serve`로 tailnet에 HTTPS(443)
 
 ### 검증
 `sh infra/test-web-scripts.sh`(드라이런 출력, 잘못된 포트·비root `--apply` 거부, funnel 명령 부재). `nft -c -f`는 nft가 있는 호스트(홈서버 등)에서 따로 실행해야 한다.
+
+## 브로커 배포 (W2b)
+파일: `broker-init.sh [--apply]`(기본 드라이런. `--apply`는 root만. 계정 `orch-broker`, `/etc/orch-broker`(root:orch-broker 0750), `/var/lib/orch-broker`(0700)를 만들 뿐 **키·토큰 파일은 만들지 않는다**. 그룹 `orch`가 있는지는 **확인하지 않는다**), `systemd/orch-broker.service`(하드닝 유닛. `SupplementaryGroups=orch`는 소켓 그룹을 `orch`로 바꾸기 위한 보안상 타협이다), `test-broker-scripts.sh`(로컬 검사, 서버 미접촉). 설정(`/etc/orch-broker/broker.json`)과 키·토큰은 사용자가 직접 둔다. 점검: `orch-broker -check`(설정·신뢰·키 모드·소켓 그룹·상태 폴더만, 외부 접속 없음).
+방화벽은 바꾸지 않는다: `nftables/orchestrator.nft`는 공인 주소로의 80·443(OpenAI)과 `100.64.0.10`의 22·18082(GitLab)를 이미 허용한다. 실서버 규칙이 같은지는 `curl -sS -o /dev/null -w '%{http_code}' https://api.openai.com/v1/models`가 401이면 확인된 것이다.
+적용 순서·검증·롤백은 `docs/10-OPERATIONS-orchestrator.md` 11장(**아직 실서버에서 실행하지 않았다**).

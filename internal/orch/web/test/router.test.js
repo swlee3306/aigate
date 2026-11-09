@@ -12,7 +12,9 @@ test('parseRoute', () => {
   eq('#/tasks/abc', 'notfound'); eq('#/tasks/1/2', 'notfound'); eq('#/nope', 'notfound');
   eq('#/diff/38/..', 'notfound'); eq('#/diff/38/a%2Fb', 'notfound'); eq('#/tasks/38?x=1', 'task', ['38']);
   eq('#/tasks/' + '9'.repeat(30), 'notfound'); eq(undefined, 'overview');
+  eq('#/new', 'new'); eq('#/new/plan', 'plan'); eq('#/new/plan/', 'plan'); eq('#/new/other', 'notfound'); eq('#/new/plan/x', 'notfound');
   assert.equal(navItem('task'), 'tasks');
+  assert.equal(navItem('plan'), 'new');
 });
 
 test('registerView', () => {

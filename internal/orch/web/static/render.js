@@ -16,6 +16,7 @@ const TAGS = new Set([
 const PLAIN_ATTRS = new Set([
   'class', 'id', 'role', 'type', 'disabled', 'title', 'tabindex', 'for', 'name', 'value', 'href',
   'hidden', 'scope', 'colspan', 'placeholder', 'maxlength', 'autocomplete', 'spellcheck', 'inputmode',
+  'target', 'rel',
 ]);
 const PATTERN_ATTRS = [/^aria-[a-z]+$/, /^data-[a-z0-9-]+$/];
 // ID_RE: a numeric id (task, approval). Views must validate ids with it
@@ -28,6 +29,33 @@ export const SAFE_TOKEN_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const HREF_RE = /^#\/[A-Za-z0-9_-]{1,64}(\/[A-Za-z0-9_-]{1,64})*$/;
 const EVENT_RE = /^[a-z]+$/;
 
+// External links (a merge request on GitLab) are the one place an href leaves
+// the console. They pass safeExternalHref, and on an <a> only the FIXED
+// target and rel below are accepted.
+const EXTERNAL_TARGET = '_blank';
+const EXTERNAL_REL = 'noopener noreferrer';
+const EXTERNAL_HREF_MAX = 500;
+const EXTERNAL_HREF_RE = /^https?:\/\/[\x21-\x2e\x30-\x7e][\x21-\x7e]*$/i; // printable ASCII, a host right after //
+
+// safeExternalHref returns url when it is a plain http(s) address that is safe
+// to put in an href, else null: a string of at most 500 printable ASCII
+// characters (no whitespace, control, bidi or non-ASCII character), with a
+// host and without user:password. Nothing is normalised: what passes is
+// what is linked.
+export function safeExternalHref(url) {
+  if (typeof url !== 'string' || url.length === 0 || url.length > EXTERNAL_HREF_MAX) return null;
+  if (!EXTERNAL_HREF_RE.test(url) || url.includes('\\')) return null;
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+  if (u.username !== '' || u.password !== '' || u.hostname === '') return null;
+  return url;
+}
+
 function isPlainObject(x) {
   if (x === null || typeof x !== 'object') return false;
   const p = Object.getPrototypeOf(x);
@@ -39,9 +67,15 @@ function setAttr(node, tag, name, value) {
   if (!ok) throw new Error('el: attribute not allowed: ' + name);
   if (value === false || value === null || value === undefined) return;
   if (name === 'href') {
-    if (tag !== 'a' || typeof value !== 'string' || !HREF_RE.test(value)) {
-      throw new Error('el: href must be a #/ route on an <a>');
+    if (tag !== 'a' || typeof value !== 'string' || !(HREF_RE.test(value) || safeExternalHref(value) !== null)) {
+      throw new Error('el: href must be a #/ route or a safe http(s) address on an <a>');
     }
+  }
+  if (name === 'target' && !(tag === 'a' && value === EXTERNAL_TARGET)) {
+    throw new Error('el: target must be _blank on an <a>');
+  }
+  if (name === 'rel' && !(tag === 'a' && value === EXTERNAL_REL)) {
+    throw new Error('el: rel must be "noopener noreferrer" on an <a>');
   }
   if ((name === 'id' || name === 'for' || name === 'name') && !(typeof value === 'string' && SAFE_TOKEN_RE.test(value))) {
     throw new Error('el: ' + name + ' must match SAFE_TOKEN_RE');
@@ -85,6 +119,15 @@ export function el(tag, attrs, children) {
         continue;
       }
       setAttr(node, tag, name, value);
+    }
+    if (node.hasAttribute('target') && node.getAttribute('rel') !== EXTERNAL_REL) {
+      throw new Error('el: rel must be "noopener noreferrer" when target is set');
+    }
+    // an address outside the console is only ever linked with the fixed
+    // target and rel (never a bare external href)
+    const href = node.getAttribute('href');
+    if (href !== null && !HREF_RE.test(href) && node.getAttribute('target') !== EXTERNAL_TARGET) {
+      throw new Error('el: an external href needs target=_blank and rel="noopener noreferrer"');
     }
   }
   appendChild(node, children);
