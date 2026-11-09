@@ -287,7 +287,7 @@ func TestRefineSendsExactlyThePreviewedSelection(t *testing.T) {
 	}
 	text := "add a health check\r\nsecond line"
 	p := e.preview(t, sock, text)
-	if !p.Allowed || len(p.Files) != 2 || p.Files[0].Path != "README.md" || p.Files[1].Path != "src/health.go" {
+	if !p.Allowed || len(p.Files) != 3 || p.Files[0].Path != "README.md" || p.Files[1].Path != "src/health.go" || p.Files[2].Path != "src/other.go" {
 		t.Fatalf("%+v", p)
 	}
 	head := git(t, e.repo, "rev-parse", "HEAD")
@@ -831,5 +831,64 @@ func TestParsePlanRejectsHostileTextIdsAndUsage(t *testing.T) {
 	}
 	if _, err := parsePlan(mk(func(pl map[string]any) { pl["usage"] = map[string]int{"input_tokens": 10_000_000, "output_tokens": 0} }), sent); err != nil {
 		t.Errorf("usage at the bound refused: %v", err)
+	}
+}
+
+func TestPreviewAndRefineSmallRepoSendsEveryFile(t *testing.T) {
+	files := map[string]string{
+		"calc.go":     "package toy // FILE-MARKER-calc\n",
+		"go.mod":      "module toy\n",
+		".aigate.yml": "checks: []\n",
+		".env":        "TOKEN-IN-ENV\n",
+	}
+	e := newRefineEnv(t, files)
+	sock := e.socket(t)
+	text := "계산기에 빼기 기능을 추가해 주세요"
+	p := e.preview(t, sock, text)
+	if !p.Allowed || len(p.Files) < 3 {
+		t.Fatalf("%+v", p)
+	}
+	listed := map[string]bool{}
+	for _, f := range p.Files {
+		listed[f.Path] = true
+		if f.Why != refine.WhySmallRepo {
+			t.Errorf("%+v", f)
+		}
+	}
+	for _, want := range []string{"calc.go", "go.mod", ".aigate.yml"} {
+		if !listed[want] {
+			t.Errorf("%s not previewed: %+v", want, p.Files)
+		}
+	}
+	if listed[".env"] {
+		t.Fatal(".env previewed")
+	}
+	head := git(t, e.repo, "rev-parse", "HEAD")
+	var want []refine.File
+	for _, f := range p.Files {
+		want = append(want, refine.File{Path: f.Path, Content: git(t, e.repo, "show", "HEAD:"+f.Path) + "\n"})
+	}
+	if code, b := e.refine(sock, text, p.SelectionID); code != 200 {
+		t.Fatalf("%d %s", code, b)
+	}
+	call := e.fb.lastRefine(t)
+	var got []refine.File
+	for _, f := range call.Files {
+		got = append(got, refine.File{Path: f.Path, Content: f.Content})
+		if strings.Contains(f.Content, "TOKEN-IN-ENV") {
+			t.Fatal("secret sent")
+		}
+	}
+	if refine.ContentHash(head, got) != refine.ContentHash(head, want) || len(got) != len(p.Files) {
+		t.Fatalf("sent %+v, previewed %+v", got, want)
+	}
+	// A changed file is still selection_changed.
+	e2 := newRefineEnv(t, files)
+	sock2 := e2.socket(t)
+	p2 := e2.preview(t, sock2, text)
+	e2.commit(t, map[string]string{"go.mod": "module toy2\n"})
+	code, b := e2.refine(sock2, text, p2.SelectionID)
+	if code != 409 || v1Code(b) != "selection_changed" || e2.fb.refineCount() != 0 {
+		t.Fatalf("%d %s", code, b)
 	}
 }

@@ -92,7 +92,9 @@ test('TestPlanFlowPreviewBeforeAnySend', async () => {
   const t = text(ctx.root);
   assert.match(t, /README\.md/);
   assert.match(t, /docs\/install\.md/);
-  assert.match(t, /7440/);
+  assert.match(t, /7560/);
+  assert.match(t, /go\.mod/);
+  assert.match(t, /작은 저장소: 전체 파일/);
   assert.match(t, /\.env\.example/);
   assert.match(t, /비밀/);
   assert.ok(byId(ctx.root, 'p-confirm'));
@@ -792,4 +794,18 @@ test('TestLoadingStageCanBeCancelled', async () => {
   click(byId(c2.root, 'p-cancel'));
   g2.go(); await c2.settle();
   assert.doesNotMatch(text(c2.root), /비용이 이미 발생/);
+});
+
+test('the preview shows a fixed label per why code and never raw server text', async () => {
+  const pv = fx('preview.json');
+  pv.files[2].why = 'SERVER-TEXT-<b>x</b>';
+  const ctx = await mount({ preview: () => pv });
+  await toPreview(ctx);
+  const t = text(ctx.root);
+  assert.match(t, /README · /);
+  assert.match(t, /이름이 요구사항과 겹침/);
+  assert.doesNotMatch(t, /SERVER-TEXT/);
+  const ok = await mount();
+  await toPreview(ok);
+  assert.match(text(ok.root), /작은 저장소: 전체 파일 · 120 바이트/);
 });

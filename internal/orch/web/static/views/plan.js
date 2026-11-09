@@ -211,7 +211,7 @@ const EXCLUDE_REASONS = {
   total_cap: '전체 크기 한도 때문에 제외',
   unreadable: '읽을 수 없어 제외',
 };
-const WHY = { readme: 'README', name_match: '이름이 요구사항과 겹침' };
+const WHY = { readme: 'README', name_match: '이름이 요구사항과 겹침', small_repo: '작은 저장소: 전체 파일' };
 
 // --- the view ----------------------------------------------------------
 

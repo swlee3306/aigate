@@ -102,9 +102,9 @@ func TestWebFixturesGolden(t *testing.T) {
 		Usage:      planUsage{InputTokens: 4200, OutputTokens: 650},
 	})
 	checkFixture(t, "preview.json", previewResponse{Allowed: true, SelectionID: "sel0123456789abcdef0123456789ab",
-		Files:      []refine.FileEntry{{Path: "README.md", Bytes: 2140, Why: refine.WhyReadme}, {Path: "docs/install.md", Bytes: 5300, Why: refine.WhyNameMatch}},
+		Files:      []refine.FileEntry{{Path: "README.md", Bytes: 2140, Why: refine.WhyReadme}, {Path: "docs/install.md", Bytes: 5300, Why: refine.WhyNameMatch}, {Path: "go.mod", Bytes: 120, Why: refine.WhySmallRepo}},
 		Excluded:   []refine.Excluded{{Path: ".env.example", Reason: refine.ReasonSecretName}, {Path: "docs/key.txt", Reason: refine.ReasonLooksLikeSecret}, {Path: "docs/big.md", Reason: refine.ReasonTooLarge}},
-		TotalBytes: 7440})
+		TotalBytes: 7560})
 	checkFixture(t, "preview-not-allowed.json", previewResponse{Files: []refine.FileEntry{}, Excluded: []refine.Excluded{}})
 	mrTask := func(id int64, state, code, url string, iid int64) store.Task {
 		tk := fixtureTask(id, store.StateDone, "README 오타 수정", t0)

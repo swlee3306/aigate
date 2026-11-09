@@ -11,6 +11,11 @@
       "path": "docs/install.md",
       "bytes": 5300,
       "why": "name_match"
+    },
+    {
+      "path": "go.mod",
+      "bytes": 120,
+      "why": "small_repo"
     }
   ],
   "excluded": [
@@ -27,5 +32,5 @@
       "reason": "too_large"
     }
   ],
-  "total_bytes": 7440
+  "total_bytes": 7560
 }

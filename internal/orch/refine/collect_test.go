@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -289,8 +290,10 @@ func TestCollectNeverReadsOutsideRepo(t *testing.T) {
 			unsafe++
 		}
 	}
-	if unsafe != 2 {
-		t.Fatalf("unsafe exclusions %d, want 2: %+v", unsafe, sel.Excluded)
+	// The tree is small, so ".." (no name match) is listed too, as an
+	// anonymous "<unsafe path>".
+	if unsafe != 3 {
+		t.Fatalf("unsafe exclusions %d, want 3: %+v", unsafe, sel.Excluded)
 	}
 	view, _ := json.Marshal(sel)
 	if strings.Contains(string(view), "OUTSIDE-SECRET") || strings.Contains(string(view), "escape") {
@@ -465,5 +468,125 @@ func TestStoreFairness(t *testing.T) {
 	now = now.Add(TTL + time.Second)
 	if _, err := s.Put("late", "/r", "t", sel); err != nil {
 		t.Fatalf("after expiry: %v", err)
+	}
+}
+
+func toyFiles() map[string]string {
+	return map[string]string{
+		"calc.go":      "package toy\nfunc Add(a, b int) int { return a + b }\n",
+		"calc_test.go": "package toy\n",
+		"go.mod":       "module toy\n",
+		".gitignore":   "bin/\n",
+		".aigate.yml":  "checks: []\n",
+	}
+}
+
+func TestCollectSmallRepoSendsAllFiles(t *testing.T) {
+	const req = "계산기에 빼기 기능을 추가해 주세요"
+	d := newRepo(t, toyFiles())
+	sel := collect(t, d, req, Options{})
+	if len(sel.Files) != 5 {
+		t.Fatalf("files %+v excluded %+v", sel.Files, sel.Excluded)
+	}
+	for _, f := range sel.Files {
+		if f.Why != WhySmallRepo {
+			t.Fatalf("why %+v", f)
+		}
+	}
+	if WhySmallRepo != "small_repo" {
+		t.Fatal(WhySmallRepo)
+	}
+	// README first when present; then the rest by path (shortest first).
+	files := toyFiles()
+	files["README.md"] = "# toy\n"
+	d2 := newRepo(t, files)
+	sel = collect(t, d2, req, Options{})
+	want := []string{"README.md", "go.mod", "calc.go", ".gitignore", ".aigate.yml", "calc_test.go"}
+	if got := paths(sel); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("order %v", got)
+	}
+	if sel.Files[0].Why != WhyReadme || sel.Files[1].Why != WhySmallRepo {
+		t.Fatalf("%+v", sel.Files)
+	}
+	// Name matches keep name_match and come before the rest.
+	sel = collect(t, d2, "calc 기능 수정", Options{})
+	if sel.Files[0].Path != "README.md" || sel.Files[1].Path != "calc.go" || sel.Files[1].Why != WhyNameMatch {
+		t.Fatalf("%+v", sel.Files)
+	}
+	if sel.Files[2].Path != "calc_test.go" || sel.Files[2].Why != WhyNameMatch || sel.Files[3].Why != WhySmallRepo {
+		t.Fatalf("%+v", sel.Files)
+	}
+}
+
+func TestCollectSmallRepoStillExcludesSecretsAndBinaries(t *testing.T) {
+	const pk = "-----BEGIN RSA PRIVATE KEY-----"
+	files := toyFiles()
+	files[".env"] = "DB=SECRET-ENV-VALUE\n"
+	files["server.pem"] = "SECRET-PEM-BODY\n"
+	files["id_rsa"] = "SECRET-RSA-BODY\n"
+	files["blob.bin"] = "ab\x00cd"
+	files["notes.txt"] = pk + "\nSECRET-KEY-BODY\n"
+	d := newRepo(t, files)
+	sel := collect(t, d, "계산기에 빼기 기능", Options{})
+	got := strings.Join(paths(sel), ",")
+	for _, p := range []string{".env", "server.pem", "id_rsa", "blob.bin", "notes.txt"} {
+		if strings.Contains(got, p) {
+			t.Fatalf("%s selected: %s", p, got)
+		}
+	}
+	for p, r := range map[string]string{".env": ReasonSecretName, "server.pem": ReasonSecretName, "id_rsa": ReasonSecretName,
+		"blob.bin": ReasonBinary, "notes.txt": ReasonLooksLikeSecret} {
+		if g := excludedReason(sel, p); g != r {
+			t.Errorf("%s: reason %q want %q", p, g, r)
+		}
+	}
+	var all strings.Builder
+	for _, f := range sel.Contents {
+		all.WriteString(f.Content)
+	}
+	if strings.Contains(all.String(), "SECRET-") || len(sel.Files) != 5 {
+		t.Fatalf("files %v", paths(sel))
+	}
+}
+
+func TestCollectLargeRepoKeepsOldRule(t *testing.T) {
+	check := func(name string, sel Selection) {
+		t.Helper()
+		for _, f := range sel.Files {
+			if f.Why == WhySmallRepo {
+				t.Errorf("%s: small_repo file %+v", name, f)
+			}
+		}
+		if got := strings.Join(paths(sel), ","); got != "README.md,auth.go" {
+			t.Errorf("%s: files %s", name, got)
+		}
+	}
+	// More entries than MaxFiles.
+	files := map[string]string{"README.md": "# r\n", "auth.go": "package a\n"}
+	for i := 0; i < 5; i++ {
+		files["f"+strconv.Itoa(i)+".txt"] = "x\n"
+	}
+	d := newRepo(t, files)
+	check("count", collect(t, d, "change auth flow", Options{MaxFiles: 6}))
+	// Exactly at the limit is still small.
+	if sel := collect(t, d, "change auth flow", Options{MaxFiles: 7}); len(sel.Files) != 7 {
+		t.Errorf("at the limit: %v", paths(sel))
+	}
+	// Total size over the cap.
+	files = map[string]string{"README.md": "# r\n", "auth.go": "package a\n", "aaa.txt": strings.Repeat("x", 200), "bbb.txt": strings.Repeat("z", 200)}
+	d = newRepo(t, files)
+	check("bytes", collect(t, d, "change auth flow", Options{MaxTotalBytes: 300, MaxFileBytes: 300}))
+}
+
+func TestCollectSmallRepoRespectsCaps(t *testing.T) {
+	files := toyFiles()
+	files["huge.txt"] = strings.Repeat("y", 300)
+	d := newRepo(t, files)
+	sel := collect(t, d, "계산기에 빼기 기능", Options{MaxFileBytes: 200})
+	if excludedReason(sel, "huge.txt") != ReasonTooLarge {
+		t.Fatalf("excluded %+v", sel.Excluded)
+	}
+	if len(sel.Files) != 5 {
+		t.Fatalf("files %v", paths(sel))
 	}
 }
