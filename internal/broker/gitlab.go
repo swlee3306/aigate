@@ -28,6 +28,7 @@ const (
 	gitlabConnTimeout = 10 * time.Second
 	gitlabTotalTime   = 15 * time.Second
 	maxGitLabResponse = 1 << 20
+	gitlabUserAgent   = "orch-broker-gitlab/1"
 )
 
 var (
@@ -72,6 +73,7 @@ type mrJSON struct {
 	WebURL       *string `json:"web_url"`
 	State        *string `json:"state"`
 	SourceBranch *string `json:"source_branch"`
+	TargetBranch *string `json:"target_branch"`
 }
 
 // mrCollectionURL builds <base>/api/v4/projects/<escaped project>/merge_requests.
@@ -102,7 +104,7 @@ func (c *GitLabClient) do(ctx context.Context, method, u string, body []byte) (i
 	}
 	req.Header.Set("PRIVATE-TOKEN", c.Token)
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", openAIUserAgent)
+	req.Header.Set("User-Agent", gitlabUserAgent)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -146,9 +148,9 @@ func decodeOne(raw []byte, v any) bool {
 	return err == io.EOF
 }
 
-// FindOpenMR returns the open MR of project whose source branch is branch.
+// FindOpenMR returns the open MR of project from branch into target.
 // ok is false when there is none.
-func (c *GitLabClient) FindOpenMR(ctx context.Context, project, branch string) (mr MR, ok bool, err error) {
+func (c *GitLabClient) FindOpenMR(ctx context.Context, project, branch, target string) (mr MR, ok bool, err error) {
 	u, err := c.mrCollectionURL(project, url.Values{"state": {"opened"}, "source_branch": {branch}})
 	if err != nil {
 		return MR{}, false, err
@@ -163,7 +165,8 @@ func (c *GitLabClient) FindOpenMR(ctx context.Context, project, branch string) (
 	}
 	for _, e := range list {
 		// The filter is GitLab's; verify instead of trusting it.
-		if e.State == nil || *e.State != "opened" || e.SourceBranch == nil || *e.SourceBranch != branch {
+		if e.State == nil || *e.State != "opened" || e.SourceBranch == nil || *e.SourceBranch != branch ||
+			e.TargetBranch == nil || *e.TargetBranch != target {
 			continue
 		}
 		return c.checkMR(e)
@@ -216,6 +219,9 @@ func (c *GitLabClient) CreateMR(ctx context.Context, project string, in MRCreate
 	}
 	var e mrJSON
 	if !decodeOne(raw, &e) || e.State == nil || *e.State != "opened" {
+		return MR{}, errUpstream
+	}
+	if e.TargetBranch == nil || *e.TargetBranch != in.TargetBranch {
 		return MR{}, errUpstream
 	}
 	mr, _, err := c.checkMR(e)

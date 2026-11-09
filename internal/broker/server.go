@@ -55,8 +55,8 @@ var fixedMessages = map[string]string{
 	"repo_not_allowed":  "이 저장소는 AI 전송이 허용되어 있지 않습니다.",
 	"bad_file":          "보낼 파일 경로나 내용이 올바르지 않습니다.",
 	"looks_like_secret": "비밀 값처럼 보이는 내용이 있어 보낼 수 없습니다.",
-	"rate_limited":      "AI 호출 횟수 한도를 초과했습니다. 잠시 후 다시 시도하세요.",
-	"upstream_error":    "AI 서비스 호출에 실패했습니다.",
+	"rate_limited":      "요청 횟수 한도를 초과했습니다. 잠시 후 다시 시도하세요.",
+	"upstream_error":    "외부 서비스 호출에 실패했습니다.",
 	"bad_plan":          "AI 응답이 계획서 형식을 지키지 않았습니다.",
 
 	"repo_not_mapped": "이 저장소는 GitLab 프로젝트에 연결되어 있지 않습니다.",
@@ -98,6 +98,7 @@ type Server struct {
 	logOnce sync.Once
 	logger  *log.Logger
 	sem     chan struct{}
+	mrLock  chan struct{} // serialises create_mr find+create
 }
 
 // Options configures New.
@@ -131,6 +132,7 @@ func New(cfg Config, o Options) (*Server, error) {
 		Config:  cfg,
 		Secrets: sec,
 		OpenAI:  &OpenAIClient{Key: sec.OpenAIKey(), Model: cfg.OpenAI.Model},
+		mrLock:  make(chan struct{}, 1),
 		GitLab:  &GitLabClient{BaseURL: cfg.GitLab.BaseURL, Token: sec.GitLabToken()},
 		Log:     o.Log,
 		State: State{

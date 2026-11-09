@@ -136,7 +136,8 @@ func (s *Server) createMRHandler(ctx context.Context, raw json.RawMessage) (any,
 	if !mapped || !s.Config.GitLab.Configured() {
 		return fail("repo_not_mapped")
 	}
-	if !mrBranchRE.MatchString(a.Branch) {
+	// The branch must be exactly orch/<task> (this also rejects orch/012).
+	if !mrBranchRE.MatchString(a.Branch) || (a.Task >= 1 && a.Branch != "orch/"+strconv.FormatInt(a.Task, 10)) {
 		return fail("bad_branch")
 	}
 	if a.Task < 1 || a.Task > maxTaskNumber || !mrHeadRE.MatchString(a.Head) ||
@@ -162,8 +163,16 @@ func (s *Server) createMRHandler(ctx context.Context, raw json.RawMessage) (any,
 	if !s.State.CreateMR.Allow() {
 		return fail("rate_limited")
 	}
+	// One find+create at a time: two requests for the same branch must not
+	// both see "no MR" and create twice.
+	select {
+	case s.mrLock <- struct{}{}:
+		defer func() { <-s.mrLock }()
+	case <-ctx.Done():
+		return fail("upstream_error")
+	}
 	gl := s.GitLab
-	mr, found, err := gl.FindOpenMR(ctx, project, a.Branch)
+	mr, found, err := gl.FindOpenMR(ctx, project, a.Branch, s.Config.GitLab.TargetBranch)
 	if err != nil {
 		return mrFail(err)
 	}
@@ -179,7 +188,7 @@ func (s *Server) createMRHandler(ctx context.Context, raw json.RawMessage) (any,
 	})
 	if errors.Is(err, errConflict) {
 		// Someone created it in between: return that one.
-		mr, found, err = gl.FindOpenMR(ctx, project, a.Branch)
+		mr, found, err = gl.FindOpenMR(ctx, project, a.Branch, s.Config.GitLab.TargetBranch)
 		if err == nil && !found {
 			err = errUpstream
 		}

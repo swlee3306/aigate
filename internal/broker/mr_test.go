@@ -46,7 +46,7 @@ func newFakeGitLab(t *testing.T) *fakeGitLab {
 			return
 		}
 		w.WriteHeader(201)
-		io.WriteString(w, `{"iid":7,"web_url":"`+g.URL+`/grp/proj/-/merge_requests/7","state":"opened","source_branch":"orch/12"}`)
+		io.WriteString(w, `{"iid":7,"web_url":"`+g.URL+`/grp/proj/-/merge_requests/7","state":"opened","source_branch":"orch/12","target_branch":"main"}`)
 	})
 	return g
 }
@@ -170,9 +170,10 @@ func TestMRBranchPatternExact(t *testing.T) {
 	if len(m.gl.Reqs()) != 0 {
 		t.Fatal("bad branch reached GitLab")
 	}
-	for _, b := range []string{"orch/12", "orch/0", "orch/123456789"} {
+	for b, n := range map[string]int{"orch/12": 12, "orch/1": 1, "orch/123456789": 123456789} {
 		a := m.args()
 		a["branch"] = b
+		a["task"] = n
 		if _, oerr := m.call(t, a); oerr != nil {
 			t.Fatalf("%s: %s", b, oerr.Code)
 		}
@@ -200,7 +201,7 @@ func TestMRRepoMustBeMapped(t *testing.T) {
 func TestMRExistingOpenMRIsReturnedNotDuplicated(t *testing.T) {
 	// Case 1: found by the list query.
 	m := newMREnv(t, nil)
-	m.gl.listJSON = `[{"iid":3,"web_url":"` + m.gl.URL + `/grp/proj/-/merge_requests/3","state":"opened","source_branch":"orch/12"}]`
+	m.gl.listJSON = `[{"iid":3,"web_url":"` + m.gl.URL + `/grp/proj/-/merge_requests/3","state":"opened","source_branch":"orch/12","target_branch":"main"}]`
 	out, oerr := m.call(t, m.args())
 	if oerr != nil {
 		t.Fatal(oerr.Code)
@@ -234,7 +235,7 @@ func TestMRExistingOpenMRIsReturnedNotDuplicated(t *testing.T) {
 		g := gets
 		mu.Unlock()
 		if g >= 2 {
-			io.WriteString(w, `[{"iid":5,"web_url":"`+m2.gl.URL+`/grp/proj/-/merge_requests/5","state":"opened","source_branch":"orch/12"}]`)
+			io.WriteString(w, `[{"iid":5,"web_url":"`+m2.gl.URL+`/grp/proj/-/merge_requests/5","state":"opened","source_branch":"orch/12","target_branch":"main"}]`)
 			return true
 		}
 		io.WriteString(w, `[]`)
@@ -250,7 +251,7 @@ func TestMRExistingOpenMRIsReturnedNotDuplicated(t *testing.T) {
 
 	// Case 3: entries of other branches or states are not taken for the MR.
 	m3 := newMREnv(t, nil)
-	m3.gl.listJSON = `[{"iid":3,"web_url":"` + m3.gl.URL + `/x/-/merge_requests/3","state":"opened","source_branch":"orch/99"},{"iid":4,"web_url":"` + m3.gl.URL + `/x/-/merge_requests/4","state":"closed","source_branch":"orch/12"}]`
+	m3.gl.listJSON = `[{"iid":3,"web_url":"` + m3.gl.URL + `/x/-/merge_requests/3","state":"opened","source_branch":"orch/99","target_branch":"main"},{"iid":4,"web_url":"` + m3.gl.URL + `/x/-/merge_requests/4","state":"closed","source_branch":"orch/12","target_branch":"main"}]`
 	out, oerr = m3.call(t, m3.args())
 	if oerr != nil || out["created"] != true || len(m3.posts()) != 1 {
 		t.Fatalf("result %v %v", out, oerr)
@@ -343,7 +344,7 @@ func TestMRUrlMustStartWithBaseUrl(t *testing.T) {
 				return true
 			}
 			w.WriteHeader(201)
-			b, _ := json.Marshal(map[string]any{"iid": 7, "web_url": wu, "state": "opened"})
+			b, _ := json.Marshal(map[string]any{"iid": 7, "web_url": wu, "state": "opened", "target_branch": "main"})
 			w.Write(b)
 			return true
 		}
@@ -358,7 +359,7 @@ func TestMRUrlMustStartWithBaseUrl(t *testing.T) {
 			return true
 		}
 		w.WriteHeader(201)
-		io.WriteString(w, `{"iid":7,"web_url":"`+m.gl.URL+`.evil.example/x","state":"opened"}`)
+		io.WriteString(w, `{"iid":7,"web_url":"`+m.gl.URL+`.evil.example/x","state":"opened","target_branch":"main"}`)
 		return true
 	}
 	_, oerr := m.call(t, m.args())
@@ -368,7 +369,7 @@ func TestMRUrlMustStartWithBaseUrl(t *testing.T) {
 	}
 	// The same rule applies to an existing MR found by the list query.
 	m = newMREnv(t, nil)
-	m.gl.listJSON = `[{"iid":3,"web_url":"http://evil.example/mr/3","state":"opened","source_branch":"orch/12"}]`
+	m.gl.listJSON = `[{"iid":3,"web_url":"http://evil.example/mr/3","state":"opened","source_branch":"orch/12","target_branch":"main"}]`
 	_, oerr = m.call(t, m.args())
 	wantCode(t, oerr, "bad_url")
 }
@@ -519,13 +520,13 @@ func TestMRUpstreamErrorsCollapse(t *testing.T) {
 	create := map[string]string{
 		"nobody":     ``,
 		"badjson":    `{`,
-		"noiid":      `{"web_url":"%U/x","state":"opened"}`,
-		"zeroiid":    `{"iid":0,"web_url":"%U/x","state":"opened"}`,
-		"strIID":     `{"iid":"7","web_url":"%U/x","state":"opened"}`,
-		"noURL":      `{"iid":7,"state":"opened"}`,
+		"noiid":      `{"web_url":"%U/x","state":"opened","target_branch":"main"}`,
+		"zeroiid":    `{"iid":0,"web_url":"%U/x","state":"opened","target_branch":"main"}`,
+		"strIID":     `{"iid":"7","web_url":"%U/x","state":"opened","target_branch":"main"}`,
+		"noURL":      `{"iid":7,"state":"opened","target_branch":"main"}`,
 		"array":      `[]`,
-		"trailing":   `{"iid":7,"web_url":"%U/x","state":"opened"} {}`,
-		"wrongstate": `{"iid":7,"web_url":"%U/x","state":"merged"}`,
+		"trailing":   `{"iid":7,"web_url":"%U/x","state":"opened","target_branch":"main"} {}`,
+		"wrongstate": `{"iid":7,"web_url":"%U/x","state":"merged","target_branch":"main"}`,
 	}
 	for name, body := range create {
 		m := newMREnv(t, nil)
@@ -591,7 +592,7 @@ func TestMRNeverMerges(t *testing.T) {
 	scenarios := map[string]func(m *mrEnv){
 		"create": func(m *mrEnv) {},
 		"existing": func(m *mrEnv) {
-			m.gl.listJSON = `[{"iid":3,"web_url":"` + m.gl.URL + `/x/-/merge_requests/3","state":"opened","source_branch":"orch/12"}]`
+			m.gl.listJSON = `[{"iid":3,"web_url":"` + m.gl.URL + `/x/-/merge_requests/3","state":"opened","source_branch":"orch/12","target_branch":"main"}]`
 		},
 		"conflict": func(m *mrEnv) {
 			n := 0
@@ -602,7 +603,7 @@ func TestMRNeverMerges(t *testing.T) {
 				}
 				n++
 				if n > 1 {
-					io.WriteString(w, `[{"iid":5,"web_url":"`+m.gl.URL+`/x/-/merge_requests/5","state":"opened","source_branch":"orch/12"}]`)
+					io.WriteString(w, `[{"iid":5,"web_url":"`+m.gl.URL+`/x/-/merge_requests/5","state":"opened","source_branch":"orch/12","target_branch":"main"}]`)
 				} else {
 					io.WriteString(w, `[]`)
 				}
@@ -618,7 +619,7 @@ func TestMRNeverMerges(t *testing.T) {
 					io.WriteString(w, `[]`)
 				} else {
 					w.WriteHeader(201)
-					io.WriteString(w, `{"iid":7,"web_url":"`+m.gl.URL+`/merge","state":"opened","merge_when_pipeline_succeeds":true}`)
+					io.WriteString(w, `{"iid":7,"web_url":"`+m.gl.URL+`/merge","state":"opened","target_branch":"main","merge_when_pipeline_succeeds":true}`)
 				}
 				return true
 			}
@@ -664,5 +665,136 @@ func TestMRArgsStrict(t *testing.T) {
 	}
 	if len(m.gl.Reqs()) != 0 {
 		t.Fatal("strict args reached GitLab")
+	}
+}
+
+func TestMRExistingMustMatchTargetBranch(t *testing.T) {
+	// A list entry for another target is not "the" MR: a new one is created.
+	m := newMREnv(t, nil)
+	m.gl.listJSON = `[{"iid":3,"web_url":"` + m.gl.URL + `/grp/proj/-/merge_requests/3","state":"opened","source_branch":"orch/12","target_branch":"other"}]`
+	out, oerr := m.call(t, m.args())
+	if oerr != nil || out["created"] != true || len(m.posts()) != 1 {
+		t.Fatalf("result %v %v", out, oerr)
+	}
+	// 409 and a re-list with only other-target MRs: upstream_error.
+	m2 := newMREnv(t, nil)
+	m2.gl.over = func(w http.ResponseWriter, r *http.Request, n int) bool {
+		if r.Method == http.MethodPost {
+			w.WriteHeader(409)
+			return true
+		}
+		io.WriteString(w, `[{"iid":3,"web_url":"`+m2.gl.URL+`/x/-/merge_requests/3","state":"opened","source_branch":"orch/12","target_branch":"other"}]`)
+		return true
+	}
+	_, oerr = m2.call(t, m2.args())
+	wantCode(t, oerr, "upstream_error")
+	// The create response must carry the configured target.
+	for _, tb := range []string{`"target_branch":"other",`, ``} {
+		m3 := newMREnv(t, nil)
+		tb := tb
+		m3.gl.over = func(w http.ResponseWriter, r *http.Request, n int) bool {
+			if r.Method == http.MethodGet {
+				io.WriteString(w, `[]`)
+				return true
+			}
+			w.WriteHeader(201)
+			io.WriteString(w, `{`+tb+`"iid":7,"web_url":"`+m3.gl.URL+`/x","state":"opened"}`)
+			return true
+		}
+		_, oerr = m3.call(t, m3.args())
+		wantCode(t, oerr, "upstream_error")
+	}
+}
+
+func TestMRBranchMustMatchTask(t *testing.T) {
+	m := newMREnv(t, nil)
+	for name, mod := range map[string]func(map[string]any){
+		"task mismatch": func(a map[string]any) { a["task"] = 99 },
+		"leading zero":  func(a map[string]any) { a["branch"] = "orch/012" },
+	} {
+		a := m.args()
+		mod(a)
+		_, oerr := m.call(t, a)
+		if oerr == nil || (oerr.Code != "bad_branch" && oerr.Code != "bad_request") {
+			t.Fatalf("%s: %+v", name, oerr)
+		}
+	}
+	if len(m.gl.Reqs()) != 0 {
+		t.Fatal("mismatch reached GitLab")
+	}
+}
+
+func TestMRConcurrentSameBranchCreatesOnce(t *testing.T) {
+	m := newMREnv(t, func(e *testEnv, t *testing.T) { e.set(t, []string{"limits", "create_mr_per_hour"}, 1000) })
+	var mu sync.Mutex
+	created := false
+	posts := 0
+	m.gl.over = func(w http.ResponseWriter, r *http.Request, n int) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		item := `{"iid":7,"web_url":"` + m.gl.URL + `/grp/proj/-/merge_requests/7","state":"opened","source_branch":"orch/12","target_branch":"main"}`
+		if r.Method == http.MethodGet {
+			if created {
+				io.WriteString(w, `[`+item+`]`)
+			} else {
+				io.WriteString(w, `[]`)
+			}
+			return true
+		}
+		posts++
+		time.Sleep(50 * time.Millisecond) // widen the race window
+		created = true
+		w.WriteHeader(201)
+		io.WriteString(w, item)
+		return true
+	}
+	const n = 8
+	var wg sync.WaitGroup
+	var rmu sync.Mutex
+	nCreated := 0
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			out, oerr := m.call(t, m.args())
+			if oerr != nil {
+				t.Errorf("err %s", oerr.Code)
+				return
+			}
+			if out["iid"].(float64) != 7 {
+				t.Errorf("iid %v", out["iid"])
+			}
+			if out["created"] == true {
+				rmu.Lock()
+				nCreated++
+				rmu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if len(m.posts()) != 1 || nCreated != 1 {
+		t.Fatalf("posts=%d created=%d", len(m.posts()), nCreated)
+	}
+}
+
+func TestMRNoQuickActionLines(t *testing.T) {
+	for _, in := range []string{"\n/merge", "/approve", "\r\n/submit_review", "x\n\n/close", " /merge", "a\r/merge"} {
+		m := newMREnv(t, nil)
+		a := m.args()
+		a["title_hint"] = in
+		a["summary"] = in
+		a["verdict"] = in
+		if _, oerr := m.call(t, a); oerr != nil {
+			t.Fatal(oerr.Code)
+		}
+		var body map[string]any
+		json.Unmarshal([]byte(m.posts()[0].Body), &body)
+		for _, f := range []string{"title", "description"} {
+			for _, line := range strings.FieldsFunc(body[f].(string), func(r rune) bool { return r == '\n' || r == '\r' || r == ' ' }) {
+				if strings.HasPrefix(strings.TrimSpace(line), "/") {
+					t.Fatalf("%q: %s line starts with slash: %q", in, f, line)
+				}
+			}
+		}
 	}
 }
