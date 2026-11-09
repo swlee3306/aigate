@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sync"
@@ -69,26 +70,58 @@ func OpenUsedRequests(dir string, o RegistryOptions) (*UsedRequests, error) {
 	if !exists {
 		return u, nil
 	}
+	entries, err := parseUsedFile(data)
+	if err != nil {
+		u.broken = true
+		return u, ErrUsedRequestsBroken
+	}
+	u.entries = entries
+	return u, nil
+}
+
+func parseUsedFile(data []byte) (map[string]int64, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	var f usedFile
 	if err := dec.Decode(&f); err != nil || f.Version != 1 {
-		u.broken = true
-		return u, ErrUsedRequestsBroken
+		return nil, ErrUsedRequestsBroken
 	}
 	if _, err := dec.Token(); err != io.EOF {
-		u.broken = true
-		return u, ErrUsedRequestsBroken
+		return nil, ErrUsedRequestsBroken
 	}
+	out := map[string]int64{}
 	for id, ts := range f.Entries {
 		if !requestIDRE.MatchString(id) || ts <= 0 {
-			u.broken = true
-			u.entries = map[string]int64{}
-			return u, ErrUsedRequestsBroken
+			return nil, ErrUsedRequestsBroken
 		}
-		u.entries[id] = ts
+		out[id] = ts
 	}
-	return u, nil
+	return out, nil
+}
+
+// UsedRequestsStatus inspects used-requests.json without writing or creating
+// anything (for orch-broker -check). A missing dir or file is fine; anything
+// that OpenUsedRequests would call broken is ErrUsedRequestsBroken.
+func UsedRequestsStatus(dir string, o RegistryOptions) error {
+	if _, err := os.Lstat(dir); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return ErrUsedRequestsBroken
+	}
+	if checkStateDir(dir, o.ownerOK()) != nil {
+		return ErrUsedRequestsBroken
+	}
+	data, exists, err := readStateFile(filepath.Join(dir, UsedRequestsFileName), o.fileOwner())
+	if err != nil {
+		return ErrUsedRequestsBroken
+	}
+	if exists {
+		if _, err := parseUsedFile(data); err != nil {
+			return ErrUsedRequestsBroken
+		}
+	}
+	return nil
 }
 
 // Mark records id as used at now. A second Mark of the same id within an hour

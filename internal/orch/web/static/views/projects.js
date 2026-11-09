@@ -53,6 +53,11 @@ export function isSafeProjectPath(s) {
   return typeof s === 'string' && s.length > 0 && PATH_TEXT_RE.test(s) && utf8Len(s) <= MAX_PATH_BYTES;
 }
 
+// The browser waits longer than orchd's worst case for a signed change (the
+// broker write limit is 15 s, plus the repository checks): the 15 s default of
+// the api layer would let the browser give up first.
+const PROJECT_TIMEOUT_MS = 25000;
+
 // --- canonical change (the same bytes as Go's registrymsg.CanonicalChange) ---
 
 export class ChangeError extends Error {
@@ -400,7 +405,7 @@ export function projectsView(ctx) {
     if (st.step === 'list') paint(); // disables the reload button while the proposal is out
     let resp;
     try {
-      resp = await ctx.post('/api/v1/projects/propose', sent, { noRetry429: true });
+      resp = await ctx.post('/api/v1/projects/propose', sent, { noRetry429: true, timeoutMs: PROJECT_TIMEOUT_MS });
     } catch (err) {
       if (gone() || my !== propSeq) return; // left or cancelled: toList already cleared busy
       st.busy = false;
@@ -481,7 +486,7 @@ export function projectsView(ctx) {
     st.result = { error: false, text: '서버로 변경을 보내는 중…', pending: true };
     paint();
     try {
-      await ctx.post('/api/v1/projects/apply', body, { noRetry429: true });
+      await ctx.post('/api/v1/projects/apply', body, { noRetry429: true, timeoutMs: PROJECT_TIMEOUT_MS });
     } catch (err) {
       if (gone()) return;
       const unknown = (err && err.code === 'outcome_unknown') || (err && err.status === 0);

@@ -107,6 +107,9 @@ func projectsBrokerError(e *broker.OpError, write bool) *httpError {
 	case "path_not_allowed":
 		return errProjBadPath
 	case "registry_unavailable":
+		if write {
+			return errProjUnknownResult // may already be applied (failed dir fsync after rename)
+		}
 		return errProjRegistryGone
 	case "not_supported":
 		return errProjNotSupported

@@ -469,6 +469,10 @@ test('TestNoRetry429ForProjectWrites', async () => {
   await until(() => posts(ctx, '/api/v1/projects/apply').length === 1, 'apply');
   assert.equal(posts(ctx, '/api/v1/projects/propose')[0].opts.noRetry429, true);
   assert.equal(posts(ctx, '/api/v1/projects/apply')[0].opts.noRetry429, true);
+  // the browser must outwait orchd's worst case (a 15 s broker write plus the
+  // repository checks): an explicit 25 s, not the 15 s default
+  assert.equal(posts(ctx, '/api/v1/projects/propose')[0].opts.timeoutMs, 25000);
+  assert.equal(posts(ctx, '/api/v1/projects/apply')[0].opts.timeoutMs, 25000);
   // and the real api layer honours it: one request, no sleep
   const api = await import('../static/api.js');
   let n = 0;

@@ -310,6 +310,14 @@ func RegistryStatus(dir string, o RegistryOptions) (exists bool, err error) {
 	return exists, nil
 }
 
+// MigrationDryRun builds the registry the legacy entries of cfg would become,
+// in memory only (for orch-broker -check). ErrMigrationConflict when they
+// cannot be turned into a valid registry.
+func MigrationDryRun(cfg Config) error {
+	_, err := migrateLegacy(LegacySource{ContextRepos: cfg.ContextRepos, GitLabProjects: cfg.GitLab.Projects})
+	return err
+}
+
 func emptyRegistry() Registry {
 	return Registry{Version: registryVersion, Providers: []struct{}{}, Projects: []Project{},
 		AutoMergeGlobal: AutoMergeGlob{Enabled: false, MaxPerDay: 5}}

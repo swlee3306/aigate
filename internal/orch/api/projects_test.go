@@ -580,17 +580,20 @@ func TestApplyForwardsSignatureAndMapsErrors(t *testing.T) {
 		code   string
 	}
 	table := map[string]want{
-		"not_signed":           {400, "not_signed"},
-		"bad_signature":        {403, "bad_signature"},
-		"unknown_signer":       {403, "unknown_signer"},
-		"stale_signature":      {403, "stale_signature"},
-		"signers_unavailable":  {503, "signers_unavailable"},
-		"request_reused":       {409, "request_reused"},
-		"change_mismatch":      {400, "change_mismatch"},
-		"project_exists":       {409, "project_exists"},
-		"project_unknown":      {404, "project_unknown"},
-		"path_not_allowed":     {400, "path_not_allowed"},
-		"registry_unavailable": {503, "registry_unavailable"},
+		"not_signed":          {400, "not_signed"},
+		"bad_signature":       {403, "bad_signature"},
+		"unknown_signer":      {403, "unknown_signer"},
+		"stale_signature":     {403, "stale_signature"},
+		"signers_unavailable": {503, "signers_unavailable"},
+		"request_reused":      {409, "request_reused"},
+		"change_mismatch":     {400, "change_mismatch"},
+		"project_exists":      {409, "project_exists"},
+		"project_unknown":     {404, "project_unknown"},
+		"path_not_allowed":    {400, "path_not_allowed"},
+		// A WRITE answered registry_unavailable may already be applied (a failed
+		// directory fsync after the rename leaves the change in place), so it is an
+		// unknown outcome, not a definite failure. Reads keep registry_unavailable.
+		"registry_unavailable": {504, "outcome_unknown"},
 		"not_supported":        {400, "not_supported"},
 		"bad_request":          {400, "bad_request"},
 		// a broker-side or client-side failure that is not a registry code

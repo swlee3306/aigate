@@ -61,6 +61,7 @@ var (
 	errSelectionChanged     = apiErr(http.StatusConflict, "selection_changed", "미리보기 이후 저장소나 요청 글이 바뀌었습니다. 미리보기를 다시 하세요")
 	errSelectionExpired     = apiErr(http.StatusGone, "selection_expired", "미리보기가 만료되었거나 없습니다. 미리보기를 다시 하세요")
 	errRefineBudget         = apiErr(http.StatusTooManyRequests, "budget_exceeded", "AI 사용 예산 또는 호출 한도를 초과했습니다")
+	errRefineRegistry       = apiErr(http.StatusServiceUnavailable, "registry_unavailable", "프로젝트 등록부를 사용할 수 없어 AI 전송이 모두 꺼져 있습니다. 관리자가 확인해야 합니다")
 	errRefineUpstream       = apiErr(http.StatusBadGateway, "upstream_error", "AI 서비스 호출에 실패했습니다")
 	errRefineBadPlan        = apiErr(http.StatusBadGateway, "bad_plan", "AI 응답이 계획서 형식을 지키지 않았습니다")
 	errRefineBadBody        = apiErr(http.StatusBadRequest, "bad_request", "요청 형식이 올바르지 않습니다")
@@ -89,6 +90,8 @@ func brokerError(e *broker.OpError) *httpError {
 		return errRefineSecretFile
 	case "too_large", "bad_file", "bad_request":
 		return errRefineTooBig
+	case "registry_unavailable":
+		return errRefineRegistry // fail closed: the broker cannot trust its registry
 	case broker.CodeUnavailable, "forbidden", "busy", "unknown_op", "not_implemented":
 		return errBrokerUnavailable
 	}
