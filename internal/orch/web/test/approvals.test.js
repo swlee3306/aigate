@@ -611,7 +611,14 @@ test('not signed mode: says so and never asks the authenticator or the signers l
   await A.approvalView(none);
   await settle();
   assert.match(text(none.root), /지금은 서명할 수 있는 상태가 아닙니다/);
-  assert.equal(byKey(none.root, 'sign'), null);
+  assert.equal(byKey(none.root, 'sign'), null);  // a pending row from a build before 2026-11-09 (16-hex diff hash): the
+  // server sends no message for it; the detail renders and is not signable
+  const old = detailCtx({ ...fx('approval.json'), hash: fx('approval.json').hash.slice(0, 16), message: '', digest: '' });
+  await A.approvalView(old);
+  await settle();
+  assert.match(text(old.root), /지금은 서명할 수 있는 상태가 아닙니다/);
+  assert.equal(byKey(old.root, 'sign'), null);
+  assert.equal(auth.gets.length, 0);
 });
 
 test('hostile meaning, paths, repo and message are shown neutralised; a hostile message is not signable', async () => {

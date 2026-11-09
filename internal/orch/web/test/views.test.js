@@ -368,7 +368,7 @@ test('TestDiffViewEscapesAndMarksProtected', () => {
   // read-only note and no recomputation
   assert.match(text(root), /읽기 전용/);
   assert.match(text(root), /웹은 다시 계산하지 않습니다/);
-  assert.match(text(root), /3273763058ed7862/);
+  assert.match(text(root), /3273763058ed786269abfd318c01a425c417aeb4b196118f5c43206a0396f4ef/);
   assert.equal(findAll(root, (e) => e.tagName === 'INPUT' || e.tagName === 'TEXTAREA').length, 0);
 });
 
