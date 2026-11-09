@@ -58,6 +58,10 @@ var fixedMessages = map[string]string{
 	"rate_limited":      "AI 호출 횟수 한도를 초과했습니다. 잠시 후 다시 시도하세요.",
 	"upstream_error":    "AI 서비스 호출에 실패했습니다.",
 	"bad_plan":          "AI 응답이 계획서 형식을 지키지 않았습니다.",
+
+	"repo_not_mapped": "이 저장소는 GitLab 프로젝트에 연결되어 있지 않습니다.",
+	"bad_branch":      "브랜치 이름이 올바르지 않습니다.",
+	"bad_url":         "GitLab이 설정된 주소 밖의 주소를 돌려주었습니다.",
 }
 
 // Default per-op processing time limits (decision D1).
@@ -82,6 +86,7 @@ type Server struct {
 	State    State
 	Secrets  Secrets
 	OpenAI   *OpenAIClient // set by New; tests may point BaseURL at a fake
+	GitLab   *GitLabClient // set by New; tests may point BaseURL at a fake
 
 	PeerUID     func(net.Conn) (uint32, error) // nil: kernel peer credentials
 	AllowUID    func(uint32) bool              // nil: Config.UIDs()
@@ -126,6 +131,7 @@ func New(cfg Config, o Options) (*Server, error) {
 		Config:  cfg,
 		Secrets: sec,
 		OpenAI:  &OpenAIClient{Key: sec.OpenAIKey(), Model: cfg.OpenAI.Model},
+		GitLab:  &GitLabClient{BaseURL: cfg.GitLab.BaseURL, Token: sec.GitLabToken()},
 		Log:     o.Log,
 		State: State{
 			Refine:   NewHourlyLimiter(cfg.Limits.RefinePerHour, o.Clock),
@@ -137,13 +143,9 @@ func New(cfg Config, o Options) (*Server, error) {
 	s.Handlers = map[string]HandlerFunc{
 		"status":    s.statusHandler,
 		"refine":    s.refineHandler,
-		"create_mr": notImplemented,
+		"create_mr": s.createMRHandler,
 	}
 	return s, nil
-}
-
-func notImplemented(context.Context, json.RawMessage) (any, *OpError) {
-	return nil, &OpError{Code: "not_implemented"}
 }
 
 // statusHandler is read-only and secret-free (decision D3).

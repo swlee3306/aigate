@@ -253,8 +253,9 @@ func TestPlaceholdersNotImplemented(t *testing.T) {
 	if r.OK || r.Code != "repo_not_allowed" {
 		t.Fatalf("refine: %s", out)
 	}
+	// create_mr is implemented since B3: empty args name no mapped repo.
 	r, out = call(t, e.Raw["socket"].(string), `{"v":1,"op":"create_mr","args":{}}`)
-	if r.OK || r.Code != "not_implemented" {
+	if r.OK || r.Code != "repo_not_mapped" {
 		t.Fatalf("create_mr: %s", out)
 	}
 }
