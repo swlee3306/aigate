@@ -523,3 +523,144 @@ ExecStart=<systemctl cat orchd 의 기존 ExecStart 줄 전체> --broker-socket 
 | 3-8 MR | **사용자가 시험할지 결정** | MR 닫기·브랜치 삭제(사용자) | — |
 | 3-6·3-10 | — | 컷오버에서 확인 안 함 | — |
 | 4 롤백 | 승인 | — | 필요 |
+
+## 12. W3a 컷오버 런북 (프로젝트 등록부·서명된 변경, `orch-broker`·`orchd` 갱신)
+설계는 `19-DESIGN-webconsole-W3-projects.md`, 계획은 `20-PLAN-webconsole-W3a.md`, 결과·시험·한계는 `21-RESULTS-webconsole-W3a.md`. **이 절차는 아직 실제 서버에서 한 번도 실행하지 않았다.** 아래 "예상"은 코드와 이 저장소의 시험(가짜 서명자·가짜 broker·임시 폴더)을 읽고 쓴 것이지 서버에서 본 출력이 아니다(11장과 같은 원칙). 순서는 바꾸지 않는다. 다르게 보이면 그 단계에서 멈추고 단계 4(롤백)를 고려한다.
+
+표기: **[사용자]** 사용자 본인의 작업 또는 명시적 승인이 필요, **[되돌림 가능]** 아래 몇 줄로 원상 복구, **[주의]** 되돌리면 그 사이의 변경을 잃는다. 경로는 11장과 같다(바이너리 `/usr/local/lib/aigate`와 `/usr/local/bin/orch-broker`, 설정 `/etc/orch-broker/broker.json`, 상태 `/var/lib/orch-broker`, broker 소켓 `/run/orch-broker/broker.sock`). **orchd DB 스키마는 이번에 바뀌지 않는다(v8 그대로)**: 롤백에 DB 복원이 필요 없다. 새로 생기는 것: broker 상태 폴더의 `registry.json`(프로젝트 등록부)과 `used-requests.json`(쓴 요청 ID), `broker.json`의 선택 키 `repo_roots`, orchd의 `/api/v1/projects/registry|candidates|propose|apply`, 웹의 `#/projects` 화면.
+
+### 12.0 시작 전에 모두 참이어야 하는 것
+- **W2b 컷오버가 끝난 상태가 출발점이다**(18번 문서 7장): broker `active`, `orchd`가 `--broker-socket`으로 도는 중, DB 스키마 v8, 서명 필수 모드(`/etc/aigate/signers.json`에 `mac-ssh`·`mac-passkey`). 실행 중이거나 대기 중인 작업이 없다(`orch list`, `orch approvals`). 단계 2는 `orchd`를 재시작하고 단계 1은 broker를 재시작한다.
+- **웹 서명 흐름에 쓸 패스키 서명자가 등록되어 있다**: `sudo orch admin signers list`에 `webauthn` 형식 서명자가 있다(W1 컷오버의 `mac-passkey`). 등록 화면의 서명은 이 패스키로 한다.
+- 그룹 `orch`, 계정 `orch-broker`, `/etc/orch-broker`, `/var/lib/orch-broker`가 11장에서 만들어진 그대로 있다.
+- **사전 점검 (단계 1 전에, 전부 값을 찍지 않는 명령):**
+  - **(a) 상태 폴더 모드.** `/var/lib/orch-broker`는 **`orch-broker` 소유 0700이어야 하고 그렇게 유지해야 한다**: `sudo stat -c '%U:%G %a' /var/lib/orch-broker`가 `orch-broker:orch-broker 700`. 이 폴더의 소유·모드 검사가 어긋나면(그룹·기타 권한 비트가 하나라도 있거나 소유자가 다르면) 등록부를 "신뢰할 수 없음"으로 보고 **등록부에 의존하는 모든 것(`status`, `projects`, `refine`, `create_mr`, 등록·변경)이 `registry_unavailable`로 꺼진다**. 등록부 파일은 0600, `used-requests.json`도 0600이다.
+  - **(b) 서명자 목록 읽기.** `sudo -u orch-broker test -r /etc/aigate/signers.json && echo READABLE || echo denied` → **`READABLE`이어야 한다.** (파일은 root 소유 0644, 폴더 `/etc/aigate`는 root 0755: 읽기 가능함은 이 저장소 쪽 점검으로 확인함. **broker가 실제로 이 파일을 읽어 서명을 검증하는지는 서버에서 처음 확인한다.**) 유닛의 `ProtectSystem=strict`는 `/etc`를 읽기 전용으로 보이게 할 뿐 읽기를 막지 않는다(코드·유닛 읽기 기준, 미확인).
+  - **(c) `repo_roots` 철자.** broker 설정의 `repo_roots`는 **orchd가 쓰는 정책의 `repo_roots`와 글자 그대로 같아야 한다**(현재 `policy.yml`은 `repo_roots: [/home/orch/repos]`): `sudo grep -n repo_roots /home/orch/orchd/policy.yml`(실제 정책 파일 위치는 `systemctl cat orchd`의 `--policy`로 확인). orchd가 후보로 보여 주는 경로는 orchd가 정리한 실제 경로 아래이고 broker는 자기 설정의 철자와 **정확히 한 단계 아래**만 허용하므로, 한쪽이 심볼릭 링크 철자(`/home/orch/../orch/repos` 등)나 끝 `/`를 쓰면 broker가 모든 등록을 `path_not_allowed`로 거부한다.
+  - **(d) [사용자 결정] broker 샌드박스가 저장소 경로를 볼 수 있는지.** `infra/systemd/orch-broker.service`는 **`ProtectHome=yes`**다. 이 옵션이면 broker 프로세스에게 `/home`이 비어 보이므로, 등록 때 broker가 하는 경로 검사(`lstat`로 `/home/orch/repos/<이름>`과 `<이름>/.git` 확인)가 **실서버에서는 항상 실패해 모든 등록이 `path_not_allowed`가 될 것으로 코드와 유닛을 읽고 추정한다(미확인: 이 저장소는 리눅스 systemd에서 시험한 적이 없다)**. 이미 등록된 프로젝트의 AI 전송 켜기/끄기(`set_flag`)와 마이그레이션은 경로를 검사하지 않으므로 영향이 없다. **확인:** 단계 1-6 뒤에 `sudo nsenter -t "$(systemctl show -p MainPID --value orch-broker)" -m ls -ld /home/orch/repos`가 목록을 보여 주는지(`No such file`이면 샌드박스가 막고 있음). **막혀 있다면 멈추고 사용자에게 알린다: 유닛을 바꿔야 한다.** 후보 한 가지(**미검증 제안**, 사용자가 정한다): 드롭인 `/etc/systemd/system/orch-broker.service.d/repos.conf`에 `[Service]` `TemporaryFileSystem=/home:ro` 와 `BindReadOnlyPaths=/home/orch/repos`를 두면 `/home/orch/repos`만 읽기 전용으로 보이게 되어 `ProtectHome=yes`의 나머지 효과(다른 홈 폴더 차단)가 유지될 것이다. 다른 후보는 `ProtectHome=read-only`(더 넓게 열림, `SupplementaryGroups=orch` 때문에 `orch` 그룹이 읽을 수 있는 홈 파일이 보임: 11.0 "알아둘 것" 5 참고). **유닛을 임의로 바꾸지 않는다.** 이 결정이 나기 전에는 등록 흐름(3-3)을 시험하지 못하지만 나머지 단계는 진행할 수 있다.
+
+**알아둘 것 (코드 읽기와 시험 기준, 실서버 미확인).**
+1. **WebAuthn 서명 카운터는 어디서도 검사하지 않는다**(`signing.Verify`에도 없다). 재전송 방어는 **서명 5분 신선도 + 요청 ID 1회성**(broker가 `used-requests.json`에 시각과 함께 저장, 1시간 보관, broker를 재시작해도 유지)이다. 복제된 패스키는 카운터로 걸러지지 않는다.
+2. **상태 폴더 `/var/lib/orch-broker`는 `orch-broker` 소유 0700을 유지한다**(위 사전 점검 a). 이 검사는 등록부와 `used-requests.json`에 적용된다(코드 읽기 기준: `budget.json`은 이 폴더 검사와 별개로 읽는다). 모드가 틀리면 등록부가 꺼진 것으로 보이므로 컷오버 뒤에도 `stat`으로 확인한다.
+3. **`broker.json`의 `repo_roots`는 orchd가 해석한 정책의 `repo_roots`와 철자가 같아야 한다**(사전 점검 c). 값이 없으면 모든 등록이 `path_not_allowed`다(안전한 기본). 이 값에 심볼릭 링크가 들어 있어도 broker는 풀지 않고 최종 요소만 `lstat`한다.
+4. **마이그레이션된 프로젝트의 `kind`는 `legacy`다.** 옛 설정에는 정책 클래스가 없었기 때문이다. W3a에서는 화면에 그대로 표시만 하며, **작업을 제출할 때 정책 클래스는 orchd가 제출 시점에 정한다**(등록부의 `kind`를 쓰지 않음).
+5. **등록 경로 검사는 등록하는 순간의 검사다.** 등록 뒤에 그 경로를 심볼릭 링크로 바꿔치기해도 등록부는 그대로지만, **사용 시점에 거부된다**: AI 계획서 미리보기가 `allowed: false`(다른 저장소로의 링크) 또는 403(허용 루트 밖으로의 링크)이 되고 아무것도 전송되지 않는다(`TestRegisteredPathReplacedBySymlinkRefusedAtUse`). `repo_roots` 자체의 상위 경로 심볼릭 링크는 풀지 않는다.
+6. **쓰기 op의 `timeout`은 "결과를 모른다"는 뜻이다.** 화면은 고정 문장(목록을 다시 읽어 확인)과 `outcome_unknown`(504)을 보이고 목록을 다시 읽는다. **목록을 다시 읽어 확인하기 전에는 같은 변경을 다시 시도하지 않는다**(broker가 뒤늦게 적용했을 수 있다). 서명이 끝난 변경은 한 번 쓰고 나면 같은 서명으로 다시 보낼 수 없다.
+7. **broker는 깨진 등록부로도 시작하지만 op마다 `registry_unavailable`로 답한다**(옛 `broker.json`으로 되돌아가지 않는다: AI 허용이 넓어지지 않음). **`orch-broker -check`는 깨진 등록부를 거부한다**(실패, 종료 코드 1). 등록부 파일은 건드리지 않는다(고치려면 사용자가 판단해 파일을 옮기거나 지운 뒤 재시작: 지우면 옛 설정으로 **다시 마이그레이션**된다). 이전 쓰기가 남긴 `.state-*` 임시 파일은 시작할 때 1분이 지난 것만 치운다.
+8. **한도(주체별).** 등록·변경 요청 만들기(`propose`) 시간당 **60회**, 서명 적용(`apply`) 시간당 **30회**. 초과하면 429 `project_rate_limited`. broker에 닿기 전에 실패한 `apply`는 슬롯을 돌려준다.
+9. **등록부 목록 엔드포인트는 `GET /api/v1/projects/registry`다.** `GET /api/v1/projects`는 W2a의 저장소별 작업 요약으로 그대로 남아 있다(설계서 8장의 `GET /projects`는 이 이유로 바뀜).
+10. **이번에 확인하지 못한 것(결과 문서 21번 5장):** 키보드만, 스크린 리더로의 `#/projects` 화면 사용은 시험하지 않았다. 화면의 시각 확인은 **대역 패스키**(브라우저의 `navigator.credentials.get`을 바꿔치기)로 했다. **실제 패스키 서명을 broker가 검증하는 것, broker가 실제 `/etc/aigate/signers.json`을 읽는 것, 실제 `broker.json`으로 마이그레이션이 올바른 등록부를 만드는 것은 컷오버 전까지 전부 미확인이다.** 처음 한 번 성공하기 전에는 아무것도 "된다"고 말하지 않는다.
+11. **마이그레이션은 등록부 파일이 없을 때 broker가 시작하면서 단 한 번 일어난다.** 되돌릴 때는 broker 정지 → 이전 바이너리와 `broker.json` 복원 → `registry.json`과 `used-requests.json` 삭제(단계 4). **컷오버 뒤 등록부에 한 모든 변경(프로젝트 추가, AI 전송 켜기/끄기)은 롤백하면 사라진다.** 시작하기 전에 `/var/lib/orch-broker`와 `/etc/orch-broker`를 통째로 복사해 둔다(단계 1).
+12. **마이그레이션 뒤에는 `broker.json`의 옛 `context_repos`·`gitlab.projects`가 무시된다.** 파일에는 남아 있고 `orch-broker -check`가 **경고만** 한다(종료 코드 0, 시작을 막지 않음). 등록부가 아직 없는 첫 점검에서는 경고가 없다. 롤백하면 이 옛 항목이 다시 쓰이므로 **지우지 않는 것이 안전하다.**
+
+### 단계 1. broker 갱신·마이그레이션 [사용자][되돌림 가능: 단계 4의 A]
+`orchd`와 DB는 건드리지 않는다. **먼저 백업**(서비스 영향 없음). orch-vm에서:
+```
+B=/home/orch/orchd/backup-w3a; sudo mkdir -p $B
+sudo install -o root -g root -m 0755 /usr/local/bin/orch-broker /usr/local/bin/orch-broker.prev-w3a
+sudo cp -a /etc/orch-broker $B/etc-orch-broker
+sudo cp -a /var/lib/orch-broker $B/var-lib-orch-broker
+sudo cp -a /etc/systemd/system/orch-broker.service $B/orch-broker.service.pre-w3a
+for f in orchd orch aigate; do sudo install -o root -g root -m 0755 /usr/local/lib/aigate/$f /usr/local/lib/aigate/$f.prev-w3a; done
+sudo cp -a /etc/systemd/system/orchd.service $B/orchd.service.pre-w3a; sudo cp -a /etc/systemd/system/orchd.service.d $B/ 2>/dev/null
+sudo ls -lR $B | head -40
+```
+(백업 폴더에 `openai.key`(0400)가 복사된다. 값은 화면에 나오지 않으며 `$B`는 root만 읽는다. 컷오버가 안정되면 사용자가 `sudo shred -u`로 지운다.)
+
+**1-0. 빌드 전 확인 (Mac, 저장소에서).** 웹 화면의 상수와 서버 상수가 같은지: `go test -run TestConstantsAgreeWithWeb -v ./internal/orch/api` → **`--- PASS`이고 `SKIP`이 없어야 한다**(건너뛰거나 실패하면 빌드하지 않는다). 이어서 `go vet ./...`, `go test ./... -count=1 -race`, `node --test "internal/orch/web/test/*.test.js"`가 통과한 커밋인지 확인한다(결과 문서 21번 2장).
+
+**1-1. 새 바이너리.** Mac에서 `GOOS=linux GOARCH=amd64 go build -o /tmp/w3a/<이름> ./cmd/<이름>`을 `orch-broker`, `orchd`, `orch`, `aigate`에 대해 하고(`uname -m`에 맞춘다) `scp`로 VM `/tmp/w3a/`에 보낸다. **아직 설치하지 않는다.**
+
+**1-2. 설정에 `repo_roots` 더하기.** `sudo cp /etc/orch-broker/broker.json /tmp/w3a/broker.json`으로 복사해 편집한다(기존 키는 그대로, `context_repos`·`gitlab`도 **지우지 않는다**) 마지막에 `"repo_roots": ["/home/orch/repos"]`를 더하고(사전 점검 c의 철자) `sudo install -m 0644 -o root -g root /tmp/w3a/broker.json /etc/orch-broker/broker.json`. 알 수 없는 키는 거부되므로 철자를 확인한다.
+
+**1-3. 설치 전 점검(옛 바이너리로는 `repo_roots`를 모르므로 새 바이너리로).** 새 바이너리를 임시 위치에서 실행한다:
+```
+sudo install -o root -g root -m 0755 /tmp/w3a/orch-broker /tmp/w3a/orch-broker.new
+sudo -u orch-broker /tmp/w3a/orch-broker.new -check -config /etc/orch-broker/broker.json -state-dir /var/lib/orch-broker
+```
+예상: `orch-broker: 점검 통과 (…외부 접속은 하지 않았습니다)`와 종료 코드 0. **등록부가 아직 없으므로 경고는 없다**(`-check`는 아무것도 쓰지 않는다: `ls /var/lib/orch-broker`에 `registry.json`이 아직 없어야 한다). 실패하면 고정 문장 하나가 나온다 → 멈춘다.
+
+**1-4. 설치·재시작(마이그레이션이 여기서 일어난다).**
+```
+sudo systemctl stop orch-broker
+sudo install -o root -g root -m 0755 /tmp/w3a/orch-broker /usr/local/bin/orch-broker
+sudo systemctl start orch-broker
+systemctl status orch-broker --no-pager; sudo journalctl -u orch-broker -n 30 --no-pager
+sudo ls -l /var/lib/orch-broker
+sudo stat -c '%U:%G %a %n' /var/lib/orch-broker /var/lib/orch-broker/registry.json /var/lib/orch-broker/used-requests.json
+```
+예상: 유닛 `active (running)`, 로그에 오류 없음. `registry.json`이 새로 생기고 **`orch-broker:orch-broker 600`**, 폴더는 `700`. `used-requests.json`은 첫 쓰기 때까지 없을 수 있다. **로그에 "등록부" 관련 오류 문장이 있으면 멈춘다**(등록부가 깨졌다는 뜻이고 broker는 op마다 `registry_unavailable`로 답한다).
+
+**1-5. 마이그레이션 결과 확인: 등록부가 현재 설정과 같은 허용 범위를 주는가.** `orch` 계정이 소켓으로 호출한다(값을 찍지 않는 읽기 두 개):
+```
+sudo -u orch python3 -c 'import socket;s=socket.socket(socket.AF_UNIX);s.connect("/run/orch-broker/broker.sock");s.sendall(b"{\"v\":1,\"op\":\"projects\"}\n");print(s.makefile().readline())'
+sudo -u orch python3 -c 'import socket;s=socket.socket(socket.AF_UNIX);s.connect("/run/orch-broker/broker.sock");s.sendall(b"{\"v\":1,\"op\":\"status\"}\n");print(s.makefile().readline())'
+```
+예상: `projects`가 `{"ok":true,"result":{"projects":[{"id":"toy","path":"/home/orch/repos/toy","kind":"legacy","ai_context":true,"provider":null,"gitlab":null,"auto_merge":{"enabled":false}},{"id":"sample-app",…}],"providers":[],"auto_merge_global":{"enabled":false,"max_per_day":5}}}` 형태이고, **`status`의 `context_repos`가 단계 1 이전과 같은 두 경로(`/home/orch/repos/toy`, `/home/orch/repos/sample-app`)**다(`gitlab` 절이 있던 구성이면 `gitlab`에 `project`가 보인다). 응답에 키·토큰·서명자 키가 없어야 한다. **다르면 멈추고 단계 4의 A.** 이 단계가 "실제 `broker.json`으로 마이그레이션이 올바른 등록부를 만드는가"의 첫 실제 확인이다.
+
+**1-6. 점검을 한 번 더(이번에는 등록부가 있다).**
+```
+sudo -u orch-broker /usr/local/bin/orch-broker -check -config /etc/orch-broker/broker.json -state-dir /var/lib/orch-broker
+```
+예상: **`orch-broker: 경고: 프로젝트 등록부가 있으므로 broker.json의 context_repos·gitlab.projects는 무시됩니다…` 한 줄**과 `점검 통과`, 종료 코드 0. 경고가 없으면 마이그레이션이 일어나지 않은 것이다(1-4를 다시 본다).
+
+**1-7. 서명자 목록과 샌드박스 경로 확인.** 사전 점검 (b)와 (d)를 지금 다시 한다(`READABLE`, 그리고 `nsenter ... ls -ld /home/orch/repos`가 목록을 보여 주는지). (d)가 막혀 있으면 **여기서 사용자에게 알린다.**
+
+**검증 체크리스트:** 1-3 통과(경고 없음), 1-4의 유닛 active·등록부 600·폴더 700, 1-5의 `projects`와 `status`가 단계 1 이전의 허용 범위와 같음, 1-6의 경고 한 줄, 1-7의 `READABLE`. **그래도 안 되면:** 단계 4의 A. 다른 서비스에는 영향이 없다(이 단계는 `orchd`를 건드리지 않았다).
+
+### 단계 2. `orchd` 갱신 [사용자]
+**DB 스키마가 바뀌지 않으므로 DB를 복원할 필요가 없다**(이번 백업은 바이너리 `*.prev-w3a`뿐). 11장의 배포 방식과 같다. 실행 중·대기 작업이 없음을 먼저 확인한다(`orch list`).
+```
+sudo systemctl stop orchd
+for f in orchd orch aigate; do sudo install -o root -g root -m 0755 /tmp/w3a/$f /usr/local/lib/aigate/$f; done
+sudo systemctl start orchd
+journalctl -u orchd -n 40 --no-pager
+```
+유닛과 드롭인(`--broker-socket`)은 바꾸지 않는다. **검증 체크리스트**
+- 로그: 오류 없이 대기, `approvals: mode signed`, 스키마 오류 없음.
+- `orch list`: 단계 1 이전의 작업이 모두 그대로, 마지막 번호가 같다.
+- 새 엔드포인트가 실제로 떠 있는지는 단계 3-1(웹)에서 처음 본다.
+
+**그래도 안 되면:** 단계 4의 B(바이너리만 되돌리면 된다. DB는 그대로 호환된다).
+
+### 단계 3. 웹에서 확인 [사용자]
+**전제:** 단계 1·2 통과. Mac 브라우저에서 `https://<FQDN>/`에 패스키로 로그인. "예상"은 코드·시험(`internal/orch/web/test/projects.test.js`, `internal/orch/api/projects_test.go`, `adversarial_w3a_test.go`, `internal/broker/*_test.go`)에서 읽은 것이다.
+
+| # | 할 일 | 예상(코드·시험 기준) | 다르면 |
+|---|---|---|---|
+| 3-1 | 메뉴 "프로젝트"(`#/projects`) | 목록에 `toy`·`sample-app`(종류 `legacy`, AI 전송 허용 "예"). GitLab 연결·자동 병합은 읽기 전용 표시(자리표시). **주소 표시줄의 해시는 `#/projects` 그대로** | 목록이 안 뜨면 `broker_unavailable`/`registry_unavailable`: 단계 1-4·1-5. 메뉴가 없으면 브라우저 캐시(새로고침) |
+| 3-2 | **회귀: AI 계획서.** "새 작업" → "AI로 계획서 만들기", 저장소 `toy`, 한 줄을 적고 미리보기까지만 | 11장 3-1과 같다: 보낼 파일 목록, 제외 사유, "이 내용을 AI로 보냅니다" 단추(**누르지 않아도 된다**: 실제 OpenAI 호출은 비용이 든다) | "허용되어 있지 않습니다"면 `status`의 `context_repos`(1-5)가 단계 1 이전과 다른 것이다 → 단계 4의 A |
+| 3-3 | **[사용자 결정] 등록 흐름.** 후보 저장소가 있으면(허용 루트 아래 아직 등록되지 않은 저장소가 후보로 보인다): "프로젝트 추가" → 후보 고르기 → 종류(정책 클래스) → AI 전송 허용(기본 꺼짐) → "변경 내용 확인" | 확인 화면이 id·경로·종류·AI 여부를 보여 주고, AI를 켜면 노란 강조 문장이 하나 더 나온다. 서버 문장이 전체 변경 내용을 말한다. 서명 단추는 **브라우저가 다시 계산한 해시가 서버 것과 같을 때만** 열린다 | 경고 문장과 서명 단추 없음 = 내용 불일치(서명하지 않는다, 기록한다). 사전 점검 (d)가 막혀 있으면 서명 뒤 `path_not_allowed`(실서버 첫 확인) |
+| 3-4 | **서명(사용자가 할지 정한다).** 서명하면 **실제로 broker의 등록부가 바뀐다.** 패스키로 서명 → 완료 | 목록에 새 행. broker가 **실제 패스키 서명을 처음으로 검증**한다(미확인 항목). 원장에 `project_change`(행위자·동작·id·성공 여부·코드, **경로·내용 없음**) | `bad_signature`/`unknown_signer`/`signers_unavailable`: 서명자 목록(사전 점검 b), 패스키 등록. `stale_signature`: 시계(5분)와 확인 화면에서 서명까지 걸린 시간. **같은 변경을 곧바로 다시 시도하지 않는다**(화면은 새 제안부터 다시 한다) |
+| 3-5 | **AI 전송 켜기/끄기 시험(등록하지 않을 때의 대안, 사용자가 정한다).** 이미 등록된 두 프로젝트 중 하나(권장: 덜 중요한 쪽)의 AI 전송을 끄고 → 다시 켠다 | 각각 확인 화면(경로와 "예 → 아니오" 표시) → 패스키 서명 → 목록 갱신. 끈 동안 그 저장소로 AI 미리보기는 "허용되어 있지 않습니다". **끝나면 원래 상태(켜짐)로 되돌린다** | 같은 오류 코드 설명은 3-4와 같다 |
+| 3-6 | **서명 거부 확인.** 잘못된 서명으로 변경을 시도하는 것은 **자동 시험으로만 확인**한다(실서버에서 일부러 위조 서명을 만들지 않는다) | 시험: `TestRegistryNeverWrittenWithoutValidSignature`, `TestSignatureOverDifferentChangeRefused` 등 | — |
+| 3-7 | **브로커를 멈춘 상태**(선택): `sudo systemctl stop orch-broker` → `#/projects`를 연다 | 고정 오류(브로커에 연결할 수 없음). 작업 제출·취소 등 기존 기능은 그대로. 끝나면 `sudo systemctl start orch-broker`(**등록부가 이미 있으므로 다시 마이그레이션되지 않는다**) | 기존 기능까지 막히면 단계 4의 B |
+| 3-8 | 확인 | `sudo stat -c '%U:%G %a %n' /var/lib/orch-broker /var/lib/orch-broker/*.json`: 폴더 700, 파일 600. `sudo grep project_change /home/orch/orchd/gate-home/.aigate/ledger/orchd.jsonl \| tail -3`: 내용 없는 줄만 | 내용(경로·서명)이 보이면 멈추고 보고 |
+
+**검증 체크리스트(요약):** 3-1이 예상대로, 3-2 회귀 없음, 3-3~3-5 중 사용자가 한 것이 예상대로, 3-7에서 기존 기능이 살아 있고, 3-8의 모드. 3-4(실제 패스키 서명 검증)와 사전 점검 (b)·(d)의 결과는 결과 문서 5장에 "컷오버에서 확인함/못 함"으로 남긴다.
+
+**그래도 안 되면:** 화면 문제(표시·문구)만이면 롤백하지 않고 기록한다. 등록부가 의도와 다르게 바뀌었거나(서명하지 않은 변경), 원장·로그·화면에 서명·경로 원문이 보이거나, AI 허용 범위가 단계 1 이전보다 넓어졌으면 **즉시 broker를 멈추고(단계 4의 A) 사용자에게 보고한다.**
+
+### 단계 4. 롤백 [사용자][주의]
+**A. broker를 W2b 상태로 되돌리기(등록부 폐기, DB는 건드리지 않는다).**
+1. `sudo systemctl stop orch-broker`
+2. 바이너리·설정 복원: `sudo install -o root -g root -m 0755 /usr/local/bin/orch-broker.prev-w3a /usr/local/bin/orch-broker`, `sudo install -o root -g root -m 0644 /home/orch/orchd/backup-w3a/etc-orch-broker/broker.json /etc/orch-broker/broker.json`(옛 `context_repos`·`gitlab.projects`가 들어 있는 파일: 1-2에서 지우지 않았으므로 `repo_roots`만 빠진다).
+3. **등록부 파일 삭제:** `sudo rm -f /var/lib/orch-broker/registry.json /var/lib/orch-broker/used-requests.json`(옛 broker는 이 파일을 쓰지 않으므로 남겨 둬도 동작하지만, **마이그레이션은 등록부가 없을 때만 일어나므로 나중에 새 broker를 다시 올릴 때를 위해 지운다**). `budget.json`은 지우지 않는다(주 예산 기록).
+4. `sudo systemctl start orch-broker`; `status` 호출(11장 1-8의 python 줄)이 옛 `context_repos` 두 경로를 주는지 본다.
+5. **경고:** **컷오버 뒤 등록부에 한 모든 변경(추가한 프로젝트, 바꾼 AI 전송 허용)은 사라진다.** 다시 새 broker를 올리면 옛 `broker.json`으로 다시 마이그레이션되어 그 변경 전 상태가 된다(필요하면 폐기 전에 `projects` 응답을 따로 저장해 둔다: 값이 든 파일은 없다). 문제가 시작되기 전 복사본이 필요하면 `/home/orch/orchd/backup-w3a/var-lib-orch-broker`에 있다(**복원하지 않는다**: 이 폴더 전체를 되돌리면 예산 기록도 되돌아간다).
+
+**B. `orchd`·CLI를 W2b 상태로 되돌리기(DB 복원 불필요).**
+1. `sudo systemctl stop orchd`
+2. `for f in orchd orch aigate; do sudo install -o root -g root -m 0755 /usr/local/lib/aigate/$f.prev-w3a /usr/local/lib/aigate/$f; done`(세 개는 항상 같이)
+3. `sudo systemctl start orchd`. DB 스키마는 이번에 바뀌지 않았으므로 복원이 필요 없다. 웹의 "프로젝트" 메뉴가 사라진다(브라우저 캐시면 새로고침).
+
+**검증:** `journalctl -u orchd`·`journalctl -u orch-broker`에 오류가 없고, `orch list`가 단계 2 이전과 같으며, W2b의 AI 계획서 미리보기(11장 3-1)가 동작한다. **그래도 안 되면:** 아무것도 더 지우지 말고 `journalctl -u orch-broker -n 80`, `ls -l /usr/local/bin /usr/local/lib/aigate /var/lib/orch-broker /home/orch/orchd/backup-w3a`를 사용자에게 보고한다. W2b 이전까지 가야 하면 11장 단계 4(`*.prev-w2b`, `backup-w2b`).
+
+### 요약표: 누가·되돌림
+| 단계 | 사용자 작업·승인 | 되돌리기 | 재시작 |
+|---|---|---|---|
+| 0 사전 점검(상태 폴더 0700, `signers.json` 읽기, `repo_roots` 철자, **`ProtectHome` 결정**) | **사용자 결정**(유닛 변경은 임의로 하지 않음) | — | — |
+| 1 broker 갱신·마이그레이션 | 승인 | A(바이너리·`broker.json` 복원 + 등록부 삭제, 컷오버 뒤 등록부 변경은 사라짐) | broker만 |
+| 2 `orchd` 갱신 | 승인 | B(바이너리만, DB 복원 불필요) | 필요(stop/start) |
+| 3 웹 확인 | **사용자 직접**(로그인, 등록·켜기/끄기 **서명할지 결정**) | 등록한 프로젝트는 A로 사라짐. AI 켜기/끄기는 같은 화면으로 되돌림 | 불필요(3-7만 broker 재시작) |
+| 4 롤백 | 승인 | — | 필요 |
