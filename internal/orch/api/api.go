@@ -55,7 +55,13 @@ const (
 	MaxBodyBytes = 1 << 20
 	// MaxPromptBytes caps the prompt of one task.
 	MaxPromptBytes = 64 << 10
+	// DefaultQueueLimit is how many tasks may wait in StateQueued at once
+	// when Config.QueueLimit is 0.
+	DefaultQueueLimit = 20
 )
+
+// errQueueFull is the submit refusal when the queue is at its limit.
+var errQueueFull = apiErr(http.StatusTooManyRequests, "queue_full", "대기 중인 작업이 상한에 도달했습니다. 앞의 작업이 진행된 뒤 다시 제출하세요")
 
 var (
 	classRe = regexp.MustCompile(`^[a-z0-9_가-힣-]{1,32}$`)
@@ -191,6 +197,13 @@ type handler struct {
 	// onSubmitted records a task the API just created (the steps provider's
 	// task_submitted ledger event, with the actor from ctx); nil: nothing.
 	onSubmitted func(ctx context.Context, t store.Task)
+	// queueLimit caps the tasks waiting in StateQueued; a submit beyond it is
+	// 429 queue_full (Config.QueueLimit, default DefaultQueueLimit).
+	queueLimit int
+	// reposTimeout and reposMax bound GET /repos (0: defaultReposTimeout,
+	// DefaultReposMax); tests shorten them.
+	reposTimeout time.Duration
+	reposMax     int
 }
 
 func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome string) (*handler, error) {
@@ -201,6 +214,7 @@ func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome 
 	h.webauthnLoginCap = DefaultWebAuthnLoginChallengeCap
 	h.credKey = newCredKey()
 	h.sessionTTL = SessionIdleTTL
+	h.queueLimit = DefaultQueueLimit
 	for _, r := range allowed {
 		if !filepath.IsAbs(r) || filepath.Clean(r) != r {
 			return nil, fmt.Errorf("allowed repo root %q must be an absolute clean path", r)
@@ -362,20 +376,35 @@ func (h *handler) submit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	scoped, bh := scopedIdemKey(p, key), bodyHash(raw)
+	id, created, done := h.createKeyed(w, r, t, scoped, bh)
+	// The ledger event is written after the idempotency record and outside
+	// idemMu (CF-W2a-1): a slow ledger never stalls other keyed submits.
+	if created {
+		h.submitted(r, id, t)
+	}
+	if !done {
+		h.respondTask(w, r, id, http.StatusCreated, false)
+	}
+}
+
+// createKeyed is the part of a keyed submit that runs under idemMu: the
+// replay check, the limited insert and the idempotency record. created
+// reports a new task (even when a raced key made it answer with a replay);
+// done means the response is already written.
+func (h *handler) createKeyed(w http.ResponseWriter, r *http.Request, t store.Task, scoped, bh string) (id int64, created, done bool) {
 	h.idemMu.Lock()
 	defer h.idemMu.Unlock()
 	if done, err := h.replay(w, r, scoped, bh); done || err != nil {
 		if err != nil {
 			writeErr(w, err)
 		}
-		return
+		return 0, false, true
 	}
-	id, err := h.st.CreateTask(r.Context(), t)
+	id, err := h.createTask(r.Context(), t)
 	if err != nil {
 		writeErr(w, err)
-		return
+		return 0, false, true
 	}
-	h.submitted(r, id, t)
 	// Under idemMu only another process (which lockDB rules out) or an expiry
 	// race can make Put fail with ErrKeyExists. Retry once when the key turns
 	// out to have expired meanwhile (CF6); a live key from elsewhere wins.
@@ -389,13 +418,13 @@ func (h *handler) submit(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, rerr)
 			}
 			log.Printf("orchd: idempotency key raced; task %d was created but not recorded", id)
-			return
+			return id, true, true
 		}
 	}
 	if err != nil {
 		log.Printf("orchd: idempotency key for task %d not recorded: %v", id, err)
 	}
-	h.respondTask(w, r, id, http.StatusCreated, false)
+	return id, true, false
 }
 
 // replay answers from a live idempotency record: done=true when it wrote the
@@ -413,13 +442,24 @@ func (h *handler) replay(w http.ResponseWriter, r *http.Request, scoped, bh stri
 }
 
 func (h *handler) createAndRespond(w http.ResponseWriter, r *http.Request, t store.Task) {
-	id, err := h.st.CreateTask(r.Context(), t)
+	id, err := h.createTask(r.Context(), t)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
 	h.submitted(r, id, t)
 	h.respondTask(w, r, id, http.StatusCreated, false)
+}
+
+// createTask inserts t unless the queue already holds h.queueLimit queued
+// tasks (count and insert are one store transaction, for keyed and unkeyed
+// submits alike).
+func (h *handler) createTask(ctx context.Context, t store.Task) (int64, error) {
+	id, err := h.st.CreateTaskLimited(ctx, t, h.queueLimit)
+	if errors.Is(err, store.ErrQueueFull) {
+		return 0, errQueueFull
+	}
+	return id, err
 }
 
 // submitted reports a newly created task (never a replay) to onSubmitted.
@@ -452,6 +492,15 @@ func (h *handler) validate(req submitRequest) (store.Task, error) {
 	}
 	if !classRe.MatchString(req.Class) {
 		return t, bad("class는 [a-z0-9_가-힣-] 1~32자여야 합니다")
+	}
+	// R3: only a policy with a class list restricts the class. The class
+	// already matched classRe, so echoing it is safe.
+	if h.policy != nil {
+		if classes := h.policy().Classes; len(classes) > 0 {
+			if _, ok := classes[req.Class]; !ok {
+				return t, apiErr(http.StatusBadRequest, "unknown_class", "정책에 없는 작업 종류입니다: "+req.Class)
+			}
+		}
 	}
 	if strings.TrimSpace(req.Prompt) == "" {
 		return t, bad("prompt가 비어 있습니다")

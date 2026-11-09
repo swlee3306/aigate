@@ -34,6 +34,7 @@ func (h *handler) mountV1(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+v1Prefix+"/projects", h.projects)
 	mux.HandleFunc("GET "+v1Prefix+"/policy", h.policyView)
 	mux.HandleFunc("GET "+v1Prefix+"/ops", h.opsView)
+	mux.HandleFunc("GET "+v1Prefix+"/repos", h.repos)
 	// Socket principals only (adminEnroll refuses sessions and tokens).
 	mux.HandleFunc("POST "+v1Prefix+"/admin/enroll", h.requireWrite(h.adminEnroll))
 	mux.HandleFunc("GET "+v1Prefix+"/auth/session", h.authSession)

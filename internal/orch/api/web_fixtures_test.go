@@ -72,6 +72,14 @@ func TestWebFixturesGolden(t *testing.T) {
 	queued := fixtureTask(39, store.StateQueued, "README 오타 수정", t0.Add(time.Hour))
 	checkFixture(t, "tasks.json", []TaskView{viewOf(queued), viewOf(pending), viewOf(failed)})
 
+	// GET /api/v1/repos (sorted by path; detached HEAD has branch "", an
+	// unborn branch has head "").
+	checkFixture(t, "repos.json", []RepoView{
+		{Path: "/srv/repos/calc", Head: "0123456789abcdef0123456789abcdef01234567", Branch: "main", Branches: []string{"main", "기능/새것", "fix-1"}},
+		{Path: "/srv/repos/docs", Head: "89abcdef0123456789abcdef0123456789abcdef", Branch: "", Branches: []string{"main"}},
+		{Path: "/srv/repos/new", Head: "", Branch: "main", Branches: []string{}},
+	})
+
 	// GET /api/v1/tasks/{id}/events: steps from Timeline, verify from the note.
 	evs := []store.Event{
 		{To: store.StateQueued, Note: "created", At: t0},

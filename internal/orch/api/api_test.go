@@ -347,7 +347,9 @@ func TestSocketParentDirCreated0700(t *testing.T) {
 }
 
 func TestConcurrentSubmissions(t *testing.T) {
-	e := newEnv(t, noSteps{}, 2)
+	// 24 submits exceed the default queue limit (20); this test is about
+	// unique ids under concurrency, so lift the limit.
+	e := newEnv(t, noSteps{}, 2, withQueueLimit(100))
 	const n = 24
 	var wg sync.WaitGroup
 	ids := make(chan int64, n)

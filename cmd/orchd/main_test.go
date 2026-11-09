@@ -256,3 +256,33 @@ func TestSignersFileFlagSetsRegistryPath(t *testing.T) {
 		t.Fatalf("untrusted: mode %q", mode)
 	}
 }
+
+func TestSubmitQueueLimitFlagValidation(t *testing.T) {
+	for _, args := range [][]string{
+		{"--queue-limit", "-1"},
+		{"--queue-limit", "x"},
+	} {
+		db := filepath.Join(t.TempDir(), "never", "o.db")
+		if code := run(append(args, "--db", db)); code != 2 {
+			t.Errorf("%v: exit %d, want 2", args, code)
+		}
+		if _, err := os.Stat(filepath.Dir(db)); !os.IsNotExist(err) {
+			t.Errorf("%v: database directory created before the flags were checked", args)
+		}
+	}
+	if err := checkQueueLimit(api.Config{QueueLimit: 0}); err != nil {
+		t.Fatalf("0 (default): %v", err)
+	}
+	if err := checkQueueLimit(api.Config{QueueLimit: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkQueueLimit(api.Config{QueueLimit: -3}); err == nil {
+		t.Fatal("negative accepted")
+	}
+	fs := flag.NewFlagSet("x", flag.ContinueOnError)
+	var cfg api.Config
+	registerQueueLimit(fs, &cfg)
+	if f := fs.Lookup("queue-limit"); f == nil || f.DefValue != "20" || !strings.Contains(f.Usage, "20") {
+		t.Fatalf("flag %+v", f)
+	}
+}

@@ -1,0 +1,26 @@
+[
+  {
+    "path": "/srv/repos/calc",
+    "head": "0123456789abcdef0123456789abcdef01234567",
+    "branch": "main",
+    "branches": [
+      "main",
+      "기능/새것",
+      "fix-1"
+    ]
+  },
+  {
+    "path": "/srv/repos/docs",
+    "head": "89abcdef0123456789abcdef0123456789abcdef",
+    "branch": "",
+    "branches": [
+      "main"
+    ]
+  },
+  {
+    "path": "/srv/repos/new",
+    "head": "",
+    "branch": "main",
+    "branches": []
+  }
+]

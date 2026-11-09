@@ -262,8 +262,21 @@ func scanTask(r scanner) (Task, error) {
 	return t, err
 }
 
+// ErrQueueFull is CreateTaskLimited's refusal: the queue already holds
+// maxQueued tasks in StateQueued.
+var ErrQueueFull = errors.New("store: queue is full")
+
 // CreateTask inserts t in StateQueued (State and timestamps are ignored).
 func (s *Store) CreateTask(ctx context.Context, t Task) (int64, error) {
+	return s.CreateTaskLimited(ctx, t, 0)
+}
+
+// CreateTaskLimited is CreateTask refusing with ErrQueueFull when maxQueued
+// or more tasks are already in StateQueued (maxQueued <= 0: no limit). The
+// count and the insert share one transaction, and every transaction takes
+// the write lock at BEGIN (_txlock=immediate), so concurrent callers can
+// never overshoot the limit.
+func (s *Store) CreateTaskLimited(ctx context.Context, t Task, maxQueued int) (int64, error) {
 	if t.Repo == "" {
 		return 0, errors.New("store: task needs a repo")
 	}
@@ -272,6 +285,15 @@ func (s *Store) CreateTask(ctx context.Context, t Task) (int64, error) {
 		return 0, err
 	}
 	defer tx.Rollback()
+	if maxQueued > 0 {
+		var q int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks WHERE state = ?`, StateQueued).Scan(&q); err != nil {
+			return 0, err
+		}
+		if q >= maxQueued {
+			return 0, ErrQueueFull
+		}
+	}
 	n := now()
 	res, err := tx.ExecContext(ctx,
 		`INSERT INTO tasks(repo, base, prompt, class, agent, state, created_at, updated_at)
@@ -286,6 +308,13 @@ func (s *Store) CreateTask(ctx context.Context, t Task) (int64, error) {
 		return 0, err
 	}
 	return id, tx.Commit()
+}
+
+// CountQueued is the number of tasks in StateQueued.
+func (s *Store) CountQueued(ctx context.Context) (int, error) {
+	var q int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks WHERE state = ?`, StateQueued).Scan(&q)
+	return q, err
 }
 
 // GetTask returns one task or ErrNotFound.

@@ -91,6 +91,7 @@ func run(args []string) int {
 	fs.StringVar(&cfg.HTTPListen, "http-listen", "", "loopback address of the web console listener, e.g. 127.0.0.1:8808 (empty = off; reach it only through tailscale serve)")
 	var allowedHosts stringList
 	fs.Var(&allowedHosts, "allowed-host", "Host header the HTTP listener accepts (repeatable; must include the --origin host)")
+	registerQueueLimit(fs, &cfg)
 	fs.DurationVar(&cfg.SessionTTL, "session-ttl", api.SessionIdleTTL, "idle expiry of a browser session (5m..24h; the absolute cap stays 24h)")
 	signersFile := fs.String("signers-file", signing.DefaultRegistryPath, "signers registry (root-owned); present = signed approvals only")
 	var vf vmFlags
@@ -108,6 +109,10 @@ func run(args []string) int {
 	}
 	// Refuse before touching the database or opening any listener.
 	if err := checkListenerFlags(cfg, vf.ReportDir, *signersFile); err != nil {
+		fmt.Fprintln(os.Stderr, "orchd:", err)
+		return 2
+	}
+	if err := checkQueueLimit(cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "orchd:", err)
 		return 2
 	}
@@ -265,6 +270,20 @@ func checkStateDirWritable(statePath string) error {
 
 // checkWebAuthnFlags validates --rp-id, --origin and --pending-file before
 // anything is opened.
+// registerQueueLimit adds --queue-limit (Config.QueueLimit).
+func registerQueueLimit(fs *flag.FlagSet, cfg *api.Config) {
+	fs.IntVar(&cfg.QueueLimit, "queue-limit", api.DefaultQueueLimit,
+		fmt.Sprintf("most tasks waiting in the queue at once; a submit beyond it is refused with 429 queue_full (default %d; 0 = the default)", api.DefaultQueueLimit))
+}
+
+// checkQueueLimit refuses a negative --queue-limit.
+func checkQueueLimit(cfg api.Config) error {
+	if cfg.QueueLimit < 0 {
+		return fmt.Errorf("--queue-limit %d: must be >= 0", cfg.QueueLimit)
+	}
+	return nil
+}
+
 func checkWebAuthnFlags(cfg api.Config) error {
 	if err := api.ValidateWebAuthnConfig(cfg.RPID, cfg.Origin); err != nil {
 		return err
