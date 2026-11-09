@@ -283,6 +283,22 @@ const ISSUED_RE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/;
 export async function signApproval(detail, signer) {
   const { challenge } = await consistency(detail);
   if (!ISSUED_RE.test(detail.issued)) throw new WebAuthnError('bad_message');
+  const body = await signWithPasskey(challenge, signer);
+  return {
+    signer: body.signer,
+    alg: body.alg,
+    sig: body.sig,
+    issued: detail.issued, // the server's value: the digest was computed over it
+    webauthn: body.webauthn,
+  };
+}
+
+// signWithPasskey asks the signer's passkey to sign `challenge` (the 32-byte
+// digest of a canonical message, user verification required) and returns
+// {signer, alg: 'webauthn-es256', sig, webauthn: {authenticator_data,
+// client_data_json}}. Shared by signApproval and signRegistryChange; every
+// check on the signer and the answer lives here.
+async function signWithPasskey(challenge, signer) {
   if (!signer || typeof signer.id !== 'string' || !SIGNER_RE.test(signer.id)) throw new WebAuthnError('bad_signer');
   let credId;
   try {
@@ -312,12 +328,55 @@ export async function signApproval(detail, signer) {
     signer: signer.id,
     alg: 'webauthn-es256',
     sig: b64uEncode(r.signature), // DER ECDSA, as the authenticator returned it
-    issued: detail.issued, // the server's value: the digest was computed over it
     webauthn: {
       authenticator_data: b64uEncode(r.authenticatorData),
       client_data_json: b64uEncode(r.clientDataJSON),
     },
   };
+}
+
+// --- canonical registry message (project registry changes) ---------------
+
+// The whole text of a valid aigate-registry-v1 message
+// (signing.RegistryMessage.Text): six lines in a fixed order, each ending
+// with \n. The prefix differs from the approval message, so neither format
+// passes as the other.
+const REGISTRY_MESSAGE_RE = new RegExp('^aigate-registry-v1\\n' +
+  'action: (register_project|set_flag)\\n' +
+  'subject: ([a-z][a-z0-9-]{0,39})\\n' +
+  'change: ([0-9a-f]{64})\\n' +
+  'request: ([0-9a-f]{32})\\n' +
+  'issued: ([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)\\n$');
+
+// checkRegistryMessage throws unless message is a canonical registry message
+// and returns its fields {action, subject, change, request, issued}.
+export function checkRegistryMessage(message) {
+  if (typeof message !== 'string' || message === '') throw new WebAuthnError('no_message');
+  if (message.length > MAX_MESSAGE) throw new WebAuthnError('bad_message');
+  if (HOSTILE_RE.test(message)) throw new WebAuthnError('hostile_message');
+  const m = REGISTRY_MESSAGE_RE.exec(message);
+  if (!m) throw new WebAuthnError('bad_message');
+  const [, action, subject, change, request, issued] = m;
+  return { action, subject, change, request, issued };
+}
+
+// sha256Hex is the lowercase hex SHA-256 of a string's UTF-8 bytes.
+export async function sha256Hex(textValue) {
+  const s = deps.subtle();
+  if (!s || typeof s.digest !== 'function') throw new WebAuthnError('unsupported');
+  return hex(new Uint8Array(await s.digest('SHA-256', new TextEncoder().encode(textValue))));
+}
+
+// signRegistryChange asks the passkey to sign one registry message and
+// returns the signature object of POST /projects/apply:
+//   {signer, alg: 'webauthn-es256', sig, webauthn: {authenticator_data, client_data_json}}
+// The challenge is the 32-byte SHA-256 of the message text. The message is
+// checked first (canonical, no hidden characters); the caller is responsible
+// for checking that it says what the screen says (projects.js does).
+export async function signRegistryChange(message, signer) {
+  checkRegistryMessage(message);
+  const challenge = await sha256(new TextEncoder().encode(message));
+  return signWithPasskey(challenge, signer);
 }
 
 // --- login ---------------------------------------------------------------

@@ -18,6 +18,7 @@ import (
 	"aigate/internal/orch/refine"
 	"aigate/internal/orch/steps"
 	"aigate/internal/orch/store"
+	"aigate/internal/registrymsg"
 )
 
 // fixturesDir holds the JSON the browser-side tests (internal/orch/web/test)
@@ -316,4 +317,122 @@ func publishVectors() []map[string]any {
 		}
 	}
 	return out
+}
+
+// TestWebFixturesProjects pins the project registry JSON the console reads
+// (registry list, candidates, propose, apply success) and the golden canonical
+// change vectors the browser's computeChange must reproduce byte for byte. The
+// propose fixture's key set is compared with a REAL propose response, so a
+// renamed or added field fails here.
+func TestWebFixturesProjects(t *testing.T) {
+	gitlab := &projectGitLab{Project: "team/docs"}
+	checkFixture(t, "projects-registry.json", map[string]any{
+		"projects": []ProjectView{
+			{ID: "docs", Path: "/home/orch/repos/docs", Kind: "docs", AIContext: false, GitLab: gitlab},
+			{ID: "calc", Path: "/home/orch/repos/calc", Kind: "code", AIContext: true},
+		},
+		"providers":         []struct{}{},
+		"auto_merge_global": map[string]any{"enabled": false, "max_per_day": 5},
+	})
+	checkFixture(t, "projects-candidates.json", map[string]any{
+		"candidates": []CandidateView{
+			{Path: "/home/orch/repos/notes", Head: "0123456789abcdef0123456789abcdef01234567"},
+			{Path: "/home/orch/repos/website", Head: "89abcdef0123456789abcdef0123456789abcdef"},
+		},
+		"kinds": []string{"code", "docs"},
+	})
+
+	issued := time.Date(2026, 11, 9, 10, 4, 5, 0, time.UTC)
+	request := "00112233445566778899aabbccddeeff"
+	propose := func(action, subject string, fields map[string]any) map[string]any {
+		c := registryChange{Action: action, Subject: subject, Fields: fields}
+		change, err := c.hash()
+		if err != nil {
+			t.Fatal(err)
+		}
+		msg := signing.RegistryMessage{Action: action, Subject: subject, Change: change, Request: request, Issued: issued}
+		return map[string]any{"action": action, "subject": subject, "fields": fields, "message": msg.Text(),
+			"change": change, "request": request, "issued": issued.Format(registryTimeFormat), "preview": previewSentences(c)}
+	}
+	reg := propose("register_project", "notes", map[string]any{"path": "/home/orch/repos/notes", "kind": "docs", "ai_context": false})
+	regAI := propose("register_project", "notes", map[string]any{"path": "/home/orch/repos/notes", "kind": "docs", "ai_context": true})
+	flag := propose("set_flag", "docs", map[string]any{"flag": "ai_context", "value": true})
+	checkFixture(t, "projects-propose-register.json", reg)
+	checkFixture(t, "projects-propose-register-ai.json", regAI)
+	checkFixture(t, "projects-propose-setflag.json", flag)
+	checkFixture(t, "projects-apply-ok.json", ProjectView{ID: "notes", Path: "/home/orch/repos/notes", Kind: "docs"})
+
+	e := newProjEnv(t)
+	code, b := e.sock(t, "POST", "/api/v1/projects/propose", e.proposeBody())
+	if code != 200 {
+		t.Fatalf("%d %s", code, b)
+	}
+	var realKeys map[string]json.RawMessage
+	if err := json.Unmarshal(b, &realKeys); err != nil {
+		t.Fatal(err)
+	}
+	if len(realKeys) != len(reg) {
+		t.Fatalf("propose has %d keys, fixture %d", len(realKeys), len(reg))
+	}
+	for k := range reg {
+		if _, ok := realKeys[k]; !ok {
+			t.Errorf("fixture key %q is not in the real propose response", k)
+		}
+	}
+
+	// Canonical change vectors.
+	type vec struct {
+		Name      string         `json:"name"`
+		Action    string         `json:"action"`
+		Subject   string         `json:"subject"`
+		Fields    map[string]any `json:"fields"`
+		Canonical string         `json:"canonical,omitempty"`
+		Change    string         `json:"change,omitempty"`
+	}
+	good := []vec{
+		{Name: "register plain", Action: "register_project", Subject: "notes", Fields: map[string]any{"path": "/home/orch/repos/notes", "kind": "docs", "ai_context": false}},
+		{Name: "register ai on", Action: "register_project", Subject: "notes", Fields: map[string]any{"path": "/home/orch/repos/notes", "kind": "docs", "ai_context": true}},
+		{Name: "special characters", Action: "register_project", Subject: "a-1", Fields: map[string]any{"path": "/srv/a\"b\\c<d>&e/한글😀 f", "kind": "a_b-c", "ai_context": false}},
+		{Name: "set flag on", Action: "set_flag", Subject: "docs", Fields: map[string]any{"flag": "ai_context", "value": true}},
+		{Name: "set flag off", Action: "set_flag", Subject: "docs", Fields: map[string]any{"flag": "ai_context", "value": false}},
+	}
+	for i := range good {
+		c, err := registrymsg.CanonicalChange(good[i].Action, good[i].Subject, good[i].Fields)
+		if err != nil {
+			t.Fatalf("%s: %v", good[i].Name, err)
+		}
+		h, _ := registrymsg.ChangeHash(good[i].Action, good[i].Subject, good[i].Fields)
+		good[i].Canonical, good[i].Change = string(c), h
+	}
+	refused := []vec{
+		{Name: "control char", Action: "register_project", Subject: "a", Fields: map[string]any{"path": "/a\x01b", "kind": "docs", "ai_context": false}},
+		{Name: "newline", Action: "register_project", Subject: "a", Fields: map[string]any{"path": "/a\nb", "kind": "docs", "ai_context": false}},
+		{Name: "U+2028", Action: "register_project", Subject: "a", Fields: map[string]any{"path": "/a b", "kind": "docs", "ai_context": false}},
+		{Name: "U+2029", Action: "register_project", Subject: "a", Fields: map[string]any{"path": "/a b", "kind": "docs", "ai_context": false}},
+		{Name: "DEL", Action: "register_project", Subject: "a", Fields: map[string]any{"path": "/a\x7fb", "kind": "docs", "ai_context": false}},
+		{Name: "empty path", Action: "register_project", Subject: "a", Fields: map[string]any{"path": "", "kind": "docs", "ai_context": false}},
+		{Name: "extra field", Action: "register_project", Subject: "a", Fields: map[string]any{"path": "/a", "kind": "docs", "ai_context": false, "x": "y"}},
+		{Name: "missing field", Action: "register_project", Subject: "a", Fields: map[string]any{"path": "/a", "kind": "docs"}},
+		{Name: "ai_context string", Action: "register_project", Subject: "a", Fields: map[string]any{"path": "/a", "kind": "docs", "ai_context": "false"}},
+		{Name: "ai_context number", Action: "register_project", Subject: "a", Fields: map[string]any{"path": "/a", "kind": "docs", "ai_context": float64(1)}},
+		{Name: "bad subject upper", Action: "register_project", Subject: "A", Fields: map[string]any{"path": "/a", "kind": "docs", "ai_context": false}},
+		{Name: "bad subject digit first", Action: "register_project", Subject: "1a", Fields: map[string]any{"path": "/a", "kind": "docs", "ai_context": false}},
+		{Name: "bad kind", Action: "register_project", Subject: "a", Fields: map[string]any{"path": "/a", "kind": "Docs", "ai_context": false}},
+		{Name: "unknown action", Action: "delete_project", Subject: "a", Fields: map[string]any{"path": "/a", "kind": "docs", "ai_context": false}},
+		{Name: "bad flag", Action: "set_flag", Subject: "a", Fields: map[string]any{"flag": "Auto Merge", "value": true}},
+		{Name: "flag value string", Action: "set_flag", Subject: "a", Fields: map[string]any{"flag": "ai_context", "value": "true"}},
+	}
+	for _, r := range refused {
+		if _, err := registrymsg.CanonicalChange(r.Action, r.Subject, r.Fields); err == nil {
+			t.Fatalf("Go accepts %q; it must be in the refused vectors only if registrymsg refuses it", r.Name)
+		}
+	}
+	m := signing.RegistryMessage{Action: "register_project", Subject: "notes", Change: good[0].Change, Request: request, Issued: issued}
+	d := m.Digest()
+	checkFixture(t, "registry-vectors.json", map[string]any{
+		"change":  good,
+		"refused": refused,
+		"message": map[string]any{"action": m.Action, "subject": m.Subject, "change": m.Change, "request": m.Request,
+			"issued": issued.Format(registryTimeFormat), "text": m.Text(), "digest": hex.EncodeToString(d[:])},
+	})
 }

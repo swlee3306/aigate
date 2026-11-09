@@ -1,8 +1,8 @@
 // router.js: hash routes and the view registry. It has no DOM access so views
 // (loaded by app.js) can import it without a cycle with app.js.
 //
-// Routes: #/overview  #/tasks  #/tasks/ID  #/new  #/new/plan  #/ops  #/approvals  #/approvals/ID  #/diff/ID
-// View names: overview, tasks, task, new, plan, ops, approvals, approval, diff, login (and notfound).
+// Routes: #/overview  #/tasks  #/tasks/ID  #/new  #/new/plan  #/projects  #/ops  #/approvals  #/approvals/ID  #/diff/ID
+// View names: overview, tasks, task, new, plan, projects, ops, approvals, approval, diff, login (and notfound).
 
 import { ID_RE } from './render.js';
 
@@ -53,6 +53,7 @@ export function parseRoute(hash) {
       if (rest.length === 0) return { name: 'new', params: [] };
       return rest.length === 1 && rest[0] === 'plan' ? { name: 'plan', params: [] } : bad;
     case 'ops':
+    case 'projects':
       return rest.length === 0 ? { name: head, params: [] } : bad;
     case 'diff':
       // The file shown is view state (a button), never part of the URL.

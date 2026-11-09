@@ -1,0 +1,10 @@
+{
+  "id": "notes",
+  "path": "/home/orch/repos/notes",
+  "kind": "docs",
+  "ai_context": false,
+  "gitlab": null,
+  "auto_merge": {
+    "enabled": false
+  }
+}

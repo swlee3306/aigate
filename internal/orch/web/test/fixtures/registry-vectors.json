@@ -1,0 +1,231 @@
+{
+  "change": [
+    {
+      "name": "register plain",
+      "action": "register_project",
+      "subject": "notes",
+      "fields": {
+        "ai_context": false,
+        "kind": "docs",
+        "path": "/home/orch/repos/notes"
+      },
+      "canonical": "{\"action\":\"register_project\",\"fields\":{\"ai_context\":false,\"kind\":\"docs\",\"path\":\"/home/orch/repos/notes\"},\"subject\":\"notes\"}",
+      "change": "d7a64dd604c129cdcefaaa5d86b67083dac5fdbcf49833b5b963a75433bca9f1"
+    },
+    {
+      "name": "register ai on",
+      "action": "register_project",
+      "subject": "notes",
+      "fields": {
+        "ai_context": true,
+        "kind": "docs",
+        "path": "/home/orch/repos/notes"
+      },
+      "canonical": "{\"action\":\"register_project\",\"fields\":{\"ai_context\":true,\"kind\":\"docs\",\"path\":\"/home/orch/repos/notes\"},\"subject\":\"notes\"}",
+      "change": "099f2efa68a49bb726818b2b3b3e6bbd4b2c4ff9563d024fa0795482093272ff"
+    },
+    {
+      "name": "special characters",
+      "action": "register_project",
+      "subject": "a-1",
+      "fields": {
+        "ai_context": false,
+        "kind": "a_b-c",
+        "path": "/srv/a\"b\\c\u003cd\u003e\u0026e/한글😀 f"
+      },
+      "canonical": "{\"action\":\"register_project\",\"fields\":{\"ai_context\":false,\"kind\":\"a_b-c\",\"path\":\"/srv/a\\\"b\\\\c\u003cd\u003e\u0026e/한글😀 f\"},\"subject\":\"a-1\"}",
+      "change": "11dc8d571ace2ea00d37e8702b55ea339e2cf5f4775a9e5b3098ee179abe35ec"
+    },
+    {
+      "name": "set flag on",
+      "action": "set_flag",
+      "subject": "docs",
+      "fields": {
+        "flag": "ai_context",
+        "value": true
+      },
+      "canonical": "{\"action\":\"set_flag\",\"fields\":{\"flag\":\"ai_context\",\"value\":true},\"subject\":\"docs\"}",
+      "change": "c32da9f43fb6a3412ef669d85ae6604d12b829dcbf77a4891f89d717d40fdf2b"
+    },
+    {
+      "name": "set flag off",
+      "action": "set_flag",
+      "subject": "docs",
+      "fields": {
+        "flag": "ai_context",
+        "value": false
+      },
+      "canonical": "{\"action\":\"set_flag\",\"fields\":{\"flag\":\"ai_context\",\"value\":false},\"subject\":\"docs\"}",
+      "change": "3eac7c18dc634eab87d3834c4c924c86d0f2d096718d578b04d05fabe159451a"
+    }
+  ],
+  "message": {
+    "action": "register_project",
+    "change": "d7a64dd604c129cdcefaaa5d86b67083dac5fdbcf49833b5b963a75433bca9f1",
+    "digest": "25e7f8ddab49768b15a49315c331cc99134fb71f2225407f6a9d205d9132e996",
+    "issued": "2026-11-09T10:04:05Z",
+    "request": "00112233445566778899aabbccddeeff",
+    "subject": "notes",
+    "text": "aigate-registry-v1\naction: register_project\nsubject: notes\nchange: d7a64dd604c129cdcefaaa5d86b67083dac5fdbcf49833b5b963a75433bca9f1\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-09T10:04:05Z\n"
+  },
+  "refused": [
+    {
+      "name": "control char",
+      "action": "register_project",
+      "subject": "a",
+      "fields": {
+        "ai_context": false,
+        "kind": "docs",
+        "path": "/a\u0001b"
+      }
+    },
+    {
+      "name": "newline",
+      "action": "register_project",
+      "subject": "a",
+      "fields": {
+        "ai_context": false,
+        "kind": "docs",
+        "path": "/a\nb"
+      }
+    },
+    {
+      "name": "U+2028",
+      "action": "register_project",
+      "subject": "a",
+      "fields": {
+        "ai_context": false,
+        "kind": "docs",
+        "path": "/a\u2028b"
+      }
+    },
+    {
+      "name": "U+2029",
+      "action": "register_project",
+      "subject": "a",
+      "fields": {
+        "ai_context": false,
+        "kind": "docs",
+        "path": "/a\u2029b"
+      }
+    },
+    {
+      "name": "DEL",
+      "action": "register_project",
+      "subject": "a",
+      "fields": {
+        "ai_context": false,
+        "kind": "docs",
+        "path": "/ab"
+      }
+    },
+    {
+      "name": "empty path",
+      "action": "register_project",
+      "subject": "a",
+      "fields": {
+        "ai_context": false,
+        "kind": "docs",
+        "path": ""
+      }
+    },
+    {
+      "name": "extra field",
+      "action": "register_project",
+      "subject": "a",
+      "fields": {
+        "ai_context": false,
+        "kind": "docs",
+        "path": "/a",
+        "x": "y"
+      }
+    },
+    {
+      "name": "missing field",
+      "action": "register_project",
+      "subject": "a",
+      "fields": {
+        "kind": "docs",
+        "path": "/a"
+      }
+    },
+    {
+      "name": "ai_context string",
+      "action": "register_project",
+      "subject": "a",
+      "fields": {
+        "ai_context": "false",
+        "kind": "docs",
+        "path": "/a"
+      }
+    },
+    {
+      "name": "ai_context number",
+      "action": "register_project",
+      "subject": "a",
+      "fields": {
+        "ai_context": 1,
+        "kind": "docs",
+        "path": "/a"
+      }
+    },
+    {
+      "name": "bad subject upper",
+      "action": "register_project",
+      "subject": "A",
+      "fields": {
+        "ai_context": false,
+        "kind": "docs",
+        "path": "/a"
+      }
+    },
+    {
+      "name": "bad subject digit first",
+      "action": "register_project",
+      "subject": "1a",
+      "fields": {
+        "ai_context": false,
+        "kind": "docs",
+        "path": "/a"
+      }
+    },
+    {
+      "name": "bad kind",
+      "action": "register_project",
+      "subject": "a",
+      "fields": {
+        "ai_context": false,
+        "kind": "Docs",
+        "path": "/a"
+      }
+    },
+    {
+      "name": "unknown action",
+      "action": "delete_project",
+      "subject": "a",
+      "fields": {
+        "ai_context": false,
+        "kind": "docs",
+        "path": "/a"
+      }
+    },
+    {
+      "name": "bad flag",
+      "action": "set_flag",
+      "subject": "a",
+      "fields": {
+        "flag": "Auto Merge",
+        "value": true
+      }
+    },
+    {
+      "name": "flag value string",
+      "action": "set_flag",
+      "subject": "a",
+      "fields": {
+        "flag": "ai_context",
+        "value": "true"
+      }
+    }
+  ]
+}

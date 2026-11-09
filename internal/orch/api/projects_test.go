@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1022,19 +1023,11 @@ func TestConstantsAgreeWithWeb(t *testing.T) {
 			t.Errorf("%q should not be a kind", bad)
 		}
 	}
-	// The browser's copy (A5) is compared once it exists.
+	// The browser's copy must exist (a missing file is a failure, never a skip)
+	// and agree on every shared constant.
 	src, err := os.ReadFile("../web/static/views/projects.js")
 	if err != nil {
-		// Loud sentinel: if the shell already loads the view, a missing file
-		// must fail, not skip. (A5: turn this Skip into Fatal and extend the
-		// comparison to the length caps.)
-		for _, f := range []string{"router.js", "shell.js", "app.js", "index.html", "render.js"} {
-			b, rerr := os.ReadFile(filepath.Join("../web/static", f))
-			if rerr == nil && strings.Contains(string(b), "views/projects.js") {
-				t.Fatalf("%s loads views/projects.js but the file is missing", f)
-			}
-		}
-		t.Skip("web/static/views/projects.js does not exist yet (A5); the comparison runs once it does")
+		t.Fatalf("web/static/views/projects.js: %v", err)
 	}
 	js := string(src)
 	jsRegex := func(name string) string {
@@ -1044,11 +1037,102 @@ func TestConstantsAgreeWithWeb(t *testing.T) {
 		}
 		return m[1]
 	}
+	jsString := func(name string) string {
+		m := regexp.MustCompile(`(?m)^(?:export )?const ` + name + ` = '([^']*)';\s*$`).FindStringSubmatch(js)
+		if m == nil {
+			t.Fatalf("JS string constant %s not found", name)
+		}
+		return m[1]
+	}
+	jsInt := func(name string) int {
+		m := regexp.MustCompile(`(?m)^(?:export )?const ` + name + ` = ([0-9]+);\s*$`).FindStringSubmatch(js)
+		if m == nil {
+			t.Fatalf("JS integer constant %s not found", name)
+		}
+		n, _ := strconv.Atoi(m[1])
+		return n
+	}
 	if got, want := jsRegex("SUBJECT_RE"), subjectPattern; got != want {
 		t.Errorf("SUBJECT_RE %q != %q", got, want)
 	}
 	if got, want := jsRegex("KIND_RE"), kindPattern; got != want {
 		t.Errorf("KIND_RE %q != %q", got, want)
+	}
+	// The flag pattern lives unexported in registrymsg: pin the literal and
+	// the behaviour that matters.
+	if got, want := jsRegex("FLAG_RE"), `^[a-z][a-z0-9_]{0,31}$`; got != want {
+		t.Errorf("FLAG_RE %q != %q", got, want)
+	}
+	for _, s := range []string{"ai_context", "a", strings.Repeat("a", 32)} {
+		if _, err := registrymsg.CanonicalChange("set_flag", "a", map[string]any{"flag": s, "value": true}); err != nil {
+			t.Errorf("flag %q should be valid: %v", s, err)
+		}
+	}
+	for _, s := range []string{"", "Ai", "1a", "a-b", strings.Repeat("a", 33)} {
+		if _, err := registrymsg.CanonicalChange("set_flag", "a", map[string]any{"flag": s, "value": true}); err == nil {
+			t.Errorf("flag %q should be refused", s)
+		}
+	}
+	// The path text rule: printable ASCII and Hangul syllables only.
+	if got, want := jsRegex("PATH_TEXT_RE"), `^[\x20-\x7e\uac00-\ud7a3]+$`; got != want {
+		t.Errorf("PATH_TEXT_RE %q != %q", got, want)
+	}
+	for r, want := range map[rune]bool{0x1f: false, 0x20: true, 0x7e: true, 0x7f: false, 0xa0: false, 0xabff: false, 0xac00: true, 0xd7a3: true,
+		0xd7a4: false, 0x200b: false, 0x3000: false, 0x1f600: false} {
+		if got := safeProjectPath("/a" + string(r)); got != want {
+			t.Errorf("safeProjectPath rune %U = %v, want %v", r, got, want)
+		}
+	}
+	// Length caps.
+	if got := jsInt("MAX_PATH_BYTES"); got != maxPathBytes {
+		t.Errorf("MAX_PATH_BYTES %d != %d", got, maxPathBytes)
+	}
+	if !safeProjectPath("/"+strings.Repeat("a", maxPathBytes-1)) || safeProjectPath("/"+strings.Repeat("a", maxPathBytes)) {
+		t.Errorf("safeProjectPath does not cap at %d bytes", maxPathBytes)
+	}
+	if got, want := jsInt("SUBJECT_MAX"), 40; got != want || !registrymsg.ValidSubject("a"+strings.Repeat("b", want-1)) || registrymsg.ValidSubject("a"+strings.Repeat("b", want)) {
+		t.Errorf("SUBJECT_MAX %d does not match registrymsg", got)
+	}
+	if got, want := jsInt("KIND_MAX"), 32; got != want || !registrymsg.ValidKind("a"+strings.Repeat("b", want-1)) || registrymsg.ValidKind("a"+strings.Repeat("b", want)) {
+		t.Errorf("KIND_MAX %d does not match registrymsg", got)
+	}
+	// Actions and the one flag the console may change.
+	if got := jsString("ACTION_REGISTER"); got != registrymsg.ActionRegisterProject {
+		t.Errorf("ACTION_REGISTER %q", got)
+	}
+	if got := jsString("ACTION_SET_FLAG"); got != registrymsg.ActionSetFlag {
+		t.Errorf("ACTION_SET_FLAG %q", got)
+	}
+	if got := jsString("FLAG_AI_CONTEXT"); got != "ai_context" {
+		t.Errorf("FLAG_AI_CONTEXT %q", got)
+	}
+	// The browser's message format: the magic line and field order of
+	// signing.RegistryMessage.Text.
+	wa, werr := os.ReadFile("../web/static/webauthn.js")
+	if werr != nil {
+		t.Fatal(werr)
+	}
+	m := signing.RegistryMessage{Action: "set_flag", Subject: "a", Change: strings.Repeat("a", 64), Request: strings.Repeat("b", 32),
+		Issued: time.Date(2026, 11, 9, 10, 4, 5, 0, time.UTC)}
+	for _, line := range strings.Split(strings.TrimSuffix(m.Text(), "\n"), "\n") {
+		key, _, _ := strings.Cut(line, ": ")
+		if key == "aigate-registry-v1" {
+			key = "^aigate-registry-v1\\\\n'"
+		} else {
+			key += ": "
+		}
+		if !strings.Contains(string(wa), key) {
+			t.Errorf("webauthn.js REGISTRY_MESSAGE_RE lacks %q", key)
+		}
+	}
+	// Shipped, loaded and routed: the shell must know the view.
+	for _, f := range []struct{ file, needle string }{
+		{"app.js", "'projects'"}, {"router.js", "case 'projects':"}, {"index.html", `href="#/projects"`},
+	} {
+		b, rerr := os.ReadFile(filepath.Join("../web/static", f.file))
+		if rerr != nil || !strings.Contains(string(b), f.needle) {
+			t.Errorf("%s does not wire the projects view (%q)", f.file, f.needle)
+		}
 	}
 }
 
