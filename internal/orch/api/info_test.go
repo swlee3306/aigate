@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -220,5 +221,74 @@ func TestOpsCloudRequiresAuth(t *testing.T) {
 	}
 	if calls.Load() != 0 {
 		t.Errorf("the cloud supplier ran for an unauthenticated request")
+	}
+}
+
+func TestOpsReturnsWithinBudgetWhenCloudHangs(t *testing.T) {
+	old := cloudBudget
+	cloudBudget = 100 * time.Millisecond
+	t.Cleanup(func() { cloudBudget = old })
+	release := make(chan struct{})
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { close(release) }) })
+	var ready atomic.Bool
+	// A detached refresh like vm.TestVM.CloudStatus: shared, outlives callers.
+	var mu sync.Mutex
+	var res *CloudView
+	started := false
+	supplier := func(ctx context.Context) CloudView {
+		mu.Lock()
+		if res != nil {
+			v := *res
+			mu.Unlock()
+			return v
+		}
+		if !started {
+			started = true
+			go func() {
+				<-release
+				v := okCloud()
+				mu.Lock()
+				res = &v
+				mu.Unlock()
+				ready.Store(true)
+			}()
+		}
+		mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return CloudView{Code: CloudTimeout}
+		case <-time.After(5 * time.Second):
+			return CloudView{Code: CloudUnavailable}
+		}
+	}
+	e := newEnv(t, noSteps{}, 1, func(c *Config) {
+		c.Ops = func() OpsView {
+			return OpsView{Build: "rev1", Started: time.Now(), PolicyHash: "ph", BaseCacheEntries: 4}
+		}
+		c.CloudStatus = supplier
+	})
+	start := time.Now()
+	code, b := e.do(t, "GET", "/api/v1/ops", "")
+	if code != 200 || time.Since(start) > 2*time.Second {
+		t.Fatalf("%d after %v: %s", code, time.Since(start), b)
+	}
+	var got OpsView
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Build != "rev1" || got.PolicyHash != "ph" || got.BaseCacheEntries != 4 ||
+		got.Cloud == nil || got.Cloud.OK || got.Cloud.Code != CloudTimeout {
+		t.Fatalf("%s", b)
+	}
+	once.Do(func() { close(release) })
+	for i := 0; i < 100 && !ready.Load(); i++ {
+		time.Sleep(20 * time.Millisecond)
+	}
+	_, b = e.do(t, "GET", "/api/v1/ops", "")
+	var later OpsView
+	_ = json.Unmarshal(b, &later)
+	if later.Cloud == nil || !later.Cloud.OK || later.Cloud.Quota == nil {
+		t.Errorf("later /ops: %s", b)
 	}
 }

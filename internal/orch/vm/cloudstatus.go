@@ -23,6 +23,11 @@ import (
 // the screen must not show hours-old numbers as if they were current. A
 // failure is itself remembered for only cloudFailTTL so that a broken cloud is
 // not called once per request, yet recovery shows up quickly.
+//
+// Documented behaviours: History is empty when the cloud read failed (the
+// failure view is ok/code/checked_at only). VMStatus may be "unknown" while OK
+// is true: the server could not be read (for example a failed restore deleted
+// it) but the quota was; consumers must render that state.
 const (
 	cloudTTL            = 60 * time.Second
 	cloudFailTTL        = 10 * time.Second
@@ -144,9 +149,23 @@ func (t *TestVM) readCloud() CloudInfo {
 	var qErr, sErr, vErr error
 	var wg sync.WaitGroup
 	wg.Add(3)
-	go func() { defer wg.Done(); quotaDoc, qErr = rd.QuotaUsage(ctx) }()
-	go func() { defer wg.Done(); status, sErr = rd.ServerStatus(ctx, t.name()) }()
-	go func() { defer wg.Done(); vols, vErr = rd.CountRestoreVolumes(ctx) }()
+	// Each read recovers on its own: a panic in a reader goroutine would
+	// otherwise crash the daemon (the recover in refreshCloud covers only
+	// its own goroutine). A panicking read counts as a failed read.
+	guard := func(err *error, f func()) {
+		go func() {
+			defer wg.Done()
+			defer func() {
+				if recover() != nil {
+					*err = errors.New("cloud read panicked")
+				}
+			}()
+			f()
+		}()
+	}
+	guard(&qErr, func() { quotaDoc, qErr = rd.QuotaUsage(ctx) })
+	guard(&sErr, func() { status, sErr = rd.ServerStatus(ctx, t.name()) })
+	guard(&vErr, func() { vols, vErr = rd.CountRestoreVolumes(ctx) })
 	wg.Wait()
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return failInfo(CloudTimeout)

@@ -35,6 +35,13 @@ type RestoreView struct {
 	OK      bool           `json:"ok"`
 }
 
+// cloudBudget is how long /ops waits for the cloud block. It must stay below
+// the web client's request timeout (15 s) so a slow cloud yields a partial
+// answer (cloud_timeout) instead of an aborted request; the supplier's own
+// refresh is detached and keeps running, so the next poll gets the value.
+// A var so tests can shorten it.
+var cloudBudget = 6 * time.Second
+
 // Fixed failure codes of CloudView (no error text ever reaches the client).
 const (
 	CloudUnavailable = "cloud_unavailable"
@@ -139,7 +146,9 @@ func (h *handler) opsView(w http.ResponseWriter, r *http.Request) {
 	}
 	v := h.ops()
 	if h.cloud != nil {
-		c := h.cloudView(r.Context())
+		ctx, cancel := context.WithTimeout(r.Context(), cloudBudget)
+		c := h.cloudView(ctx)
+		cancel()
 		v.Cloud = &c
 	}
 	writeJSON(w, 200, v)

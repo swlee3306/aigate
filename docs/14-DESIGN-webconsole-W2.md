@@ -61,7 +61,7 @@ W2b는 W2a가 서버에서 돌고 있는 것을 확인한 뒤에 시작한다.
 
 ### 3.3 서버 상태와 진행 표시
 - `GET /api/v1/ops`를 확장한다: `cloud` 블록에 쿼터(gigabytes·volumes의 한도/사용/예약), 테스트 VM 상태, 복원 볼륨 개수, 최근 복원 기록(최대 N건). 읽기 전용이다.
-- **호출 비용을 숨기는 방식(제안):** orchd가 60초 TTL 캐시와 중복 호출 합치기(single-flight)로 한 번만 클라우드를 부른다. 실패하면 `cloud:{ok:false, code}`(고정 코드, 오류 원문 없음)로 응답하고 나머지 필드는 그대로 준다. 허용 목록의 읽기 동사(`quota show --usage -f json`, `server show`, `volume list`)만 쓰고 쓰기 동사는 추가하지 않는다.
+- **호출 비용을 숨기는 방식(제안):** orchd가 60초 TTL 캐시와 중복 호출 합치기(single-flight)로 한 번만 클라우드를 부른다. 실패하면 `cloud:{ok:false, code}`(고정 코드, 오류 원문 없음)로 응답하고 나머지 필드는 그대로 준다. `/ops`는 클라우드 블록을 최대 6초만 기다리고(느리면 `cloud_timeout`, 갱신은 뒤에서 계속된다), `test_vm.status`는 서버를 읽지 못했지만 쿼터는 읽은 경우(예: 복원 실패로 서버가 지워진 뒤) `ok:true`와 함께 `"unknown"`일 수 있으므로 웹이 이 상태를 표시해야 한다. 허용 목록의 읽기 동사(`quota show --usage -f json`, `server show`, `volume list`)만 쓰고 쓰기 동사는 추가하지 않는다.
 - `OpenStackCLI`는 vm 패키지 안에만 있으므로 `Ops`와 같은 방식의 공급 함수(`CloudStatus func(ctx) CloudView`)를 데몬 설정에 추가한다.
 - 화면: `#/ops`(서버 상태). 쿼터가 임계(예: 80%)를 넘으면 경고 문구와 정리 스크립트 안내(`cleanup-restore-volumes.sh`)를 보여 준다. 가장 흔한 고장(쿼터 초과로 복원 실패, docs/10 5장)을 미리 알리는 것이 목적이다.
 - 진행 표시: 작업 상세의 타임라인에 **현재 진행 중인 단계와 경과 시간**을 추가한다(데이터는 이미 이벤트에 있다). 폴링은 기존 `poll`을 쓴다(실시간 푸시는 하지 않는다).

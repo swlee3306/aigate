@@ -271,3 +271,67 @@ func TestCloudStatusWithoutReaderIsUnavailable(t *testing.T) {
 		t.Errorf("%+v", v)
 	}
 }
+
+func TestCloudStatusFirstCallerCancelDoesNotPoisonOthers(t *testing.T) {
+	tv, f, _ := newCloudTest()
+	f.block = make(chan struct{})
+	ctxA, cancelA := context.WithCancel(context.Background())
+	aDone := make(chan CloudInfo, 1)
+	go func() { aDone <- tv.CloudStatus(ctxA) }()
+	time.Sleep(50 * time.Millisecond) // A started the refresh
+	bDone := make(chan CloudInfo, 1)
+	go func() { bDone <- tv.CloudStatus(context.Background()) }()
+	time.Sleep(50 * time.Millisecond)
+	cancelA()
+	if a := <-aDone; a.OK || a.Code != CloudTimeout {
+		t.Errorf("A: %+v", a)
+	}
+	close(f.block)
+	if b := <-bDone; !b.OK {
+		t.Fatalf("B poisoned by A's cancel: %+v", b)
+	}
+	if v := tv.CloudStatus(context.Background()); !v.OK || f.count("quota show") != 1 {
+		t.Errorf("cache not filled: %+v calls %d", v, f.count("quota show"))
+	}
+}
+
+type panicReader struct{ which string }
+
+func (p panicReader) QuotaUsage(context.Context) (string, error) {
+	if p.which == "quota" {
+		panic("boom quota")
+	}
+	return realQuotaJSON, nil
+}
+func (p panicReader) ServerStatus(context.Context, string) (string, error) {
+	if p.which == "server" {
+		panic("boom server")
+	}
+	return "ACTIVE", nil
+}
+func (p panicReader) CountRestoreVolumes(context.Context) (int, error) {
+	if p.which == "volumes" {
+		panic("boom volumes")
+	}
+	return 1, nil
+}
+func (p panicReader) DeleteServer(context.Context, string) error                     { return nil }
+func (p panicReader) CreateVolumeFromSnapshot(context.Context, string, string) error { return nil }
+func (p panicReader) CreateServer(context.Context, string, string) error             { return nil }
+func (p panicReader) WaitSSH(context.Context, string) error                          { return nil }
+
+func TestCloudStatusReaderPanicIsUnavailable(t *testing.T) {
+	for _, w := range []string{"quota", "server", "volumes"} {
+		tv := &TestVM{Cloud: panicReader{w}}
+		v := tv.CloudStatus(context.Background())
+		if w == "server" { // an unreadable server is "unknown", not an outage
+			if !v.OK || v.VMStatus != "unknown" {
+				t.Errorf("%s: %+v", w, v)
+			}
+			continue
+		}
+		if v.OK || v.Code != CloudUnavailable {
+			t.Errorf("%s: %+v", w, v)
+		}
+	}
+}
