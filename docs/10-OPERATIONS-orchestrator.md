@@ -255,3 +255,80 @@ sudo /usr/local/lib/aigate/orch admin signers list
 | 4 SSH 키 등록(서명 필수) | **사용자 직접**(root) | `sudo rm /etc/aigate/signers.json` | 불필요 |
 | 5 패스키 활성화 | **사용자 직접**(지문 대조) | `signers remove <ID>` / `pending remove` | 불필요 |
 | 6 롤백 | 승인 | — | 4번만 필요 |
+
+## 10. W2a 컷오버 런북 (제출·취소·재시도·서버 상태 화면)
+설계는 `14-DESIGN-webconsole-W2.md` 3장, 결과·한계는 `16-RESULTS-webconsole-W2a.md`. **이 절차는 아직 실제 서버에서 한 번도 실행하지 않았다.** 아래 "예상 결과"는 코드와 이 저장소의 시험을 읽고 쓴 것이지 서버에서 본 출력이 아니다(W1 9장과 같은 원칙). 처음 실행할 때 다르면 그 단계에서 멈추고 롤백(단계 3)을 고려한다. 순서는 바꾸지 않는다.
+
+표기: **[사용자]** 사용자 본인의 작업 또는 명시적 승인이 필요, **[되돌림 가능]** 아래 한 줄로 원상 복구, **[주의]** 되돌리려면 DB 복원이 필요하고 그 사이 기록을 잃는다. `ORCHVM`, 관리자 키, 경로는 9장과 같다(바이너리 `/usr/local/lib/aigate`, DB `/home/orch/orchd/state/orchd.db`, 소켓 `/home/orch/orchd/run/orchd.sock`).
+
+### 10.0 시작 전에 모두 참이어야 하는 것
+- **W1 컷오버가 끝난 상태가 출발점이다**(13-RESULTS 10장): 세 바이너리가 root 소유 `/usr/local/lib/aigate`에 있고 그 옆에 W1의 `*.prev-w1`이 있다. 서명 필수 모드(`/etc/aigate/signers.json`), `tailscale serve`, 유닛의 웹 플래그는 그대로 둔다. 이 컷오버는 **바이너리만** 바꾼다(유닛·정책·서명자 목록은 바꾸지 않는다).
+- 실행 중이거나 대기 중인 작업이 없다: `orch list`에 `queued`·진행 중 상태가 없고 `orch approvals`가 비어 있다. 단계 1은 `orchd`를 재시작하고, 롤백은 DB를 되돌린다.
+- **동작이 바뀌는 것 두 가지를 미리 안다.**
+  1. **정책이 종류(class) 목록을 가지면 목록에 없는 종류의 제출은 거부된다**(`400 unknown_class`). 웹만이 아니라 **CLI `orch submit`도 같다**(같은 검증 함수). 지금 orch-vm 정책에는 `toy`, `sample-app`가 있다고 알고 있다(3장, 실서버 정책 파일은 이번에 다시 읽지 않았다). 다른 종류 이름을 쓰던 스크립트가 있으면 먼저 정책에 넣거나 이름을 바꾼다.
+  2. **이미 끝난 작업을 취소하면** 코드 `already_final`(409)이 온다(전에는 `conflict`). 대기 중인 작업이 20개(`--queue-limit` 기본)면 새 제출은 `429 queue_full`.
+
+### 단계 1. 백업, 세 바이너리 한꺼번에 배포, 재시작 [사용자][주의: DB 스키마가 v7로 올라간다]
+**백업(전부 먼저).** orch-vm에서:
+```
+sudo systemctl stop orchd
+B=/home/orch/orchd/backup-w2a; sudo mkdir -p $B
+for f in orchd orch aigate; do sudo install -o root -g root -m 0755 /usr/local/lib/aigate/$f /usr/local/lib/aigate/$f.prev-w2a; done
+sudo sh -c "cp -a /home/orch/orchd/state/orchd.db* $B/ && cp -a /home/orch/orchd/gate-home $B/gate-home && cp -a /etc/systemd/system/orchd.service /etc/systemd/system/orchd.service.pre-w2a"
+ls -l /usr/local/lib/aigate $B
+```
+`*.prev-w1`은 지우지 않는다(W1 이전으로 가야 할 때를 위해). DB 백업은 반드시 **`orchd`를 멈춘 뒤** 뜬다(WAL 파일 `orchd.db-wal`, `-shm`까지 `orchd.db*`로 함께).
+
+**배포.** Mac에서 `GOOS=linux GOARCH=amd64 go build -o /tmp/w2a/<이름> ./cmd/<이름>`을 `orchd`, `orch`, `aigate` 세 개에 대해 하고(W1 기록상 orch-vm은 x86_64. 다르면 `uname -m`에 맞춘다), `scp`로 VM `/tmp/w2a/`에 보낸 뒤:
+```
+for f in orchd orch aigate; do sudo install -o root -g root -m 0755 /tmp/w2a/$f /usr/local/lib/aigate/$f; done
+sudo systemctl start orchd
+```
+유닛은 바꾸지 않는다(`--queue-limit`은 기본 20을 쓴다. 바꾸려면 유닛에 `--queue-limit N`을 더하고 `daemon-reload` 후 재시작; 음수는 시작 거부).
+
+> **[주의] 롤백은 DB 복원을 동반한다.** 새 `orchd`는 첫 시작에서 DB를 스키마 **v7**로 올린다(`task_events.actor` 열 추가, 자동 마이그레이션). **옛 `orchd`(W1)는 v7 DB를 열지 않는다**(W1 단계 1과 같은 버전 검사, 코드 읽기 기준). 그래서 바이너리를 되돌릴 때는 **반드시 `$B`의 DB 백업도 되돌려야 하고, 백업 뒤에 만든 작업·이벤트·승인 대기 기록은 모두 사라진다.** 되돌릴 가능성이 있으면 단계 2의 시험 작업 외에 실제 작업을 넣기 전에 판단한다.
+
+**검증 체크리스트**
+- `journalctl -u orchd -n 40`: 오류 없이 대기, `approvals: mode signed (… signers …)`(W1과 같음), `socket uids allowed: [0 <orch uid>]`, `HTTP listener on 127.0.0.1:8808 …`.
+- `orch list`: 백업 전의 작업이 모두 그대로 보인다(마지막 번호 확인).
+- `orch submit`으로 toy 작업 하나를 제출(3장 명령, 종류 `toy`) → `orch show <ID>`에 새 줄 `  주체:     socket:uid:<n>`이 있다(소켓으로 제출했으므로 `socket:uid:` + orch uid. `sudo`로 했으면 `socket:uid:0`). 옛 작업은 마이그레이션 전 이벤트라 `주체:` 줄이 없을 수 있다(정상: 옛 이벤트의 actor는 비어 있음).
+- 새 `orchd`의 base 결과 캐시는 빌드 키가 바뀌어 첫 판정에서 한 번 다시 돈다(6장). 첫 작업이 느려도 정상.
+
+**그래도 안 되면:** 단계 3(롤백) 전체. 바이너리만 되돌리면 옛 `orchd`가 v7 DB를 거부하고 시작하지 않는다.
+
+### 단계 2. 웹에서 확인 [사용자]
+**전제:** 단계 1 통과. Mac 브라우저에서 `https://<FQDN>/`에 패스키로 로그인(W1과 같음). 각 항목의 "예상"은 코드·시험(`internal/orch/web/test/*.test.js`, `internal/orch/api/*_test.go`)에서 읽은 것이다.
+
+| # | 할 일 | 예상(코드·시험 기준) | 다르면 |
+|---|---|---|---|
+| 2-1 | 메뉴 "새 작업"(`#/new`) 열기 | 저장소 선택 상자에 `/home/orch/repos` 아래 저장소(`toy`, `sample-app`), 기준 커밋 칸에 그 저장소 HEAD, 종류 상자에 정책의 종류 목록 | 저장소가 비면 2-7(소유자·`safe.directory`)부터 본다. 종류가 글 상자이면 정책에 종류 목록이 없는 것(R3: 아무 종류나 받음) |
+| 2-2 | toy 작업 제출: 네 칸 중 "목표"만 적고 미리보기를 확인한 뒤 "제출" | 미리보기에 `Goal: …`, 바이트 수 표시. 제출하면 `#/tasks/<ID>`로 이동, 상태 `queued` → 진행 줄 "진행 중 · <단계> · N초 경과" | 오류 문구는 코드별 고정 문장이다(서버 원문은 보이지 않음). `queue_full`이면 큐 확인, `unknown_class`면 정책 확인 |
+| 2-3 | 그 작업 화면의 정보 칸 | "마지막 변경"에 `session:<서명자 ID>`(예: `session:mac-passkey`). 승인이 필요한 작업이면 W1 방식(웹 패스키 서명)으로 승인 → `done` | 주체가 `system`이면 단계 3을 고려(주체 전달 실패) |
+| 2-4 | 정책에 **없는** 종류로 제출해 보기. 웹은 목록에서만 고르게 하므로 Mac CLI로: `orch --server https://<FQDN> --signer mac-ssh submit … --class nosuchclass …` | `400 unknown_class` "정책에 없는 작업 종류입니다: nosuchclass", 작업이 생기지 않음(`orch list`의 마지막 번호 그대로) | 작업이 생기면 단계 3 |
+| 2-5 | 큐 상한(`queue_full`) | **컷오버에서 확인하지 않는다.** 유닛을 바꿔 상한을 낮추는 것은 이 컷오버의 범위가 아니고, 20개를 실제로 쌓는 것은 VM 시간을 쓴다. 자동 시험(`TestQueueFloodBoundedAcrossPrincipals`, `TestQueueLimitRaceNeverExceeds`)으로만 확인됨 | — |
+| 2-6 | 취소: 대기 중이거나 진행 중인 toy 작업 화면에서 "작업 취소" → 확인 칸 → "취소 실행" | 확인 칸에서 아무것도 보내지 않고(Escape나 "돌아가기"로 닫힘), 실행하면 상태 `cancelled`, 정보 칸 주체 `session:<ID>`. 이미 끝난 작업에는 취소 단추가 없다 | 409 `state_changed`가 반복되면 작업이 계속 움직이는 것: 잠시 뒤 다시 |
+| 2-7 | 재시도 | **인프라 오류로 실패한 작업이 있어야만 시험할 수 있다**(복원 쿼터 413 등). 일부러 만들지 않는다. 그런 실패가 생기면 그때 "다시 시도" → 실패한 단계부터 재개되는지 본다. 그 전까지는 **"검증 못 함"** | — |
+| 2-8 | 메뉴 "서버 상태"(`#/ops`) | 클라우드 칸에 볼륨 용량·개수 쿼터(사용/한도, 예약), test-vm 상태(`ACTIVE` 등 또는 "알 수 없음"), 복원 볼륨 수, 최근 복원 기록. 클라우드가 늦으면 "응답이 늦어 이번에는 건너뜁니다"가 한 번 보이고 다음 갱신(20초)에 수치가 나온다 | **[사용자] 수치 대조:** orch-vm에서 `orchd`와 같은 OpenStack 자격으로 `openstack quota show --usage -f json`을 실행해 `gigabytes`·`volumes` 줄의 `In Use`·`Limit`·`Reserved`가 화면과 같은지 본다. **키 이름**(`Resource`, `In Use`, `Limit`, `Reserved`)이 출력과 다르면 화면은 늘 "클라우드 상태를 지금 읽을 수 없습니다"가 된다(키 이름은 기존 시험의 고정 데이터에서 가져왔고 실제 CLI로 확인한 적 없음). 다르면 결과 문서에 실제 출력의 키를 기록하고 고치는 작업을 따로 한다(데이터 손상 위험은 없음: 읽기 전용) |
+| 2-9 | `#/new`의 저장소 목록 | 기대한 저장소가 모두 나온다 | **[사용자]** orch-vm에서 `ls -ld /home/orch/repos/*`로 소유자를 본다. `/repos`는 전역·시스템 git 설정을 읽지 않으므로 **orch가 아닌 사용자 소유 저장소**(전역 `safe.directory`로만 열리던 것)는 목록에서 빠진다. 그런 저장소는 CLI 제출은 여전히 된다. 소유자를 orch로 맞추거나 그대로 둔다(사용자 결정) |
+
+**검증 체크리스트(요약):** 2-2·2-3·2-6이 예상대로이고, 2-4가 거부되고, 2-8의 수치가 CLI와 같다. 2-5·2-7은 결과 문서에 "컷오버에서 확인 안 함"/"검증 못 함"으로 남긴다.
+
+**그래도 안 되면:** 화면 문제(표시·문구)만이면 롤백하지 않고 기록한다(쓰기 동작은 CLI로도 된다). 제출·취소가 잘못된 작업을 건드리거나, 주체가 남지 않거나, 거부되어야 할 제출이 통과하면 단계 3.
+
+### 단계 3. 롤백 [사용자][주의]
+1. `sudo systemctl stop orchd`
+2. 바이너리: `for f in orchd orch aigate; do sudo install -o root -g root -m 0755 /usr/local/lib/aigate/$f.prev-w2a /usr/local/lib/aigate/$f; done`(세 개는 항상 같이).
+3. **DB 복원(필수):** 필요하면 지금 DB를 먼저 따로 복사한다(`sudo cp -a /home/orch/orchd/state/orchd.db* /home/orch/orchd/backup-w2a/after-v7/` — 폴더를 먼저 만든다). 그다음 `sudo rm -f /home/orch/orchd/state/orchd.db-wal /home/orch/orchd/state/orchd.db-shm && sudo cp -a /home/orch/orchd/backup-w2a/orchd.db* /home/orch/orchd/state/`. **백업 이후의 작업·이벤트·승인 대기는 사라진다.**
+4. 유닛(바꾸지 않았다면 생략 가능): `sudo cp /etc/systemd/system/orchd.service.pre-w2a /etc/systemd/system/orchd.service && sudo systemctl daemon-reload`.
+5. `sudo systemctl start orchd`.
+
+**검증:** `journalctl -u orchd`에 스키마 오류가 없고, `orch list`가 단계 1 이전의 작업 목록과 같다(W2a 시험 작업은 없음). 웹에는 W1 화면만 보인다(메뉴 "새 작업"·"서버 상태" 없음; 브라우저 캐시면 새로고침). **그래도 안 되면:** 아무것도 더 지우지 말고 멈춰서 상태(`journalctl -u orchd -n 80`, `ls -l /usr/local/lib/aigate /home/orch/orchd/state /home/orch/orchd/backup-w2a`)를 사용자에게 보고한다. W1 이전까지 가야 하면 9장 단계 6(`*.prev-w1`, `backup-w1`).
+
+### 요약표: 누가·되돌림
+| 단계 | 사용자 작업·승인 | 되돌리기 | 재시작 |
+|---|---|---|---|
+| 1 백업·바이너리 3개 | 승인 | **[주의]** 바이너리 + DB 복원(스키마 v7, 그 사이 기록 잃음) | 필요(stop/start) |
+| 2 웹 확인 | **사용자 직접**(로그인, 제출, 취소, 쿼터 수치·저장소 소유자 대조) | 시험 작업은 남겨 둬도 무해(취소 가능) | 불필요 |
+| 2-5 큐 상한 | — | 컷오버에서 확인 안 함(자동 시험만) | — |
+| 2-7 재시도 | — | 인프라 실패가 생길 때까지 검증 못 함 | — |
+| 3 롤백 | 승인 | — | 필요 |
