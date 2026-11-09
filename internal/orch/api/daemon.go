@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"aigate/internal/orch/broker"
 	"aigate/internal/orch/machine"
 	"aigate/internal/orch/store"
 	"aigate/internal/orch/web"
@@ -80,6 +81,10 @@ type Config struct {
 	// QueueLimit refused).
 	QueueLimit      int
 	QueueLimitTotal int
+	// BrokerSocket is the orch-broker unix socket, the only path to the AI
+	// plan service (absolute and clean; empty = the AI plan feature is off
+	// and every refine call is 503 broker_unavailable).
+	BrokerSocket string
 }
 
 const (
@@ -144,6 +149,9 @@ func NewDaemon(cfg Config, st *store.Store, p StepProvider) (*Daemon, error) {
 	if cfg.QueueLimit < 0 || cfg.QueueLimitTotal < 0 {
 		return nil, errors.New("queue limits must be >= 0 (0 = default)")
 	}
+	if cfg.BrokerSocket != "" && !broker.ValidSocketPath(cfg.BrokerSocket) {
+		return nil, errors.New("broker socket must be an absolute clean path")
+	}
 	if cfg.Concurrency < 1 {
 		cfg.Concurrency = 1
 	}
@@ -160,6 +168,9 @@ func NewDaemon(cfg Config, st *store.Store, p StepProvider) (*Daemon, error) {
 		return nil, err
 	}
 	h.policyHash = cfg.PolicyHash
+	if cfg.BrokerSocket != "" {
+		h.broker = &broker.Client{Socket: cfg.BrokerSocket}
+	}
 	if sr, ok := p.(interface {
 		RecordSubmitted(context.Context, store.Task)
 	}); ok {

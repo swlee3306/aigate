@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -43,31 +44,43 @@ func readEnv() []string {
 // fsmonitor off. stdout is capped at 1 MiB. The error never carries stderr:
 // callers decide what (if anything) to show.
 func runRead(ctx context.Context, repo string, args ...string) ([]byte, int, error) {
+	out, _, code, err := runReadCap(ctx, repo, 1<<20, args...)
+	return out, code, err
+}
+
+// runReadCap is runRead with stdout capped at max bytes; truncated reports
+// that git wrote more than that.
+func runReadCap(ctx context.Context, repo string, max int, args ...string) (out []byte, truncated bool, code int, err error) {
 	full := append([]string{"-C", repo, "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"}, args...)
 	cmd := exec.CommandContext(ctx, "git", full...)
 	cmd.Env = append(readEnv(), ceilingEnv(repo)...)
 	cmd.WaitDelay = time.Second
 	var stdout capBuf
-	stdout.max = 1 << 20
+	stdout.max = max
 	cmd.Stdout = &stdout
-	err := cmd.Run()
+	err = cmd.Run()
 	if err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) && ctx.Err() == nil {
-			return stdout.b.Bytes(), ee.ExitCode(), err
+			return stdout.b.Bytes(), stdout.over, ee.ExitCode(), err
 		}
-		return nil, -1, err
+		return nil, false, -1, err
 	}
-	return stdout.b.Bytes(), 0, nil
+	return stdout.b.Bytes(), stdout.over, 0, nil
 }
 
 type capBuf struct {
-	b   bytes.Buffer
-	max int
+	b    bytes.Buffer
+	max  int
+	over bool
 }
 
 func (c *capBuf) Write(p []byte) (int, error) {
-	if room := c.max - c.b.Len(); room > 0 {
+	room := c.max - c.b.Len()
+	if len(p) > room {
+		c.over = true
+	}
+	if room > 0 {
 		if len(p) > room {
 			c.b.Write(p[:room])
 		} else {
@@ -153,4 +166,100 @@ func ReadRepoState(ctx context.Context, repo string, maxBranches int, keep func(
 		}
 	}
 	return st, nil
+}
+
+// Errors of the HEAD-commit readers below.
+var (
+	// ErrNoHead: HEAD names an unborn branch (no commit yet).
+	ErrNoHead = errors.New("gitx: HEAD has no commit")
+	// ErrTooLarge: the tree listing or a blob is bigger than the reader's cap.
+	ErrTooLarge = errors.New("gitx: too large")
+)
+
+// maxTreeListing caps the bytes of one ls-tree listing (a few hundred
+// thousand paths); more is ErrTooLarge, never a silently cut list.
+const maxTreeListing = 16 << 20
+
+var objectIDRe = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
+
+// ReadHeadCommit is the full SHA of HEAD's commit (ErrNoHead when unborn),
+// read-only.
+func ReadHeadCommit(ctx context.Context, repo string) (string, error) {
+	out, code, err := runRead(ctx, repo, "rev-parse", "-q", "--verify", "HEAD^{commit}")
+	switch {
+	case err == nil:
+		sha := strings.TrimSpace(string(out))
+		if !objectIDRe.MatchString(sha) {
+			return "", errors.New("gitx: unexpected rev-parse output")
+		}
+		return sha, nil
+	case code == 1:
+		return "", ErrNoHead
+	}
+	return "", err
+}
+
+// TreeEntry is one path of a commit's tree. Size is -1 for entries that are
+// not blobs (submodule commits).
+type TreeEntry struct {
+	Mode string // "100644", "100755", "120000" (symlink), "160000" (submodule)
+	Type string // "blob" or "commit"
+	SHA  string
+	Size int64
+	Path string
+}
+
+// ListTree lists every path of commit's tree recursively (git ls-tree -r -l
+// -z --full-tree) with read-only git. It reads the object database only, never
+// the work tree. Paths are exactly as stored; the caller decides which are
+// safe.
+func ListTree(ctx context.Context, repo, commit string) ([]TreeEntry, error) {
+	if !objectIDRe.MatchString(commit) {
+		return nil, errors.New("gitx: invalid commit id")
+	}
+	out, truncated, _, err := runReadCap(ctx, repo, maxTreeListing, "ls-tree", "-r", "-l", "-z", "--full-tree", commit)
+	if err != nil {
+		return nil, err
+	}
+	if truncated {
+		return nil, ErrTooLarge
+	}
+	var ents []TreeEntry
+	for _, rec := range strings.Split(string(out), "\x00") {
+		if rec == "" {
+			continue
+		}
+		meta, p, ok := strings.Cut(rec, "\t")
+		f := strings.Fields(meta)
+		if !ok || len(f) != 4 || !objectIDRe.MatchString(f[2]) {
+			return nil, errors.New("gitx: unexpected ls-tree output")
+		}
+		size := int64(-1)
+		if f[3] != "-" {
+			n, perr := strconv.ParseInt(f[3], 10, 64)
+			if perr != nil || n < 0 {
+				return nil, errors.New("gitx: unexpected ls-tree output")
+			}
+			size = n
+		}
+		ents = append(ents, TreeEntry{Mode: f[0], Type: f[1], SHA: f[2], Size: size, Path: p})
+	}
+	return ents, nil
+}
+
+// ReadBlob returns the content of the blob object sha (cat-file blob, object
+// database only: no path, no work tree, no filters), ErrTooLarge when it is
+// longer than max bytes.
+func ReadBlob(ctx context.Context, repo, sha string, max int) ([]byte, error) {
+	if !objectIDRe.MatchString(sha) {
+		return nil, errors.New("gitx: invalid object id")
+	}
+	out, truncated, _, err := runReadCap(ctx, repo, max, "cat-file", "blob", sha)
+	if err != nil {
+		return nil, err
+	}
+	if truncated {
+		return nil, ErrTooLarge
+	}
+	return out, nil
 }

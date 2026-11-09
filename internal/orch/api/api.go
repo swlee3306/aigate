@@ -46,7 +46,9 @@ import (
 
 	"aigate/internal/gitx"
 	"aigate/internal/orch/approvals"
+	"aigate/internal/orch/broker"
 	"aigate/internal/orch/machine"
+	"aigate/internal/orch/refine"
 	"aigate/internal/orch/store"
 )
 
@@ -215,6 +217,14 @@ type handler struct {
 	// DefaultReposMax); tests shorten them.
 	reposTimeout time.Duration
 	reposMax     int
+	// AI plan path (refine.go): the broker client (nil or empty Socket:
+	// every refine call is broker_unavailable), the previewed selections,
+	// the per-actor limiter (D8) and the collection limits (zero: the
+	// defaults; tests shrink them).
+	broker      *broker.Client
+	refineStore *refine.Store
+	refineLimit *actorLimiter
+	refineOpts  refine.Options
 }
 
 func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome string) (*handler, error) {
@@ -226,6 +236,8 @@ func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome 
 	h.credKey = newCredKey()
 	h.sessionTTL = SessionIdleTTL
 	h.queueLimit, h.queueLimitTotal = DefaultQueueLimit, DefaultQueueLimitTotal
+	h.refineStore = refine.NewStore(h.clock)
+	h.refineLimit = newActorLimiter(RefinePerActorHour, time.Hour)
 	for _, r := range allowed {
 		if !filepath.IsAbs(r) || filepath.Clean(r) != r {
 			return nil, fmt.Errorf("allowed repo root %q must be an absolute clean path", r)

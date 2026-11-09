@@ -35,6 +35,10 @@ func (h *handler) mountV1(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+v1Prefix+"/policy", h.policyView)
 	mux.HandleFunc("GET "+v1Prefix+"/ops", h.opsView)
 	mux.HandleFunc("GET "+v1Prefix+"/repos", h.repos)
+	// AI plan path: both read the repository's HEAD and may reach the broker,
+	// so both need the write tier (and CSRF for sessions).
+	mux.HandleFunc("POST "+v1Prefix+"/refine/preview", h.requireWrite(h.refinePreview))
+	mux.HandleFunc("POST "+v1Prefix+"/refine", h.requireWrite(h.refinePlan))
 	// Socket principals only (adminEnroll refuses sessions and tokens).
 	mux.HandleFunc("POST "+v1Prefix+"/admin/enroll", h.requireWrite(h.adminEnroll))
 	mux.HandleFunc("GET "+v1Prefix+"/auth/session", h.authSession)
