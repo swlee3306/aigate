@@ -98,5 +98,5 @@ func TestV1ErrorCodes(t *testing.T) {
 		t.Fatalf("cancel %d %s", code, b)
 	}
 	code, b = e.do(t, "POST", path, "")
-	wantEnvelope(t, code, b, 409, "conflict")
+	wantEnvelope(t, code, b, 409, "already_final")
 }

@@ -83,6 +83,9 @@ type TaskView struct {
 	Verdict    string    `json:"verdict,omitempty"`
 	// Retryable: `orch retry` is allowed now (failed on infrastructure, within the retry limit).
 	Retryable bool `json:"retryable,omitempty"`
+	// Cancellable: `orch cancel` is allowed now. Computed from machine.Allowed,
+	// the table machine.Cancel itself checks, so the two cannot disagree.
+	Cancellable bool `json:"cancellable,omitempty"`
 	// Retries is how many times an operator retried this task.
 	Retries int `json:"retries,omitempty"`
 	// Actor is who made the task's latest change ("kind:id" or "system";
@@ -107,7 +110,7 @@ func viewOf(t store.Task) TaskView {
 	return TaskView{ID: t.ID, Repo: t.Repo, Base: t.Base, Prompt: t.Prompt, Class: t.Class,
 		Agent: t.Agent, State: string(t.State), Attempts: t.Attempts, RetryState: string(t.RetryState),
 		CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt, Error: t.ErrorText, HeadSHA: t.HeadSHA, Verdict: t.Verdict,
-		Retryable: machine.Retryable(t) == nil, Retries: t.Retries, Actor: t.LastActor}
+		Retryable: machine.Retryable(t) == nil, Cancellable: machine.CanTransition(t.State, machine.StateCancelled), Retries: t.Retries, Actor: t.LastActor}
 }
 
 type submitRequest struct {
@@ -124,6 +127,9 @@ type httpError struct {
 	// v1Code, when set, is the envelope's machine-readable code instead of the
 	// one derived from the status (codeOf).
 	v1Code string
+	// reason, when set, is a server-built fixed sentence that rides next to
+	// the message (v1: error.reason; legacy flat body: "reason").
+	reason string
 }
 
 // apiErr is an error with a fixed v1 envelope code. msg must be a fixed text:
@@ -298,6 +304,9 @@ func writeErr(w http.ResponseWriter, err error) {
 	body := map[string]string{"error": he.msg}
 	if he.v1Code != "" {
 		body["code"] = he.v1Code
+	}
+	if he.reason != "" {
+		body["reason"] = he.reason
 	}
 	writeJSON(w, he.code, body)
 }
@@ -544,15 +553,8 @@ func (h *handler) cancel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	switch err := h.m.Cancel(r.Context(), id); {
-	case errors.Is(err, store.ErrNotFound):
-		writeErr(w, &httpError{code: 404, msg: "작업을 찾을 수 없습니다"})
-		return
-	case errors.Is(err, machine.ErrTerminal):
-		writeErr(w, &httpError{code: 409, msg: "이미 끝난 작업입니다"})
-		return
-	case err != nil:
-		writeErr(w, err)
+	if err := h.m.Cancel(r.Context(), id); err != nil {
+		writeErr(w, cancelErr(err))
 		return
 	}
 	t, err := h.st.GetTask(r.Context(), id)
@@ -571,19 +573,42 @@ func (h *handler) retry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t, err := h.m.Retry(r.Context(), id)
+	if err != nil {
+		writeErr(w, retryErr(err))
+		return
+	}
+	writeJSON(w, 200, viewOf(t))
+}
+
+// cancelErr maps a machine.Cancel error to its API error (fixed texts only).
+func cancelErr(err error) error {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return apiErr(http.StatusNotFound, "not_found", "작업을 찾을 수 없습니다")
+	case errors.Is(err, machine.ErrTerminal):
+		return apiErr(http.StatusConflict, "already_final", "이미 끝난 작업입니다")
+	case errors.Is(err, store.ErrStateMismatch):
+		// Cancel lost its compare-and-set five times in a row.
+		return apiErr(http.StatusConflict, "state_changed", "작업 상태가 계속 바뀌어 취소하지 못했습니다. 변경 없음")
+	}
+	return err
+}
+
+// retryErr maps a machine.Retry error to its API error. not_retryable carries
+// the machine's Korean reason (a fixed sentence built from the task state).
+func retryErr(err error) error {
 	var nr *machine.NotRetryableError
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		writeErr(w, &httpError{code: 404, msg: "작업을 찾을 수 없습니다"})
+		return apiErr(http.StatusNotFound, "not_found", "작업을 찾을 수 없습니다")
 	case errors.As(err, &nr):
-		writeErr(w, &httpError{code: 409, msg: nr.Reason})
+		e := apiErr(http.StatusConflict, "not_retryable", nr.Reason)
+		e.reason = nr.Reason
+		return e
 	case errors.Is(err, store.ErrStateMismatch):
-		writeErr(w, &httpError{code: 409, msg: "작업 상태가 방금 바뀌어 다시 시도하지 않았습니다. 변경 없음"})
-	case err != nil:
-		writeErr(w, err)
-	default:
-		writeJSON(w, 200, viewOf(t))
+		return apiErr(http.StatusConflict, "state_changed", "작업 상태가 방금 바뀌어 다시 시도하지 않았습니다. 변경 없음")
 	}
+	return err
 }
 
 func (h *handler) approvals(w http.ResponseWriter, r *http.Request) {

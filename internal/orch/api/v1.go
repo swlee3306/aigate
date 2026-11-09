@@ -79,7 +79,16 @@ func codeOf(status int) string {
 
 // writeV1Err writes the v1 error envelope.
 func writeV1Err(w http.ResponseWriter, status int, code, msg string) {
-	writeJSON(w, status, map[string]any{"error": map[string]string{"code": code, "message": msg}})
+	writeV1ErrReason(w, status, code, msg, "")
+}
+
+// writeV1ErrReason is writeV1Err plus an optional error.reason sentence.
+func writeV1ErrReason(w http.ResponseWriter, status int, code, msg, reason string) {
+	body := map[string]string{"code": code, "message": msg}
+	if reason != "" {
+		body["reason"] = reason
+	}
+	writeJSON(w, status, map[string]any{"error": body})
 }
 
 // envWriter buffers error responses (status >= 400) so finish can rewrite
@@ -111,14 +120,15 @@ func (e *envWriter) finish() {
 	}
 	h := e.ResponseWriter.Header()
 	h.Del("Content-Length")
-	msg, code := "", ""
+	msg, code, reason := "", "", ""
 	if strings.HasPrefix(h.Get("Content-Type"), "application/json") {
 		var flat struct {
-			Error string `json:"error"`
-			Code  string `json:"code"`
+			Error  string `json:"error"`
+			Code   string `json:"code"`
+			Reason string `json:"reason"`
 		}
 		if json.Unmarshal(e.buf.Bytes(), &flat) == nil {
-			msg, code = flat.Error, flat.Code
+			msg, code, reason = flat.Error, flat.Code, flat.Reason
 		}
 	}
 	if code == "" {
@@ -134,5 +144,5 @@ func (e *envWriter) finish() {
 			msg = "요청을 처리할 수 없습니다"
 		}
 	}
-	writeV1Err(e.ResponseWriter, e.status, code, msg)
+	writeV1ErrReason(e.ResponseWriter, e.status, code, msg, reason)
 }

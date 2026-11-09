@@ -49,6 +49,9 @@ type Machine struct {
 	// onTransitionCtx, when set, is called instead of onTransition, with the
 	// context of the call that made the transition (it carries the actor).
 	onTransitionCtx func(ctx context.Context, t store.Task, from, to State, note string)
+	// beforeCancelCAS is a test seam: Cancel calls it after reading the task and
+	// before the compare-and-set, so a test can move the task in between.
+	beforeCancelCAS func(ctx context.Context, id int64)
 }
 
 // Option configures a Machine.
@@ -61,6 +64,12 @@ func WithMaxAttempts(n int) Option {
 			m.maxAttempts = n
 		}
 	}
+}
+
+// WithBeforeCancelCAS is a test seam (see Machine.beforeCancelCAS); production
+// code never sets it.
+func WithBeforeCancelCAS(f func(ctx context.Context, id int64)) Option {
+	return func(m *Machine) { m.beforeCancelCAS = f }
 }
 
 // WithOnTransition registers a callback invoked after each successful
@@ -215,6 +224,9 @@ func (m *Machine) Cancel(ctx context.Context, id int64) error {
 		}
 		if t.State.IsTerminal() {
 			return ErrTerminal
+		}
+		if m.beforeCancelCAS != nil {
+			m.beforeCancelCAS(ctx, id)
 		}
 		err = m.transition(ctx, t, StateCancelled, "cancelled", store.TransitionOpts{})
 		if !errors.Is(err, store.ErrStateMismatch) {
