@@ -15,12 +15,12 @@
 
 ## 2. 시험 목록 (실제 실행 결과)
 
-실행: 2026-11-09, macOS(Apple Silicon), Go 1.27.1, Node v26.5.0, 커밋 `6d4c8a8`(코드·시험의 마지막 커밋. 이 문서 커밋은 코드를 바꾸지 않음). 세는 방식은 W2a(16번 문서 2장)와 같다: 최상위 시험 함수(`Test…`)와 하위 시험(`t.Run`)을 따로 센다(`go test -json` 결과 줄에서 집계).
+실행: 2026-11-09, macOS(Apple Silicon), Go 1.27.1, Node v26.5.0, 커밋 `f2a0f58`(코드·시험의 마지막 커밋, 최종 검토 수정 포함. 이 문서 커밋은 코드를 바꾸지 않음). 세는 방식은 W2a(16번 문서 2장)와 같다: 최상위 시험 함수(`Test…`)와 하위 시험(`t.Run`)을 따로 센다(`go test -json` 결과 줄에서 집계).
 
 - `go vet ./...`, `GOOS=darwin go vet ./cmd/... ./internal/...`, `GOOS=linux go vet ./cmd/... ./internal/...`: 통과. `gofmt -l .`: 출력 없음.
-- `go test ./... -count=1 -race`: **종료 코드 0**. 최상위 시험 함수 1073개 중 **1071 통과, 0 실패, 2 건너뜀**(하위 시험 730개 모두 통과). 건너뜀 2개는 W1·W2a와 같다: `internal/orch/web` `TestDevServer`(수동 개발 서버), `internal/pathfold` `TestCollectionsPerformance`(-race 빌드에서만 건너뛰는 시간 검사). 표준 오류 출력 없음.
+- `go test ./... -count=1 -race`: **종료 코드 0**. 최상위 시험 함수 1086개 중 **1084 통과, 0 실패, 2 건너뜀**(하위 시험 730개 모두 통과). 건너뜀 2개는 W1·W2a와 같다: `internal/orch/web` `TestDevServer`(수동 개발 서버), `internal/pathfold` `TestCollectionsPerformance`(-race 빌드에서만 건너뛰는 시간 검사). 표준 오류 출력 없음.
 - `node --test "internal/orch/web/test/*.test.js"`: **137개 전부 통과**(W2a 105개 + W2b 32개).
-- W2a(16번 문서) 대비 최상위 통과 925 → 1071, `internal/orch/api` 203 → 234(이후 W2a 후속 포함), 새 패키지: `cmd/orch-broker` 5, `internal/broker` 72(하위 38), `internal/orch/broker` 3, `internal/orch/refine` 11.
+- W2a(16번 문서) 대비 최상위 통과 925 → 1084, 새 패키지: `cmd/orch-broker`, `internal/broker`, `internal/orch/broker`, `internal/orch/refine`, `internal/refinesize`(시험 파일 없음. 그 숫자는 broker·orch/api·orch/broker·orch/refine의 시험이 맞춰 본다).
 
 | 패키지 | 통과 | 실패 | 건너뜀 | 하위 시험 |
 |---|---|---|---|---|
@@ -32,21 +32,21 @@
 | `internal/adapter` | 13 | 0 | 0 | 0 |
 | `internal/approval` | 33 | 0 | 0 | 80 |
 | `internal/approval/signing` | 55 | 0 | 0 | 76 |
-| `internal/broker` | 72 | 0 | 0 | 38 |
+| `internal/broker` | 74 | 0 | 0 | 38 |
 | `internal/config` | 8 | 0 | 0 | 0 |
 | `internal/gate` | 60 | 0 | 0 | 63 |
 | `internal/gitx` | 45 | 0 | 0 | 3 |
 | `internal/ledger` | 17 | 0 | 0 | 0 |
-| `internal/orch/api` | 234 | 0 | 0 | 25 |
+| `internal/orch/api` | 238 | 0 | 0 | 25 |
 | `internal/orch/approvals` | 6 | 0 | 0 | 0 |
-| `internal/orch/broker` | 3 | 0 | 0 | 0 |
+| `internal/orch/broker` | 5 | 0 | 0 | 0 |
 | `internal/orch/machine` | 34 | 0 | 0 | 14 |
 | `internal/orch/policy` | 9 | 0 | 0 | 25 |
 | `internal/orch/policy/autonomy` | 9 | 0 | 0 | 0 |
 | `internal/orch/policy/propose` | 9 | 0 | 0 | 0 |
 | `internal/orch/publish` | 17 | 0 | 0 | 0 |
-| `internal/orch/refine` | 11 | 0 | 0 | 0 |
-| `internal/orch/steps` | 63 | 0 | 0 | 24 |
+| `internal/orch/refine` | 13 | 0 | 0 | 0 |
+| `internal/orch/steps` | 66 | 0 | 0 | 24 |
 | `internal/orch/store` | 43 | 0 | 0 | 4 |
 | `internal/orch/vm` | 88 | 0 | 0 | 5 |
 | `internal/orch/web` | 9 | 0 | 1 | 0 |
@@ -83,6 +83,8 @@
 | `TestOrchdWorksWithBrokerDown` | 소켓이 없음 / 리스너가 사라진 소켓에서 제출·목록·조회·취소·승인, 미리보기, 계획서, MR 재시도 | 기존 기능 정상, 미리보기는 고정 `broker_unavailable`(소켓 경로 노출 없음), MR 재시도는 502 고정 오류이고 작업은 `done` 그대로, 기록은 `failed`/`broker_unavailable` |
 | `TestRefineAndMRLedgerHaveNoSecrets` | 키·토큰 모양과 요청 글 표지가 든 브로커 오류, 비 코드 문자열을 코드로 쓴 MR 오류 | 원장 파일·`mr_code`·이벤트 메모 어디에도 비밀·요청 글·파일 이름 없음, `refine`·`merge_request` 줄이 쓰이고 해시 사슬 검증 통과 |
 
+**최종 검토 수정 라운드(`f2a0f58`)에서 더한 시험:** `TestPreviewSelectionFitsBrokerLimits`(api: 40개 큰 파일·200자 경로·한글 2000자 요구사항의 미리보기 뒤 브로커가 받는 요청이 입력 262144바이트·요청 한도 안), `TestPreviewSelectionIsAcceptedByTheBroker`(broker: 자르기 전에는 `too_large`, 자른 뒤에는 받아들임, `max_input_bytes`를 계산값에 정확히 맞추면 받고 1 모자라면 거절), `TestFitTrimsLowestPriorityUntilBothCapsHold`, `TestFitRespectsTheRequestCapWithEscapes`(refine), `TestRequestBytesMatchesEncode`(orch/broker: 공유 패키지의 요청 크기가 실제 인코딩과 같음), `TestBrokerClientUnsentFlag`(orch/broker), `TestRefineCancelAfterWriteKeepsSlotAndLedgers`, `TestRefineRefundsOnlyWhenNothingWasSent`, `TestMRRetryBadURLIsTerminalOnTheServer`(api), `TestRetryMRBadURLIsTerminal`, `TestBrokerMRRefusesSecretPromptWithoutCalling`, `TestMRHookTimeoutOutlastsTheBrokerCreateMRLimit`(steps), `TestMRRefusesSecretLookingHintAndSummary`(broker). 새 시험은 모두 고치기 전에 실패하는 것을 확인했다(`TestPreviewSelectionFitsBrokerLimits`는 `Fit` 호출을 빼면 `input 266770 over the broker's 262144`로 실패). 이 라운드의 변이 시험은 그 한 가지(`Fit` 제거)만 했다.
+
 ## 3. 변이 시험 (시험이 실제로 잡는지)
 
 방법: 저장소를 **작업 트리 밖의 새 임시 폴더(`/tmp/w2b-mut-…`)로 복사**(`rsync`, `.git` 제외)해 한 곳만 망가뜨리고 관련 패키지(`go test`, 웹은 `node --test`)를 돌렸다. 변이마다 원본에서 파일을 다시 복사해 되돌렸다. 작업 트리는 건드리지 않았다. 전부 구현자 실행이다(이 작업의 검토자는 아직 재현하지 않음). 브리프의 12개 행 모두 한 번에 잡혔고 시험을 새로 더할 필요가 없었다(잡히지 않은 변이 0).
@@ -108,6 +110,19 @@
 
 결과: **12/12 잡혔다**(④·⑤·⑥·⑨는 하위 행 포함 모두). 정직하게 적는다: ⑤a·⑤b·⑥a·⑧·⑨a·⑨b는 **새 적대 시험이 아니라 기존(B1~B6) 시험이 잡았다**(위 행의 괄호). 처음 시도에서 ④a·⑤a·⑥a는 변이가 컴파일되지 않아(미사용 변수·import) 잡힌 것이 아니라 빌드 실패였다. 변이를 `false && (…)` 형태로 바꿔 다시 돌려 위의 결과를 얻었다. ⑪은 처음에 시험 이름을 뽑지 못해(`node` 출력 형식) 따로 다시 돌려 세 개의 이름을 확인했다.
 
+## 3b. 최종 검토에서 나온 막는 항목과 수정 (커밋 `f2a0f58`)
+
+| 항목 | 문제 | 수정 |
+|---|---|---|
+| **I1** (막는 항목, **수정됨**) | 미리보기가 "허용"이라고 한 선택을 브로커가 `too_large`로 거절할 수 있었다(경로가 지시문에 두 번 들어가고 표지가 붙는 크기를 orchd가 세지 않았다) | 지시문·스키마·사용자 메시지 배치와 요청 크기를 한 곳(`internal/refinesize`, 입출력 없는 순수 패키지)에 두고 브로커와 orchd가 같이 쓴다. 미리보기는 `refine.Fit`으로 우선순위가 낮은 파일부터 뺀다(이유 `total_cap`, 화면의 기존 고정 문장 "전체 크기 한도 때문에 제외"). 브로커의 `too_large`는 슬롯을 돌려준다. |
+| **I2** (막는 항목, **수정됨**) | 브라우저가 요청을 취소하면 소켓이 일찍 닫히고 슬롯이 돌아가는 동안 브로커는 계속 일했다(주체별 한도 우회, 원장 누락) | 브로커 호출이 요청의 취소를 따르지 않는다(클라이언트 자체 제한시간만 적용). `OpError.Unsent`로 "요청을 다 쓰기 전에 실패"(슬롯 반환)와 "쓴 뒤 실패"(슬롯 유지, 원장 `ok:false`)를 가른다. 브로커가 일하기 전에 거절한 `busy`·`forbidden`·`too_large`도 반환. |
+| **I3** (막는 항목, **수정됨**) | 런북 1-8이 `sudo -u orch cat /etc/orch-broker/openai.key`를 시켰다. 권한이 잘못된 경우 키가 화면에 찍힌다 | 값을 찍지 않는 `test -r … && echo READABLE \|\| echo denied`로 바꿨다(예상 `denied`). 런북 11장, 이 문서, `infra/README.md`의 모든 명령을 훑어 값을 찍는 명령이 더는 없음을 확인했다(`ls -l`, 크기, 소유자·모드만). 예산 파일(`budget.json`)과 원장의 `cat`/`grep`은 값이 없다고 코드로 확인한 파일들이다. |
+| M2 | MR 훅 제한시간(15초)이 브로커 `create_mr` 한도(20초)보다 짧았다 | 25초 |
+| M3 | 서버가 `failed`+`bad_url`의 재시도도 브로커에 보냈다 | 409 `mr_not_applicable`, 브로커 호출·MR 슬롯 사용 없음(웹은 그대로) |
+| M5 | MR 요약·제목 힌트에 비밀 검사가 없었다 | 브로커(원문과 정리한 글 모두)와 orchd(보내기 전)가 검사, `looks_like_secret`로 `mr_state=failed`. orchd 쪽은 프롬프트 원문과 한 줄로 정리한 글을 본다 |
+| 런북 | (a) 추론 모델과 `max_output_tokens`, `-check`는 모델 이름을 검증하지 않음, (b) 롤백 뒤 낡은 MR·`orch/<번호>` 브랜치 정리, (c) 미리보기 화면 제한시간 25초 < 서버 최악 약 38초(다시 시도 안전) | 런북 11장에 반영 |
+미루어 둔 것(최종 검토의 M4, M7, M8)은 `progress.md`에 있다. 이 라운드에서도 코드 변경 없음.
+
 ## 4. 설계서와 달라진 곳 (결정)
 
 | id | 결정 | 틀렸을 때 비용 |
@@ -126,7 +141,7 @@
 | B3-b | 생성 성공인데 `web_url`이 기준 주소 밖이면 `bad_url`(MR은 GitLab에 있으나 저장 안 함, 재시도는 같은 결과) | 사람이 GitLab에서 확인 |
 | B4-a | 요구사항 글은 미리보기와 같아야 한다(다르면 409). 웹은 같은 글을 보냄 | 더 엄격함 |
 | B4-b | 선택은 주체별 10개·전체 50개(가득 차면 새 선택이 429), 미리보기 30/h·AI 5/h 주체별, 브로커에 닿기 전 실패(`broker_unavailable`·`busy`·`forbidden`)만 AI 슬롯을 돌려줌 | 슬롯 정책 조정 |
-| B4-c | orchd 내용 상한 240 KiB(브로커 256 KiB는 지시문·스키마 포함) | 설정 값 |
+| B4-c | orchd 내용 상한 240 KiB(브로커 256 KiB는 지시문·스키마 포함). 최종 검토 뒤: 미리보기가 브로커의 크기 계산(`internal/refinesize`)으로 입력 262144바이트·요청 480 KiB 안에 들 때까지 낮은 순위 파일을 뺌 | 브로커의 `max_input_bytes`를 기본값보다 낮추면 보장이 깨짐(`too_large`, 슬롯 반환) |
 | B4-d | git 읽기는 `GIT_NO_REPLACE_OBJECTS=1` 포함(기존 읽기 전용 호출 전체) | 없음 |
 | B5-a | MR 켜기/끄기는 **브로커 설정의 `gitlab.projects`**(orchd 플래그 없음). 매핑이 없으면 `skipped` | 별도 플래그를 원하면 추가 작업 |
 | B5-b | `skipped`는 작업 이벤트를 쓰지 않고(기존 이력 시험 유지) 브로커가 답한 경우에만 원장 줄 | 이력 표시가 줄어듦 |
@@ -156,6 +171,10 @@
 - **리눅스 `SO_PEERCRED`가 실제로 동작하는지.** 코드는 `internal/orch/api`의 것을 복사했고 macOS(`LOCAL_PEERCRED`)에서만 실행·시험했다. 리눅스는 `GOOS=linux go vet`으로 컴파일만 확인.
 - **`install -m 0400 … /dev/stdin`과 프롬프트 입력(`read -rs`) 절차**가 orch-vm의 쉘·`install`에서 되는지(런북의 대체 절차 있음).
 - **실제 `orchd` 유닛과 `--broker-socket`**: 실제 유닛의 `ExecStart`와 보호 옵션(`PrivateTmp` 등)이 `/run/orch-broker/broker.sock`을 막는지는 보지 않았다.
+- **실제 모델이 추론 모델일 때의 동작**: `max_output_tokens`를 추론에 다 써서 `incomplete`로 끝나는지(모든 호출이 `upstream_error`이고 비용은 청구). 가짜 서버의 `incomplete` 응답이 `upstream_error`가 되는 것만 확인.
+- **브로커 시간 한도와 취소 동작**: 브라우저가 취소한 요청의 브로커 쪽 처리가 실제로 끝까지 가서 원장에 기록되는지는 가짜 브로커로만 확인(실제 60초 호출은 안 해 봄).
+- **크기 계산의 실제 일치**: `internal/refinesize`가 센 바이트가 브로커 핸들러가 센 바이트와 같다는 것은 시험으로 확인했으나, 실제 OpenAI가 입력을 토큰으로 세는 방식과의 관계(최악 예약의 `ceil(바이트/3)`)는 실제 호출 전에는 미확인.
+- **미리보기 화면 제한시간(25초)이 느린 저장소의 서버 최악(약 38초)보다 짧을 수 있음**(재시도는 안전, 실서버 측정 없음).
 - **운영 DB의 v7 → v8 마이그레이션.** 시험 DB로만 확인(행 보존 시험 있음). 옛 `orchd`가 v8 DB를 거부하는 것은 코드의 버전 검사를 읽어서만 확인.
 - **송신 경로**: `curl https://api.openai.com/v1/models`가 orch-vm에서 401을 주는지(저장소의 nftables 파일이 허용한다는 것은 파일을 읽어 확인, 서버에 올라간 규칙은 미확인).
 - **키보드만, 스크린 리더로의 계획서 화면 사용.** DOM 대역 시험(라벨·`for/id`·네이티브 체크박스·`aria-live`·`aria-disabled`)만. ego-browser 시각 확인은 B6에서 1280px 중심으로 했고(키보드 흐름·스크린 리더·390px 재확인 없음), 이 작업(B7)에서는 하지 않았다.

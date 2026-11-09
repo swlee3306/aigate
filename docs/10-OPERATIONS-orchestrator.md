@@ -347,7 +347,7 @@ sudo systemctl start orchd
 - 그룹 `orch`가 있다: `getent group orch`. **`broker-init.sh`는 이 그룹이 있는지 확인하지 않는다.** 없으면 브로커가 소켓 그룹을 정하지 못해 시작하지 못한다(유닛이 `status=216/GROUP`으로 실패하거나 `socket_group을 확인할 수 없습니다`). `orchd`가 실행되는 계정 이름도 `orch`이고 uid는 `id orch`로 확인한다(W2a 기록상 1000).
 - **사용자 사전 작업 (제가 대신 할 수 없습니다. 키·토큰 값은 이 대화나 어떤 파일·셸 기록에도 붙여 넣지 않는다):**
   - **(a) OpenAI에서 이 용도 전용 프로젝트와 키를 새로 만든다.** 그 프로젝트의 **지출 한도를 주당 25달러에 맞춰** 건다. 브로커의 한도(`weekly_budget_usd` 25)에 더한 두 번째 방어선이다. 다른 용도와 키를 공유하지 않는다.
-  - **(b) 사용할 모델 ID와 그 모델의 현재 단가**(입력·출력 각각 100만 토큰당 USD)를 정해 둔다. 브로커 설정에 적는다. 값이 없거나 0 이하이면 브로커는 시작하지 않는다(코드가 값을 추측하지 않는다). `weekly_budget_usd`는 25, 시간당 한도는 기본값(AI 계획서 20회, MR 30회)을 쓴다. **모델 ID와 단가가 실제와 맞는지는 이 저장소에서 확인할 수 없다.**
+  - **(b) 사용할 모델 ID와 그 모델의 현재 단가**(입력·출력 각각 100만 토큰당 USD)를 정해 둔다. 브로커 설정에 적는다. 값이 없거나 0 이하이면 브로커는 시작하지 않는다(코드가 값을 추측하지 않는다). `weekly_budget_usd`는 25, 시간당 한도는 기본값(AI 계획서 20회, MR 30회)을 쓴다. **모델 ID와 단가가 실제와 맞는지는 이 저장소에서 확인할 수 없다. `orch-broker -check`도 모델 이름을 검증하지 않는다**(형식만 본다. 틀린 이름은 첫 실제 호출에서 `upstream_error`로 드러난다). **추론(reasoning) 모델 주의:** 추론 모델은 `max_output_tokens`(기본 4096)를 생각하는 데 다 써 버리고 답 없이 `incomplete`로 끝날 수 있다. 그러면 **모든 호출이 `upstream_error`인데 비용은 청구된다**(최악 예약이 지출로 남는다). 추론하지 않는 모델을 고르거나, `broker.json`의 `max_output_tokens`를 올린다(올리면 호출당 최악 예약 비용도 커진다).
   - **(c) AI로 코드를 보낼 저장소.** 사용자가 **어떤 저장소든 가능**하다고 결정했으므로(2026-11-09) `toy`와 `sample-app`의 경로를 `context_repos`에 넣는다(`/home/orch/repos/toy`, `/home/orch/repos/sample-app`). 이 목록은 root 소유 설정이 정하는 것이므로 `orch` 계정은 넓힐 수 없다.
   - **(d) GitLab 프로젝트 액세스 토큰**(역할 Developer, 범위 `api`, **만료일 지정**). 사용자가 **이 단계에 도달해 요청받으면 만들어 주기로** 했다(2026-11-09). 그때 대상 프로젝트의 **`main`이 보호되어 있는지**(직접 push 금지, Maintainer만 병합)도 함께 확인한다. **병합 요청을 이번 컷오버에 켤지 먼저 정한다**(아래 "알아둘 것" 2). 처음에는 AI만 켜고 MR은 나중에 켜는 것을 권한다.
   - **(e) 키·토큰 값은 사용자가 직접 서버에 둔다.** 방법은 단계 1-5(값이 명령줄·화면·셸 기록에 남지 않게 입력한다).
@@ -355,12 +355,13 @@ sudo systemctl start orchd
 **알아둘 것 (코드 읽기와 시험 기준, 실서버 미확인).**
 1. **키가 틀리면 실패한 호출마다 최악 비용 예약이 지출로 남는다.** 401이어도 그렇다(브로커는 응답의 사용량을 못 받으면 예약값을 그대로 지출로 남긴다). 한도는 **시간당 20회와 주당 25달러**이므로 잘못 설정해도 25달러 안에서 멈추지만, 그 예산이 헛되이 소진된다. 컷오버 중 `sudo cat /var/lib/orch-broker/budget.json`(금액과 시각만 있고 비밀은 없다)으로 소진을 본다. 7일 롤링이라 일부러 비우려면 이 파일을 지우지 말고(깨진 파일은 "예산 소진"으로 취급) 브로커를 멈춘 뒤 사용자가 판단한다.
 2. **MR 켜기/끄기는 브로커 설정의 `gitlab.projects`다.** orchd에는 따로 켜는 플래그가 없다. 저장소가 `gitlab.projects`에 없으면 그 저장소의 모든 완료 작업은 `mr_state=skipped`("이 저장소는 병합 요청을 만들지 않습니다")가 된다. **AI만 쓰는 첫 컷오버라면 설정에서 `gitlab` 절 전체를 뺀다.**
-3. **충돌 창.** 작업이 `done`이 된 뒤 MR 훅이 돌기 전에 orchd가 죽으면 그 작업의 `mr_state`는 비어 있고 재시도 단추도 없다(재시도는 `failed`·`skipped`만 허용, 의도). 또 **MR이 닫히거나 병합된 뒤 재시도하면 같은 브랜치로 두 번째 MR이 만들어질 수 있다**(브로커는 *열린* MR만 찾아 재사용한다).
+3. **MR 관련 동작 세 가지.** (i) MR 훅의 제한시간은 25초(브로커의 `create_mr` 한도 20초보다 길다). (ii) 실패 코드가 `bad_url`인 작업은 서버가 재시도를 거부한다(409 `mr_not_applicable`): MR은 이미 GitLab에 있고 같은 답이 돌아올 뿐이므로 브로커를 부르지 않는다. (iii) 요청 글이 MR 설명의 요약이 되므로 브로커와 orchd 둘 다 요약·제목 힌트에 비밀 모양 검사를 해서, 걸리면 `mr_state=failed`, 코드 `looks_like_secret`(GitLab으로 아무것도 가지 않는다)이 된다.
+   **충돌 창.** 작업이 `done`이 된 뒤 MR 훅이 돌기 전에 orchd가 죽으면 그 작업의 `mr_state`는 비어 있고 재시도 단추도 없다(재시도는 `failed`·`skipped`만 허용, 의도). 또 **MR이 닫히거나 병합된 뒤 재시도하면 같은 브랜치로 두 번째 MR이 만들어질 수 있다**(브로커는 *열린* MR만 찾아 재사용한다).
 4. **저장된 작업 요청 글(상한을 두고 정리한 것)이 MR 설명의 요약이 된다.** 요청 글에 비밀을 붙여 넣었다면 GitLab으로 간다. 파일 내용·diff는 MR에 들어가지 않는다. 요구사항 글에는 비밀 값 모양 검사가 있으나 보조 장치일 뿐이다.
 5. **유닛의 `SupplementaryGroups=orch`는 보안상의 타협이다.** 브로커는 `orch-broker` 계정으로 도는데 소켓의 그룹을 `orch`로 바꿔야 하므로(그래야 `orchd`가 접속한다) 서비스 프로세스가 `orch` 그룹의 구성원이 된다. 그 결과 **`orch` 그룹이 읽을 수 있는 파일은 브로커 프로세스도 읽을 수 있다**(브로커의 샌드박스 `ProtectHome=yes` 등이 일부 막지만 이 효과를 시험한 적은 없다). 대안은 systemd 소켓 활성화(`orch-broker.socket`의 `SocketGroup=orch`)로 브로커가 `orch` 그룹이 되지 않게 하는 것인데 **구현하지 않았다**(브로커가 넘겨받은 소켓을 쓰도록 바꿔야 함). 반대로 `orch`를 `orch-broker` 그룹에 넣는 방법은 쓰지 않는다: `/etc/orch-broker`가 `root:orch-broker 0750`이라 `orch`가 설정 폴더를 읽게 된다.
 6. **스키마가 v8로 올라가고 내리는 마이그레이션이 없다.** 옛 `orchd`는 v8 DB를 열지 않는다. 그래서 **DB 복사를 `orchd` 배포 전에 한다(단계 2의 첫 일).** 롤백은 "DB 복원 + 옛 바이너리"이고, **컷오버 뒤에 만든 작업·이벤트·승인 대기는 사라진다.**
-7. **한도.** `orchd`가 받는 AI로 보낼 내용의 상한은 **240 KiB**(브로커의 256 KiB는 지시문·스키마를 합친 값). 주체(사람·세션·토큰)별로 **미리보기 시간당 30회, AI 계획서 요청 시간당 5회**. 브로커 전체로 **AI 계획서 시간당 20회, MR 시간당 30회**, 주 25달러. 초과하면 고정 문장의 429가 온다(웹 화면은 429를 자동으로 다시 보내지 않는다).
-8. **선택은 orchd 메모리에 10분만 산다.** 미리보기 뒤 10분이 지나거나 `orchd`가 재시작되면 "미리보기가 만료되었습니다"가 나오고 미리보기부터 다시 한다. 화면에서 작성 중이던 체크리스트는 브라우저 메모리에만 있어 새로 고침하면 사라진다.
+7. **한도.** (AI 계획서 요청의 슬롯은 브라우저가 중간에 취소해도 돌려주지 않는다: 요청이 브로커에 완전히 써진 뒤에는 브로커가 일을 계속하고 결과는 원장에 기록되며, 슬롯은 브로커에 닿기 전에 실패했을 때(브로커 없음, 연결 실패)와 브로커가 일하기 전에 거절했을 때(`busy`, `forbidden`, `too_large`)만 돌려준다.) `orchd`가 받는 AI로 보낼 내용의 상한은 **240 KiB**(브로커의 256 KiB는 지시문·스키마를 합친 값). 주체(사람·세션·토큰)별로 **미리보기 시간당 30회, AI 계획서 요청 시간당 5회**. 브로커 전체로 **AI 계획서 시간당 20회, MR 시간당 30회**, 주 25달러. 초과하면 고정 문장의 429가 온다(웹 화면은 429를 자동으로 다시 보내지 않는다). **미리보기는 브로커가 세는 방식 그대로(지시문 + 파일별 표지(경로가 두 번) + 요구사항 + 스키마, 그리고 인코딩된 요청 크기)로 크기를 재서, 입력 262144바이트·요청 480 KiB 안에 들 때까지 우선순위가 낮은 파일부터 빼고 "전체 크기 한도 때문에 제외"로 보여 준다.** 그래서 미리보기가 "허용"이면 브로커가 크기 때문에 거절하지 않는다(설정의 `max_input_bytes`를 기본값보다 낮추면 이 보장이 깨진다: 그때는 `too_large`가 오고 슬롯은 돌려준다).
+8. **미리보기 화면의 제한시간은 25초**인데 큰 저장소에서 서버가 일하는 최악 시간은 약 38초일 수 있다. 느린 저장소에서는 화면이 시간 초과를 먼저 보일 수 있다. 미리보기는 비용이 없고 읽기 전용이라 **다시 시도해도 안전하다**. **선택은 orchd 메모리에 10분만 산다.** 미리보기 뒤 10분이 지나거나 `orchd`가 재시작되면 "미리보기가 만료되었습니다"가 나오고 미리보기부터 다시 한다. 화면에서 작성 중이던 체크리스트는 브라우저 메모리에만 있어 새로 고침하면 사라진다.
 9. **계획서 화면의 키보드만 사용, 스크린 리더 사용은 시험하지 않았다.** 이 컷오버에서도 확인 항목이 아니다.
 10. **실제 OpenAI·GitLab의 동작은 컷오버 전까지 전부 미확인이다**: 응답 형식, 구조화 출력, 모델 ID·단가, 토큰 사용량, 키 한도, `store: false`, GitLab의 http 접속·`main` 보호·토큰 권한, MR의 Draft 표시. 처음 한 번 성공하기 전에는 아무것도 "된다"고 말하지 않는다.
 
@@ -436,10 +437,11 @@ curl -sS -o /dev/null -w '%{http_code}\n' https://api.openai.com/v1/models
 sudo systemctl enable --now orch-broker
 systemctl status orch-broker --no-pager; sudo journalctl -u orch-broker -n 30 --no-pager
 ls -l /run/orch-broker/broker.sock
-sudo -u orch cat /etc/orch-broker/openai.key; sudo -u orch ls /etc/orch-broker
+sudo -u orch test -r /etc/orch-broker/openai.key && echo READABLE || echo denied
+sudo -u orch test -x /etc/orch-broker && echo ENTERABLE || echo denied
 sudo -u orch python3 -c 'import socket;s=socket.socket(socket.AF_UNIX);s.connect("/run/orch-broker/broker.sock");s.sendall(b"{\"v\":1,\"op\":\"status\"}\n");print(s.makefile().readline())'
 ```
-예상: 유닛 `active (running)`, 로그에 오류 없음, 소켓 `srw-rw---- orch-broker orch`. **`orch` 계정의 `cat`/`ls`는 `Permission denied`여야 한다**(`orch` 계정이 `/etc/orch-broker`를 읽지 못함. **이 저장소에서는 확인하지 못한 항목**). 마지막 줄(`orch` 계정이 소켓으로 `status` 호출, 리눅스 `SO_PEERCRED` 확인)은 `{"ok":true,"result":{"context_repos":[…],…,"weekly_budget_remaining_usd":25…}}` 형태이고 **응답에 키·토큰이 없어야** 한다. 가능하면 `systemd-analyze security orch-broker`로 하드닝 점수를 본다(유닛의 하드닝이 실제로 시작되는지도 이 저장소에서는 확인하지 못했다. 시작이 `status=218/CAPABILITIES`, `226/NAMESPACE`, `31/SYSTEMCALL` 등으로 실패하면 이 단계에서 멈추고 단계 4의 A, 로그를 사용자에게 보고한다. 유닛의 보호 옵션을 임의로 빼지 않는다).
+예상: 유닛 `active (running)`, 로그에 오류 없음, 소켓 `srw-rw---- orch-broker orch`. **`orch` 계정의 두 검사는 모두 `denied`여야 한다(`READABLE`·`ENTERABLE`이면 멈추고 보고. 값은 화면에 찍히지 않는다)**(`orch` 계정이 `/etc/orch-broker`를 읽지 못함. **이 저장소에서는 확인하지 못한 항목**). 마지막 줄(`orch` 계정이 소켓으로 `status` 호출, 리눅스 `SO_PEERCRED` 확인)은 `{"ok":true,"result":{"context_repos":[…],…,"weekly_budget_remaining_usd":25…}}` 형태이고 **응답에 키·토큰이 없어야** 한다. 가능하면 `systemd-analyze security orch-broker`로 하드닝 점수를 본다(유닛의 하드닝이 실제로 시작되는지도 이 저장소에서는 확인하지 못했다. 시작이 `status=218/CAPABILITIES`, `226/NAMESPACE`, `31/SYSTEMCALL` 등으로 실패하면 이 단계에서 멈추고 단계 4의 A, 로그를 사용자에게 보고한다. 유닛의 보호 옵션을 임의로 빼지 않는다).
 
 **검증 체크리스트:** 1-6 통과, 1-7이 401, 1-8의 유닛 active·소켓 모드·`orch`의 읽기 거부·status 호출 성공. **그래도 안 되면:** `sudo systemctl disable --now orch-broker`, 단계 4의 A. 다른 서비스에는 영향이 없다(이 단계는 `orchd`를 건드리지 않았다).
 
@@ -506,6 +508,7 @@ ExecStart=<systemctl cat orchd 의 기존 ExecStart 줄 전체> --broker-socket 
 3. **DB 복원(필수):** 필요하면 지금 DB를 먼저 따로 복사한다(`sudo mkdir -p /home/orch/orchd/backup-w2b/after-v8 && sudo cp -a /home/orch/orchd/state/orchd.db* /home/orch/orchd/backup-w2b/after-v8/`). 그다음 `sudo rm -f /home/orch/orchd/state/orchd.db-wal /home/orch/orchd/state/orchd.db-shm && sudo cp -a /home/orch/orchd/backup-w2b/orchd.db* /home/orch/orchd/state/`. **백업 이후의 작업·이벤트·승인 대기·세션(로그인)은 사라진다.** 만들어진 MR은 GitLab에 남는다(사용자가 정리).
 4. 유닛: `sudo cp /etc/systemd/system/orchd.service.pre-w2b /etc/systemd/system/orchd.service`(드롭인을 썼으면 그 파일도 지운다) `&& sudo systemctl daemon-reload`.
 5. `sudo systemctl start orchd`. 브로커는 위 A의 2·3으로 끈다.
+   - **[사용자] 백업 뒤에 만들어진 MR과 브랜치를 정리한다.** DB를 되돌리면 작업 번호가 백업 시점부터 다시 쓰이므로, 되돌리기 전에 만들어진 GitLab의 `orch/<번호>` 브랜치와 그 열린 MR이 **앞으로 같은 번호로 만들어질 새 작업의 브랜치와 겹친다**(브로커가 같은 브랜치의 열린 MR을 "이미 있음"으로 돌려주므로 새 작업이 낡은 MR을 자기 것으로 보여 줄 수 있다). 컷오버 뒤 `done`이 된 작업 번호를 되돌리기 전에 적어 두고(`orch list`), 그 번호의 MR을 닫고 `orch/<번호>` 브랜치를 지운다.
 6. `gate-home` 전체를 되돌리지 않는다(원장이 백업 시점으로 돌아간다). 같은 작업 번호가 원장에 두 번 나타날 수 있으니(W2a 롤백 주의와 같다) 롤백 시각을 결과 문서에 적는다.
 
 **검증:** `journalctl -u orchd`에 스키마 오류가 없고, `orch list`가 단계 2 이전의 작업 목록과 같다. 웹에는 "AI로 계획서 만들기" 링크가 없다(브라우저 캐시면 새로고침). **그래도 안 되면:** 아무것도 더 지우지 말고 `journalctl -u orchd -n 80`, `ls -l /usr/local/lib/aigate /home/orch/orchd/state /home/orch/orchd/backup-w2b`를 사용자에게 보고한다. W2a 이전까지 가야 하면 10장 단계 3(`*.prev-w2a`, `backup-w2a`).
