@@ -221,10 +221,9 @@
 - **새 작업 화면의 저장소 목록:** `toy`와 `sample-app` 둘 다 보임(서버에서 확인한 `/repos` 예상과 일치).
 - **#44 화면의 "다시 시도" 버튼:** 붙여 넣은 화면 글에 "다시 시도"가 없었다. 판정 실패(커밋 없음)이므로 없어야 정상이고 예상과 일치. (복사한 글에 버튼 이름이 항상 포함되는지는 확인하지 못했으므로 "예상과 일치"로만 기록.)
 
-- **웹에서의 취소(작업 #45, 2026-11-09 17:24):** 사용자가 웹에서 진행 중인 작업을 취소해 확인했다. 화면: `취소를 요청했습니다. 화면을 새로 고쳤습니다.`, 타임라인 `대기` `처리: session:mac-passkey` → `준비`·`에이전트` `처리: 자동` → `취소` `처리: session:mac-passkey`. 서버 기록과 일치: DB 이벤트 `created`(session:mac-passkey) → `started`·`agent vm prepared`(system) → `agent_running→cancelled`(session:mac-passkey), 원장 `task_submitted`와 `task_transition`(`agent_running→cancelled`, note `cancelled`)의 `actor`·`via`가 모두 `session:mac-passkey`. 원장의 해시 사슬 검증은 하지 않았다(줄 수 407만 봄).
+- **웹에서의 취소(작업 #45, 2026-11-09 17:24):** 사용자가 웹에서 진행 중인 작업을 취소해 확인했다. 화면: `취소를 요청했습니다. 화면을 새로 고쳤습니다.`, 타임라인 `대기` `처리: session:mac-passkey` → `준비`·`에이전트` `처리: 자동` → `취소` `처리: session:mac-passkey`. 서버 기록과 일치: DB 이벤트 `created`(session:mac-passkey) → `started`·`agent vm prepared`(system) → `agent_running→cancelled`(session:mac-passkey), 원장 `task_submitted`와 `task_transition`(`agent_running→cancelled`, note `cancelled`)의 `actor`·`via`가 모두 `session:mac-passkey`. 원장의 해시 사슬 검증은 하지 않았다(줄 수 407만 봄). **취소 전 확인 칸:** 사용자가 "확인 칸이 떴다, 취소를 물어보는"이라고 직접 알려 왔다(붙여 넣은 화면에는 나타나지 않아 화면 증거는 없고 사용자 보고로 기록). 확인 전에는 요청이 나가지 않는다는 것은 코드 시험으로 확인됨.
 
 ### 컷오버에서 확인하지 않은 것 (닫을 때의 상태)
-- 웹 취소 때 **확인 칸이 먼저 뜨는지**(요청이 확인 전에는 나가지 않는 것)는 사용자가 알려 준 화면에 나타나지 않아 확인하지 못했다(확인 칸의 동작은 코드 시험으로만 확인됨).
 - `#/new`의 키보드 전체 흐름·스크린 리더, 구체적인 요청의 웹 제출이 `done`까지 가는 것(웹 제출의 기록 경로는 #44·#45가 확인해 줌).
 
 ### 끝내 확인하지 못한 것
