@@ -115,9 +115,45 @@
 
 ---
 
+---
+
+### Task 7 (A7): 사용자별 큐 상한 (사용자 결정, 컷오버 전)
+
+**배경(결정 2026-11-09):** 전역 상한 20개는 한 세션이 큐를 독점할 수 있다. 상한을 **사용자(주체)별**로 바꾸고 서버 전체 상한을 따로 둔다. R5(원자성)는 그대로 유지한다.
+
+**파일:** 수정 `internal/orch/store/store.go`(`CreateTaskLimited`), `internal/orch/api/api.go`(제출 경로가 주체를 넘김, 오류 문구), `internal/orch/api/daemon.go`(`Config`), `cmd/orchd/main.go`(플래그), 시험 파일들, `docs/14-DESIGN-webconsole-W2.md` 3.1, `docs/16-RESULTS-webconsole-W2a.md`, `docs/10-OPERATIONS-orchestrator.md`(W2a 런북의 큐 관련 문구)
+
+**인터페이스:**
+- 변경: `store.CreateTaskLimited(ctx context.Context, t Task, perActor, total int) (int64, error)` — 한 번의 즉시(immediate) 트랜잭션 안에서 (1) 주체 `ActorFrom(ctx)`가 만든 `queued` 작업 수를 세고(`task_events`에서 `note='created'`인 가장 이른 이벤트의 `actor`가 같은 작업), `>= perActor`이면 `store.ErrQueueFull`, (2) 전체 `queued` 수가 `>= total`이면 `store.ErrQueueFullTotal`, (3) 통과하면 삽입. `perActor <= 0` 또는 `total <= 0`은 그 검사를 하지 않는다.
+- 생산: `api.Config.QueueLimit`(주체별, 0이면 기본 20)과 `api.Config.QueueLimitTotal`(0이면 기본 100), 플래그 `--queue-limit`(주체별)과 `--queue-limit-total`; 음수는 거부, `total < perActor`이면 시작을 거부(고정 메시지). 오류 응답은 둘 다 HTTP 429 v1 코드 `queue_full`이고 **메시지만 다르다**: 주체별 — "내 대기 작업이 가득 찼습니다", 전체 — "서버 대기열이 가득 찼습니다". 웹은 코드로만 분기하고 서버 문장을 텍스트로 보여 준다.
+- 규칙: 주체가 `system`이거나 만든 이벤트에 `actor`가 없는(v7 이전) 작업은 어느 주체의 한도에도 들지 않고 **전체 수에만** 센다.
+
+- [ ] **시험(이름 그대로):** `TestQueueLimitIsPerActor`(주체 A가 한도까지 채워도 주체 B는 제출 가능, A는 429), `TestQueueLimitTotalCeiling`(여러 주체가 합쳐 전체 상한에 닿으면 모두 429, 문구는 전체용), `TestQueueLimitRaceNeverExceedsPerActorOrTotal`(동시 N+10 요청을 두 주체와 키 있음/없음을 섞어 보내 어떤 주체도 한도를 넘지 않고 전체도 넘지 않음, -race 반복), `TestQueueLimitIgnoresLegacyNullActorTasks`(v7 이전 NULL 작업은 주체별 수에 안 들고 전체에만 듦), `TestQueueLimitReplayNotCounted`(멱등 재생은 새 작업이 아니라 한도에 영향 없음), `TestQueueFlagsValidation`(`--queue-limit-total < --queue-limit`, 음수 거부), 기존 `TestQueueFloodBoundedAcrossPrincipals`·`TestQueueLimit*`·`TestCreateTaskLimited*`는 새 의미로 갱신(약화 금지, 바꾼 단언을 보고서에 나열).
+- [ ] **구현:** `CreateTaskLimited`의 세기를 주체별·전체 두 쿼리로 나눠 같은 트랜잭션에 둔다. 세기 쿼리에 필요한 색인이 있는지 확인하고 없으면 `task_events(task_id, id)`(기존)를 활용한다. 새 스키마 변경은 하지 않는다. 제출 핸들러는 요청 컨텍스트의 주체로 넘긴다(R6의 `ActorFrom`). 웹(`new.js`)의 `queue_full` 문구는 서버의 문장을 텍스트로 그대로 보여 주도록 이미 되어 있는지 확인하고, 아니면 고친다(고정 문구 + 서버 `message`).
+- [ ] **변이 확인(복사본):** 주체별 검사 제거 → 격리 시험 실패; 전체 검사 제거 → 상한 시험 실패; 세기와 삽입을 분리된 트랜잭션으로 → 경쟁 시험 실패.
+- [ ] **통과 + `-race`**, 커밋 `feat(store): per-principal queue limit with a server-wide ceiling`.
+
+---
+
+### Task 8 (A8): 이벤트별 주체를 웹 화면에 표시 (사용자 결정, 컷오버 전)
+
+**배경(결정 2026-11-09):** 지금은 마지막 이벤트의 주체만 보이고, 이벤트별 주체는 SQLite와 원장에만 있다. 작업 상세의 타임라인에 단계마다 "누가 그 단계로 넘겼는지"를 보여 준다. 이렇게 하면 W2a 런북의 "제출자·취소자 확인"을 화면에서 할 수 있다.
+
+**파일:** 수정 `internal/orch/api/timeline.go`(`StepTime`, `Timeline`), `internal/orch/web/static/views/task.js`, 시험 `internal/orch/api/timeline_test.go`·`web/test/views.test.js`(또는 task 관련 시험), 픽스처 재생성(`web_fixtures_test.go`), `docs/16-RESULTS-webconsole-W2a.md`, `docs/10-OPERATIONS-orchestrator.md`(W2a 런북의 주체 확인 문구를 화면 확인을 포함하도록 갱신)
+
+**인터페이스:**
+- 소비: `store.Event.Actor`(Task 1), `Timeline(events)`.
+- 생산: `StepTime.Actor string json:"actor,omitempty"` — **그 단계로 들어가게 한 이벤트의 주체**(`kind:id` 또는 `system`; 기록이 없는 v7 이전 이벤트는 비워 둠). 웹 타임라인의 각 단계 옆에 주체를 텍스트로 표시하고(`system`은 "자동"처럼 한국어 표시, 그 밖은 `kind:id` 그대로), 접근성용 텍스트 대체(막대는 이미 `aria-hidden`)에도 포함한다.
+
+- [ ] **시험(이름 그대로):** `TestTimelineStepCarriesActor`(제출·전이·취소·재시도 이벤트가 각 단계의 `actor`로 나옴, NULL은 빈 값), `TestTimelineActorNeverEchoesClientInput`(API 응답의 actor는 서버가 기록한 정규화된 값뿐), JS: `TestTaskTimelineShowsActorPerStep`(단계마다 주체 텍스트, `system`은 "자동", 빈 값은 표시 안 함), `TestTaskTimelineActorHostileText`(제어·방향 전환 문자·긴 문자열은 sanitizer를 거쳐 텍스트로만, 속성에 들어가지 않음), 골든 픽스처 `timeline.json`이 실제 구조체에서 재생성되어 `actor`를 포함.
+- [ ] **구현:** `Timeline`이 각 단계를 만든 이벤트의 `Actor`를 `StepTime.Actor`에 복사. `task.js` 타임라인 줄에 주체 `<span>`(텍스트 노드, `inline()` 경유). 런북 문구: 제출자는 첫 단계("대기" 단계)의 주체, 취소자는 `cancelled` 단계의 주체로 확인할 수 있고, 워커가 옮긴 전이는 `자동`으로 보이는 것이 정상이라고 적는다(1·2-3·2-6 단계 갱신, 원장 확인은 보조 수단으로 유지). docs/16의 해당 문장도 갱신.
+- [ ] **변이 확인(복사본):** `Actor` 복사 제거 → Go 시험 실패; 웹에서 sanitizer 제거(원문 표시) → 적대 문자 시험 실패.
+- [ ] **통과 + `-race` + node 테스트**, 커밋 `feat(web): show who moved each step in the task timeline`.
+
 ## 자체 검토 기록
 - **설계서 대비 범위:** 3.1(제출 화면·요구사항 작성기·`/repos`·종류 대조·`Idempotency-Key`·큐 상한) → A3·A5; 3.2(취소·재시도·`cancellable`·오류 코드·500 버그) → A2·A5; 3.3(`ops.cloud`·캐시·경고·진행 표시) → A4·A5; 3.4(스키마 v7·주체 전달·원장) → A1; 3.5(API 표) → A1~A4; 5장 위협 중 W2a에 해당하는 것(큐 소진, 주체 위조) → A3·A6; 6장(적대 시험·변이·정직한 한계) → A6.
 - **의도적으로 W2b로 미룬 것:** 브로커, AI 다듬기, MR 자동 생성, `tasks.branch/mr_*`(스키마 v8), `POST /refine*`, `POST /tasks/{id}/mr`.
 - **이름 일관성:** `Actor`/`actor`(이벤트·`TaskView`·원장), `Cancellable`/`cancellable`, 오류 코드 `already_final`·`not_retryable`·`state_changed`·`unknown_class`·`queue_full`, `CloudView`/`ops.cloud`, `QueueLimit`/`--queue-limit`가 A1~A6에서 같다.
+- **추가(2026-11-09, 컷오버 전 사용자 결정):** A7 사용자별 큐 상한, A8 이벤트별 주체 표시. 위 작업 7·8.
 - **미결(구현 중 구현자가 정하고 보고서에 기록):** 정책이 없는 서버에서 종류 검증을 건너뛸지(계획은 건너뜀), `reason` 키를 v1 봉투에 싣는 정확한 모양, `repos`의 훑는 깊이(계획은 2), `CloudStatus`의 `volume list` 사용 여부(필요 없으면 제외).
 - **사용자 확인이 필요한 값(설계서 7장 Q1·Q2):** 큐 상한 20, 쿼터 경고 80%는 기본값으로 구현하고 플래그/상수로 바꿀 수 있게 한다. Q3~Q8(AI·GitLab 관련)은 W2b 계획에서 다룬다.
