@@ -9,6 +9,7 @@ package api
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -441,6 +442,28 @@ func TestOrchdWorksWithBrokerDown(t *testing.T) {
 			tk, err := e.st.GetTask(context.Background(), done)
 			if err != nil || tk.State != store.StateDone || tk.MRState != store.MRFailed || tk.MRCode != "broker_unavailable" || tk.MRURL != "" {
 				t.Fatalf("task after the failed retry: %+v %v", tk, err)
+			}
+			// W3a: the project endpoints answer with fixed codes, propose stays local,
+			// and the old per-repo task summary is untouched
+			for _, path := range []string{"/api/v1/projects/registry", "/api/v1/projects/candidates"} {
+				if c, b := e.sockDo2(t, "GET", path, ""); c != 503 || v1Code(b) != "broker_unavailable" || strings.Contains(string(b), sock) {
+					t.Fatalf("%s: %d %s", path, c, b)
+				}
+			}
+			flag := map[string]any{"flag": "ai_context", "value": true}
+			c, b = e.sockDo2(t, "POST", "/api/v1/projects/propose", jsonBody(map[string]any{"action": "set_flag", "subject": "reg", "fields": flag}))
+			if c != 200 {
+				t.Fatalf("propose: %d %s", c, b)
+			}
+			var prop proposeOut
+			if err := json.Unmarshal(b, &prop); err != nil {
+				t.Fatal(err)
+			}
+			if c, b := e.sockDo2(t, "POST", "/api/v1/projects/apply", jsonBody(applyBodyOf(prop, webauthnSig))); c != 503 || v1Code(b) != "broker_unavailable" {
+				t.Fatalf("apply: %d %s", c, b)
+			}
+			if c, b := e.sockDo2(t, "GET", "/api/v1/projects", ""); c != 200 {
+				t.Fatalf("old projects summary: %d %s", c, b)
 			}
 			// and the daemon is still fine afterwards
 			if c, b := e.sockDo2(t, "GET", "/api/v1/tasks", ""); c != 200 {

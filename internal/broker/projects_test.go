@@ -151,11 +151,16 @@ type wenv struct {
 	signers string // signers.json path
 	alice   testSigner
 	now     time.Time
+	logs    *syncBuf
 }
 
 // newWEnv starts a broker with repo_roots, a signers file holding alice, and a
 // fixed broker clock. The test config's migrated "repo-a" project exists.
-func newWEnv(t *testing.T) *wenv {
+func newWEnv(t *testing.T) *wenv { return newWEnvMod(t, nil) }
+
+// newWEnvMod is newWEnv with an extra change to the server before it listens
+// (test seams such as PeerUID/AllowUID).
+func newWEnvMod(t *testing.T, mod func(*Server)) *wenv {
 	t.Helper()
 	e := newTestEnv(t)
 	root := filepath.Join(e.Dir, "roots")
@@ -174,7 +179,12 @@ func newWEnv(t *testing.T) *wenv {
 	signing.DefaultOptions = signing.RegistryOptions{OwnerOK: func(uid uint32) bool { return uid == uint32(os.Getuid()) }}
 	t.Cleanup(func() { signing.SetRegistryPath(oldPath); signing.DefaultOptions = oldOpts })
 	w.writeSigners(w.alice)
-	w.s, _ = e.newServer(t, func(s *Server) { s.Now = func() time.Time { return w.now } })
+	w.s, w.logs = e.newServer(t, func(s *Server) {
+		s.Now = func() time.Time { return w.now }
+		if mod != nil {
+			mod(s)
+		}
+	})
 	w.sock = e.Raw["socket"].(string)
 	return w
 }
