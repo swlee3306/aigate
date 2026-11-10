@@ -79,6 +79,14 @@ var fixedMessages = map[string]string{
 	"project_unknown":     "등록되지 않은 프로젝트입니다.",
 	"path_not_allowed":    "이 경로는 프로젝트로 등록할 수 없습니다.",
 	"not_supported":       "이 버전에서는 지원하지 않는 변경입니다.",
+
+	"token_unknown":           "등록되지 않은 토큰입니다.",
+	"bad_kind":                "토큰 종류가 올바르지 않습니다. openai, gitlab, github 중 하나여야 합니다.",
+	"token_too_short":         "토큰 값이 너무 짧습니다.",
+	"token_bad_format":        "토큰 값의 형식이 올바르지 않습니다. 공백 없는 인쇄 가능한 ASCII 문자여야 하고 너무 길면 안 됩니다.",
+	"value_mismatch":          "서명한 토큰 값과 보낸 토큰 값이 다릅니다.",
+	"token_exists_other_kind": "같은 이름의 토큰이 다른 종류로 이미 있습니다.",
+	"openai_singleton":        "openai 종류는 이름이 openai인 토큰 하나만 둘 수 있습니다.",
 }
 
 // Default per-op processing time limits (decision D1).
@@ -93,6 +101,11 @@ var defaultOpTimeouts = map[string]time.Duration{
 	"projects":         10 * time.Second,
 	"register_project": 10 * time.Second,
 	"set_flag":         10 * time.Second,
+
+	// Same for the token writes: `timeout` means the outcome is unknown;
+	// re-read `tokens` before retrying.
+	"set_token":    10 * time.Second,
+	"delete_token": 10 * time.Second,
 }
 
 // State is the broker's mutable limit state.
@@ -213,6 +226,9 @@ func New(cfg Config, o Options) (*Server, error) {
 		"projects":         s.projectsHandler,
 		"register_project": s.registerProjectHandler,
 		"set_flag":         s.setFlagHandler,
+
+		"set_token":    s.setTokenHandler,
+		"delete_token": s.deleteTokenHandler,
 	}
 	return s, nil
 }

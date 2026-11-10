@@ -793,11 +793,11 @@ func TestOpAllowlistIncludesOnlyNewOps(t *testing.T) {
 		got = append(got, k)
 	}
 	sort.Strings(got)
-	want := []string{"create_mr", "projects", "refine", "register_project", "set_flag", "status", "tokens"}
+	want := []string{"create_mr", "delete_token", "projects", "refine", "register_project", "set_flag", "set_token", "status", "tokens"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("ops = %v, want %v", got, want)
 	}
-	for _, op := range []string{"delete_project", "unregister_project", "remove_project", "set_token", "delete_token",
+	for _, op := range []string{"delete_project", "unregister_project", "remove_project",
 		"set_provider", "set_auto_merge", "update_project", "delete", "register"} {
 		r, _ := call(t, w.sock, `{"v":1,"op":"`+op+`","args":{}}`)
 		if r.OK || r.Code != "unknown_op" {

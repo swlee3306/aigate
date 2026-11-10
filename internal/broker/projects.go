@@ -220,11 +220,24 @@ func (s *Server) verifySigned(action, subject string, fields map[string]any, cla
 	if s.Registry.Err() != nil {
 		return fail1("registry_unavailable")
 	}
+	return s.verifySignedShape(action, subject, fields, claimedChange, request, issuedText, sig, nil)
+}
+
+// verifySignedShape is verifySigned after the caller's own "store usable"
+// check. shape (optional) runs after `not_signed` and the `change` requirement
+// and before anything is verified: it refuses malformed requests without
+// consuming an ID (token ops use it for ref/kind/expires rules).
+func (s *Server) verifySignedShape(action, subject string, fields map[string]any, claimedChange, request, issuedText string, sig *signing.Signature, shape func() *OpError) *OpError {
 	if sig == nil {
 		return fail1("not_signed")
 	}
 	if claimedChange == "" { // `change` is required: the signer's hash must travel with the request
 		return fail1("change_mismatch")
+	}
+	if shape != nil {
+		if oe := shape(); oe != nil {
+			return oe
+		}
 	}
 	issued, err := time.Parse(issuedLayout, issuedText)
 	if err != nil {
