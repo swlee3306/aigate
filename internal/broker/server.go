@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -467,7 +466,8 @@ func (s *Server) run(ctx context.Context, op string, h HandlerFunc, args json.Ra
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				s.logf("handler panic: op=%s value=%s", op, fmt.Sprint(r))
+				// never the payload: it may carry a client-supplied secret
+				s.logf("handler panic: op=%s type=%T", op, r)
 				ch <- out{nil, &OpError{Code: "internal_error"}}
 			}
 		}()

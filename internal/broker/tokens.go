@@ -132,7 +132,7 @@ func (s *Server) setTokenHandler(_ context.Context, raw json.RawMessage) (any, *
 	if err := s.Tokens.Set(a.Ref, a.Kind, a.Expires, a.Value, now); err != nil {
 		return nil, tokenStoreFailure(err)
 	}
-	return s.tokenRow(a.Ref, now), nil
+	return tokenRow(a.Ref, a.Kind, a.Expires, a.Value, now), nil
 }
 
 func (s *Server) deleteTokenHandler(_ context.Context, raw json.RawMessage) (any, *OpError) {
@@ -158,21 +158,17 @@ func (s *Server) deleteTokenHandler(_ context.Context, raw json.RawMessage) (any
 	return map[string]any{"ref": a.Ref, "deleted": true}, nil
 }
 
-// tokenRow is the secret-free listing row of ref after a change.
-func (s *Server) tokenRow(ref string, now time.Time) map[string]any {
-	list, err := s.Tokens.List(now)
-	if err == nil {
-		for _, t := range list {
-			if t.Ref != ref {
-				continue
-			}
-			var dl any
-			if t.DaysLeft != nil {
-				dl = *t.DaysLeft
-			}
-			return map[string]any{"ref": t.Ref, "kind": t.Kind, "last4": t.Last4, "expires": t.Expires,
-				"set_at": t.SetAt, "source": "store", "days_left": dl, "usable": t.Usable}
-		}
+// tokenRow is the secret-free listing row of what was just stored, built from
+// the data written (no second read of the store, so it cannot fail or race).
+func tokenRow(ref, kind, expires, value string, now time.Time) map[string]any {
+	last4 := value
+	if len(last4) > 4 {
+		last4 = last4[len(last4)-4:]
 	}
-	return map[string]any{"ref": ref}
+	var dl any
+	if d := DaysLeft(expires, now); d != nil {
+		dl = *d
+	}
+	return map[string]any{"ref": ref, "kind": kind, "last4": last4, "expires": expires,
+		"set_at": now.UTC().Format(time.RFC3339), "source": "store", "days_left": dl, "usable": true}
 }

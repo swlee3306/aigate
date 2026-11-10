@@ -756,22 +756,132 @@ func TestHandlerTimeoutsExplicit(t *testing.T) {
 }
 
 // A valid signature over one change cannot carry other fields: the signer's
-// change must equal the hash recomputed from the request.
+// change must equal the hash recomputed from the request. Pinned: the
+// altered request burns NO ID, so the honest one (same request ID) succeeds.
 func TestSetTokenFieldsMustMatchSignedChange(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mod  func(map[string]any)
+	}{
+		{"other expires", func(a map[string]any) { a["expires"] = "2028-01-01" }},
+		{"dropped expires", func(a map[string]any) { a["expires"] = "" }},
+		{"other kind", func(a map[string]any) { a["kind"] = "github" }},
+		{"other value_hash", func(a map[string]any) { a["value_hash"] = registrymsg.ValueHash(registrymsg.NewRequestID(), tokenOK2) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWEnv(t)
+			good := w.tokArgs(w.alice, "gitlab-a", "gitlab", "2027-01-01", tokenOK)
+			before := w.tokSnap()
+			w.wantCode("set_token", copyArgs(good, tc.mod), "change_mismatch")
+			after := w.tokSnap()
+			if !before.sameStore(after) || !before.sameUsed(after) {
+				t.Fatal("store changed or the request ID was burned by an altered request")
+			}
+			if _, e := w.do("set_token", good); e != nil {
+				t.Fatalf("honest request with the same ID: %v", e.Code)
+			}
+		})
+	}
 	w := newWEnv(t)
 	good := w.tokArgs(w.alice, "gitlab-a", "gitlab", "2027-01-01", tokenOK)
-	before := w.tokSnap()
-	for name, mod := range map[string]func(map[string]any){
-		"other expires":    func(a map[string]any) { a["expires"] = "2028-01-01" },
-		"dropped expires":  func(a map[string]any) { a["expires"] = "" },
-		"other kind":       func(a map[string]any) { a["kind"] = "github" },
-		"other value_hash": func(a map[string]any) { a["value_hash"] = registrymsg.ValueHash(registrymsg.NewRequestID(), tokenOK2) },
-	} {
-		args := copyArgs(good, mod)
-		w.wantCode("set_token", args, "change_mismatch")
-		if after := w.tokSnap(); !before.sameStore(after) {
-			t.Fatalf("%s: store changed", name)
+	w.wantCode("set_token", copyArgs(good, func(a map[string]any) { delete(a, "value_hash") }), "bad_request")
+}
+
+func TestBadExpiresFormatBurnsNoIDPastDateDoes(t *testing.T) {
+	w := newWEnv(t) // broker clock 2026-11-09
+	for _, bad := range []string{"2026-13-01", "20261110", "2026-1-1", " 2026-11-10", "2026-11-10 ", "2026-11-10\n", "2026-11-100", "26-11-10", "tomorrow"} {
+		args := w.tokArgs(w.alice, "gitlab-a", "gitlab", "", tokenOK)
+		args["expires"] = bad
+		before := w.tokSnap()
+		w.wantCode("set_token", args, "bad_request")
+		if after := w.tokSnap(); !before.sameStore(after) || !before.sameUsed(after) {
+			t.Fatalf("expires %q: state changed or an ID was burned", bad)
 		}
 	}
-	w.wantCode("set_token", copyArgs(good, func(a map[string]any) { delete(a, "value_hash") }), "bad_request")
+	// well-formed but past, validly signed: refused AFTER the ID is consumed
+	args := w.tokArgs(w.alice, "gitlab-a", "gitlab", "2026-11-08", tokenOK)
+	before := w.tokSnap()
+	w.wantCode("set_token", args, "bad_request")
+	after := w.tokSnap()
+	if !before.sameStore(after) || before.sameUsed(after) {
+		t.Fatal("past date: store changed or the ID was not consumed")
+	}
+	w.wantCode("set_token", args, "request_reused")
+}
+
+func TestSetTokenResponseRowEqualsListing(t *testing.T) {
+	w := newWEnv(t)
+	res, e := w.do("set_token", w.tokArgs(w.alice, "gitlab-a", "gitlab", "2026-11-20", tokenOK))
+	if e != nil {
+		t.Fatal(e.Code)
+	}
+	row := res.(map[string]any)
+	list, _ := w.s.Tokens.List(w.now)
+	if len(list) != 1 || row["last4"] != list[0].Last4 || row["expires"] != list[0].Expires || row["set_at"] != list[0].SetAt ||
+		row["ref"] != "gitlab-a" || row["kind"] != "gitlab" || row["days_left"] != *list[0].DaysLeft || row["usable"] != true {
+		t.Fatalf("row %v vs listing %+v", row, list)
+	}
+}
+
+// End to end through the real signed handlers: the AI key changes for the
+// next refine without a restart.
+func TestOpenAIKeyViaSignedHandlersReachesRefine(t *testing.T) {
+	fake, auth, mu := openAIFake(t, nil)
+	w := newWEnvMod(t, func(s *Server) { s.OpenAI.BaseURL = fake.URL })
+	r := &refineEnv{env: w.e, srv: w.s, logs: w.logs, repo: filepath.Join(w.e.Dir, "repo-a")}
+	newKey := "e2e-key-NOT-REAL-0123456789abcdef01234567"
+	r.call(t, r.args())
+	w.mustSet("openai", "openai", "", newKey)
+	r.call(t, r.args())
+	if _, e := w.do("delete_token", w.delArgs(w.alice, "openai")); e != nil {
+		t.Fatal(e.Code)
+	}
+	r.call(t, r.args())
+	got := lastAuth(auth, mu)
+	want := []string{"Bearer " + testOpenAIKey, "Bearer " + newKey, "Bearer " + testOpenAIKey}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("authorization headers = %v", got)
+	}
+	// no config key either: delete is allowed and refine answers ai_key_missing without slot or budget
+	w.mustSet("openai", "openai", "", newKey)
+	if err := os.Remove(w.e.KeyFile); err != nil {
+		t.Fatal(err)
+	}
+	if _, e := w.do("delete_token", w.delArgs(w.alice, "openai")); e != nil {
+		t.Fatal(e.Code)
+	}
+	budget, slots, hits := w.s.State.Budget.RemainingMicros(), w.s.State.Refine.Remaining(), fake.Hits()
+	_, oerr := r.call(t, r.args())
+	if oerr == nil || oerr.Code != "ai_key_missing" {
+		t.Fatalf("refine = %+v, want ai_key_missing", oerr)
+	}
+	if w.s.State.Budget.RemainingMicros() != budget || w.s.State.Refine.Remaining() != slots || fake.Hits() != hits {
+		t.Fatal("a missing key used budget, a slot or reached upstream")
+	}
+}
+
+func TestPanicLogsTypeNotPayload(t *testing.T) {
+	canary := "canary-NOT-A-REAL-TOKEN-NEVERSTORED0001"
+	w := newWEnv(t)
+	real := w.s.Handlers["set_token"]
+	w.s.Handlers["set_token"] = func(ctx context.Context, raw json.RawMessage) (any, *OpError) {
+		real(ctx, raw) // value_mismatch: the canary is rejected, never stored
+		panic("boom " + canary)
+	}
+	signed := w.tokArgs(w.alice, "gitlab-a", "gitlab", "", tokenOK2)
+	signed["value"] = canary
+	r, out := call(t, w.sock, line(t, rpc("set_token", signed)))
+	if r.OK || r.Code != "internal_error" || strings.Contains(string(out), canary) {
+		t.Fatalf("reply: %s", out)
+	}
+	logs := w.logs.String()
+	if strings.Contains(logs, canary) || strings.Contains(logs, "NEVERSTORED") {
+		t.Fatalf("panic payload reached the log: %s", logs)
+	}
+	if !strings.Contains(logs, "op=set_token") || !strings.Contains(logs, "string") {
+		t.Fatalf("op and panic type not logged: %s", logs)
+	}
+	if _, ok := w.s.Tokens.Value("gitlab-a"); ok {
+		t.Fatal("canary was stored")
+	}
 }
