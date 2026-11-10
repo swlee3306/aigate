@@ -793,7 +793,7 @@ func TestOpAllowlistIncludesOnlyNewOps(t *testing.T) {
 		got = append(got, k)
 	}
 	sort.Strings(got)
-	want := []string{"create_mr", "projects", "refine", "register_project", "set_flag", "status"}
+	want := []string{"create_mr", "projects", "refine", "register_project", "set_flag", "status", "tokens"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("ops = %v, want %v", got, want)
 	}

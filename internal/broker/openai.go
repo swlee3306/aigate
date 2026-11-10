@@ -34,11 +34,13 @@ const (
 // request text, no key. Callers map it to the fixed code upstream_error.
 var errUpstream = errors.New("upstream error")
 
-// OpenAIClient calls the Responses API. Key is the API key, sent only in the
+// OpenAIClient calls the Responses API. KeyFn supplies the API key for each
+// call (hot reload: a replaced key is used from the next call on; a call in
+// flight keeps the key it started with). The key is sent only in the
 // Authorization header. HTTP nil means the hardened default client.
 type OpenAIClient struct {
 	BaseURL string // "" = DefaultOpenAIBaseURL
-	Key     string
+	KeyFn   func() (string, bool)
 	Model   string
 	HTTP    *http.Client
 }
@@ -79,6 +81,19 @@ type openAIResponse struct {
 // returned whenever the response reported it, even when the text is unusable,
 // so the budget can settle to the real cost. Every failure is errUpstream.
 func (c *OpenAIClient) Complete(ctx context.Context, system, user string, maxTokens int64, schema json.RawMessage) (string, Usage, error) {
+	var key string
+	var ok bool
+	if c.KeyFn != nil {
+		key, ok = c.KeyFn()
+	}
+	if !ok {
+		return "", Usage{}, errUpstream
+	}
+	return c.CompleteWithKey(ctx, key, system, user, maxTokens, schema)
+}
+
+// CompleteWithKey is Complete with a key the caller already fetched.
+func (c *OpenAIClient) CompleteWithKey(ctx context.Context, key, system, user string, maxTokens int64, schema json.RawMessage) (string, Usage, error) {
 	base := c.BaseURL
 	if base == "" {
 		base = DefaultOpenAIBaseURL
@@ -100,7 +115,7 @@ func (c *OpenAIClient) Complete(ctx context.Context, system, user string, maxTok
 	if err != nil {
 		return "", Usage{}, errUpstream
 	}
-	req.Header.Set("Authorization", "Bearer "+c.Key)
+	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", openAIUserAgent)
 	hc := c.HTTP

@@ -65,6 +65,9 @@ var fixedMessages = map[string]string{
 
 	"registry_unavailable": "프로젝트 등록부를 사용할 수 없습니다. 관리자가 확인해야 합니다.",
 
+	"ai_key_missing":     "AI 키가 등록되어 있지 않습니다. 토큰 화면에서 openai 키를 등록하세요.",
+	"tokens_unavailable": "토큰 저장소를 사용할 수 없습니다. 관리자가 확인해야 합니다.",
+
 	"not_signed":          "서명이 없는 변경 요청입니다.",
 	"bad_signature":       "서명이 올바르지 않습니다.",
 	"unknown_signer":      "등록되지 않은 서명자입니다.",
@@ -83,6 +86,7 @@ var defaultOpTimeouts = map[string]time.Duration{
 	"refine":    60 * time.Second,
 	"create_mr": 20 * time.Second,
 	"status":    5 * time.Second,
+	"tokens":    5 * time.Second,
 
 	// A `timeout` reply to a write op means the outcome is unknown: the
 	// handler may still complete. Re-read `projects` before retrying.
@@ -109,6 +113,7 @@ type Server struct {
 	GitLab   *GitLabClient  // set by New; tests may point BaseURL at a fake
 	Registry *RegistryStore // set by New: the project registry (owned by the broker)
 	Used     *UsedRequests  // set by New: one-time request IDs of signed changes
+	Tokens   *TokenStore    // set by New: secret store and token metadata (never nil)
 
 	Now         func() time.Time               // nil: time.Now (test seam: broker clock of signed writes)
 	PeerUID     func(net.Conn) (uint32, error) // nil: kernel peer credentials
@@ -117,6 +122,8 @@ type Server struct {
 	Log         io.Writer                      // nil: discard
 	ReadTimeout time.Duration                  // 0: 5s
 	OpTimeouts  map[string]time.Duration       // overrides per op
+
+	keyOwnerOK func(uint32) bool // trust of the config key file (nil: current euid)
 
 	logOnce sync.Once
 	logger  *log.Logger
@@ -160,24 +167,35 @@ func New(cfg Config, o Options) (*Server, error) {
 	if err != nil && !errors.Is(err, ErrUsedRequestsBroken) {
 		return nil, err
 	}
+	// The token store never stops the broker: a broken one answers
+	// tokens_unavailable and the store's keys are treated as absent.
+	toks, err := OpenTokenStore(dir, sopts)
+	if err != nil && !errors.Is(err, ErrTokensBroken) {
+		return nil, err
+	}
 	bud, err := OpenBudget(filepath.Join(dir, "budget.json"), Micros(cfg.Limits.WeeklyBudgetUSD), o.Clock)
 	if err != nil {
 		return nil, err
 	}
 	s := &Server{
-		Config:   cfg,
-		Secrets:  sec,
-		OpenAI:   &OpenAIClient{Key: sec.OpenAIKey(), Model: cfg.OpenAI.Model},
-		mrLock:   make(chan struct{}, 1),
-		Registry: reg,
-		Used:     used,
-		GitLab:   &GitLabClient{BaseURL: cfg.GitLab.BaseURL, Token: sec.GitLabToken()},
-		Log:      o.Log,
+		Config:     cfg,
+		Secrets:    sec,
+		mrLock:     make(chan struct{}, 1),
+		Tokens:     toks,
+		keyOwnerOK: o.KeyOwnerOK,
+		Registry:   reg,
+		Used:       used,
+		GitLab:     &GitLabClient{BaseURL: cfg.GitLab.BaseURL, Token: sec.GitLabToken()},
+		Log:        o.Log,
 		State: State{
 			Refine:   NewHourlyLimiter(cfg.Limits.RefinePerHour, o.Clock),
 			CreateMR: NewHourlyLimiter(cfg.Limits.CreateMRPerHour, o.Clock),
 			Budget:   bud,
 		},
+	}
+	s.OpenAI = &OpenAIClient{KeyFn: s.currentOpenAIKey, Model: cfg.OpenAI.Model}
+	if toks.Err() != nil {
+		s.logf("토큰 저장소를 신뢰할 수 없어 저장된 토큰을 쓰지 않습니다")
 	}
 	if reg.Err() != nil {
 		s.logf("프로젝트 등록부를 신뢰할 수 없어 등록부가 필요한 작업을 거부합니다")
@@ -188,6 +206,7 @@ func New(cfg Config, o Options) (*Server, error) {
 	bud.OnPersistError = func() { s.logf("예산 상태 저장 실패: 요청을 거부합니다") }
 	s.Handlers = map[string]HandlerFunc{
 		"status":    s.statusHandler,
+		"tokens":    s.tokensHandler,
 		"refine":    s.refineHandler,
 		"create_mr": s.createMRHandler,
 
@@ -206,13 +225,25 @@ func (s *Server) statusHandler(context.Context, json.RawMessage) (any, *OpError)
 	repos := s.Registry.AIContextPaths()
 	projects := s.Registry.GitLabPaths()
 	remaining := s.State.Budget.RemainingMicros()
-	return map[string]any{
+	res := map[string]any{
 		"context_repos":               repos,
 		"refine_remaining_hour":       s.State.Refine.Remaining(),
 		"gitlab_configured":           s.Config.GitLab.Configured(),
 		"mr_projects":                 projects,
 		"weekly_budget_remaining_usd": float64(remaining) / 1e6,
-	}, nil
+	}
+	// Expiry summary (decision D6): names and day counts only, no values.
+	expiring := []map[string]any{}
+	list, lerr := s.Tokens.List(s.now())
+	for _, t := range list {
+		if Expiring(t.DaysLeft) {
+			expiring = append(expiring, map[string]any{"ref": t.Ref, "days_left": *t.DaysLeft})
+		}
+	}
+	res["tokens_available"] = lerr == nil
+	res["warn_days"] = WarnDays
+	res["expiring"] = expiring
+	return res, nil
 }
 
 func (s *Server) setup() {
@@ -220,7 +251,7 @@ func (s *Server) setup() {
 	if w == nil {
 		w = io.Discard
 	}
-	s.logger = log.New(&redactWriter{w: w, secrets: s.Secrets.values()}, "orch-broker: ", log.LstdFlags)
+	s.logger = log.New(&redactWriter{w: w, secrets: func() []string { return append(s.Secrets.values(), s.Tokens.values()...) }}, "orch-broker: ", log.LstdFlags)
 	s.sem = make(chan struct{}, MaxConcurrent)
 }
 
@@ -522,12 +553,12 @@ func Redact(s string, secrets []string) string {
 type redactWriter struct {
 	mu      sync.Mutex
 	w       io.Writer
-	secrets []string
+	secrets func() []string
 }
 
 func (r *redactWriter) Write(p []byte) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	_, err := io.WriteString(r.w, Redact(string(p), r.secrets))
+	_, err := io.WriteString(r.w, Redact(string(p), r.secrets()))
 	return len(p), err
 }

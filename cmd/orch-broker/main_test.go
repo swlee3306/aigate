@@ -350,3 +350,79 @@ func TestCheckDryRunsMigrationAndRefusesConflict(t *testing.T) {
 		t.Fatalf("rc=%d out=%q", rc, out.String())
 	}
 }
+
+func TestCheckValidatesSecretsDirAndMeta(t *testing.T) {
+	cfg, state, _, _, _ := checkEnv(t)
+	co := trustForTest(filepath.Dir(cfg))
+	snapshot := func() string {
+		var sb strings.Builder
+		filepath.Walk(state, func(p string, fi os.FileInfo, err error) error {
+			if err == nil {
+				b, _ := os.ReadFile(p)
+				sb.WriteString(p + "|" + fi.Mode().String() + "|" + string(b) + "\n")
+			}
+			return nil
+		})
+		return sb.String()
+	}
+	run1 := func() (int, string) {
+		var out bytes.Buffer
+		rc := checkConfig(cfg, state, co, &out)
+		return rc, out.String()
+	}
+	// nothing there: passes and creates nothing (no secrets/, no tokens.json)
+	before := snapshot()
+	if rc, out := run1(); rc != 0 {
+		t.Fatalf("empty state: rc=%d %s", rc, out)
+	}
+	if snapshot() != before {
+		t.Fatal("-check wrote into the state dir")
+	}
+	if _, err := os.Lstat(filepath.Join(state, "secrets")); err == nil {
+		t.Fatal("-check created secrets/")
+	}
+	// healthy store: passes, still read-only
+	canary := "canary-NOT-A-REAL-TOKEN-0123456789abcdefXYZ"
+	os.Mkdir(filepath.Join(state, "secrets"), 0o700)
+	os.Chmod(filepath.Join(state, "secrets"), 0o700)
+	os.WriteFile(filepath.Join(state, "secrets", "openai"), []byte(canary), 0o400)
+	os.Chmod(filepath.Join(state, "secrets", "openai"), 0o400)
+	meta := `{"version":1,"tokens":[{"ref":"openai","kind":"openai","last4":"0XYZ","expires":"","set_at":"2026-11-10T00:00:00Z"}]}`
+	os.WriteFile(filepath.Join(state, "tokens.json"), []byte(meta), 0o600)
+	os.Chmod(filepath.Join(state, "tokens.json"), 0o600)
+	before = snapshot()
+	if rc, out := run1(); rc != 0 || strings.Contains(out, canary) {
+		t.Fatalf("healthy store: rc=%d %s", rc, out)
+	}
+	if snapshot() != before {
+		t.Fatal("-check changed the store")
+	}
+	// a bad secret file only warns (that token is unusable at run time)
+	os.Chmod(filepath.Join(state, "secrets", "openai"), 0o444)
+	if rc, out := run1(); rc != 0 || !strings.Contains(out, "경고") || strings.Contains(out, canary) {
+		t.Fatalf("bad file mode: rc=%d %s", rc, out)
+	}
+	os.Chmod(filepath.Join(state, "secrets", "openai"), 0o400)
+	// a group-accessible secrets dir is refused
+	os.Chmod(filepath.Join(state, "secrets"), 0o750)
+	if rc, out := run1(); rc == 0 || !strings.Contains(out, "토큰") {
+		t.Fatalf("0750 secrets/: rc=%d %s", rc, out)
+	}
+	os.Chmod(filepath.Join(state, "secrets"), 0o700)
+	// broken or wrong-mode tokens.json is refused and left alone
+	for _, c := range []struct {
+		content string
+		mode    os.FileMode
+	}{{"{garbage", 0o600}, {meta, 0o644}} {
+		os.Remove(filepath.Join(state, "tokens.json"))
+		os.WriteFile(filepath.Join(state, "tokens.json"), []byte(c.content), c.mode)
+		os.Chmod(filepath.Join(state, "tokens.json"), c.mode)
+		before = snapshot()
+		if rc, out := run1(); rc == 0 || !strings.Contains(out, "토큰") || strings.Contains(out, canary) {
+			t.Fatalf("bad tokens.json (%q, %v): rc=%d %s", c.content, c.mode, rc, out)
+		}
+		if snapshot() != before {
+			t.Fatal("-check changed a broken store")
+		}
+	}
+}

@@ -110,6 +110,16 @@ func checkConfig(cfgPath, stateDir string, o checkOptions, out io.Writer) int {
 	if err := broker.UsedRequestsStatus(stateDir, broker.RegistryOptions{OwnerOK: o.KeyOwnerOK}); err != nil {
 		return refuse(errors.New("쓴 요청 ID 파일(used-requests.json)을 신뢰할 수 없습니다(깨졌거나 소유자·권한이 올바르지 않음)"))
 	}
+	// Token store, read-only: a secrets/ directory or tokens.json that cannot
+	// be trusted would make every stored token unusable. A single bad secret
+	// file or a file/metadata mismatch only costs that token (warning).
+	warns, err := broker.TokenStoreStatus(stateDir, broker.RegistryOptions{OwnerOK: o.KeyOwnerOK})
+	if err != nil {
+		return refuse(errors.New("토큰 저장소(secrets/, tokens.json)를 신뢰할 수 없습니다(깨졌거나 소유자·권한이 올바르지 않음)"))
+	}
+	for _, w := range warns {
+		fmt.Fprintf(out, "orch-broker: %s\n", w)
+	}
 	if len(cfg.RepoRoots) == 0 {
 		fmt.Fprintln(out, "orch-broker: 경고: repo_roots가 비어 있어 프로젝트 등록이 모두 path_not_allowed가 됩니다")
 	}
@@ -123,6 +133,6 @@ func checkConfig(cfgPath, stateDir string, o checkOptions, out io.Writer) int {
 	if exists && (len(cfg.ContextRepos) > 0 || len(cfg.GitLab.Projects) > 0) {
 		fmt.Fprintln(out, "orch-broker: 경고: 프로젝트 등록부가 있으므로 broker.json의 context_repos·gitlab.projects는 무시됩니다. 설정에서 지워도 됩니다")
 	}
-	fmt.Fprintln(out, "orch-broker: 점검 통과 (설정·신뢰·키 모드·소켓 그룹·상태 폴더만 확인했습니다. 외부 접속은 하지 않았습니다)")
+	fmt.Fprintln(out, "orch-broker: 점검 통과 (설정·신뢰·키 모드·소켓 그룹·상태 폴더·토큰 저장소만 확인했습니다. 외부 접속은 하지 않았습니다)")
 	return 0
 }
