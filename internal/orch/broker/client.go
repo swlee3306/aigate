@@ -135,7 +135,14 @@ func (c *Client) Do(ctx context.Context, op string, args any) (json.RawMessage, 
 	// Closing the connection when ctx ends unblocks a stuck read or write.
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
-	if _, err := conn.Write(append(body, '\n')); err != nil {
+	// Best effort: the encoded request (a token value rides in set_token) is
+	// overwritten once written. The encoder's pooled state and the kernel's
+	// socket buffers are copies this code cannot reach (documented limit).
+	wire := append(body, '\n')
+	_, err = conn.Write(wire)
+	clear(wire)
+	clear(body)
+	if err != nil {
 		return nil, unsent(CodeUnavailable)
 	}
 	line, err := readLine(conn)

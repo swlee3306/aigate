@@ -119,6 +119,9 @@ func run(args []string) int {
 		return 2
 	}
 	vf.BrokerSocket = cfg.BrokerSocket
+	// The deploy key's public half (<path>.pub) is served to the console; the
+	// private key is never read by the API. Same flag, no new one.
+	cfg.GitSSHKey = vf.GitSSHKey
 	if err := checkQueueLimit(cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "orchd:", err)
 		return 2

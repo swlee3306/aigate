@@ -242,6 +242,10 @@ type handler struct {
 	proposeLimit *actorLimiter
 	applyLimit   *actorLimiter
 	refineOpts   refine.Options
+	// Token endpoints (tokens.go).
+	tokenPrepLimit, tokenApplyLimit *actorLimiter
+	tokenSeams                      tokenSeams
+	deployKeyPath                   string
 }
 
 func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome string) (*handler, error) {
@@ -258,6 +262,8 @@ func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome 
 	h.previewLimit = newActorLimiter(PreviewPerActorHour, time.Hour)
 	h.proposeLimit = newActorLimiter(ProjectProposePerActorHour, time.Hour)
 	h.applyLimit = newActorLimiter(ProjectApplyPerActorHour, time.Hour)
+	h.tokenPrepLimit = newActorLimiter(TokenPrepPerActorHour, time.Hour)
+	h.tokenApplyLimit = newActorLimiter(TokenApplyPerActorHour, time.Hour)
 	for _, r := range allowed {
 		if !filepath.IsAbs(r) || filepath.Clean(r) != r {
 			return nil, fmt.Errorf("allowed repo root %q must be an absolute clean path", r)

@@ -85,6 +85,10 @@ type Config struct {
 	// plan service (absolute and clean; empty = the AI plan feature is off
 	// and every refine call is 503 broker_unavailable).
 	BrokerSocket string
+	// GitSSHKey is orchd's --git-ssh-key (the deploy key's PRIVATE path). It is
+	// never opened by the API: only "<GitSSHKey>.pub" is read, by
+	// GET /api/v1/settings/deploy-key. Empty = that endpoint is unavailable.
+	GitSSHKey string
 }
 
 const (
@@ -180,6 +184,11 @@ func NewDaemon(cfg Config, st *store.Store, p StepProvider) (*Daemon, error) {
 		RecordSubmitted(context.Context, store.Task)
 	}); ok {
 		h.onSubmitted = sr.RecordSubmitted
+	}
+	// Only an absolute clean path is served (anything else leaves the endpoint
+	// unavailable; startup is not refused: the publisher judges the flag itself).
+	if broker.ValidSocketPath(cfg.GitSSHKey) {
+		h.deployKeyPath = cfg.GitSSHKey + ".pub"
 	}
 	h.reportDir = cfg.ReportDir
 	h.policy, h.ops, h.cloud = cfg.Policy, cfg.Ops, cfg.CloudStatus
