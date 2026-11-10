@@ -37,6 +37,7 @@ var (
 	// same names today, so one can change without moving the other.
 	tokenRefRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,39}$`)
 	expiresRE  = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}$`)
+	requestRE  = regexp.MustCompile(`^[0-9a-f]{32}$`)
 	hashRE     = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
@@ -69,7 +70,7 @@ func ValidTokenRef(s string) bool { return tokenRefRE.MatchString(s) }
 func ValidTokenKind(s string) bool { return tokenKinds[s] }
 
 // ValidExpires reports whether s is "" (no expiry) or a real calendar date
-// written YYYY-MM-DD.
+// written YYYY-MM-DD with a year from 2000 to 9999.
 func ValidExpires(s string) bool {
 	if s == "" {
 		return true
@@ -77,15 +78,23 @@ func ValidExpires(s string) bool {
 	if !expiresRE.MatchString(s) {
 		return false
 	}
-	_, err := time.Parse("2006-01-02", s)
-	return err == nil
+	d, err := time.Parse("2006-01-02", s)
+	return err == nil && d.Year() >= 2000
 }
 
 // ValueHash is the salted hash of a token value that a set_token signature
 // covers: lowercase hex SHA-256 of request ‖ ":" ‖ value. The request id is the
 // salt, so the same value never hashes the same way under two requests. The
 // value itself is never part of a change or message.
+//
+// request must be exactly 32 lowercase hex characters (a NewRequestID); the
+// fixed width is what makes request ":" value unambiguous. For anything else
+// ValueHash returns "" and the caller must refuse. Callers must pass the
+// validated request of the signed message, never a raw args string.
 func ValueHash(request, value string) string {
+	if !requestRE.MatchString(request) {
+		return ""
+	}
 	h := sha256.New()
 	h.Write([]byte(request))
 	h.Write([]byte(":"))

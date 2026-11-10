@@ -90,7 +90,7 @@ func TestTokenRefRegexAndKindSet(t *testing.T) {
 }
 
 func TestExpiresFormat(t *testing.T) {
-	for _, ok := range []string{"", "2026-11-09", "2027-02-28", "2028-02-29"} {
+	for _, ok := range []string{"", "2026-11-09", "2027-02-28", "2028-02-29", "2000-01-01", "9999-12-31"} {
 		if !ValidExpires(ok) {
 			t.Errorf("expires %q refused", ok)
 		}
@@ -100,7 +100,7 @@ func TestExpiresFormat(t *testing.T) {
 			t.Errorf("expires %q refused by CanonicalChange: %v", ok, err)
 		}
 	}
-	for _, no := range []string{"2026-13-40", "2026-1-1", "20261109", " 2026-11-09", "2026-11-09 ", "2026 -11-09", "2026-11-09\n", "2027-02-29", "2026-02-30", "２０２６-11-09", "2026/11/09", "2026-11-09T00:00:00Z"} {
+	for _, no := range []string{"2026-13-40", "2026-1-1", "20261109", " 2026-11-09", "2026-11-09 ", "2026 -11-09", "2026-11-09\n", "2027-02-29", "2026-02-30", "２０２６-11-09", "2026/11/09", "2026-11-09T00:00:00Z", "1999-12-31", "0000-01-01", "0001-01-01"} {
 		if ValidExpires(no) {
 			t.Errorf("expires %q accepted", no)
 		}
@@ -131,9 +131,28 @@ func TestValueHashIsSaltedAndStable(t *testing.T) {
 	if h == ValueHash(r1, canary+"!") {
 		t.Fatal("appended byte must change the hash")
 	}
-	// known answer pins the construction of D4: SHA-256("req:value")
-	if got := ValueHash("req", "value"); got != "30edabd7f398111ed2d1e7055655c11dfac79825e079644c25ed119836d948d2" {
-		t.Fatalf("ValueHash(req,value) = %s", got)
+	// known answer pins the construction of D4: SHA-256(request ":" value).
+	// (The first version used the short request "req"; requests must now be
+	// 32 lowercase hex, so the known answer uses a real-shaped one.)
+	if got := ValueHash("0123456789abcdef0123456789abcdef", "value"); got != "16a60b2cfa0fe8048b5a0a81baa8ec6d4834b614546a8e87fe717d55796d4a38" {
+		t.Fatalf("ValueHash known answer = %s", got)
+	}
+}
+
+func TestValueHashRefusesMalformedRequest(t *testing.T) {
+	// Without the fixed-width request, ("a:b","c") and ("a","b:c") would
+	// hash the same input "a:b:c".
+	if ValueHash("a:b", "c") != "" || ValueHash("a", "b:c") != "" {
+		t.Fatal("non-32-hex request must return an empty hash")
+	}
+	for _, bad := range []string{"", strings.Repeat("a", 31), strings.Repeat("a", 33), strings.Repeat("A", 32),
+		strings.Repeat("g", 32), strings.Repeat("a", 31) + ":", strings.Repeat("a", 31) + "\n"} {
+		if ValueHash(bad, canary) != "" {
+			t.Errorf("request %q produced a hash", bad)
+		}
+	}
+	if ValueHash(strings.Repeat("a", 32), canary) == "" {
+		t.Fatal("valid request refused")
 	}
 }
 

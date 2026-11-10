@@ -2,6 +2,7 @@ package signing
 
 import (
 	"crypto/sha256"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -290,5 +291,35 @@ func TestSigningAcceptsTokenActionsAndStillRejectsUnknown(t *testing.T) {
 	m.Action = RegistryActionDeleteToken
 	if _, err := ParseRegistryMessage(strings.Replace(m.Text(), "delete_token", "drop_token", 1)); err == nil {
 		t.Fatal("unknown action parsed")
+	}
+}
+
+func TestSubjectRuleIsPerAction(t *testing.T) {
+	accepts := func(action, subject string) bool {
+		m := regMsg(testNow)
+		m.Action, m.Subject = action, subject
+		return m.Validate() == nil
+	}
+	if !accepts(RegistryActionSetFlag, "ab-1") || !accepts(RegistryActionSetToken, "ab-1") || !accepts(RegistryActionDeleteToken, "ab-1") {
+		t.Fatal("baseline subject refused")
+	}
+	savedProj, savedTok := registrySubjectRE, registryTokenRefRE
+	defer func() { registrySubjectRE, registryTokenRefRE = savedProj, savedTok }()
+
+	registrySubjectRE = regexp.MustCompile(`^p-[a-z0-9-]{0,37}$`)
+	if accepts(RegistryActionSetFlag, "ab-1") || accepts(RegistryActionRegisterProject, "ab-1") || !accepts(RegistryActionSetFlag, "p-x") {
+		t.Fatal("project actions must follow the project rule")
+	}
+	if !accepts(RegistryActionSetToken, "ab-1") || !accepts(RegistryActionDeleteToken, "ab-1") {
+		t.Fatal("token actions must not follow the project rule")
+	}
+	registrySubjectRE = savedProj
+
+	registryTokenRefRE = regexp.MustCompile(`^t-[a-z0-9-]{0,37}$`)
+	if accepts(RegistryActionSetToken, "ab-1") || accepts(RegistryActionDeleteToken, "ab-1") || !accepts(RegistryActionSetToken, "t-x") {
+		t.Fatal("token actions must follow the token rule")
+	}
+	if !accepts(RegistryActionSetFlag, "ab-1") || !accepts(RegistryActionRegisterProject, "ab-1") {
+		t.Fatal("project actions must not follow the token rule")
 	}
 }
