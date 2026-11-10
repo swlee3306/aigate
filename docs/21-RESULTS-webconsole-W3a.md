@@ -192,3 +192,21 @@
 - **사소한 항목.** (3) 런북의 glob `stat`을 `sudo sh -c`로 감싸고 `used-requests.json`의 `stat`을 따로 둠. (4) 런북 순서를 정지 → 바이너리·`broker.json` 한 쌍 설치 → `-check` → 시작으로 바꾸고, 롤백도 한 쌍으로 하도록 명시(옛 바이너리는 `repo_roots`가 있는 설정을 거부). (5) refine·미리보기의 `registry_unavailable`을 고정 문장으로(W3a-18, `TestRefineErrorsAreFixedAndNeverEchoBrokerText`에 행 추가: 적색 확인), 런북 3-2의 증상 문구와 MR 훅 저장 값(`mr_code=registry_unavailable`)을 적음. (6) 쓰기의 `registry_unavailable` → `outcome_unknown`(W3a-17, 적색 확인). (7) 런북 한도 항목이 사실대로 쓰임: 로컬 `checkRegisterTarget` 거부는 슬롯을 돌려주지 않고 원장 줄도 없다. (8) 25초 제한시간(W3a-19, `TestNoRetry429ForProjectWrites`에 단언 추가: 적색 확인). (9) `set_flag` 서명이 id를 묶는다는 경고(W3a-20, 설계서 19번에도).
 - **런북에 추가:** "컷오버에서만 확인할 수 있는 것" 목록(실제 패스키 서명 검증, 샌드박스 안의 `signers.json`, `link(2)`·`fsync`, 마이그레이션 뒤 `projects` 출력(정확히 `toy`·`sample-app`, `legacy`, `ai_context` true, `gitlab` null), `/tmp` noexec·`sudo -u orch-broker`·`systemd-run` 동작, `readlink -f /home/orch/repos`와 정책 철자).
 - **실행:** `go vet ./...`, `gofmt -l .`, darwin/linux vet 통과, `go test ./... -count=1 -race` 종료 코드 0(1198 통과, 0 실패, 2 건너뜀, 하위 804), node 165/165, `TestConstantsAgreeWithWeb` PASS(SKIP 없음).
+
+## 10. 컷오버 기록 (2026-11-10, 실서버 orch-vm)
+`main` 7a6cb49 기준 빌드. 런북(docs/10 12장) 사전 점검, 단계 1·2, 단계 3 일부를 실행했다. 서버에서 본 것만 적는다.
+
+**실행.** 사전 점검(상태 폴더 `orch-broker:orch-broker 700`, `signers.json` 읽기 가능, `repo_roots` 철자 `/home/orch/repos` = 정책 = `readlink -f`, 실행 중 작업·승인 대기 없음) → 백업 `/root/backup-w3a`(root 0700) → 옛 broker 정지 → 새 바이너리와 `repo_roots`를 더한 `broker.json`을 한 쌍으로 설치 → 샌드박스 안 `-check` → 시작 → `orchd` 정지·교체·시작.
+
+**서버에서 확인한 것.**
+- 유닛과 같은 샌드박스 옵션의 `systemd-run -check`(`ProtectSystem=strict`, `ProtectHome=yes`, `SystemCallFilter=@system-service`, 사용자 `orch-broker`)가 통과했다. 샌드박스 안에서 `signers.json`이 로드된다.
+- 시작과 함께 마이그레이션이 일어나 `registry.json`이 `orch-broker:orch-broker 600`으로 생겼다(`link(2)` 배타 생성, 폴더 fsync가 서버 파일시스템에서 동작함). 상태 폴더 700 유지.
+- `projects` 응답: 정확히 `toy`와 `sample-app`, `kind` `legacy`, `ai_context` true, `provider`·`gitlab` null, `auto_merge` 꺼짐, 비밀 없음. `status`의 `context_repos`는 컷오버 전과 같은 두 경로(AI 전송 허용 범위 불변).
+- 두 번째 `-check`: 옛 항목 무시 경고 한 줄 + 통과.
+- `orchd`: `active`, 승인 모드 `signed`, 작업 목록 배포 전후 동일, DB 스키마 8 그대로, 새 엔드포인트 세 개는 로그인 없이는 401.
+- **웹(사용자가 브라우저에서 확인):** 3-1 프로젝트 목록(`toy`·`sample-app`, AI 전송 "예"), 3-2 AI 계획서 미리보기 회귀 없음, 3-5 `toy`의 AI 전송 끄기 → 켜기를 **실제 패스키로 서명**. 서버 기록: broker `op=set_flag ok`, 원장에 `project_change` `set_flag` `actor session:mac-passkey` `subject toy` `code ok` 두 줄(경로·내용 없음), `used-requests.json`이 `orch-broker:orch-broker 600`으로 생겼다. 컷오버 뒤 `projects`는 `toy`·`sample-app` 둘 다 `ai_context` true(원래 상태로 복구됨).
+- **따라서 확인됨:** 실제 패스키 서명을 broker가 검증한다, broker가 샌드박스 안에서 `signers.json`을 읽는다, 마이그레이션이 실제 `broker.json`에서 올바른 등록부를 만든다, `link(2)`/fsync/모드가 서버에서 동작한다.
+
+**확인하지 못한 것.** 3-3(후보 저장소를 등록하는 흐름): 서버에 등록 가능한 후보가 없어 시험하지 못했다(`toy`·`sample-app`는 이미 등록됨, `remote.git`은 베어 저장소). 실제 `/home/orch/repos`에서 orchd의 `candidatePath` 검사가 후보를 올바르게 보여 주는지는 후보가 생겨야 볼 수 있다. 키보드만·스크린 리더 사용. 위조 서명 거부(자동 시험으로만). 사용자가 3-5 중 느낀 화면의 세부 문구·반응은 이 기록에 인용하지 않았다.
+
+**사용자 관찰(2026-11-10).** "등록할 수 있는 저장소가 없다. 허용된 저장소 폴더 바로 아래의 git 저장소만 나타난다. 저장소를 입력하거나 신규로 생성할 방법이 없다." 설계대로다: W3a는 기존 저장소 등록(허용 폴더 바로 아래)만 만든다. 경로 직접 입력은 의도적으로 허용하지 않고(`repo_roots` 아래 한 단계만), 새 프로젝트 생성은 W3c(관리자 토큰은 W3b의 토큰 메뉴가 필요), GitLab 주소로 clone해 등록은 W3c 범위다.
