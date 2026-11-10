@@ -352,6 +352,14 @@ type TokenView struct {
 }
 
 // tokenViewOf re-bounds a broker row; false when it is not a plausible one.
+// maxDaysLeftSpan bounds a row's days_left. The broker counts exact UTC days and
+// an expiry is a legal date from 2000-01-01 to 9999-12-31, so |days_left| can
+// never exceed the span between those two dates (about 2.93 million), however
+// far the broker's own clock is from them. The same bound, symmetric, covers
+// past dates down to year 2000. (A smaller bound once made a legal far-future
+// expiry turn the whole token list into a 502.)
+var maxDaysLeftSpan = int(time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC).Unix()/86400 - time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC).Unix()/86400)
+
 func tokenViewOf(r broker.TokenRow) (TokenView, bool) {
 	if !registrymsg.ValidTokenRef(r.Ref) || !registrymsg.ValidTokenKind(r.Kind) || (r.Kind == "openai") != (r.Ref == "openai") ||
 		!registrymsg.ValidExpires(r.Expires) || (r.Source != "store" && r.Source != "config") || len(r.Last4) > 4 {
@@ -370,7 +378,7 @@ func tokenViewOf(r broker.TokenRow) (TokenView, bool) {
 			return TokenView{}, false
 		}
 	}
-	if r.DaysLeft != nil && (*r.DaysLeft < -1000000 || *r.DaysLeft > 1000000) {
+	if r.DaysLeft != nil && (*r.DaysLeft < -maxDaysLeftSpan || *r.DaysLeft > maxDaysLeftSpan) {
 		return TokenView{}, false
 	}
 	return TokenView{Ref: r.Ref, Kind: r.Kind, Last4: r.Last4, Expires: r.Expires, SetAt: r.SetAt,

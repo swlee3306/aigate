@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"aigate/internal/registrymsg"
 )
 
 // W3b adversarial suite for orchd (B6). Equivalent checks from B4 are
@@ -252,5 +254,50 @@ func TestTokensApplyValueRulesBeforeBroker(t *testing.T) {
 	}
 	if w := e.rb.tokenWrites(); len(w) != 2 {
 		t.Fatalf("%d broker writes for the two boundary values", len(w))
+	}
+}
+
+// TestFarFutureDaysLeftIsListedNotBroken: the broker's day count is exact up
+// to 9999-12-31 (2,912,129 days from 2026-11-10) and as low as -2.9 million for
+// year 2000. orchd must list such rows (not turn the list into a 502) and a
+// set_token with the farthest legal expiry must succeed with its row.
+func TestFarFutureDaysLeftIsListedNotBroken(t *testing.T) {
+	e := newTokEnv(t)
+	row := func(ref string, d int) map[string]any {
+		return map[string]any{"ref": ref, "kind": "gitlab", "last4": "abcd", "expires": "9999-12-31", "set_at": "2026-11-10T01:02:03Z",
+			"source": "store", "days_left": d, "usable": true}
+	}
+	e.rb.mu.Lock()
+	e.rb.tokenRows = []map[string]any{row("gitlab-far", 2912129), row("gitlab-old", -2900000)}
+	e.rb.mu.Unlock()
+	code, b := e.sock(t, "GET", "/api/v1/settings/tokens", "")
+	if code != 200 || !strings.Contains(string(b), "2912129") || !strings.Contains(string(b), "-2900000") {
+		t.Fatalf("list: %d %s", code, b)
+	}
+	// beyond any legal span is still refused (all or nothing)
+	e.rb.mu.Lock()
+	e.rb.tokenRows = []map[string]any{row("gitlab-far", 9000000)}
+	e.rb.mu.Unlock()
+	if code, b := e.sock(t, "GET", "/api/v1/settings/tokens", ""); code != 502 {
+		t.Fatalf("absurd days_left: %d %s", code, b)
+	}
+	// set_token with expires 9999-12-31 end to end
+	e.rb.setTokenReply(func(op string, args json.RawMessage) string {
+		out, _ := json.Marshal(map[string]any{"ok": true, "result": row("gitlab-main", 2912129)})
+		return string(out)
+	})
+	fields := map[string]any{"kind": "gitlab", "expires": "9999-12-31"}
+	_, bb := e.call(t, "begin", jsonBody(map[string]any{"action": "set_token", "subject": "gitlab-main", "fields": fields}))
+	var bo struct{ Request, Issued string }
+	_ = json.Unmarshal(bb, &bo)
+	fields["value_hash"] = registrymsg.ValueHash(bo.Request, canaryValue)
+	_, mb := e.call(t, "message", jsonBody(map[string]any{"action": "set_token", "subject": "gitlab-main", "fields": fields, "request": bo.Request, "issued": bo.Issued}))
+	var mo struct{ Change string }
+	_ = json.Unmarshal(mb, &mo)
+	body := jsonBody(map[string]any{"action": "set_token", "subject": "gitlab-main", "fields": fields, "change": mo.Change,
+		"request": bo.Request, "issued": bo.Issued, "signature": webauthnSig, "value": canaryValue})
+	code, ab := e.call(t, "apply", body)
+	if code != 200 || !strings.Contains(string(ab), `"days_left":2912129`) || strings.Contains(string(ab), canaryValue) {
+		t.Fatalf("apply: %d %s", code, ab)
 	}
 }

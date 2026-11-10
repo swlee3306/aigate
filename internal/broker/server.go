@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -138,9 +139,14 @@ type Server struct {
 	keyOwnerOK func(uint32) bool // trust of the config key file (nil: current euid)
 
 	logOnce sync.Once
-	logger  *log.Logger
-	sem     chan struct{}
-	mrLock  chan struct{} // serialises create_mr find+create
+	// logKey caches the config key for log redaction, keyed by the file's
+	// (mtime, size); logKeyReads counts real reads (test seam).
+	logKeyMu    sync.Mutex
+	logKey      logKeyCache
+	logKeyReads atomic.Int64
+	logger      *log.Logger
+	sem         chan struct{}
+	mrLock      chan struct{} // serialises create_mr find+create
 }
 
 // Options configures New.
@@ -275,7 +281,7 @@ func (s *Server) setup() {
 // (refine re-reads that file on every call, so it can differ from the start value).
 func (s *Server) redactionValues() []string {
 	v := append(s.Secrets.values(), s.Tokens.values()...)
-	if k, ok := s.configOpenAIKey(); ok {
+	if k := s.cachedConfigKey(); k != "" {
 		v = append(v, k)
 	}
 	return v
@@ -588,4 +594,31 @@ func (r *redactWriter) Write(p []byte) (int, error) {
 	defer r.mu.Unlock()
 	_, err := io.WriteString(r.w, Redact(string(p), r.secrets()))
 	return len(p), err
+}
+
+type logKeyCache struct {
+	valid bool
+	mtime time.Time
+	size  int64
+	key   string
+}
+
+// cachedConfigKey returns the config OpenAI key for log redaction. The file is
+// re-read only when its (mtime, size) changed, so a log line normally costs one
+// stat; a rewritten key file is picked up on the next line. "" when unreadable.
+func (s *Server) cachedConfigKey() string {
+	fi, err := os.Stat(s.Config.OpenAI.KeyFile)
+	s.logKeyMu.Lock()
+	defer s.logKeyMu.Unlock()
+	if err != nil {
+		s.logKey = logKeyCache{}
+		return ""
+	}
+	if s.logKey.valid && s.logKey.size == fi.Size() && s.logKey.mtime.Equal(fi.ModTime()) {
+		return s.logKey.key
+	}
+	s.logKeyReads.Add(1)
+	k, _ := s.configOpenAIKey()
+	s.logKey = logKeyCache{valid: true, mtime: fi.ModTime(), size: fi.Size(), key: k}
+	return k
 }

@@ -1169,3 +1169,17 @@ test('TestTypingWhileBusyAndLeavingClearTheField', async () => {
   click(byLabel(c3.root, '취소')[0]);
   assert.equal(i3.value, '');
 });
+
+test('TestFarFutureAndFarPastDaysLeftRenderSanely', async () => {
+  const far = { ref: 'gitlab-far', kind: 'gitlab', last4: 'abcd', expires: '9999-12-31', set_at: '2026-11-10T01:02:03Z', source: 'store', days_left: 2912129, usable: true };
+  const old = { ref: 'gitlab-old', kind: 'gitlab', last4: 'efgh', expires: '2000-01-01', set_at: '2026-11-10T01:02:03Z', source: 'store', days_left: -2900000, usable: true };
+  assert.deepEqual(E.expiringRows([far, old], 14).map((r) => r.ref), ['gitlab-old'], 'far future never warns, far past always does');
+  const b = E.expiryBanner([far, old], 14);
+  assert.match(text(b), /토큰 1개가 14일 안에 만료됩니다/);
+  assert.ok(!/NaN|Infinity|undefined/.test(text(b)));
+  const ctx = await mount({ '/api/v1/settings/tokens': { tokens: [far, old], warn_days: 14 } });
+  const t = text(ctx.root);
+  assert.ok(t.includes('2912129일'), 'exact day count shown');
+  assert.ok(t.includes('2900000일 지남'));
+  assert.ok(!/NaN|Infinity|undefined|e\+/.test(t));
+});

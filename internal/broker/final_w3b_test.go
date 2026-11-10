@@ -84,3 +84,51 @@ func TestTokensJSONYearBefore2000IsBroken(t *testing.T) {
 		}
 	}
 }
+
+// The redaction list re-reads the config key file only when it changed
+// ((mtime, size) differs), so a log line costs one stat, not a file read.
+func TestLogKeyCacheAvoidsRereadingUnchangedFile(t *testing.T) {
+	r := newRefineEnv(t, nil, nil)
+	s := r.srv
+	for i := 0; i < 20; i++ {
+		s.logf("line %d", i)
+	}
+	if n := s.logKeyReads.Load(); n > 1 {
+		t.Fatalf("unchanged key file read %d times for 20 lines", n)
+	}
+	base := s.logKeyReads.Load()
+	rewrite := func(content string, mtime time.Time) {
+		t.Helper()
+		if err := os.Remove(r.env.KeyFile); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(r.env.KeyFile, []byte(content+"\n"), 0o400); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(r.env.KeyFile, mtime, mtime); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := time.Now().Add(-time.Hour)
+	k1 := "cache-key-one-NOT-REAL-0123456789abcdefgh"
+	rewrite(k1, old) // different size
+	s.logf("saw %s", k1)
+	if strings.Contains(r.logs.String(), k1) {
+		t.Fatal("a rewritten key (other size) was not picked up on the next line")
+	}
+	k2 := strings.Replace(k1, "one", "two", 1) // same size, same content length, other mtime
+	rewrite(k2, old.Add(time.Minute))
+	s.logf("saw %s", k2)
+	if strings.Contains(r.logs.String(), k2) {
+		t.Fatal("a rewritten key (same size, other mtime) was not picked up")
+	}
+	if s.logKeyReads.Load() <= base {
+		t.Fatal("changes were never read")
+	}
+	reads := s.logKeyReads.Load()
+	s.logf("again")
+	s.logf("again")
+	if s.logKeyReads.Load() != reads {
+		t.Fatal("unchanged file re-read after the refresh")
+	}
+}
