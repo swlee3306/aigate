@@ -14,21 +14,26 @@ import (
 // signature made for one purpose never verifies for another.
 const NamespaceRegistry = "aigate-registry"
 
-// Registry change actions (they equal registrymsg.ActionRegisterProject and
-// registrymsg.ActionSetFlag).
+// Registry change actions (they equal the registrymsg.Action* constants; a
+// registrymsg test keeps them from drifting).
 const (
 	RegistryActionRegisterProject = "register_project"
 	RegistryActionSetFlag         = "set_flag"
+	RegistryActionSetToken        = "set_token"
+	RegistryActionDeleteToken     = "delete_token"
 )
 
 const registryMagic = "aigate-registry-v1"
 
-var registrySubjectRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,39}$`)
+var (
+	registrySubjectRE  = regexp.MustCompile(`^[a-z][a-z0-9-]{0,39}$`)
+	registryTokenRefRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,39}$`)
+)
 
 // RegistryMessage is the content signed to change the project registry.
 type RegistryMessage struct {
-	Action  string // register_project or set_flag
-	Subject string // project id
+	Action  string // register_project, set_flag, set_token or delete_token
+	Subject string // project id, or token ref for the token actions
 	Change  string // 64 lowercase hex: SHA-256 of the canonical change JSON
 	Request string // 32 lowercase hex: one-time request id
 	Issued  time.Time
@@ -36,10 +41,13 @@ type RegistryMessage struct {
 
 // Validate reports whether the message can be rendered canonically.
 func (m RegistryMessage) Validate() error {
+	isToken := m.Action == RegistryActionSetToken || m.Action == RegistryActionDeleteToken
 	switch {
-	case m.Action != RegistryActionRegisterProject && m.Action != RegistryActionSetFlag:
+	case m.Action != RegistryActionRegisterProject && m.Action != RegistryActionSetFlag && !isToken:
 		return fmt.Errorf("signing: unknown registry action %q", m.Action)
-	case !registrySubjectRE.MatchString(m.Subject):
+	case isToken && !registryTokenRefRE.MatchString(m.Subject):
+		return errors.New("signing: subject is not a valid token ref")
+	case !isToken && !registrySubjectRE.MatchString(m.Subject):
 		return errors.New("signing: subject is not a valid project id")
 	case !isLowerHex(m.Change, 64):
 		return errors.New("signing: change must be 64 lowercase hex characters")

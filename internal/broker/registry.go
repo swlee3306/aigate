@@ -590,6 +590,13 @@ func sweepStaleTemps(dir string) {
 // file is untouched and the temp file is removed. err with renamed true means
 // only the directory fsync failed (content is on disk, durability unconfirmed).
 func writeAtomic(path string, data []byte, failAt func(string) error, exclusive bool) (renamed bool, err error) {
+	return writeAtomicMode(path, data, 0o600, failAt, exclusive)
+}
+
+// writeAtomicMode is writeAtomic with the final file mode chosen by the caller
+// (secret files are 0400). The temp file gets that mode before any data is
+// written; the open descriptor keeps write access.
+func writeAtomicMode(path string, data []byte, mode os.FileMode, failAt func(string) error, exclusive bool) (renamed bool, err error) {
 	stage := func(name string) error {
 		if failAt != nil {
 			return failAt(name)
@@ -606,7 +613,7 @@ func writeAtomic(path string, data []byte, failAt func(string) error, exclusive 
 		tmp.Close()
 		os.Remove(name) // after a successful rename the name is gone: harmless
 	}()
-	if err := tmp.Chmod(0o600); err != nil {
+	if err := tmp.Chmod(mode); err != nil {
 		return false, err
 	}
 	if _, err := tmp.Write(data); err != nil {

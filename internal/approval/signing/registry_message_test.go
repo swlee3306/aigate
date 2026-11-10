@@ -2,6 +2,7 @@ package signing
 
 import (
 	"crypto/sha256"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -247,3 +248,78 @@ func TestExistingVerifyUnchanged(t *testing.T) {
 }
 
 func sha256Sum(b []byte) [32]byte { return sha256.Sum256(b) }
+
+func TestSigningAcceptsTokenActionsAndStillRejectsUnknown(t *testing.T) {
+	for _, a := range []string{RegistryActionSetToken, RegistryActionDeleteToken} {
+		m := regMsg(testNow)
+		m.Action = a
+		m.Subject = "gitlab-main"
+		if err := m.Validate(); err != nil {
+			t.Fatalf("%s refused: %v", a, err)
+		}
+		want := "aigate-registry-v1\naction: " + a + "\nsubject: gitlab-main\nchange: " +
+			strings.Repeat("c", 64) + "\nrequest: " + strings.Repeat("1", 32) + "\nissued: 2026-11-09T12:00:00Z\n"
+		if m.Text() != want {
+			t.Fatalf("Text = %q", m.Text())
+		}
+		got, err := ParseRegistryMessage(m.Text())
+		if err != nil || got != m {
+			t.Fatalf("round trip: %+v %v", got, err)
+		}
+		if m.Digest() == ([32]byte{}) {
+			t.Fatal("zero digest")
+		}
+	}
+	for _, a := range []string{"", "delete_project", "set_tokens", "SET_TOKEN", "set_token ", "token", "delete"} {
+		m := regMsg(testNow)
+		m.Action = a
+		if m.Validate() == nil || m.Text() != "" {
+			t.Errorf("action %q accepted", a)
+		}
+	}
+	// token subjects still follow the ref rule
+	m := regMsg(testNow)
+	m.Action = RegistryActionSetToken
+	for _, s := range []string{"", "Tok", "-t", "a_b", "a\nb", "a" + strings.Repeat("b", 40)} {
+		m.Subject = s
+		if m.Validate() == nil {
+			t.Errorf("token subject %q accepted", s)
+		}
+	}
+	// token messages verify under the registry namespace like the others
+	m = regMsg(testNow)
+	m.Action = RegistryActionDeleteToken
+	if _, err := ParseRegistryMessage(strings.Replace(m.Text(), "delete_token", "drop_token", 1)); err == nil {
+		t.Fatal("unknown action parsed")
+	}
+}
+
+func TestSubjectRuleIsPerAction(t *testing.T) {
+	accepts := func(action, subject string) bool {
+		m := regMsg(testNow)
+		m.Action, m.Subject = action, subject
+		return m.Validate() == nil
+	}
+	if !accepts(RegistryActionSetFlag, "ab-1") || !accepts(RegistryActionSetToken, "ab-1") || !accepts(RegistryActionDeleteToken, "ab-1") {
+		t.Fatal("baseline subject refused")
+	}
+	savedProj, savedTok := registrySubjectRE, registryTokenRefRE
+	defer func() { registrySubjectRE, registryTokenRefRE = savedProj, savedTok }()
+
+	registrySubjectRE = regexp.MustCompile(`^p-[a-z0-9-]{0,37}$`)
+	if accepts(RegistryActionSetFlag, "ab-1") || accepts(RegistryActionRegisterProject, "ab-1") || !accepts(RegistryActionSetFlag, "p-x") {
+		t.Fatal("project actions must follow the project rule")
+	}
+	if !accepts(RegistryActionSetToken, "ab-1") || !accepts(RegistryActionDeleteToken, "ab-1") {
+		t.Fatal("token actions must not follow the project rule")
+	}
+	registrySubjectRE = savedProj
+
+	registryTokenRefRE = regexp.MustCompile(`^t-[a-z0-9-]{0,37}$`)
+	if accepts(RegistryActionSetToken, "ab-1") || accepts(RegistryActionDeleteToken, "ab-1") || !accepts(RegistryActionSetToken, "t-x") {
+		t.Fatal("token actions must follow the token rule")
+	}
+	if !accepts(RegistryActionSetFlag, "ab-1") || !accepts(RegistryActionRegisterProject, "ab-1") {
+		t.Fatal("project actions must not follow the token rule")
+	}
+}

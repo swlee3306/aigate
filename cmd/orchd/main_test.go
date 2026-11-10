@@ -336,3 +336,31 @@ func TestBrokerSocketWiresMR(t *testing.T) {
 		}
 	}
 }
+
+// cfg.GitSSHKey (served as <key>.pub by GET /settings/deploy-key) comes from
+// the existing --git-ssh-key flag, not from a new one. run() starts the daemon,
+// so the wiring is pinned in two halves: the flag fills vmFlags.GitSSHKey, and
+// run() copies exactly that field into the API config after parsing.
+func TestGitSSHKeyFlagFeedsAPIConfig(t *testing.T) {
+	fs := flag.NewFlagSet("orchd", flag.ContinueOnError)
+	var vf vmFlags
+	vf.register(fs)
+	if err := fs.Parse([]string{"--git-ssh-key", "/home/orch/orchd/ssh/id_gitlab_deploy"}); err != nil {
+		t.Fatal(err)
+	}
+	if vf.GitSSHKey != "/home/orch/orchd/ssh/id_gitlab_deploy" {
+		t.Fatalf("flag did not set vmFlags.GitSSHKey: %q", vf.GitSSHKey)
+	}
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(src)
+	parse, wire := strings.Index(s, "fs.Parse(args)"), strings.Index(s, "cfg.GitSSHKey = vf.GitSSHKey")
+	if parse < 0 || wire < parse {
+		t.Fatalf("run() does not copy vf.GitSSHKey into cfg after parsing (parse=%d wire=%d)", parse, wire)
+	}
+	if strings.Count(s, `"git-ssh-key"`) != 0 {
+		t.Fatal("main.go declares its own git-ssh-key flag")
+	}
+}

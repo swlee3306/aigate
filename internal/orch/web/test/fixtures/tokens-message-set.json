@@ -1,0 +1,13 @@
+{
+  "change": "3c61b3a61041b6dca78f1370ca7e77d45b9f9c272f7ee195d1dd74a9e046f13c",
+  "issued": "2026-11-09T10:04:05Z",
+  "message": "aigate-registry-v1\naction: set_token\nsubject: gitlab-main\nchange: 3c61b3a61041b6dca78f1370ca7e77d45b9f9c272f7ee195d1dd74a9e046f13c\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-09T10:04:05Z\n",
+  "preview": [
+    "토큰 'gitlab-main'을(를) 저장합니다(종류: gitlab). 같은 이름이 같은 종류로 이미 있으면 새 값으로 바꿉니다",
+    "만료일: 2027-06-30 (직접 적은 날짜입니다. 서버가 확인하지 않으며 날짜는 UTC로 셉니다)",
+    "이 토큰은 저장만 되고 아직 어떤 기능도 쓰지 않습니다(이후 연결 기능이 이름으로 가져다 씁니다)",
+    "토큰 값은 이 화면과 서명 메시지에 들어가지 않고, 서명에는 값의 해시만 묶입니다",
+    "서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다"
+  ],
+  "request": "00112233445566778899aabbccddeeff"
+}

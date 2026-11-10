@@ -158,7 +158,8 @@ func TestNewRequestID(t *testing.T) {
 // The registry action constants and subject rule are duplicated in signing
 // (which must not import this package); this keeps them from drifting.
 func TestSigningDefinitionsDoNotDrift(t *testing.T) {
-	if ActionRegisterProject != signing.RegistryActionRegisterProject || ActionSetFlag != signing.RegistryActionSetFlag {
+	if ActionRegisterProject != signing.RegistryActionRegisterProject || ActionSetFlag != signing.RegistryActionSetFlag ||
+		ActionSetToken != signing.RegistryActionSetToken || ActionDeleteToken != signing.RegistryActionDeleteToken {
 		t.Fatal("action constants differ between registrymsg and signing")
 	}
 	corpus := []string{
@@ -173,6 +174,18 @@ func TestSigningDefinitionsDoNotDrift(t *testing.T) {
 		}
 		if got, want := m.Validate() == nil, ValidSubject(s); got != want {
 			t.Errorf("subject %q: signing accepts=%v registrymsg accepts=%v", s, got, want)
+		}
+	}
+	// token actions use the token ref rule
+	for _, s := range corpus {
+		for _, a := range []string{ActionSetToken, ActionDeleteToken} {
+			m := signing.RegistryMessage{
+				Action: a, Subject: s, Change: valid, Request: strings.Repeat("1", 32),
+				Issued: time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC),
+			}
+			if got, want := m.Validate() == nil, ValidTokenRef(s); got != want {
+				t.Errorf("%s subject %q: signing accepts=%v registrymsg accepts=%v", a, s, got, want)
+			}
 		}
 	}
 }

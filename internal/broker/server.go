@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -17,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -65,6 +65,9 @@ var fixedMessages = map[string]string{
 
 	"registry_unavailable": "프로젝트 등록부를 사용할 수 없습니다. 관리자가 확인해야 합니다.",
 
+	"ai_key_missing":     "AI 키가 등록되어 있지 않습니다. 토큰 화면에서 openai 키를 등록하세요.",
+	"tokens_unavailable": "토큰 저장소를 사용할 수 없습니다. 관리자가 확인해야 합니다.",
+
 	"not_signed":          "서명이 없는 변경 요청입니다.",
 	"bad_signature":       "서명이 올바르지 않습니다.",
 	"unknown_signer":      "등록되지 않은 서명자입니다.",
@@ -76,6 +79,14 @@ var fixedMessages = map[string]string{
 	"project_unknown":     "등록되지 않은 프로젝트입니다.",
 	"path_not_allowed":    "이 경로는 프로젝트로 등록할 수 없습니다.",
 	"not_supported":       "이 버전에서는 지원하지 않는 변경입니다.",
+
+	"token_unknown":           "등록되지 않은 토큰입니다.",
+	"bad_kind":                "토큰 종류가 올바르지 않습니다. openai, gitlab, github 중 하나여야 합니다.",
+	"token_too_short":         "토큰 값이 너무 짧습니다.",
+	"token_bad_format":        "토큰 값의 형식이 올바르지 않습니다. 공백 없는 인쇄 가능한 ASCII 문자여야 하고 너무 길면 안 됩니다.",
+	"value_mismatch":          "서명한 토큰 값과 보낸 토큰 값이 다릅니다.",
+	"token_exists_other_kind": "같은 이름의 토큰이 다른 종류로 이미 있습니다.",
+	"openai_singleton":        "openai 종류는 이름이 openai인 토큰 하나만 둘 수 있습니다.",
 }
 
 // Default per-op processing time limits (decision D1).
@@ -83,12 +94,18 @@ var defaultOpTimeouts = map[string]time.Duration{
 	"refine":    60 * time.Second,
 	"create_mr": 20 * time.Second,
 	"status":    5 * time.Second,
+	"tokens":    5 * time.Second,
 
 	// A `timeout` reply to a write op means the outcome is unknown: the
 	// handler may still complete. Re-read `projects` before retrying.
 	"projects":         10 * time.Second,
 	"register_project": 10 * time.Second,
 	"set_flag":         10 * time.Second,
+
+	// Same for the token writes: `timeout` means the outcome is unknown;
+	// re-read `tokens` before retrying.
+	"set_token":    10 * time.Second,
+	"delete_token": 10 * time.Second,
 }
 
 // State is the broker's mutable limit state.
@@ -109,6 +126,7 @@ type Server struct {
 	GitLab   *GitLabClient  // set by New; tests may point BaseURL at a fake
 	Registry *RegistryStore // set by New: the project registry (owned by the broker)
 	Used     *UsedRequests  // set by New: one-time request IDs of signed changes
+	Tokens   *TokenStore    // set by New: secret store and token metadata (never nil)
 
 	Now         func() time.Time               // nil: time.Now (test seam: broker clock of signed writes)
 	PeerUID     func(net.Conn) (uint32, error) // nil: kernel peer credentials
@@ -118,10 +136,17 @@ type Server struct {
 	ReadTimeout time.Duration                  // 0: 5s
 	OpTimeouts  map[string]time.Duration       // overrides per op
 
+	keyOwnerOK func(uint32) bool // trust of the config key file (nil: current euid)
+
 	logOnce sync.Once
-	logger  *log.Logger
-	sem     chan struct{}
-	mrLock  chan struct{} // serialises create_mr find+create
+	// logKey caches the config key for log redaction, keyed by the file's
+	// (mtime, size); logKeyReads counts real reads (test seam).
+	logKeyMu    sync.Mutex
+	logKey      logKeyCache
+	logKeyReads atomic.Int64
+	logger      *log.Logger
+	sem         chan struct{}
+	mrLock      chan struct{} // serialises create_mr find+create
 }
 
 // Options configures New.
@@ -160,24 +185,35 @@ func New(cfg Config, o Options) (*Server, error) {
 	if err != nil && !errors.Is(err, ErrUsedRequestsBroken) {
 		return nil, err
 	}
+	// The token store never stops the broker: a broken one answers
+	// tokens_unavailable and the store's keys are treated as absent.
+	toks, err := OpenTokenStore(dir, sopts)
+	if err != nil && !errors.Is(err, ErrTokensBroken) {
+		return nil, err
+	}
 	bud, err := OpenBudget(filepath.Join(dir, "budget.json"), Micros(cfg.Limits.WeeklyBudgetUSD), o.Clock)
 	if err != nil {
 		return nil, err
 	}
 	s := &Server{
-		Config:   cfg,
-		Secrets:  sec,
-		OpenAI:   &OpenAIClient{Key: sec.OpenAIKey(), Model: cfg.OpenAI.Model},
-		mrLock:   make(chan struct{}, 1),
-		Registry: reg,
-		Used:     used,
-		GitLab:   &GitLabClient{BaseURL: cfg.GitLab.BaseURL, Token: sec.GitLabToken()},
-		Log:      o.Log,
+		Config:     cfg,
+		Secrets:    sec,
+		mrLock:     make(chan struct{}, 1),
+		Tokens:     toks,
+		keyOwnerOK: o.KeyOwnerOK,
+		Registry:   reg,
+		Used:       used,
+		GitLab:     &GitLabClient{BaseURL: cfg.GitLab.BaseURL, Token: sec.GitLabToken()},
+		Log:        o.Log,
 		State: State{
 			Refine:   NewHourlyLimiter(cfg.Limits.RefinePerHour, o.Clock),
 			CreateMR: NewHourlyLimiter(cfg.Limits.CreateMRPerHour, o.Clock),
 			Budget:   bud,
 		},
+	}
+	s.OpenAI = &OpenAIClient{KeyFn: s.currentOpenAIKey, Model: cfg.OpenAI.Model}
+	if toks.Err() != nil {
+		s.logf("토큰 저장소를 신뢰할 수 없어 저장된 토큰을 쓰지 않습니다")
 	}
 	if reg.Err() != nil {
 		s.logf("프로젝트 등록부를 신뢰할 수 없어 등록부가 필요한 작업을 거부합니다")
@@ -188,12 +224,16 @@ func New(cfg Config, o Options) (*Server, error) {
 	bud.OnPersistError = func() { s.logf("예산 상태 저장 실패: 요청을 거부합니다") }
 	s.Handlers = map[string]HandlerFunc{
 		"status":    s.statusHandler,
+		"tokens":    s.tokensHandler,
 		"refine":    s.refineHandler,
 		"create_mr": s.createMRHandler,
 
 		"projects":         s.projectsHandler,
 		"register_project": s.registerProjectHandler,
 		"set_flag":         s.setFlagHandler,
+
+		"set_token":    s.setTokenHandler,
+		"delete_token": s.deleteTokenHandler,
 	}
 	return s, nil
 }
@@ -206,13 +246,25 @@ func (s *Server) statusHandler(context.Context, json.RawMessage) (any, *OpError)
 	repos := s.Registry.AIContextPaths()
 	projects := s.Registry.GitLabPaths()
 	remaining := s.State.Budget.RemainingMicros()
-	return map[string]any{
+	res := map[string]any{
 		"context_repos":               repos,
 		"refine_remaining_hour":       s.State.Refine.Remaining(),
 		"gitlab_configured":           s.Config.GitLab.Configured(),
 		"mr_projects":                 projects,
 		"weekly_budget_remaining_usd": float64(remaining) / 1e6,
-	}, nil
+	}
+	// Expiry summary (decision D6): names and day counts only, no values.
+	expiring := []map[string]any{}
+	list, lerr := s.Tokens.List(s.now())
+	for _, t := range list {
+		if Expiring(t.DaysLeft) {
+			expiring = append(expiring, map[string]any{"ref": t.Ref, "days_left": *t.DaysLeft})
+		}
+	}
+	res["tokens_available"] = lerr == nil
+	res["warn_days"] = WarnDays
+	res["expiring"] = expiring
+	return res, nil
 }
 
 func (s *Server) setup() {
@@ -220,8 +272,19 @@ func (s *Server) setup() {
 	if w == nil {
 		w = io.Discard
 	}
-	s.logger = log.New(&redactWriter{w: w, secrets: s.Secrets.values()}, "orch-broker: ", log.LstdFlags)
+	s.logger = log.New(&redactWriter{w: w, secrets: s.redactionValues}, "orch-broker: ", log.LstdFlags)
 	s.sem = make(chan struct{}, MaxConcurrent)
+}
+
+// redactionValues lists every secret a log line must never show: the values
+// loaded at start, the usable stored tokens and the CURRENT config OpenAI key
+// (refine re-reads that file on every call, so it can differ from the start value).
+func (s *Server) redactionValues() []string {
+	v := append(s.Secrets.values(), s.Tokens.values()...)
+	if k := s.cachedConfigKey(); k != "" {
+		v = append(v, k)
+	}
+	return v
 }
 
 func (s *Server) logf(format string, a ...any) {
@@ -420,7 +483,8 @@ func (s *Server) run(ctx context.Context, op string, h HandlerFunc, args json.Ra
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				s.logf("handler panic: op=%s value=%s", op, fmt.Sprint(r))
+				// never the payload: it may carry a client-supplied secret
+				s.logf("handler panic: op=%s type=%T", op, r)
 				ch <- out{nil, &OpError{Code: "internal_error"}}
 			}
 		}()
@@ -522,12 +586,39 @@ func Redact(s string, secrets []string) string {
 type redactWriter struct {
 	mu      sync.Mutex
 	w       io.Writer
-	secrets []string
+	secrets func() []string
 }
 
 func (r *redactWriter) Write(p []byte) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	_, err := io.WriteString(r.w, Redact(string(p), r.secrets))
+	_, err := io.WriteString(r.w, Redact(string(p), r.secrets()))
 	return len(p), err
+}
+
+type logKeyCache struct {
+	valid bool
+	mtime time.Time
+	size  int64
+	key   string
+}
+
+// cachedConfigKey returns the config OpenAI key for log redaction. The file is
+// re-read only when its (mtime, size) changed, so a log line normally costs one
+// stat; a rewritten key file is picked up on the next line. "" when unreadable.
+func (s *Server) cachedConfigKey() string {
+	fi, err := os.Stat(s.Config.OpenAI.KeyFile)
+	s.logKeyMu.Lock()
+	defer s.logKeyMu.Unlock()
+	if err != nil {
+		s.logKey = logKeyCache{}
+		return ""
+	}
+	if s.logKey.valid && s.logKey.size == fi.Size() && s.logKey.mtime.Equal(fi.ModTime()) {
+		return s.logKey.key
+	}
+	s.logKeyReads.Add(1)
+	k, _ := s.configOpenAIKey()
+	s.logKey = logKeyCache{valid: true, mtime: fi.ModTime(), size: fi.Size(), key: k}
+	return k
 }

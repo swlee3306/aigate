@@ -134,7 +134,13 @@ func (s *Server) refineHandler(ctx context.Context, raw json.RawMessage) (any, *
 	if int64(len(system)+len(user)+len(refinesize.Schema)) > s.Config.OpenAI.MaxInputBytes {
 		return fail("too_large")
 	}
-	// 5. hourly limit, then the reservation (worst case, before the call).
+	// 5. the key (read once: the call keeps it even if it is replaced meanwhile).
+	// Without one nothing is reserved and no hourly slot is used.
+	key, haveKey := s.currentOpenAIKey()
+	if !haveKey {
+		return fail("ai_key_missing")
+	}
+	// 6. hourly limit, then the reservation (worst case, before the call).
 	if !s.State.Refine.Allow() {
 		return fail("rate_limited")
 	}
@@ -147,9 +153,9 @@ func (s *Server) refineHandler(ctx context.Context, raw json.RawMessage) (any, *
 	if err != nil {
 		return fail("budget_exceeded")
 	}
-	// 6. the call. Whatever happens, settle by reported usage or keep the
+	// 7. the call. Whatever happens, settle by reported usage or keep the
 	// reservation.
-	text, usage, cerr := s.OpenAI.Complete(ctx, system, user, cfg.MaxOutputTokens, refinesize.Schema)
+	text, usage, cerr := s.OpenAI.CompleteWithKey(ctx, key, system, user, cfg.MaxOutputTokens, refinesize.Schema)
 	if usage.InputTokens != nil && *usage.InputTokens == 0 {
 		usage = Usage{} // a non-trivial request cannot have used 0 input tokens: treat as missing
 	}

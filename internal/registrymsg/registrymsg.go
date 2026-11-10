@@ -15,6 +15,7 @@ import (
 	"io"
 	"regexp"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -22,13 +23,26 @@ import (
 const (
 	ActionRegisterProject = "register_project"
 	ActionSetFlag         = "set_flag"
+	ActionSetToken        = "set_token"
+	ActionDeleteToken     = "delete_token"
 )
 
 var (
 	subjectRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,39}$`)
 	kindRE    = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 	flagRE    = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+
+	// tokenRefRE is the rule for the subject of token actions. It is a
+	// separate rule from subjectRE (project ids) even though both accept the
+	// same names today, so one can change without moving the other.
+	tokenRefRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,39}$`)
+	expiresRE  = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}$`)
+	requestRE  = regexp.MustCompile(`^[0-9a-f]{32}$`)
+	hashRE     = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
+
+// tokenKinds is the closed set of token kinds.
+var tokenKinds = map[string]bool{"openai": true, "gitlab": true, "github": true}
 
 type fieldKind int
 
@@ -41,6 +55,51 @@ const (
 var schema = map[string]map[string]fieldKind{
 	ActionRegisterProject: {"path": kindString, "kind": kindString, "ai_context": kindBool},
 	ActionSetFlag:         {"flag": kindString, "value": kindBool},
+	ActionSetToken:        {"kind": kindString, "expires": kindString, "value_hash": kindString},
+	ActionDeleteToken:     {},
+}
+
+func isTokenAction(action string) bool {
+	return action == ActionSetToken || action == ActionDeleteToken
+}
+
+// ValidTokenRef reports whether s is a token name (the subject of token actions).
+func ValidTokenRef(s string) bool { return tokenRefRE.MatchString(s) }
+
+// ValidTokenKind reports whether s is one of openai, gitlab, github.
+func ValidTokenKind(s string) bool { return tokenKinds[s] }
+
+// ValidExpires reports whether s is "" (no expiry) or a real calendar date
+// written YYYY-MM-DD with a year from 2000 to 9999.
+func ValidExpires(s string) bool {
+	if s == "" {
+		return true
+	}
+	if !expiresRE.MatchString(s) {
+		return false
+	}
+	d, err := time.Parse("2006-01-02", s)
+	return err == nil && d.Year() >= 2000
+}
+
+// ValueHash is the salted hash of a token value that a set_token signature
+// covers: lowercase hex SHA-256 of request ‖ ":" ‖ value. The request id is the
+// salt, so the same value never hashes the same way under two requests. The
+// value itself is never part of a change or message.
+//
+// request must be exactly 32 lowercase hex characters (a NewRequestID); the
+// fixed width is what makes request ":" value unambiguous. For anything else
+// ValueHash returns "" and the caller must refuse. Callers must pass the
+// validated request of the signed message, never a raw args string.
+func ValueHash(request, value string) string {
+	if !requestRE.MatchString(request) {
+		return ""
+	}
+	h := sha256.New()
+	h.Write([]byte(request))
+	h.Write([]byte(":"))
+	h.Write([]byte(value))
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // ValidSubject reports whether s is a project id.
@@ -70,7 +129,11 @@ func validate(action, subject string, fields map[string]any) error {
 	if !ok {
 		return errors.New("registrymsg: unknown action")
 	}
-	if !subjectRE.MatchString(subject) {
+	subjectOK := subjectRE.MatchString(subject)
+	if isTokenAction(action) {
+		subjectOK = tokenRefRE.MatchString(subject)
+	}
+	if !subjectOK {
 		return errors.New("registrymsg: bad subject")
 	}
 	if len(fields) != len(spec) {
@@ -88,7 +151,8 @@ func validate(action, subject string, fields map[string]any) error {
 			}
 		case kindString:
 			s, ok := v.(string)
-			if !ok || s == "" {
+			// Only a token's expires may be empty ("no expiry").
+			if !ok || (s == "" && !(action == ActionSetToken && name == "expires")) {
 				return errors.New("registrymsg: field has the wrong type")
 			}
 			if err := checkString(s); err != nil {
@@ -96,8 +160,20 @@ func validate(action, subject string, fields map[string]any) error {
 			}
 			switch name {
 			case "kind":
-				if !kindRE.MatchString(s) {
+				if action == ActionSetToken {
+					if !tokenKinds[s] {
+						return errors.New("registrymsg: bad kind")
+					}
+				} else if !kindRE.MatchString(s) {
 					return errors.New("registrymsg: bad kind")
+				}
+			case "expires":
+				if !ValidExpires(s) {
+					return errors.New("registrymsg: bad expires")
+				}
+			case "value_hash":
+				if !hashRE.MatchString(s) {
+					return errors.New("registrymsg: bad value_hash")
 				}
 			case "flag":
 				if !flagRE.MatchString(s) {
@@ -116,6 +192,9 @@ func validate(action, subject string, fields map[string]any) error {
 func CanonicalChange(action, subject string, fields map[string]any) ([]byte, error) {
 	if err := validate(action, subject, fields); err != nil {
 		return nil, err
+	}
+	if fields == nil {
+		fields = map[string]any{} // delete_token: encode {} not null
 	}
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)

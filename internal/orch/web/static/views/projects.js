@@ -19,6 +19,7 @@
 import { el, inline, clear, findHostile, errorPane } from '../render.js';
 import { registerView } from '../router.js';
 import { replaceContent } from '../shell.js';
+import { expiryBanner } from '../expiry.js';
 import {
   signRegistryChange, checkRegistryMessage, sha256Hex, activeSigners, rememberedPasskey, supported, waText,
 } from '../webauthn.js';
@@ -274,6 +275,7 @@ export function projectsView(ctx) {
     result: null, // {error, text}
   };
   let signerP = null;
+  let expiry = null; // {rows, warn}: the tokens that are due, for the banner on top of the list
   let listSeq = 0; // list loads: a newer load or an apply makes older answers stale
   let propSeq = 0; // proposals: a cancel or a newer proposal makes older answers stale
   const gone = () => !!(ctx.signal && ctx.signal.aborted);
@@ -297,6 +299,19 @@ export function projectsView(ctx) {
     if (st.step === 'loading' || st.step === 'list') {
       st.step = 'list';
       paint();
+    }
+  }
+
+  // loadExpiry reads the token list once per visit for the expiry banner. The
+  // banner is a convenience: a failure here is silent and never blocks the page.
+  async function loadExpiry() {
+    try {
+      const r = await ctx.get('/api/v1/settings/tokens');
+      if (gone() || !isObj(r) || !Array.isArray(r.tokens)) return;
+      expiry = { rows: r.tokens.filter(isObj).slice(0, 200), warn: r.warn_days };
+      if (st.step === 'list') paint();
+    } catch {
+      // no banner
     }
   }
 
@@ -545,6 +560,7 @@ export function projectsView(ctx) {
     ]);
     return el('div', { class: ['panel', 'canvas'] }, [
       el('h1', { id: 'h-projects' }, '프로젝트'),
+      expiry ? expiryBanner(expiry.rows, expiry.warn, { link: true }) : null,
       el('p', { class: 'lead' }, st.list.length === 0 ? '등록된 프로젝트가 없습니다.'
         : '등록된 프로젝트 ' + st.list.length + '개. AI 전송 허용을 바꾸거나 새로 등록하려면 패스키 서명이 필요합니다.'),
       el('div', { class: 'row' }, [
@@ -681,12 +697,13 @@ export function projectsView(ctx) {
   ctx.root.append(el('p', { class: 'lead' }, '불러오는 중…'));
   // One read per visit and after each change: the page never polls, so a
   // refresh can not wipe a confirmation.
+  loadExpiry();
   return loadList();
 }
 
 // resolveSigner: the passkey of the logged-in principal (this tab's login, or
 // GET /auth/signers once per page load).
-async function resolveSigner(ctx) {
+export async function resolveSigner(ctx) {
   const s = ctx.session;
   if (!s || s.kind !== 'session' || typeof s.principal !== 'string') return { error: TEXT.noPasskeySession };
   const rem = rememberedPasskey();

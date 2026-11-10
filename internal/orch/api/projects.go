@@ -164,32 +164,42 @@ func safeProjectPath(s string) bool {
 // allowed keys, spelled exactly (encoding/json would match "Path" to "path"),
 // each at most once, and nothing after the object.
 func objectKeys(raw []byte, allowed ...string) (map[string]json.RawMessage, bool) {
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+	out, ok := scanObject(raw, allowed...)
+	if !ok {
 		return nil, false
 	}
+	return out, true
+}
+
+// scanObject is objectKeys that, on failure, still returns the values it had
+// already copied, so a caller that handles secrets can wipe them.
+func scanObject(raw []byte, allowed ...string) (map[string]json.RawMessage, bool) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	out := map[string]json.RawMessage{}
+	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+		return out, false
+	}
 	for dec.More() {
 		kt, err := dec.Token()
 		key, isStr := kt.(string)
 		if err != nil || !isStr {
-			return nil, false
+			return out, false
 		}
 		known := false
 		for _, a := range allowed {
 			known = known || a == key
 		}
 		if _, dup := out[key]; dup || !known {
-			return nil, false
+			return out, false
 		}
 		var v json.RawMessage
 		if dec.Decode(&v) != nil {
-			return nil, false
+			return out, false
 		}
 		out[key] = v
 	}
 	if t, err := dec.Token(); err != nil || t != json.Delim('}') {
-		return nil, false
+		return out, false
 	}
 	_, err := dec.Token()
 	return out, err == io.EOF

@@ -43,7 +43,7 @@ func staticFiles(t *testing.T) map[string][]byte {
 
 func TestWebAssetsEmbedded(t *testing.T) {
 	files := staticFiles(t)
-	for _, need := range []string{"index.html", "app.js", "api.js", "render.js", "router.js", "style.css", "views/tasks.js", "views/task.js", "views/diff.js", "views/approvals.js", "views/login.js", "views/new.js", "views/plan.js", "guard.js", "views/ops.js", "views/projects.js", "webauthn.js"} {
+	for _, need := range []string{"index.html", "app.js", "api.js", "render.js", "router.js", "style.css", "views/tasks.js", "views/task.js", "views/diff.js", "views/approvals.js", "views/login.js", "views/new.js", "views/plan.js", "guard.js", "views/ops.js", "views/projects.js", "views/tokens.js", "expiry.js", "webauthn.js"} {
 		if len(files[need]) == 0 {
 			t.Errorf("static/%s is missing or empty", need)
 		}
@@ -343,4 +343,37 @@ func lastLines(s string, n int) string {
 		lines = lines[len(lines)-n:]
 	}
 	return strings.Join(lines, "\n")
+}
+
+// TestTokensViewClockOnlyForExpiry: tokens.js may read the browser clock only in
+// the clock seam (deps, configure, todayUTC) and in validExpires (Date.UTC for
+// the calendar check). Nothing else in the file, the signing path included, may
+// read the clock.
+func TestTokensViewClockOnlyForExpiry(t *testing.T) {
+	files := staticFiles(t)
+	b, ok := files["views/tokens.js"]
+	if !ok {
+		t.Fatal("static/views/tokens.js missing")
+	}
+	allowed := map[string]bool{"deps": true, "configure": true, "todayUTC": true, "validExpires": true}
+	decl := regexp.MustCompile(`^(?:export )?(?:async )?(?:function|const|let|class) ([A-Za-z0-9_]+)`)
+	clock := regexp.MustCompile(`\bnew Date\b|Date\.now|performance\.now|\bDate\(`)
+	cur := ""
+	seen := map[string]bool{}
+	for i, line := range strings.Split(string(b), "\n") {
+		if m := decl.FindStringSubmatch(line); m != nil {
+			cur = m[1]
+		}
+		if clock.MatchString(line) && !strings.HasPrefix(strings.TrimSpace(line), "//") {
+			if !allowed[cur] {
+				t.Errorf("tokens.js line %d reads the clock in %q: %s", i+1, cur, line)
+			}
+			seen[cur] = true
+		}
+	}
+	for _, need := range []string{"deps", "validExpires"} {
+		if !seen[need] {
+			t.Errorf("expected a clock read in %s (the scan found none: is it still scanning?)", need)
+		}
+	}
 }

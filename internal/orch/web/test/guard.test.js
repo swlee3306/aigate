@@ -45,3 +45,15 @@ test('TestHashGuardReleasedOrAbsentNeverBlocks', () => {
   hold = false;
   assert.equal(c.onChange(), false);
 });
+
+test('TestHashGuardStringIsItsOwnNotice', () => {
+  const a = env({ guard: () => () => '입력한 값이 있어 이동하지 않았습니다.' });
+  assert.equal(a.onChange(), true);
+  assert.deepEqual(a.log.restored, ['#/new/plan']);
+  assert.deepEqual(a.log.notices, ['입력한 값이 있어 이동하지 않았습니다.']);
+  // an empty or oversized string never blocks, and `true` keeps the plan wording
+  for (const r of ['', 'x'.repeat(201), 1, {}]) assert.equal(env({ guard: () => () => r }).onChange(), false);
+  const t = env({ guard: () => () => true });
+  t.onChange();
+  assert.deepEqual(t.log.notices, [LEAVE_BLOCKED_TEXT]);
+});

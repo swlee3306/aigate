@@ -1,0 +1,15 @@
+{
+  "tokens": [
+    {
+      "ref": "openai",
+      "kind": "openai",
+      "last4": "",
+      "expires": "",
+      "set_at": "",
+      "source": "config",
+      "days_left": null,
+      "usable": true
+    }
+  ],
+  "warn_days": 14
+}

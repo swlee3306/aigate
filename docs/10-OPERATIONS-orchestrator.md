@@ -681,3 +681,163 @@ journalctl -u orchd -n 40 --no-pager
 | 2 `orchd` 갱신 | 승인 | B(바이너리만, DB 복원 불필요) | 필요(stop/start) |
 | 3 웹 확인 | **사용자 직접**(로그인, 등록·켜기/끄기 **서명할지 결정**) | 등록한 프로젝트는 A로 사라짐. AI 켜기/끄기는 같은 화면으로 되돌림 | 불필요(3-7만 broker 재시작) |
 | 4 롤백 | 승인 | — | 필요 |
+
+## 13. W3b 컷오버 런북 (토큰 메뉴·만료 경고·OpenAI 키 교체, `orch-broker`·`orchd` 갱신)
+설계는 `19-DESIGN-webconsole-W3-projects.md`, 계획은 `22-PLAN-webconsole-W3b.md`, 결과·시험·한계는 `23-RESULTS-webconsole-W3b.md`(**배포 현실 표**와 "확인하지 못한 것"은 거기 4·6장). **이 절차는 아직 실제 서버에서 한 번도 실행하지 않았다.** 아래 "예상"은 코드와 이 저장소의 시험(가짜 서명자·가짜 broker·임시 폴더)을 읽고 쓴 것이지 서버에서 본 출력이 아니다(11·12장과 같은 원칙). **W3a에서 임시 폴더 시험이 실서버의 권한 문제를 숨긴 적이 있어서(21번 문서 8장), 이번에는 0단계에 컨트롤러가 서버에서 읽기 전용으로 먼저 보는 사전 점검 목록을 따로 둔다.** 순서는 바꾸지 않는다. 다르게 보이면 그 단계에서 멈추고 단계 4(롤백)를 고려한다.
+
+표기: **[사용자]** 사용자 본인의 작업 또는 명시적 승인이 필요, **[컨트롤러]** 읽기 전용 확인(서버 상태를 바꾸지 않음), **[되돌림 가능]** 아래 몇 줄로 원상 복구, **[주의]** 되돌리면 그 사이의 변경을 잃는다. 경로는 11·12장과 같다(바이너리 `/usr/local/lib/aigate`와 `/usr/local/bin/orch-broker`, 설정 `/etc/orch-broker/broker.json`, 상태 `/var/lib/orch-broker`, broker 소켓 `/run/orch-broker/broker.sock`). **orchd DB 스키마는 이번에 바뀌지 않는다(v8 그대로)**: 롤백에 DB 복원이 필요 없다. **`broker.json`과 유닛(`orch-broker.service`, `orchd.service`)도 바뀌지 않는다**(새 설정 키·새 플래그 없음). 새로 생기는 것: broker 상태 폴더의 `secrets/`(토큰 값, 0700)와 `tokens.json`(토큰 메타데이터, 0600, 값 없음)(**`secrets/` 폴더는 broker가 시작할 때** 만들어지고, `tokens.json`은 웹에서 토큰을 처음 등록할 때 만들어진다), broker op `tokens`·`set_token`·`delete_token`, orchd의 `/api/v1/settings/tokens|deploy-key`와 `/api/v1/tokens/begin|message|apply`, 웹의 `#/tokens` 화면과 만료 배너.
+
+### 13.0 시작 전에 모두 참이어야 하는 것
+- **W3a 컷오버가 끝난 상태가 출발점이다**(21번 문서 10장): broker `active`(등록부 `registry.json` 있음), `orchd`가 `--broker-socket`으로 도는 중, DB 스키마 v8, 서명 필수 모드, `/etc/aigate/signers.json`에 `mac-passkey`. 실행 중이거나 대기 중인 작업이 없다(`orch list`, `orch approvals`). 단계 1은 broker를, 단계 2는 `orchd`를 재시작한다.
+- **웹 서명에 쓸 패스키 서명자가 등록되어 있다**(`sudo orch admin signers list`에 `webauthn` 형식). 토큰 변경의 서명도 같은 패스키로 한다.
+- **백업은 `/root/backup-w3b`(root 소유 0700)에만 둔다.** `orch`가 쓸 수 있는 폴더(`/home/orch/orchd/…`)에는 두지 않는다(21번 문서 9장 I1과 같은 이유: root가 신뢰하는 파일을 `orch`가 바꿔치기할 수 있는 곳에서 복원하면 안 된다).
+- **사전 점검 (단계 1 전에, 전부 읽기 전용이고 값·개인 키를 찍지 않는 명령. 컨트롤러가 서버에서 직접 한다).** 하나라도 예상과 다르면 **시작하지 않고** 보고한다.
+  - **(a) 상태 폴더.** `sudo stat -c '%U:%G %a' /var/lib/orch-broker` → **`orch-broker:orch-broker 700`**. `secrets/`가 이 폴더 **안에** 만들어지고, 폴더의 소유·모드 검사가 어긋나면(그룹·기타 권한 비트 하나라도, 소유자가 다름) 토큰 저장소 전체가 "신뢰할 수 없음"으로 꺼진다(그리고 W3a의 등록부도 꺼진다). 지금 `secrets/`·`tokens.json`이 **없어야** 한다: `sudo ls -la /var/lib/orch-broker`.
+  - **(b) 설정의 OpenAI 키 파일.** 경로는 `sudo grep -n key_file /etc/orch-broker/broker.json`(예상 `/etc/orch-broker/openai.key`). `sudo stat -c '%U:%G %a %n' <경로>` → 소유자 `orch-broker`(또는 broker가 허용하는 소유자), 모드 `400`. `sudo -u orch-broker test -r <경로> && echo READABLE || echo denied` → **`READABLE`**. 이 파일이 **롤백의 마지막 보루**이고 **삭제 폴백**(저장소 키를 지우면 이 키로 돌아감)이므로 컷오버 동안 건드리지 않는다.
+  - **(c) 유닛 샌드박스 값.** `systemctl show orch-broker -p ReadWritePaths -p ProtectSystem -p ProtectHome -p UMask -p StateDirectory -p StateDirectoryMode -p User` → 예상 **`ReadWritePaths=/var/lib/orch-broker /run/orch-broker`**, `ProtectSystem=strict`, `ProtectHome=yes`, **`UMask=0077`**, `StateDirectory=orch-broker`, `StateDirectoryMode=0700`, `User=orch-broker`. `ReadWritePaths`에 `/var/lib/orch-broker`가 없으면 broker가 `secrets/`를 만들 수 없으므로(만들기 실패 → 토큰 저장소가 꺼진 채 시작) **멈춘다**(유닛 변경이 필요하면 사용자 결정으로 따로 한다).
+  - **(d) 배포 키의 공개 키(`.pub`) — 오늘은 있는지 모른다(미확인).** `GET /api/v1/settings/deploy-key`는 `--git-ssh-key` 경로 + `.pub`만 읽는다(개인 키는 코드가 열지 않는다. 시험 있음). 실서버의 `--git-ssh-key`는 `/home/orch/orchd/ssh/id_gitlab_deploy`다(`systemctl cat orchd`로 확인). 확인(개인 키는 읽지 않는다): `sudo ls -l /home/orch/orchd/ssh/` 와 `sudo stat -c '%U:%G %a %s %n' /home/orch/orchd/ssh/id_gitlab_deploy.pub`(예상: 일반 파일, 소유자 `orch`(또는 root), 모드 `644`, 크기 4096 이하, **심볼릭 링크 아님**). 한 줄 공개 키인지: `sudo wc -l < /home/orch/orchd/ssh/id_gitlab_deploy.pub`(0 또는 1: 끝 줄바꿈 한 개까지는 허용)와 `sudo ssh-keygen -l -f /home/orch/orchd/ssh/id_gitlab_deploy.pub`(`.pub`만 읽어 지문을 찍는다. `ssh-ed25519` 또는 `ssh-rsa` 한 줄이어야 한다. 개인 키 파일에는 `-f`를 쓰지 않는다). **없어도 W3b의 어떤 기능도 막히지 않는다**(소비자는 W3c이고, 지금은 `deploy_key_unavailable`로만 답한다). 없으면 기록만 하고 넘어간다: 만들려면 `ssh-keygen -y`가 **개인 키를 읽으므로** 사용자 결정이다(아래 알아둘 것 12).
+  - **(e) 샌드박스 안 `-check`.** 단계 1-3에서 새 바이너리로 한다(새 바이너리가 있어야 하므로 설치 뒤, 시작 전). 사전 점검은 **현재(W3a) 바이너리로도** 같은 명령을 한 번 돌려 두면 비교가 쉽다(1-3의 명령, 경고가 없는 통과 한 줄).
+  - **서버에서 쓰기 시험을 따로 하지 않는다.** `systemd-run`으로 `secrets/` 생성을 시험하는 일시 유닛은 **필요 없다**: 진짜 broker 시작이 `secrets/`를 만든다(1-4). 그 한 번이 유닛 샌드박스 + `orch-broker` 계정 + `UMask=0077` 아래에서 `secrets/`가 `orch-broker:orch-broker 700`으로 생기는지를 보여 주는 **유일한 실제 시험**이다. **시작 전에 실서버로 확인할 수 없는 것(시작해야 비로소 보임):** ① `secrets/` 생성과 모드, ② 첫 `set_token`의 쓰기(`0400` 파일 생성, `rename`, 폴더 `fsync`)가 서버 파일 시스템에서 되는지(3-5), ③ 실제 패스키 서명을 broker가 `set_token`에 대해 검증하는지(3-5), ④ 실제 OpenAI 키로 교체한 뒤 `refine`이 새 키를 쓰는지(3-5), ⑤ 삭제 뒤 설정 키 폴백(3-6).
+
+**알아둘 것 (코드 읽기와 시험 기준, 실서버 미확인).**
+0. **⚠ 먼저 읽을 것: 오타 난 OpenAI 키는 일하는 키를 조용히 가린다.** `set_token`은 D3 규칙(32~512자 인쇄 가능한 ASCII)만 만족하면 **무엇이든 받는다. 키가 OpenAI에서 유효한지는 검사하지 않는다**(검사하면 AI 호출 한 번의 비용이 든다). 웹으로 잘못 친 OpenAI 키를 저장하면 그것이 **정상인 설정 키보다 우선**하므로, 그 뒤 모든 `refine`은 `upstream_error`로 실패한다. **실패한 시도마다 최악 예산 예약이 그대로 남고**(성공해야 실제 비용으로 정산됨) broker의 시간당 슬롯과 orchd의 슬롯도 소모된다. **복구: 다시 시도하지 말고(AI 호출을 더 하지 말고) 먼저 저장소의 `openai`를 삭제한다**(3-6: `delete_token openai` → 설정 키로 폴백). 그 뒤 올바른 키를 다시 정한다. 예산 파일은 쓴 만큼 예약이 남아 있으므로 주간 예산(`weekly_budget_usd`)이 줄어 있을 수 있다.
+1. **웹으로 OpenAI 키를 교체하면 `secrets/openai`가 생긴다. 설정의 키 파일(`/etc/orch-broker/openai.key`)은 그대로 남는다**(broker는 `/etc`에 쓸 수 없다). 저장소의 `openai` 키가 있으면 그것을, 없으면 설정 파일의 키를 **호출마다** 읽는다(재시작 불필요, 진행 중인 호출은 시작할 때 읽은 키로 끝난다). **저장소의 `openai` 키를 지우면 설정 파일 키로 돌아간다.** **설정 키만 있는 `openai`(목록의 출처 "설정 파일")를 지우려 하면 `token_unknown`이다**(화면에는 그 행에 삭제 단추가 없다). broker 시작은 여전히 **설정 키 파일이 신뢰할 수 있게 있어야** 한다(W2b 규칙: 없으면 시작을 거부).
+2. **키가 아예 없으면(`ai_key_missing`)**: 저장소 키를 지웠고 설정 키 파일도 없거나 읽을 수 없는 경우, AI 계획서(`refine`)는 고정 문장 "AI 키가 등록되어 있지 않습니다…"(503 `ai_key_missing`)로 **실패하고 예산·한도·upstream 호출을 쓰지 않는다**(orchd의 시간당 refine 슬롯도 돌려준다). 키를 다시 등록하면 바로 풀린다.
+3. **롤백은 옛 바이너리(broker, orchd, 웹은 orchd에 들어 있다)를 `/root/backup-w3b`에서 복원하는 것이다. 옛 broker는 `secrets/`와 `tokens.json`을 모른다**: 컷오버 뒤 웹으로 정한 토큰(**교체한 OpenAI 키 포함**)은 옛 broker에게는 **없는 것**이다. 옛 broker는 설정 파일의 키만 쓰므로 **W3a 동작을 그대로 되돌리려면 설정 키 파일이 아직 있어야 한다.** 그래서 **컷오버가 안정될 때까지 `/etc/orch-broker/openai.key`를 지우지 않고 `secrets/`도 `shred`하지 않는 것을 권한다.** `secrets/`와 `tokens.json`은 롤백 때 **지우지 않아도 된다**(옛 broker는 읽지 않는다). 다시 새 broker를 올리면 그대로 이어서 쓴다.
+4. **토큰 목록은 전부 아니면 전무다.** broker가 준 행 중 하나라도 이상하면(예: 손으로 고친 `tokens.json`의 한도 밖 값) `GET /api/v1/settings/tokens`가 502 `broker_error`이고 **화면에 토큰이 하나도 안 보이며 하나도 지울 수 없다.** 서버에서 `/var/lib/orch-broker/tokens.json`을 고치거나(broker를 멈추고) 옮겨야 한다. broker 자신은 깨진 `tokens.json`(문법 오류, 한도 밖 값, **2000년 이전 연도의 만료일**처럼 orchd의 규칙을 어기는 행 포함: broker와 orchd가 같은 날짜 규칙 `registrymsg.ValidExpires`를 쓴다)을 `tokens_unavailable`로 거부하고 **다른 기능(프로젝트·`refine`의 설정 키)은 계속 돈다**; 저장소에 들어 있던 키는 그동안 쓰지 않는다(`TestBrokenTokenMetaDoesNotDisableOtherFeatures`).
+5. **쓰기에서 `tokens_unavailable`은 "결과를 모른다"(`outcome_unknown`, 504)다.** 저장 중 디렉터리 `fsync` 실패처럼 변경이 이미 적용된 채로 오류가 날 수 있다. **목록을 다시 읽어 확인하기 전에는 같은 변경을 다시 시도하지 않는다.** 화면은 이때 이전 목록을 보여 주지 않는다(목록을 다시 읽지 못하면 실패 화면).
+6. **만료일의 하루는 UTC로 센다**(KST로는 00:00~09:00 사이에 하루 차이). **만료일은 사용자가 직접 적은 값이고 GitLab·GitHub에 물어 확인하지 않는다**(화면에 그렇게 적혀 있다). 만료 배너("토큰 N개가 14일 안에 만료됩니다")는 **브라우저가** 목록의 `days_left`와 `warn_days`(14)로 계산한다(`days_left ≤ warn_days`, 이미 지난 것 포함). 이미 지난 날짜로는 등록할 수 없다.
+7. **요청 ID 정책.** 모양이 틀린 입력(이름·종류·만료일 형식, 서명 모양)은 서명 검증 전에 거부되어 **ID를 소모하지 않는다.** 서명이 한 번 유효하다고 확인되면 **ID는 소모된다**: 그 뒤 값 규칙·만료일·저장소 오류로 거부되어도 같은 서명으로 다시 보낼 수 없고 **새로 서명해야 한다.** 그래서 브라우저가 D3 값 규칙(32~512자, 인쇄 가능한 ASCII, 앞뒤 공백 없음)을 서명 전에 미리 검사한다.
+8. **알려진 한계(비밀이 어디를 거치는가).** 토큰 값은 **브라우저 JS 메모리 → orchd 메모리 → broker 소켓 → broker 메모리 → 파일**을 거친다. JS 문자열은 바꿀 수 없어서 지우는 것은 참조를 버리는 것뿐이고 GC가 덮어쓸 때까지 글자가 남는다. orchd는 값을 바이트로 받아 쓰고 처리 뒤 가능한 범위에서 0으로 덮지만(최선), JSON 디코더 내부 버퍼·커널 소켓 버퍼·GC가 옮긴 사본은 지울 수 없다: **`apply` 도중 코어 덤프에는 값이 들어 있을 수 있다.** `last4`(마지막 4자)가 목록에 보인다(식별용, 알려진 노출). 값 입력칸은 `type=text` + CSS 가림(`text-security`)이라서 **그 칸에서 복사하면 실제 글자가 복사될 수 있다**(비밀번호 칸이 아니므로 브라우저의 "비밀번호 저장" 제안을 피하려는 의도적 선택, 보장이 아니라 휴리스틱). **두 가지를 더 알아 둔다:** ① 브라우저의 `api.js`는 서버가 403 `csrf_failed`를 주면 세션을 한 번 새로 고치고 **같은 요청 본문(값과 서명 포함)을 한 번 다시 보낸다**(이때는 broker 호출이 일어나지 않았다). ② 유닛에 `LimitCORE=0`이 없으므로 `apply` 도중 충돌하면 systemd-coredump가 값을 담은 메모리를 저장할 수 있다(선택적 유닛 강화로 적어 두고 **적용하지 않았다**: 유닛은 이번에 바꾸지 않는다). 이 한계 전부 설계서 6장에 있고 결과 문서 6장에 다시 적었다.
+9. **`gitlab`·`github` 종류의 토큰은 W3c 전까지 쓰는 코드가 없다.** 저장·목록·삭제만 된다. 기존 `create_mr`은 계속 설정의 `gitlab.token_file`을 쓴다(바뀌지 않음). 그러므로 **지금 등록해도 어떤 동작도 바뀌지 않는다.**
+10. **한도(주체별).** `begin`+`message`를 합쳐 시간당 **60회**, `apply` 시간당 **20회**. 초과하면 429 `token_rate_limited`. `apply`의 슬롯은 broker에 닿기 전에 실패했을 때(연결 실패)와 broker가 일하기 전에 거절했을 때(`busy`, `forbidden`)만 돌려준다.
+11. **컷오버에서만 사용자가 할 수 있는 확인(3-3, 3-5):** 브라우저에 시험용 값을 쳐서 **"비밀번호 저장" 제안이 안 뜨는지**, 글자가 가려지는지, 붙여넣기가 되는지, **실제 패스키로 `set_token`을 서명**하는 것. 이 저장소는 대역 패스키(`navigator.credentials.get` 바꿔치기)와 시험용 서명자만 썼고 실제 브라우저의 비밀번호 관리자 동작은 한 번도 보지 못했다.
+12. **배포 키의 `.pub`이 없을 때.** `ssh-keygen -y -f /home/orch/orchd/ssh/id_gitlab_deploy`는 개인 키를 **읽는다**(코드가 아니라 `ssh-keygen`이). W3c 전에는 쓸 곳이 없으므로 **지금 만들지 않아도 된다.** 만든다면 사용자 결정으로 `orch` 계정에서 `ssh-keygen -y -f <개인 키> > <개인 키>.pub; chmod 0644 <개인 키>.pub`(결과가 한 줄 `ssh-ed25519 …`인지 `ssh-keygen -l -f <.pub>`로 확인)이고, 되돌리려면 `.pub`만 지운다.
+13. **가짜 토큰을 진짜처럼 등록하지 않는다.** `gitlab` 종류의 더미 값을 "시험삼아" 넣지 않는다(나중에 W3c가 그 이름으로 실제 호출을 할 수 있다). 시험은 3-5의 선택지(**교체 없음 / 사용자가 가진 같은 OpenAI 키 값으로 교체**)와 직후의 삭제로 한다.
+
+### 컷오버에서만 확인할 수 있는 것 (사전 목록: 결과 문서 23번 6장에 "확인함/못 함"으로 남긴다)
+1. **`secrets/`가 `orch-broker:orch-broker 700`으로 생기는지**(1-4): 유닛 샌드박스(`ProtectSystem=strict`, `ReadWritePaths`), 계정 `orch-broker`, `UMask=0077` 아래에서.
+2. **첫 `set_token`이 서버에서 되는지**(3-5): `secrets/<ref>`가 `orch-broker:orch-broker 400`, `tokens.json`이 `600`으로 생기고 `.state-*` 임시 파일이 남지 않음.
+3. **실제 패스키 서명을 broker가 `set_token`에 대해 검증하는지**(3-5). W3a는 `set_flag`에 대해서만 확인했다.
+4. **실제 OpenAI 키를 웹에서 교체한 뒤 `refine`이 새 키를 쓰는지**(3-5. 사용자 결정, 한 번의 AI 호출 비용), **삭제 뒤 설정 키 폴백**(3-6).
+5. **브라우저의 "비밀번호 저장" 제안이 안 뜨는지, 가림·붙여넣기**(3-3, 사용자).
+6. **배포 키 `.pub` 존재와 형식**(사전 점검 d), 키보드만·스크린 리더 사용.
+
+### 단계 1. broker 갱신 [사용자][되돌림 가능: 단계 4의 A]
+`orchd`와 DB는 건드리지 않는다. **순서: 백업 → (Mac) 게이트 → 옛 broker 정지 → 새 바이너리 설치 → 샌드박스 안에서 `-check` → 시작.** `broker.json`은 바뀌지 않는다(새 설정 키 없음).
+
+**먼저 백업(서비스 영향 없음). `/root/backup-w3b`(root 0700).** orch-vm에서:
+```
+B=/root/backup-w3b
+sudo install -d -m 0700 -o root -g root $B $B/bin
+sudo stat -c '%U:%G %a %n' $B          # root:root 700 이어야 한다
+sudo cp -a /usr/local/bin/orch-broker $B/bin/orch-broker
+for f in orchd orch aigate; do sudo cp -a /usr/local/lib/aigate/$f $B/bin/$f; done
+sudo cp -a /etc/orch-broker $B/etc-orch-broker
+sudo cp -a /var/lib/orch-broker $B/var-lib-orch-broker
+sudo cp -a /etc/systemd/system/orch-broker.service $B/orch-broker.service.pre-w3b
+sudo cp -a /etc/systemd/system/orchd.service $B/orchd.service.pre-w3b; sudo cp -a /etc/systemd/system/orchd.service.d $B/ 2>/dev/null
+sudo ls -lR $B | head -40
+```
+(백업에는 `openai.key`(0400)와 등록부의 사본이 들어간다. 값은 화면에 나오지 않고 폴더는 root만 들어갈 수 있다. **`orch`가 쓸 수 있는 폴더에 두지 않는다.** 컷오버가 안정되면 사용자가 `sudo shred -u`로 키 사본을 지운다.)
+
+**1-0. 빌드 전 게이트 (Mac, 저장소에서). 하나라도 실패하면 빌드하지 않는다.**
+```
+go test -run TestConstantsAgreeWithWeb -v ./internal/orch/api     # --- PASS 이고 SKIP 이 없어야 한다
+go vet ./... ; gofmt -l .                                         # gofmt 출력 없음
+GOOS=darwin go vet ./cmd/... ./internal/... ; GOOS=linux go vet ./cmd/... ./internal/...
+go test ./... -count=1 -race
+node --test "internal/orch/web/test/*.test.js"
+```
+(결과 문서 23번 2장의 숫자와 같은 커밋인지 확인한다.)
+
+**1-1. 새 바이너리.** Mac에서 `GOOS=linux GOARCH=amd64 go build -o /tmp/w3b/<이름> ./cmd/<이름>`을 `orch-broker`, `orchd`, `orch`, `aigate`에 대해 하고(`uname -m`에 맞춘다) `scp`로 VM `/tmp/w3b/`에 보낸다. **아직 설치하지 않는다.**
+
+**1-2. 옛 broker 정지 → 새 바이너리 설치.** (정지한 뒤 1-3의 점검이 실패하면 **broker는 멈춘 채로** 남는다. 그때는 곧바로 단계 4의 A로 옛 바이너리를 복원해 시작한다.)
+```
+sudo systemctl stop orch-broker
+sudo install -o root -g root -m 0755 /tmp/w3b/orch-broker /usr/local/bin/orch-broker
+```
+이 시점부터 시작까지 AI 계획서와 병합 요청은 `broker_unavailable`이다(기존 기능은 그대로). 아직 시작하지 않는다.
+
+**1-3. 샌드박스 안에서 `-check`(시작 전).** 유닛과 같은 샌드박스 옵션으로 점검한다(12장 1-4와 같은 명령):
+```
+sudo systemd-run --wait --pipe -p User=orch-broker -p Group=orch-broker -p SupplementaryGroups=orch -p ProtectSystem=strict -p ProtectHome=yes -p SystemCallFilter=@system-service /usr/local/bin/orch-broker -check -config /etc/orch-broker/broker.json -state-dir /var/lib/orch-broker
+```
+예상: `orch-broker: 점검 통과 (…)` 한 줄(`systemd-run --wait --pipe`가 `Running as unit: …` 줄 등을 함께 찍는 것은 정상)과 `Finished with result: success`(종료 코드 0). **경고는 W3a 컷오버 뒤 상태와 같아야 한다**: 옛 `context_repos`·`gitlab.projects`를 무시한다는 경고 한 줄(21번 문서 10장)은 있어도 되고, **토큰 저장소에 대한 경고는 없어야 한다**(`secrets/`·`tokens.json`이 아직 없으면 정상으로 통과한다). 새 점검이 보는 것: **`secrets/` 폴더가 있으면 소유자·모드(0700)가 올바른지(어긋나면 거부)**, **`tokens.json`이 있으면 소유자·모드(0600)·문법이 올바른지(깨졌거나 0644면 거부)**, 개별 비밀 파일의 모드(0400)·메타데이터와의 일치(어긋나면 그 토큰만 쓸 수 없다는 **경고**). **`-check`는 아무것도 만들지 않는다**(`sudo ls /var/lib/orch-broker`에 `secrets/`가 아직 없어야 한다). 실패 문장 하나가 나오면 **시작하지 않고 멈춘다 → 단계 4의 A.**
+
+**1-4. 시작(`secrets/`가 여기서 만들어진다).**
+```
+sudo systemctl start orch-broker
+systemctl status orch-broker --no-pager; sudo journalctl -u orch-broker -n 30 --no-pager
+sudo stat -c '%U:%G %a %n' /var/lib/orch-broker /var/lib/orch-broker/secrets /var/lib/orch-broker/registry.json
+sudo ls -la /var/lib/orch-broker/secrets
+sudo ls /var/lib/orch-broker/tokens.json 2>&1 || echo "(없음: 첫 set_token 전에는 정상)"
+```
+예상: 유닛 `active (running)`, 로그에 오류 없음. 폴더 `orch-broker:orch-broker 700`, **`secrets`가 새로 생기고 `orch-broker:orch-broker 700`**, 안은 비어 있음, `registry.json`은 W3a 그대로 `600`. `tokens.json`은 없다. **`secrets/`가 안 생겼거나 모드가 700이 아니면 멈춘다**(사전 점검 a·c를 다시 본다 → 단계 4의 A). 로그에 토큰 저장소 오류 문장이 있으면 멈춘다(broker는 시작하지만 토큰 op가 `tokens_unavailable`).
+
+**1-5. 새 읽기 op와 회귀.** `orch` 계정이 소켓으로 호출한다(값을 찍지 않는 읽기 둘):
+```
+sudo -u orch python3 -c 'import socket;s=socket.socket(socket.AF_UNIX);s.connect("/run/orch-broker/broker.sock");s.sendall(b"{\"v\":1,\"op\":\"tokens\"}\n");print(s.makefile().readline())'
+sudo -u orch python3 -c 'import socket;s=socket.socket(socket.AF_UNIX);s.connect("/run/orch-broker/broker.sock");s.sendall(b"{\"v\":1,\"op\":\"status\"}\n");print(s.makefile().readline())'
+sudo -u orch python3 -c 'import socket;s=socket.socket(socket.AF_UNIX);s.connect("/run/orch-broker/broker.sock");s.sendall(b"{\"v\":1,\"op\":\"projects\"}\n");print(s.makefile().readline())'
+```
+예상: `tokens`는 **`openai` 한 항목만, `"source":"config"`**, `"kind":"openai"`, `"last4":""`, `"expires":""`, `"days_left":null`, `"usable":true`, 그리고 `"warn_days":14`: `{"ok":true,"result":{"tokens":[{"days_left":null,"expires":"","kind":"openai","last4":"","ref":"openai","set_at":"","source":"config","usable":true}],"warn_days":14}}`(키 순서는 Go의 맵 출력이라 사전순일 것으로 읽은 것이고 실제 출력은 미확인). 응답에 키 값이 없어야 한다. `status`는 W3a와 같은 `context_repos`에 `tokens_available`(true)·`warn_days`·`expiring`(빈 목록)이 더해진다. `projects`는 W3a 컷오버 뒤와 같다(`toy`·`sample-app`). **`openai`가 두 번 나오거나 다른 항목이 있거나 `source`가 `store`면 멈춘다 → 단계 4의 A.** **회귀(기존 `refine`):** `tokens`의 `openai` 행이 `source:config, usable:true`라는 것은 broker가 설정 키 파일을 호출 경로로 읽을 수 있다는 뜻이다. 실제 AI 호출은 비용이 들어 3-2에서 사용자가 정한다.
+
+**검증 체크리스트:** 1-3 통과(토큰 경고 없음, `secrets/` 아직 없음), 1-4의 유닛 active·`secrets` 700·`registry.json` 600, 1-5의 `tokens`(정확히 `openai` 한 항목, source config)와 `status`·`projects`가 W3a 컷오버 뒤와 같음. **그래도 안 되면:** 단계 4의 A. 다른 서비스에는 영향이 없다(이 단계는 `orchd`를 건드리지 않았다).
+
+### 단계 2. `orchd` 갱신 [사용자]
+**DB 스키마가 바뀌지 않으므로 DB를 복원할 필요가 없다**(이번 백업은 `/root/backup-w3b/bin`의 바이너리뿐). 실행 중·대기 작업이 없음을 먼저 확인한다(`orch list`).
+```
+sudo systemctl stop orchd
+for f in orchd orch aigate; do sudo install -o root -g root -m 0755 /tmp/w3b/$f /usr/local/lib/aigate/$f; done
+sudo systemctl start orchd
+journalctl -u orchd -n 40 --no-pager
+```
+유닛과 드롭인(`--broker-socket`, `--git-ssh-key`)은 바꾸지 않는다. **검증 체크리스트**
+- 로그: 오류 없이 대기, `approvals: mode signed`, 스키마 오류 없음.
+- `orch list`: 단계 1 이전의 작업이 모두 그대로, 마지막 번호가 같다.
+- 새 엔드포인트가 떠 있고 로그인 없이는 닫혀 있는지: `curl -sk -o /dev/null -w '%{http_code}\n' https://<FQDN>/api/v1/settings/tokens` → **401**(같은 방식으로 `/api/v1/settings/deploy-key`, `POST /api/v1/tokens/begin`도 401). 404면 옛 바이너리다.
+
+**그래도 안 되면:** 단계 4의 B(바이너리만 되돌리면 된다. DB는 그대로 호환된다).
+
+### 단계 3. 웹에서 확인 [사용자]
+**전제:** 단계 1·2 통과. Mac 브라우저에서 `https://<FQDN>/`에 패스키로 로그인. "예상"은 코드·시험(`internal/orch/web/test/tokens.test.js`, `internal/orch/api/tokens_test.go`, `internal/broker/tokens_test.go`, `adversarial_w3b_test.go`)에서 읽은 것이다.
+
+| # | 할 일 | 예상(코드·시험 기준) | 다르면 |
+|---|---|---|---|
+| 3-1 | 메뉴 "토큰"(`#/tokens`) | 표에 **`openai` 한 줄**: 종류 `openai`, 마지막 4자 비어 있음, 만료일 없음, 출처 "설정 파일", **삭제 단추 없음**, "교체" 가능. 상단 만료 배너 **없음**. 주소 표시줄은 `#/tokens` 그대로. 프로젝트 화면(`#/projects`)도 배너 없음 | 목록이 안 뜨면 `broker_unavailable`(단계 1-4·1-5), `broker_error`(목록의 한 행이 이상함: 알아둘 것 4). 메뉴가 없으면 브라우저 캐시(새로고침) |
+| 3-2 | **회귀: AI 계획서.** "새 작업" → "AI로 계획서 만들기", 저장소 `toy`, 한 줄을 적고 미리보기까지 | 12장 3-2와 같다(보낼 파일 목록, 제외 사유). **[사용자 결정] 실제 AI 호출까지 해 볼지**: 비용이 든다(소액). 하면 계획서가 나온다 = 설정 키를 broker가 호출 경로로 읽는다 | `ai_key_missing`("AI 키가 등록되어 있지 않습니다…")이면 설정 키 파일을 읽지 못한 것(사전 점검 b) → 단계 4의 A |
+| 3-3 | **[사용자] 입력칸 점검(서명하지 않는다).** "토큰 추가"에서 종류 `gitlab`, 이름 `check-only`, **임의의 더미 문자열 32자 이상**을 값 칸에 직접 입력하고 붙여넣기도 해 본다. 만료일은 먼 미래. 그 뒤 **"취소"**(또는 화면 이동) | ① **글자가 점으로 가려진다**(입력 중·붙여넣은 뒤), ② **붙여넣기가 된다**, ③ **브라우저의 "비밀번호 저장/업데이트/강력한 비밀번호 제안"이 한 번도 안 뜬다**(브라우저의 비밀번호 관리자 목록에도 새 항목이 없다), ④ 확인 화면(마지막 4자와 값 해시 앞 8자만)에서 값 칸이 비어 있고 전체 값이 다시 보이지 않는다, ⑤ 취소하면 아무것도 저장되지 않는다(목록 그대로, `sudo ls /var/lib/orch-broker/secrets`가 비어 있음) | ③이 보이면 **기록하고(어느 브라우저인지) 그 값은 거절한다.** 가림이 안 되면 `text-security` 미지원 브라우저(기록). 값이 DOM에 남는다고 보이면 멈추고 보고 |
+| 3-4 | **서명 거부 확인.** 잘못된 서명·바꿔치기된 값은 **자동 시험으로만 확인**한다(실서버에서 일부러 위조하지 않는다) | 시험: `TestValueSwapAfterSignatureRefused`, `TestSetTokenForOtherRefOrKindRefused`, `TestApprovalAndRegistryMessagesStillSeparate` 등(결과 문서 23번 2장) | — |
+| 3-5 | **[사용자 결정] 실제 서명으로 `set_token`.** 선택지 **(a) 하지 않는다**(권장 기본: 컷오버를 닫는다), **(b) OpenAI 키 교체**: 종류 `openai`, 이름 `openai`, 값은 **사용자가 직접 입력한다(이 대화·채팅·터미널에 붙이지 않는다)**, 확인 화면에서 마지막 4자가 맞는지 보고 패스키로 서명. **⚠ 키를 오타 없이 입력해야 한다(알아둘 것 0: 틀리면 일하는 설정 키를 가려 `refine`이 예산 예약만 태운다. 서명 전에 확인 화면의 마지막 4자를 원본과 눈으로 대조하고, 이상하면 취소한다).** **설정 키와 *같은* 값으로 교체하면 핫 리로드나 저장소 우선순위는 확인되지 않는다**(저장소 키든 설정 키든 같은 결과). 같은 값으로 교체해서 실제로 확인되는 것은 세 가지뿐이다: ① **실제 패스키 `set_token` 서명을 broker가 검증함**, ② **0400 파일 쓰기 + `rename`이 실서버에서 됨**, ③ 목록에 **`source: store`**로 나옴. 핫 리로드·저장소 우선순위를 진짜로 보려면 **설정 키와 다른, 유효한 OpenAI 키**가 필요하다(사용자 결정: 그 키가 있을 때만, 그리고 키가 유효한지는 위 한 번의 AI 호출로만 알 수 있다). **가짜 토큰을 등록하는 선택지는 없다**(알아둘 것 13) | (b)이면 "토큰을 저장했습니다", 목록의 `openai` 행이 **출처 "저장소"**, 마지막 4자, 삭제 단추 생김. 서버: `sudo stat -c '%U:%G %a %n' /var/lib/orch-broker/secrets/openai /var/lib/orch-broker/tokens.json` → **`orch-broker:orch-broker 400`**과 **`600`**, `sudo ls -la /var/lib/orch-broker/secrets`에 `.state-*` 임시 파일 없음. 원장에 `token_change`(행위자·동작·`openai`·종류·성공 여부·코드 `ok`뿐). **같은 값으로 교체했다면 이 호출은 "키가 계속 유효하다"만 보여 준다. *다른 유효한 키*로 교체했을 때만 계획서가 나온다는 것이 "교체한 뒤 `refine`이 새 키를 쓴다"의 첫 확인이다.** 이것이 broker가 실제 패스키 서명을 `set_token`에 대해 검증하는 첫 확인이기도 하다 | `bad_signature`/`unknown_signer`/`signers_unavailable`/`stale_signature`: 서명자 목록, 패스키 등록, 시계(5분)·확인 화면에서 서명까지 걸린 시간. `tokens_unavailable`은 `outcome_unknown`(알아둘 것 5): 목록을 다시 읽어 확인한 뒤 판단. **같은 변경을 곧바로 다시 시도하지 않는다**(화면은 새 서명을 요구한다) |
+| 3-6 | **[3-5(b)를 했다면] 시험 흔적을 지워 원래 상태로.** 목록의 저장소 `openai` 행 "삭제" → 이름 `openai`를 입력해 확인 → 패스키 서명 | 목록의 `openai`가 **출처 "설정 파일"**로 돌아간다(삭제 폴백). 서버: `sudo ls -la /var/lib/orch-broker/secrets`가 비어 있음. 3-2의 AI 호출(해 본다면)이 여전히 된다(설정 키). 3-5의 값이 틀렸다면 이 삭제가 복구다 | 삭제 뒤 `ai_key_missing`이면 설정 키 파일을 읽지 못하는 것 → 단계 4의 A(사전 점검 b). 삭제는 파일을 **0으로 한 번 덮은 뒤 unlink**한다(`shred`가 아니다. 최선의 노력이고 SSD·COW 파일 시스템에서는 옛 블록이 남을 수 있다) |
+| 3-7 | **브로커를 멈춘 상태**(선택): `sudo systemctl stop orch-broker` → `#/tokens`를 연다 | 고정 오류(브로커에 연결할 수 없음). 작업 제출·취소·AI 아닌 기능은 그대로. 끝나면 `sudo systemctl start orch-broker`(`secrets/`·`tokens.json`은 그대로 이어서 쓴다) | 기존 기능까지 막히면 단계 4의 B |
+| 3-8 | **[컨트롤러] 확인(읽기 전용)** | `sudo sh -c 'stat -c "%U:%G %a %n" /var/lib/orch-broker /var/lib/orch-broker/secrets /var/lib/orch-broker/*.json'`: 폴더 700, 파일 600(3-5를 했고 3-6을 안 했다면 `secrets/openai`만 400). `sudo grep token_change /home/orch/orchd/gate-home/.aigate/ledger/orchd.jsonl \| tail -3`: **값·해시·마지막 4자·요청 ID가 없는 줄만**. `sudo journalctl -u orch-broker -u orchd --since '1 hour ago' --no-pager`을 훑어 토큰 값·`Authorization` 줄이 없는지(값을 알고 있는 사용자가 마지막 4자로 `grep -c`를 해도 된다) | 값이나 해시가 보이면 **멈추고 보고한다.** 그 값(해당하면 OpenAI 키)을 즉시 폐기·재발급하는 것이 안전하다(사용자 결정) |
+
+**검증 체크리스트(요약):** 3-1이 예상대로, 3-2 회귀 없음, 3-3의 네 가지(가림·붙여넣기·저장 제안 없음·확인 화면에서 빈 칸), 3-5·3-6 중 사용자가 한 것이 예상대로, 3-7에서 기존 기능이 살아 있고, 3-8의 모드와 원장. 사전 점검 (d)(`.pub`)와 3-3·3-5의 결과는 결과 문서 6장에 "컷오버에서 확인함/못 함"으로 남긴다.
+
+**그래도 안 되면:** 화면 문제(표시·문구)만이면 롤백하지 않고 기록한다. **저장소 토큰이 의도 없이 바뀌었거나, 원장·로그·화면에 값(또는 해시·서명)이 보이거나, `secrets/`·`tokens.json`의 모드가 어긋났으면 즉시 broker를 멈추고(단계 4의 A) 사용자에게 보고한다.**
+
+### 단계 4. 롤백 [사용자][주의]
+**A. broker를 W3a 상태로 되돌리기(DB는 건드리지 않는다).**
+1. `sudo systemctl stop orch-broker`
+2. 바이너리를 **root 전용 백업에서** 복원: `sudo install -o root -g root -m 0755 /root/backup-w3b/bin/orch-broker /usr/local/bin/orch-broker`. `broker.json`은 이번에 바뀌지 않았으므로 복원할 필요가 없다(바꿨다면 `/root/backup-w3b/etc-orch-broker/broker.json`에서만 복원한다).
+3. `sudo systemctl start orch-broker`; 12장 1-6의 `status`·`projects` 호출이 W3a 상태(`toy`·`sample-app`)를 주는지 본다.
+4. **경고(알아둘 것 3):** **옛 broker는 `secrets/`와 `tokens.json`을 읽지 않는다.** 컷오버 뒤 웹으로 등록·교체한 토큰은 옛 broker에게는 없다. 교체한 OpenAI 키가 있었다면 옛 broker는 **설정 파일의 키**로 돌아간다. **그래서 `/etc/orch-broker/openai.key`가 있어야 *그리고 아직 유효해야* W3a 동작이 그대로 돌아온다**(없으면 옛 broker는 시작을 거부한다. 웹으로 새 키를 정한 뒤 옛 키를 OpenAI에서 폐기했다면 옛 broker는 그 폐기된 키로 `upstream_error`를 내며 알아둘 것 0과 같이 예산 예약을 태운다: 롤백 전에 설정 파일의 키가 아직 유효한지 먼저 정한다). `secrets/`·`tokens.json`은 **지우지 않는다**(옛 broker는 무시하고, 다시 새 broker를 올리면 이어서 쓴다). 지우고 싶으면(예: 값이 새어 폐기한 뒤) broker를 멈춘 상태에서 `sudo find /var/lib/orch-broker/secrets -type f -exec shred -u {} +; sudo rm -f /var/lib/orch-broker/tokens.json`(`secrets/` 폴더는 둔다: 새 broker가 없으면 만든다). 그러면 웹에서 등록한 토큰이 모두 사라지고 `openai`는 설정 키로 돌아간다. 문제가 시작되기 전 복사본은 `/root/backup-w3b/var-lib-orch-broker`에 있다(**복원하지 않는다**: 폴더 전체를 되돌리면 예산 기록·등록부·쓴 요청 ID도 되돌아간다).
+
+**B. `orchd`·CLI를 W3a 상태로 되돌리기(DB 복원 불필요).**
+1. `sudo systemctl stop orchd`
+2. `for f in orchd orch aigate; do sudo install -o root -g root -m 0755 /root/backup-w3b/bin/$f /usr/local/lib/aigate/$f; done`(세 개는 항상 같이. **웹은 `orchd`에 들어 있으므로** 토큰 메뉴와 만료 배너도 함께 사라진다)
+3. `sudo systemctl start orchd`. DB 스키마는 이번에 바뀌지 않았으므로 복원이 필요 없다(브라우저 캐시면 새로고침).
+
+**검증:** `journalctl -u orchd`·`journalctl -u orch-broker`에 오류가 없고, `orch list`가 단계 2 이전과 같으며, W3a의 프로젝트 화면(12장 3-1)과 AI 계획서 미리보기(12장 3-2)가 동작한다. **그래도 안 되면:** 아무것도 더 지우지 말고 `journalctl -u orch-broker -n 80`, `ls -l /usr/local/bin /usr/local/lib/aigate /var/lib/orch-broker`와 `sudo ls -lR /root/backup-w3b | head -40`을 사용자에게 보고한다. W3a 이전까지 가야 하면 12장 단계 4(`/root/backup-w3a`).
+
+### 요약표: 누가·되돌림
+| 단계 | 사용자 작업·승인 | 되돌리기 | 재시작 |
+|---|---|---|---|
+| 0 사전 점검(상태 폴더 0700, 키 파일 읽기, 유닛 샌드박스 값, 배포 키 `.pub`) | **컨트롤러**가 읽기 전용으로 확인(유닛 변경 없음) | — | — |
+| 1 broker 갱신 | 승인 | A(바이너리를 `/root/backup-w3b`에서 복원. `secrets/`·`tokens.json`은 둔다. 컷오버 뒤 웹으로 정한 토큰은 옛 broker에게 없음) | broker만 |
+| 2 `orchd` 갱신 | 승인 | B(바이너리만, DB 복원 불필요) | 필요(stop/start) |
+| 3 웹 확인 | **사용자 직접**(로그인, 입력칸 점검, **실제 서명·키 교체 여부 결정**, 값은 직접 입력) | 등록·교체한 토큰은 3-6의 삭제로 되돌림(OpenAI는 설정 키로 폴백) | 불필요(3-7만 broker 재시작) |
+| 4 롤백 | 승인 | — | 필요 |

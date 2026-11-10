@@ -31,6 +31,11 @@ type regBroker struct {
 	reply func(op string, args json.RawMessage) string
 	// listFail, when set, is the code the projects op answers with.
 	listFail string
+	// Token ops (W3b): the rows `tokens` answers with, an optional code for
+	// that read, and an optional raw reply for set_token/delete_token.
+	tokenRows  []map[string]any
+	tokensFail string
+	tokenReply func(op string, args json.RawMessage) string
 }
 
 type regCall struct {
@@ -125,6 +130,20 @@ func (b *regBroker) serve(c net.Conn) {
 		}
 		ok(map[string]any{"context_repos": repos, "refine_remaining_hour": 20, "gitlab_configured": false,
 			"mr_projects": []string{}, "weekly_budget_remaining_usd": 25.0})
+	case "tokens":
+		b.mu.Lock()
+		rows, tf := append([]map[string]any{}, b.tokenRows...), b.tokensFail
+		b.mu.Unlock()
+		if tf != "" {
+			c.Write([]byte(brokerErrReply(tf) + "\n"))
+			return
+		}
+		if rows == nil {
+			rows = []map[string]any{}
+		}
+		ok(map[string]any{"tokens": rows, "warn_days": 14})
+	case "set_token", "delete_token":
+		b.serveTokenWrite(c, req.Op, req.Args)
 	case "register_project", "set_flag":
 		if fn != nil {
 			r := fn(req.Op, req.Args)
@@ -1132,7 +1151,7 @@ func TestConstantsAgreeWithWeb(t *testing.T) {
 	waText := string(wa)
 	bare := func(p string) string { return strings.TrimSuffix(strings.TrimPrefix(p, "^"), "$") }
 	for _, piece := range []string{
-		"action: (" + registrymsg.ActionRegisterProject + "|" + registrymsg.ActionSetFlag + ")",
+		"action: (" + registrymsg.ActionRegisterProject + "|" + registrymsg.ActionSetFlag + "|" + registrymsg.ActionSetToken + "|" + registrymsg.ActionDeleteToken + ")",
 		"subject: (" + bare(subjectPattern) + ")",
 		"change: ([0-9a-f]{64})",
 		"request: ([0-9a-f]{32})",
@@ -1254,6 +1273,9 @@ func TestConstantsAgreeWithWeb(t *testing.T) {
 			t.Errorf("%s does not wire the projects view (%q)", f.file, f.needle)
 		}
 	}
+	// The token constants (W3b): see checkTokenConstants (tokens_test.go).
+	t.Run("tokens", checkTokenConstants)
+
 }
 
 // A path is shown on a signing screen: only printable ASCII and Hangul

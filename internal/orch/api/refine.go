@@ -64,6 +64,7 @@ var (
 	errRefineRegistry       = apiErr(http.StatusServiceUnavailable, "registry_unavailable", "프로젝트 등록부를 사용할 수 없어 AI 전송이 모두 꺼져 있습니다. 관리자가 확인해야 합니다")
 	errRefineUpstream       = apiErr(http.StatusBadGateway, "upstream_error", "AI 서비스 호출에 실패했습니다")
 	errRefineBadPlan        = apiErr(http.StatusBadGateway, "bad_plan", "AI 응답이 계획서 형식을 지키지 않았습니다")
+	errRefineKeyMissing     = apiErr(http.StatusServiceUnavailable, "ai_key_missing", "AI 키가 등록되어 있지 않습니다. 토큰 화면에서 openai 키를 등록하세요")
 	errRefineBadBody        = apiErr(http.StatusBadRequest, "bad_request", "요청 형식이 올바르지 않습니다")
 	errRefineBadText        = apiErr(http.StatusBadRequest, "bad_request", "요구사항 글이 비었거나 너무 길거나(2000자) 허용되지 않는 문자가 있습니다")
 	errRefineSecretText     = apiErr(http.StatusBadRequest, "bad_request", "요구사항 글에 비밀 값처럼 보이는 내용이 있어 보낼 수 없습니다")
@@ -92,6 +93,8 @@ func brokerError(e *broker.OpError) *httpError {
 		return errRefineTooBig
 	case "registry_unavailable":
 		return errRefineRegistry // fail closed: the broker cannot trust its registry
+	case "ai_key_missing":
+		return errRefineKeyMissing // the broker called nothing and spent nothing
 	case broker.CodeUnavailable, "forbidden", "busy", "unknown_op", "not_implemented":
 		return errBrokerUnavailable
 	}
@@ -489,8 +492,9 @@ func (h *handler) refinePlan(w http.ResponseWriter, r *http.Request) {
 		// Only a failure that provably cost nothing gives the slot back: the
 		// request never completely left (no broker, dial failure, refused
 		// locally) or the broker itself refused before doing anything (busy,
-		// not allowed, too large). Anything after a complete write keeps it.
-		if oerr.Unsent || oerr.Code == "busy" || oerr.Code == "forbidden" || oerr.Code == broker.CodeTooLarge {
+		// not allowed, too large, no AI key: nothing was called or spent).
+		// Anything after a complete write keeps it.
+		if oerr.Unsent || oerr.Code == "busy" || oerr.Code == "forbidden" || oerr.Code == broker.CodeTooLarge || oerr.Code == "ai_key_missing" {
 			h.refineLimit.refund(actor, slotAt)
 		}
 	} else {
