@@ -14,6 +14,11 @@ func (s *Server) currentOpenAIKey() (string, bool) {
 	if v, ok := s.Tokens.Value("openai"); ok {
 		return v, true
 	}
+	return s.configOpenAIKey()
+}
+
+// configOpenAIKey re-reads the config key file (W2b rules) on every call.
+func (s *Server) configOpenAIKey() (string, bool) {
 	owner := s.keyOwnerOK
 	if owner == nil {
 		euid := uint32(os.Geteuid())

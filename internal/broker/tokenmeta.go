@@ -133,32 +133,9 @@ func (t *TokenStore) Err() error {
 	return nil
 }
 
-func validExpires(s string) bool {
-	if s == "" {
-		return true
-	}
-	if !registrymsgDate(s) {
-		return false
-	}
-	_, err := time.Parse("2006-01-02", s)
-	return err == nil
-}
-
-func registrymsgDate(s string) bool {
-	if len(s) != 10 {
-		return false
-	}
-	for i, c := range []byte(s) {
-		if i == 4 || i == 7 {
-			if c != '-' {
-				return false
-			}
-		} else if c < '0' || c > '9' {
-			return false
-		}
-	}
-	return true
-}
+// validExpires is the shared rule (registrymsg.ValidExpires: "" or a real
+// date, year 2000..9999) so the broker and orchd can never disagree about a row.
+func validExpires(s string) bool { return registrymsg.ValidExpires(s) }
 
 func validKindRef(ref, kind string) error {
 	if !registrymsg.ValidTokenRef(ref) {
@@ -435,9 +412,11 @@ func DaysLeft(expires string, now time.Time) *int {
 	if err != nil {
 		return nil
 	}
+	// Whole days via Unix seconds (both at 00:00 UTC): time.Duration would
+	// overflow for dates after ~2318.
 	n := now.UTC()
 	today := time.Date(n.Year(), n.Month(), n.Day(), 0, 0, 0, 0, time.UTC)
-	d := int(exp.Sub(today).Hours() / 24)
+	d := int((exp.Unix() - today.Unix()) / 86400)
 	return &d
 }
 

@@ -266,8 +266,19 @@ func (s *Server) setup() {
 	if w == nil {
 		w = io.Discard
 	}
-	s.logger = log.New(&redactWriter{w: w, secrets: func() []string { return append(s.Secrets.values(), s.Tokens.values()...) }}, "orch-broker: ", log.LstdFlags)
+	s.logger = log.New(&redactWriter{w: w, secrets: s.redactionValues}, "orch-broker: ", log.LstdFlags)
 	s.sem = make(chan struct{}, MaxConcurrent)
+}
+
+// redactionValues lists every secret a log line must never show: the values
+// loaded at start, the usable stored tokens and the CURRENT config OpenAI key
+// (refine re-reads that file on every call, so it can differ from the start value).
+func (s *Server) redactionValues() []string {
+	v := append(s.Secrets.values(), s.Tokens.values()...)
+	if k, ok := s.configOpenAIKey(); ok {
+		v = append(v, k)
+	}
+	return v
 }
 
 func (s *Server) logf(format string, a ...any) {
