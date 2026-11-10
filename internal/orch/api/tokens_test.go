@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -783,11 +784,17 @@ func TestApplyForwardsValueExactlyOnceAndNeverLogsIt(t *testing.T) {
 
 func TestSecretValueRedactsEveryFormat(t *testing.T) {
 	v := secretValue(canaryValue)
-	req := tokenApplyRequest{Action: "set_token", Subject: "a", Value: v}
+	type holder struct {
+		Action string
+		Value  secretValue
+	}
+	req := holder{Action: "set_token", Value: v}
+	w := wireSecret{src: v}
 	outs := []string{
 		fmt.Sprintf("%v|%+v|%#v|%s|%q|%x|%X|%d|%T", v, v, v, v, v, v, v, v, v),
 		fmt.Sprintf("%v|%+v|%#v", req, req, req),
 		fmt.Sprintf("%v|%+v|%#v", &req, &req, &req),
+		fmt.Sprintf("%v|%+v|%#v|%s|%d", w, w, w, w, w), fmt.Sprintf("%v|%+v|%#v", &w, &w, &w),
 		fmt.Sprint(v), fmt.Sprintln(v), v.String(), v.GoString(),
 	}
 	if b, err := json.Marshal(req); err == nil {
@@ -1366,9 +1373,23 @@ func TestDeployKeyEndpoint(t *testing.T) {
 		return c, b
 	}
 	line, fp := sshPubLine(t, "orch@deploy")
-	rsaLine := "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC7 not-checked-as-rsa"
-	_ = rsaLine
 
+	// ssh-rsa is accepted too (positive path), with its fingerprint.
+	rk, rerr := rsa.GenerateKey(rand.Reader, 2048)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	rpk, _ := ssh.NewPublicKey(&rk.PublicKey)
+	rline := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(rpk))) + " rsa@deploy"
+	rd := shortDir(t)
+	rpriv := filepath.Join(rd, "id_rsa")
+	os.WriteFile(rpriv+".pub", []byte(rline+"\n"), 0o644)
+	rc, rb := get(newDeployKeyEnv(t, rpriv))
+	var rout map[string]string
+	_ = json.Unmarshal(rb, &rout)
+	if rc != 200 || rout["public_key"] != rline || rout["fingerprint"] != ssh.FingerprintSHA256(rpk) || !strings.HasPrefix(rline, "ssh-rsa ") {
+		t.Fatalf("ssh-rsa: %d %s", rc, rb)
+	}
 	// (a) a valid .pub and NO private key file at all: 200.
 	dir := shortDir(t)
 	priv := filepath.Join(dir, "id_gitlab_deploy")
@@ -1482,6 +1503,7 @@ func TestDeployKeyEndpoint(t *testing.T) {
 
 func TestRefineAIKeyMissingIsFixed(t *testing.T) {
 	e := newRefineEnv(t, baseFiles)
+	e.d.handler.refineLimit = newActorLimiter(2, time.Hour)
 	a := e.token(t, "alice")
 	text := "add a health check"
 	p := e.preview(t, a, text)
@@ -1489,7 +1511,8 @@ func TestRefineAIKeyMissingIsFixed(t *testing.T) {
 	e.fb.refineReply = func(fakeRefineCall) string { return brokerErrReply("ai_key_missing") }
 	e.fb.mu.Unlock()
 	var sentence string
-	for i := 0; i < 3; i++ {
+	// Far more tries than the hourly limit (2): the slot is refunded each time (nothing was called).
+	for i := 0; i < 9; i++ {
 		code, b := e.refine(a, text, p.SelectionID)
 		if code != 503 || v1Code(b) != "ai_key_missing" {
 			t.Fatalf("try %d: %d %s", i+1, code, b)
@@ -1506,6 +1529,13 @@ func TestRefineAIKeyMissingIsFixed(t *testing.T) {
 	}
 	if !strings.Contains(sentence, "openai") && !strings.Contains(sentence, "AI") {
 		t.Errorf("sentence %q", sentence)
+	}
+	// After the key is registered the next call works: the user is not locked out.
+	e.fb.mu.Lock()
+	e.fb.refineReply = nil
+	e.fb.mu.Unlock()
+	if code, b := e.refine(a, text, p.SelectionID); code != 200 {
+		t.Fatalf("after ai_key_missing: %d %s", code, b)
 	}
 }
 
@@ -1681,5 +1711,81 @@ func checkTokenConstants(t *testing.T) {
 		if !strings.Contains(goSrc, `"`+c+`"`) {
 			t.Errorf("no api source returns %q", c)
 		}
+	}
+}
+
+// A body the scan refuses (unknown key, duplicate key, trailing data, not an
+// object) after the value was copied out of it: the copy is wiped anyway.
+func TestRefusedBodyWipesTheValueCopy(t *testing.T) {
+	e := newTokEnv(t)
+	var mu sync.Mutex
+	var seen [][]byte
+	e.d.handler.tokenSeams.rawValue = func(raw []byte) {
+		mu.Lock()
+		defer mu.Unlock()
+		if raw != nil {
+			seen = append(seen, raw)
+		}
+	}
+	q := `"` + canaryValue + `"`
+	for name, body := range map[string]string{
+		"unknown key after":  `{"value":` + q + `,"bogus":1}`,
+		"duplicate value":    `{"value":` + q + `,"value":` + q + `}`,
+		"trailing data":      `{"value":` + q + `} {}`,
+		"unknown key before": `{"bogus":1,"value":` + q + `}`,
+		"valid object":       `{"value":` + q + `}`,
+	} {
+		mu.Lock()
+		seen = nil
+		mu.Unlock()
+		if c, b := e.call(t, "apply", body); c != 400 || strings.Contains(string(b), canaryValue) {
+			t.Errorf("%s: %d %s", name, c, b)
+		}
+		mu.Lock()
+		n := len(seen)
+		for _, raw := range seen {
+			for _, c := range raw {
+				if c != 0 {
+					t.Errorf("%s: the copy of the value was not wiped", name)
+					break
+				}
+			}
+		}
+		mu.Unlock()
+		if n == 0 && name != "unknown key before" {
+			t.Errorf("%s: the seam saw no copy, so nothing was pinned", name)
+		}
+	}
+}
+
+// A panic after the broker call started may hide an applied change: the ledger
+// says outcome_unknown (no value) and the answer is outcome_unknown.
+func TestPanicAfterBrokerWriteIsRecorded(t *testing.T) {
+	e := newTokEnv(t)
+	e.d.handler.tokenSeams.afterWrite = func() { panic("boom " + canaryValue) }
+	c, b := e.apply(t, e.setFlow(t))
+	if c != 504 || v1Code(b) != "outcome_unknown" || strings.Contains(string(b), canaryValue) {
+		t.Fatalf("%d %s", c, b)
+	}
+	if len(e.rb.tokenWrites()) != 1 {
+		t.Fatal("the write was not sent")
+	}
+	raw := e.ledgerRaw(t)
+	if strings.Contains(raw, canaryValue) || strings.Contains(e.logs.String(), canaryValue) {
+		t.Fatal("value leaked")
+	}
+	evs, err := ledger.Events(policy.OrchLedgerPath(e.home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []map[string]any
+	for _, ev := range evs {
+		if ev.Type == "token_change" {
+			got = append(got, ev.Payload)
+		}
+	}
+	if len(got) != 1 || got[0]["ok"] != false || got[0]["code"] != "outcome_unknown" || got[0]["action"] != "set_token" ||
+		got[0]["subject"] != "gitlab-main" || got[0]["kind"] != "gitlab" || got[0]["actor"] != socketActor() {
+		t.Fatalf("%v\n%s", got, raw)
 	}
 }

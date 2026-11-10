@@ -492,8 +492,9 @@ func (h *handler) refinePlan(w http.ResponseWriter, r *http.Request) {
 		// Only a failure that provably cost nothing gives the slot back: the
 		// request never completely left (no broker, dial failure, refused
 		// locally) or the broker itself refused before doing anything (busy,
-		// not allowed, too large). Anything after a complete write keeps it.
-		if oerr.Unsent || oerr.Code == "busy" || oerr.Code == "forbidden" || oerr.Code == broker.CodeTooLarge {
+		// not allowed, too large, no AI key: nothing was called or spent).
+		// Anything after a complete write keeps it.
+		if oerr.Unsent || oerr.Code == "busy" || oerr.Code == "forbidden" || oerr.Code == broker.CodeTooLarge || oerr.Code == "ai_key_missing" {
 			h.refineLimit.refund(actor, slotAt)
 		}
 	} else {

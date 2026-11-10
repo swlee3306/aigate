@@ -105,9 +105,9 @@ type wireSecret struct {
 	out []byte
 }
 
-func (w *wireSecret) String() string   { return redactedText }
-func (w *wireSecret) GoString() string { return redactedText }
-func (w *wireSecret) Format(f fmt.State, _ rune) {
+func (wireSecret) String() string   { return redactedText }
+func (wireSecret) GoString() string { return redactedText }
+func (wireSecret) Format(f fmt.State, _ rune) {
 	_, _ = io.WriteString(f, redactedText)
 }
 
@@ -132,17 +132,6 @@ func (w *wireSecret) wipe() {
 	clear(w.src)
 }
 
-// tokenApplyRequest is the decoded apply request. Value is redacting; printing
-// the struct is safe.
-type tokenApplyRequest struct {
-	Action, Subject string
-	Fields          map[string]any
-	Change, Request string
-	Issued          string
-	Value           secretValue
-	Signature       *signing.Signature
-}
-
 // tokenSeams are test-only hooks (nil in production, like pauseWorkers):
 // buffers sees the request buffer and the value buffer of an apply (to prove
 // they are wiped), panicHook runs while the value is in memory (to prove a
@@ -150,6 +139,11 @@ type tokenApplyRequest struct {
 type tokenSeams struct {
 	buffers   func(body, value []byte)
 	panicHook func()
+	// rawValue sees the RawMessage copy of the value key as soon as the body
+	// was scanned, also when the scan refused the body.
+	rawValue func(raw []byte)
+	// afterWrite runs right after the broker call returned.
+	afterWrite func()
 }
 
 // unquoteSecret decodes the raw JSON string of the value into dst (a slice with
@@ -584,8 +578,11 @@ func readTokenApplyBody(r *http.Request) (buf, raw []byte, err *httpError) {
 // the value is the one whose salted hash the fields carry) and forwards it all
 // to the broker unchanged. The broker verifies the signature and checks again.
 func (h *handler) tokensApply(w http.ResponseWriter, r *http.Request) {
-	var buf, valueBuf []byte
+	var buf []byte
+	var valueBuf secretValue // redacts in every format; real bytes only via []byte(valueBuf)
 	var wire *wireSecret
+	var attempted bool // a broker write was started
+	var wActor, wAction, wSubject, wKind string
 	defer func() {
 		clear(buf)
 		clear(valueBuf[:cap(valueBuf)])
@@ -597,6 +594,12 @@ func (h *handler) tokensApply(w http.ResponseWriter, r *http.Request) {
 		if rec := recover(); rec != nil {
 			// The panic value may hold request text: only its type is logged.
 			log.Printf("orchd: tokens apply panic (type %T); details withheld", rec)
+			if attempted {
+				// The broker may have applied the change: say so, and leave the trace.
+				h.recordTokenChange(wActor, wAction, wSubject, wKind, false, errTokUnknownResult.v1Code)
+				writeErr(w, errTokUnknownResult)
+				return
+			}
 			writeErr(w, errTokInternal)
 		}
 	}()
@@ -610,12 +613,13 @@ func (h *handler) tokensApply(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, errProjBadBody)
 		return
 	}
-	top, ok := objectKeys(raw, "action", "subject", "fields", "change", "request", "issued", "signature", "value")
-	defer func() { // the RawMessage copy of the value
-		if top != nil {
-			clear(top["value"])
-		}
+	top, ok := scanObject(raw, "action", "subject", "fields", "change", "request", "issued", "signature", "value")
+	defer func() { // the RawMessage copy of the value, also when the scan refused the body
+		clear(top["value"])
 	}()
+	if h.tokenSeams.rawValue != nil {
+		h.tokenSeams.rawValue(top["value"])
+	}
 	if !ok {
 		writeErr(w, errProjBadBody)
 		return
@@ -673,11 +677,10 @@ func (h *handler) tokensApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if isSet {
-		valueBuf = make([]byte, 0, maxTokenValue+1)
-		var verr *httpError
-		valueBuf, verr = unquoteSecret(rawValue, valueBuf)
+		vb, verr := unquoteSecret(rawValue, make([]byte, 0, maxTokenValue+1))
+		valueBuf = secretValue(vb)
 		if h.tokenSeams.buffers != nil {
-			h.tokenSeams.buffers(buf, valueBuf[:cap(valueBuf)])
+			h.tokenSeams.buffers(buf, []byte(valueBuf[:cap(valueBuf)]))
 		}
 		if verr != nil {
 			writeErr(w, verr)
@@ -685,7 +688,7 @@ func (h *handler) tokensApply(w http.ResponseWriter, r *http.Request) {
 		}
 		// The value must be the one whose salted hash was signed. A mismatch is
 		// refused here: forwarding it would only burn the one-time request id.
-		want := valueHashOf(request, valueBuf)
+		want := valueHashOf(request, []byte(valueBuf))
 		have, _ := c.Fields["value_hash"].(string)
 		if subtle.ConstantTimeCompare([]byte(want), []byte(have)) != 1 {
 			writeErr(w, errTokValueMismatch)
@@ -705,6 +708,7 @@ func (h *handler) tokensApply(w http.ResponseWriter, r *http.Request) {
 	if h.tokenSeams.panicHook != nil {
 		h.tokenSeams.panicHook()
 	}
+	wActor, wAction, wSubject, wKind = actor, c.Action, c.Subject, c.kind()
 	args := map[string]any{"ref": c.Subject, "change": change, "request": request, "issued": issuedText, "signature": sig}
 	if isSet {
 		wire = &wireSecret{src: valueBuf}
@@ -712,7 +716,11 @@ func (h *handler) tokensApply(w http.ResponseWriter, r *http.Request) {
 	}
 	// The write goes on even if the browser goes away. The client's own time
 	// limit bounds it. One attempt, never retried.
+	attempted = true
 	res, oerr := h.broker.WriteToken(context.WithoutCancel(r.Context()), c.Action, args)
+	if h.tokenSeams.afterWrite != nil {
+		h.tokenSeams.afterWrite()
+	}
 	if wire != nil {
 		wire.wipe()
 	}
@@ -799,7 +807,8 @@ func readDeployKey(path string) (pub, fingerprint string, ok bool) {
 	if err != nil || !fi.Mode().IsRegular() || fi.Size() > maxDeployKeyFile {
 		return "", "", false
 	}
-	f, err := os.Open(path)
+	// No symlink followed and no blocking on a FIFO swapped in after the Lstat.
+	f, err := os.OpenFile(path, os.O_RDONLY|openNoFollowNonblock, 0)
 	if err != nil {
 		return "", "", false
 	}
