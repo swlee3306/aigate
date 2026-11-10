@@ -18,10 +18,10 @@
 실행: 2026-11-10, macOS(Apple Silicon), Go 1.27.1, Node v26.5.0. 세는 방식은 W3a(21번 문서 2장)와 같다: 최상위 시험 함수와 하위 시험(`t.Run`)을 따로 센다(`go test -json` 결과 줄에서 집계).
 
 - `go vet ./...`, `GOOS=darwin go vet ./cmd/... ./internal/...`, `GOOS=linux go vet ./cmd/... ./internal/...`: 통과. `gofmt -l .`: 출력 없음.
-- `go test ./... -count=1 -race`: **종료 코드 0**, 표준 오류 출력 없음. 최상위 시험 함수 1297개 중 **1295 통과, 0 실패, 2 건너뜀**(하위 시험 833개 모두 통과). 건너뜀 2개는 W1~W3a와 같다: `internal/orch/web` `TestDevServer`(수동 개발 서버), `internal/pathfold` `TestCollectionsPerformance`(-race 빌드에서만 건너뛰는 시간 검사). 이 숫자는 최종 수정 라운드(3c)까지 넣은 **최종 코드**에서 한 번에 돌린 결과다(최종 수정 라운드의 코드 커밋 시점의 트리).
-- `node --test "internal/orch/web/test/*.test.js"`: **193개 전부 통과**(W3a 165개 + W3b 28개: `tokens.test.js` 27개 + `guard.test.js` 1개(`TestHashGuardStringIsItsOwnNotice`))
+- `go test ./... -count=1 -race`: **종료 코드 0**, 표준 오류 출력 없음. 최상위 시험 함수 1299개 중 **1297 통과, 0 실패, 2 건너뜀**(하위 시험 833개 모두 통과). 건너뜀 2개는 W1~W3a와 같다: `internal/orch/web` `TestDevServer`(수동 개발 서버), `internal/pathfold` `TestCollectionsPerformance`(-race 빌드에서만 건너뛰는 시간 검사). 이 숫자는 최종 수정 라운드(3c)까지 넣은 **최종 코드**에서 한 번에 돌린 결과다(최종 수정 라운드의 코드 커밋 시점의 트리).
+- `node --test "internal/orch/web/test/*.test.js"`: **194개 전부 통과**(W3a 165개 + W3b 29개: `tokens.test.js` 28개 + `guard.test.js` 1개(`TestHashGuardStringIsItsOwnNotice`); 이 중 `TestFarFutureAndFarPastDaysLeftRenderSanely`는 재검토 수정 라운드에서 더함)
 - **B5 게이트:** `go test -run TestConstantsAgreeWithWeb -v ./internal/orch/api` → `--- PASS: TestConstantsAgreeWithWeb`, `--- PASS: TestConstantsAgreeWithWeb/tokens`, **`SKIP` 없음**(웹 파일이 없거나 상수가 어긋나면 `t.Fatal`이므로 건너뛰는 경로가 없다. 토큰 하위 시험 `tokens`도 PASS). 이 명령은 런북 13장 1-0에 들어 있다.
-- W3a(21번 문서) 대비 최상위 통과 1198 → 1295(+97), 하위 시험 804 → 833(+29). 늘어난 곳: `internal/broker` 139 → 194(+55), `internal/orch/api` 265 → 292(+27), `internal/registrymsg` 4 → 13(+9), `internal/approval/signing` 63 → 65, `internal/orch/broker` 5 → 6, `cmd/orch-broker` 11 → 12, `cmd/orchd` 31 → 32, `internal/orch/web` 9 → 10. 새 패키지는 없다. B6의 새 시험은 broker 9개 + orchd 4개(그리고 최종 수정 라운드의 broker 3개: `TestLogRedactsCurrentConfigKey`, `TestDaysLeftFarFuture`, `TestTokensJSONYearBefore2000IsBroken`, `final_w3b_test.go`)(`TestBeginAndMessageNeverWriteBroker`, `TestTokensApplyForgedFieldsRefusedBeforeBroker`, `TestTokensApplyValueRulesBeforeBroker`(변이 ⑪ 때 추가), `TestDeployKeyNeverReadsPrivateKey`)다.
+- W3a(21번 문서) 대비 최상위 통과 1198 → 1297(+99), 하위 시험 804 → 833(+29). 늘어난 곳: `internal/broker` 139 → 195(+56), `internal/orch/api` 265 → 293(+28), `internal/registrymsg` 4 → 13(+9), `internal/approval/signing` 63 → 65, `internal/orch/broker` 5 → 6, `cmd/orch-broker` 11 → 12, `cmd/orchd` 31 → 32, `internal/orch/web` 9 → 10. 새 패키지는 없다. B6의 새 시험은 broker 9개 + orchd 4개(`TestBeginAndMessageNeverWriteBroker`, `TestTokensApplyForgedFieldsRefusedBeforeBroker`, `TestTokensApplyValueRulesBeforeBroker`(변이 ⑪ 때 추가), `TestDeployKeyNeverReadsPrivateKey`)다. 최종 수정 라운드와 그 재검토 수정에서 broker 4개(`final_w3b_test.go`: `TestLogRedactsCurrentConfigKey`, `TestDaysLeftFarFuture`, `TestTokensJSONYearBefore2000IsBroken`, `TestLogKeyCacheAvoidsRereadingUnchangedFile`), orchd 1개(`TestFarFutureDaysLeftIsListedNotBroken`), node 1개(`TestFarFutureAndFarPastDaysLeftRenderSanely`)를 더했다.
 
 | 패키지 | 통과 | 실패 | 건너뜀 | 하위 시험 |
 |---|---|---|---|---|
@@ -33,12 +33,12 @@
 | `internal/adapter` | 13 | 0 | 0 | 0 |
 | `internal/approval` | 33 | 0 | 0 | 80 |
 | `internal/approval/signing` | 65 | 0 | 0 | 76 |
-| `internal/broker` | 194 | 0 | 0 | 136 |
+| `internal/broker` | 195 | 0 | 0 | 136 |
 | `internal/config` | 8 | 0 | 0 | 0 |
 | `internal/gate` | 60 | 0 | 0 | 63 |
 | `internal/gitx` | 45 | 0 | 0 | 3 |
 | `internal/ledger` | 17 | 0 | 0 | 0 |
-| `internal/orch/api` | 292 | 0 | 0 | 30 |
+| `internal/orch/api` | 293 | 0 | 0 | 30 |
 | `internal/orch/approvals` | 6 | 0 | 0 | 0 |
 | `internal/orch/broker` | 6 | 0 | 0 | 0 |
 | `internal/orch/machine` | 34 | 0 | 0 | 14 |
@@ -121,6 +121,7 @@ broker `internal/broker/adversarial_w3b_test.go`(9개)와 orchd `internal/orch/a
 ## 3c. 최종 수정 라운드 (전체 브랜치 검토 뒤, 같은 날)
 검토에서 치명적인 코드 문제는 없었고 런북 중요 2건과 사소한 항목을 고쳤다.
 - **코드(시험 먼저, 실패 확인):** F3 broker 로그 가림이 **지금의** 설정 OpenAI 키도 포함한다(`refine`이 호출마다 다시 읽으므로 시작 때 값과 다를 수 있음; `redactionValues`, 시험 `TestLogRedactsCurrentConfigKey`: 실행 중 키 파일 내용을 바꾸고 그 값을 로그에 찍어도 가려짐, 고치기 전 실패). F4 `days_left`가 `time.Duration` 오버플로 없이 Unix 초로 날짜 차이를 계산(`TestDaysLeftFarFuture`: 2026-11-10 대비 2028-02-29=476, 3000-01-01=355433, 9999-12-31=2912129, 2500-01-01 등; 고치기 전 실패). F5 broker의 `validExpires`가 `registrymsg.ValidExpires`(연도 2000 이상, 달력 검사)를 그대로 쓴다. **정한 규칙:** 손으로 고친 `tokens.json`에 2000년 이전 날짜 행이 있으면 그 파일은 **깨진 것으로 거부**(`tokens_unavailable`, 파일은 건드리지 않음, `-check`도 거부)하고, orchd가 한 행 때문에 목록 전체를 502로 만드는 일이 없다(시험 `TestTokensJSONYearBefore2000IsBroken`: 1999-12-31·0001-01-01·0000-01-01, 고치기 전 실패). 죽은 함수 `registrymsgDate`를 지웠다.
+- **재검토에서 나온 회귀 수정(같은 날):** F4가 `days_left`를 정확하게 만들자 orchd의 ±1,000,000 한도에 걸리는 합법적 만료일(약 4763년 이후)이 생겼다. orchd 한도를 합법 범위의 일수(약 293만)로 넓히고 끝에서 끝까지 시험과 웹 시험을 더했다(5장 W3b-18). 로그 가림의 설정 키 읽기는 (수정 시각, 크기) 캐시로 바꿨다(W3b-19).
 - **문서(런북 13장, 이 문서):** I1 **오타 난 OpenAI 키 경고**(알아둘 것 0, 3-5(b)): 유효성은 검사하지 않고 저장소 키가 설정 키를 가리며 실패한 `refine`마다 최악 예산 예약이 남음, 복구는 먼저 삭제(3-6). I2 3-5(b)를 바로잡음: 설정 키와 **같은 값**으로 교체해도 핫 리로드·저장소 우선순위는 확인되지 않고 실제 패스키 서명 검증·0400 파일 쓰기와 `rename`·`source: store`만 확인된다. F6 삭제는 0으로 한 번 덮고 unlink(`shred` 아님). F7 백업 안의 `secrets/`도 안정 뒤 `shred` 대상(8장). F8 롤백 A: 설정 키 파일이 **아직 유효해야** 한다. F9 받아들인 한계 추가(7장). F10 위의 node 시험 구성.
 
 ## 4. 배포 현실 표 (경로·소유자·모드·실행 사용자·샌드박스)
@@ -169,8 +170,8 @@ B2~B4가 각자 적은 표를 한 곳에 모았다. **이 표의 모든 "예상"
 | W3b-15 | **공유 웹 파일 두 개를 바꿨다:** `webauthn.js`의 `REGISTRY_MESSAGE_RE`가 네 동작 모두를 받도록 넓힘(W3a의 상수 단언을 네 Go 상수로 갱신, 의미 유지), `guard.js`가 화면별 고정 안내문 문자열을 돌려줄 수 있게 함(`true`는 옛 문구 그대로, 기존 시험 불변) | W3a 화면 회귀(시험이 지킴) |
 | W3b-16 | **핸들러 패닉 로그는 형식(`%T`)만**: W3a까지는 패닉 값을 찍었고 B3 검토에서 저장되지 않은 값이 그대로 로그에 남음을 재현했다 | 없음 |
 | W3b-17 | **broker와 orchd의 날짜 규칙을 하나로**(`registrymsg.ValidExpires`, 연도 2000~9999). 손으로 고친 `tokens.json`의 규칙 위반 행은 파일 전체를 깨진 것으로 거부(`tokens_unavailable`)하고 일부만 걸러 쓰지 않는다 | 한 행 때문에 토큰 기능 전체가 꺼짐(다른 기능은 계속, 런북 알아둘 것 4) |
-| W3b-18 | **`days_left`는 Unix 초의 정수 일수**(Duration 오버플로 방지). 9999-12-31까지 정확 | 없음 |
-| W3b-19 | **로그 가림 목록**에 지금의 설정 OpenAI 키를 포함(호출마다 파일을 다시 읽음: 로그 한 줄마다 작은 파일 한 번 읽기) | 로그가 아주 많을 때 약간의 읽기 비용 |
+| W3b-18 | **`days_left`는 Unix 초의 정수 일수**(Duration 오버플로 방지). 9999-12-31까지 정확(2026-11-10 기준 2,912,129). **재검토에서 이 수정이 만든 회귀를 찾았다:** orchd의 `tokenViewOf`가 `days_left`를 ±1,000,000으로 제한하고 있어서(Duration 오버플로 때문에 약 106,751에서 멈추던 때에는 닿지 않던 한도), 약 4763년 이후 만료일을 웹으로 등록하면 broker는 저장하는데 orchd가 그 행을 거부해 `set_token`이 "결과를 모름"으로 보이고 이후 `GET /settings/tokens`가 502가 되어 **모든 토큰이 안 보이고 지울 수도 없었다.** **고침:** 한도를 합법적인 날짜 범위(2000-01-01~9999-12-31) 사이의 일수(약 293만, 코드에서 두 날짜로 계산)로 대칭으로 넓혔고 그 밖은 계속 전부-아니면-전무 거부다. **끝에서 끝까지 시험** `TestFarFutureDaysLeftIsListedNotBroken`: 가짜 broker가 `days_left` 2,912,129와 -2,900,000인 행을 주면 목록이 502가 아니라 200으로 보이고, 9999-12-31 만료로 `set_token`을 하면 그 행과 함께 성공하며(값 반향 없음), 한도 밖(9,000,000)은 여전히 502. 웹의 `expiry.js`·`daysCell`은 정수만 보므로 같은 행이 `2912129일`·`2900000일 지남`으로 NaN 없이 그려진다(node `TestFarFutureAndFarPastDaysLeftRenderSanely`: 만료 배너는 먼 미래를 세지 않고 먼 과거를 센다) | 없음 |
+| W3b-19 | **로그 가림 목록**에 지금의 설정 OpenAI 키를 포함한다. 줄마다 파일을 읽지 않도록 **파일의 (수정 시각, 크기)로 캐시**한다: 안 바뀌었으면 `stat` 한 번뿐이고, 다시 쓴 키 파일(크기나 수정 시각이 다름)은 다음 줄에서 바로 읽어 가린다(`TestLogKeyCacheAvoidsRereadingUnchangedFile`: 20줄에 읽기 최대 1번, 크기만 다른 재작성·크기는 같고 수정 시각만 다른 재작성이 모두 다음 줄에 반영, 갱신 뒤 다시 안 읽음). `refine`의 실제 키 읽기는 캐시하지 않는다(신뢰 규칙·최신성 유지) | 같은 크기·같은 수정 시각으로(시각 해상도 안에서) 내용만 바뀌면 다음 변경 때까지 옛 값이 가림 목록에 남는다(키 파일은 root가 두고 `rename`으로 바꾸는 파일이라 현실적이지 않음) |
 
 ## 6. 실서버에서 확인하지 못한 것
 
