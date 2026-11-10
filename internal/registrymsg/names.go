@@ -18,7 +18,8 @@ var (
 	providerIDRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,39}$`)
 	// nameRE: a GitLab project/group name, a group path segment and the
 	// subject of create_project (project id = GitLab name = folder name).
-	// It needs at least two characters.
+	// It needs at least two characters. localhost-like or reserved-looking
+	// names are not special here.
 	nameRE = regexp.MustCompile(`^[a-z][a-z0-9-]{1,39}$`)
 
 	hostLabelRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
@@ -33,27 +34,15 @@ const (
 	maxURLBytes         = 200
 )
 
-// reservedNames are path words GitLab keeps for itself (top-level and
-// project-level routes) that also fit nameRE. Group path segments and project
-// names equal to one of them are refused, so the broker never asks GitLab to
-// create something it will reject or, worse, that shadows a route.
-var reservedNames = func() map[string]bool {
-	m := map[string]bool{}
-	for _, w := range strings.Fields(`admin api assets dashboard explore groups help import jwt login oauth profile
-		projects public search snippets unsubscribes uploads users sitemap s v2
-		badges blame blob branches builds commit commits compare create edit environments files forks graph graphs
-		hooks issues jobs labels new pipelines raw refs repository runners services settings tags tree update wiki wikis`) {
-		m[w] = true
-	}
-	return m
-}()
-
 // ValidProviderID reports whether s is a provider id.
 func ValidProviderID(s string) bool { return providerIDRE.MatchString(s) }
 
 // ValidName reports whether s is a project or group name (and path segment):
-// ^[a-z][a-z0-9-]{1,39}$ and not a GitLab reserved word.
-func ValidName(s string) bool { return nameRE.MatchString(s) && !reservedNames[s] }
+// ^[a-z][a-z0-9-]{1,39}$. There is deliberately no list of GitLab reserved
+// words: GitLab is the authority, it refuses such a name itself, and the
+// broker reports that as gitlab_refused (C3). A local list would be stale and
+// would be coupled to loading an existing registry.
+func ValidName(s string) bool { return nameRE.MatchString(s) }
 
 // ValidGroupPath reports whether s is a slash-separated group path of 1 to
 // MaxGroupDepth segments, each a ValidName, with no leading, trailing or

@@ -192,8 +192,8 @@ func TestGroupAndProjectNameRules(t *testing.T) {
 		"a": false, "a" + strings.Repeat("b", 40): false, "": false, "A": false, "Ab": false, "aB": false, "1a": false, "-a": false,
 		"a_b": false, "a b": false, "a\n": false, "ab\n": false, "a.b": false, ".": false, "..": false, "a/b": false, "a%2fb": false,
 		"a%2Fb": false, "%2e%2e": false, "ab%": false, "éa": false, "аpp": false /* cyrillic a */, "ａpp": false /* fullwidth */, "ab\x00": false,
-		// reserved by GitLab
-		"admin": false, "api": false, "projects": false, "groups": false, "users": false, "dashboard": false, "new": false, "edit": false, "hooks": false,
+		// GitLab-reserved words are NOT a shape rule: GitLab refuses them itself (C3 maps that to gitlab_refused)
+		"admin": true, "settings": true, "services": true, "public": true, "search": true, "profile": true, "tags": true, "hooks": true, "labels": true, "jobs": true, "new": true, "edit": true,
 	}
 	for s, ok := range names {
 		if got := ValidName(s); got != ok {
@@ -204,7 +204,7 @@ func TestGroupAndProjectNameRules(t *testing.T) {
 		"ab": true, "ab/cd": true, "ab/cd/ef/gh": true,
 		"ab/cd/ef/gh/ij": false, "": false, "/ab": false, "ab/": false, "ab//cd": false, "ab/../cd": false, "ab/./cd": false, "..": false, ".": false,
 		"ab/%2e%2e": false, "ab/cd%2fef": false, "ab%2fcd": false, "Ab/cd": false, "ab/Cd": false, "ab/c": false, "ab\\cd": false, "ab/cd\n": false,
-		"ab/аpp": false, "ab/éa": false, "ab/admin": false, "admin/ab": false, " ab": false, "ab ": false, "ab/ cd": false,
+		"ab/аpp": false, "ab/éa": false, "ab/admin": true, "admin/ab": true, " ab": false, "ab ": false, "ab/ cd": false,
 	}
 	for s, ok := range paths {
 		if got := ValidGroupPath(s); got != ok {
@@ -213,14 +213,14 @@ func TestGroupAndProjectNameRules(t *testing.T) {
 	}
 	// the rules are applied inside the actions too
 	f := projectFields()
-	for _, bad := range []string{"", "a", "Team", "a/../b", "ab/", "x/%2e%2e", "ab/admin", "a.b/cd"} {
+	for _, bad := range []string{"", "a", "Team", "a/../b", "ab/", "x/%2e%2e", "a.b/cd"} {
 		f["group_path"] = bad
 		if _, err := CanonicalChange(ActionCreateProject, "my-app", f); err == nil {
 			t.Errorf("group_path %q accepted", bad)
 		}
 	}
 	f["group_path"] = "ab"
-	for _, bad := range []string{"a", "A1", "my_app", "admin", "..", "a/b", "a%2fb", ""} {
+	for _, bad := range []string{"a", "A1", "my_app", "..", "a/b", "a%2fb", ""} {
 		if _, err := CanonicalChange(ActionCreateProject, bad, f); err == nil {
 			t.Errorf("project subject %q accepted", bad)
 		}
@@ -348,7 +348,7 @@ func TestExistingActionsUnchangedByW3c(t *testing.T) {
 		t.Errorf("1-char project id refused for set_flag: %v", err)
 	}
 	if _, err := CanonicalChange(ActionSetFlag, "admin", map[string]any{"flag": "ai_context", "value": true}); err != nil {
-		t.Errorf("reserved-name rule leaked into set_flag: %v", err)
+		t.Errorf("set_flag subject rule changed: %v", err)
 	}
 	// old actions must not take the new fields and vice versa
 	if _, err := CanonicalChange(ActionRegisterProject, "my-proj", projectFields()); err == nil {
@@ -407,8 +407,8 @@ func TestSubjectRulePerAction(t *testing.T) {
 			t.Errorf("%s: provider id rule must accept a 1-char id and reserved-looking names", a)
 		}
 	}
-	if accepts(ActionCreateProject, "a") || accepts(ActionCreateProject, "admin") {
-		t.Error("create_project: project name rule must refuse 1 char and reserved names")
+	if accepts(ActionCreateProject, "a") || !accepts(ActionCreateProject, "admin") {
+		t.Error("create_project: project name rule must refuse 1 char (reserved words are GitLab's call, not ours)")
 	}
 	for _, a := range []string{ActionRegisterProject, ActionSetFlag, ActionSetToken, ActionDeleteToken} {
 		if !accepts(a, "a") || !accepts(a, "admin") {
@@ -453,6 +453,21 @@ func TestNewActionConstants(t *testing.T) {
 	for got, w := range want {
 		if got != w {
 			t.Errorf("constant %q want %q", got, w)
+		}
+	}
+}
+
+// There is no reserved-word list: GitLab is the authority and a refusal comes
+// back as gitlab_refused. The shape rules accept these.
+func TestReservedLookingNamesAreAcceptedByShapeRules(t *testing.T) {
+	for _, n := range []string{"settings", "services", "public", "search", "profile", "tags", "hooks", "labels", "jobs", "admin", "api", "new", "edit", "projects", "groups", "users"} {
+		if !ValidName(n) || !ValidGroupPath("ab/"+n) {
+			t.Errorf("%q refused by the shape rule", n)
+		}
+		f := projectFields()
+		f["group_path"] = "ab/" + n
+		if _, err := CanonicalChange(ActionCreateProject, n, f); err != nil {
+			t.Errorf("create_project %q refused: %v", n, err)
 		}
 	}
 }

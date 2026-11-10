@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -102,9 +103,14 @@ type Orphan struct {
 	At        string `json:"at"`
 }
 
+// orphanDroppedLog is the fixed log line written when the oldest orphan record
+// is dropped to stay within maxOrphans (no values).
+const orphanDroppedLog = "orphan record dropped: the list is at its limit of 100"
+
 // AddOrphan appends o. The registry never holds more than maxOrphans (100)
-// records: when the list overflows, the OLDEST records are dropped.
-func (r *Registry) AddOrphan(o Orphan) {
+// records: when the list overflows, the OLDEST records are dropped and dropped
+// is true (callers tell the user).
+func (r *Registry) AddOrphan(o Orphan) (dropped bool) {
 	if o.ProjectID != nil {
 		id := *o.ProjectID
 		o.ProjectID = &id
@@ -112,7 +118,27 @@ func (r *Registry) AddOrphan(o Orphan) {
 	r.Orphans = append(r.Orphans, o)
 	if n := len(r.Orphans) - maxOrphans; n > 0 {
 		r.Orphans = append([]Orphan(nil), r.Orphans[n:]...)
+		return true
 	}
+	return false
+}
+
+// AddOrphan stores an orphan record (see Registry.AddOrphan) and persists it.
+// dropped reports that the oldest record was discarded; that is also logged as
+// one fixed line. If the write fails nothing changes and dropped is false.
+func (s *RegistryStore) AddOrphan(o Orphan) (dropped bool, err error) {
+	d := false
+	if err = s.Update(func(r *Registry) error { d = r.AddOrphan(o); return nil }); err != nil {
+		return false, err
+	}
+	if d {
+		if s.opts.Logf != nil {
+			s.opts.Logf("%s", orphanDroppedLog)
+		} else {
+			log.Print(orphanDroppedLog)
+		}
+	}
+	return d, nil
 }
 
 // Project is one registered repository. Provider is a provider id or null (a
@@ -163,6 +189,8 @@ type RegistryOptions struct {
 	// beforeCreate runs after OpenRegistry saw no registry file and before it
 	// creates one (simulates a file appearing late). Tests only.
 	beforeCreate func()
+	// Logf receives fixed, value-free log lines (nil: the standard logger).
+	Logf func(format string, a ...any)
 	// fileOwnerOK, when set, replaces OwnerOK for state files (not the dir). Tests only.
 	fileOwnerOK func(uint32) bool
 }
@@ -219,8 +247,12 @@ func OpenRegistry(dir string, legacy LegacySource, o RegistryOptions) (*Registry
 			}
 			if migrated {
 				// v1 -> v2: same content, atomic replace (never exclusive:
-				// the v1 file is the one being replaced). On failure the v1
-				// file is untouched and we do not start.
+				// the v1 file is the one being replaced). Any error is a start
+				// failure. Per stage: before the rename (temp write, fsync) the
+				// v1 file is untouched; after the rename (only the directory
+				// fsync can still fail) the file is already v2 and the next
+				// start reads it as a normal v2 file. There is no lock between
+				// reading v1 and renaming v2: stop the old broker first.
 				if _, werr := writeAtomic(st.path, mustMarshalRegistry(reg), o.failAt, false); werr != nil {
 					return nil, errors.New("프로젝트 등록부를 저장할 수 없습니다")
 				}
@@ -456,13 +488,50 @@ type projectV1 struct {
 	AutoMerge AutoMerge   `json:"auto_merge"`
 }
 
+// topLevelKeys returns the raw top-level values of a JSON object. It refuses
+// anything that the strict struct decoder could read differently from the
+// version dispatch: a repeated key, or two keys that differ only in case (Go's
+// decoder matches struct fields case-insensitively), and trailing data.
+func topLevelKeys(data []byte) (map[string]json.RawMessage, bool) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+		return nil, false
+	}
+	out := map[string]json.RawMessage{}
+	seen := map[string]bool{}
+	for dec.More() {
+		kt, err := dec.Token()
+		key, isStr := kt.(string)
+		if err != nil || !isStr {
+			return nil, false
+		}
+		folded := strings.ToLower(key)
+		if seen[folded] {
+			return nil, false
+		}
+		seen[folded] = true
+		var raw json.RawMessage
+		if dec.Decode(&raw) != nil {
+			return nil, false
+		}
+		out[key] = raw
+	}
+	if t, err := dec.Token(); err != nil || t != json.Delim('}') {
+		return nil, false
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, false
+	}
+	return out, true
+}
+
 // parseRegistry decodes and validates a registry file. Only version 1 and 2
 // are known; both are decoded strictly (unknown keys, trailing data and wrong
 // types are refused). migrated reports that data was a valid version 1 file
 // that was converted to the version 2 shape in memory: the caller rewrites it.
 func parseRegistry(data []byte) (r Registry, migrated bool, err error) {
-	var head map[string]json.RawMessage
-	if json.Unmarshal(data, &head) != nil {
+	head, ok := topLevelKeys(data)
+	if !ok {
 		return Registry{}, false, ErrRegistryBroken
 	}
 	strict := func(v any) bool {
@@ -476,7 +545,7 @@ func parseRegistry(data []byte) (r Registry, migrated bool, err error) {
 	}
 	switch string(head["version"]) {
 	case "2":
-		if !strict(&r) {
+		if !strict(&r) || r.Version != registryVersion {
 			return Registry{}, false, ErrRegistryBroken
 		}
 		if r.Providers == nil {
@@ -490,7 +559,7 @@ func parseRegistry(data []byte) (r Registry, migrated bool, err error) {
 		}
 	case "1":
 		var v1 registryV1
-		if !strict(&v1) || len(v1.Providers) != 0 {
+		if !strict(&v1) || v1.Version != registryVersionV1 || len(v1.Providers) != 0 {
 			return Registry{}, false, ErrRegistryBroken
 		}
 		r = emptyRegistry()

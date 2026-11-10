@@ -98,7 +98,7 @@ func TestRegistryV1MigratesToV2Atomically(t *testing.T) {
 		}
 	})
 	t.Run("write failure leaves v1 untouched", func(t *testing.T) {
-		for _, stage := range []string{"temp-written", "synced"} {
+		for _, stage := range []string{"temp-written", "synced", "dir-synced"} {
 			dir := stateDirFor(t)
 			p := writeRegFile(t, dir, v1Sample, 0o600)
 			o := regOpts()
@@ -111,6 +111,18 @@ func TestRegistryV1MigratesToV2Atomically(t *testing.T) {
 			st, err := OpenRegistry(dir, LegacySource{}, o)
 			if err == nil || errors.Is(err, ErrRegistryBroken) {
 				t.Fatalf("%s: want a start failure, got %v (store %v)", stage, err, st)
+			}
+			if stage == "dir-synced" {
+				// the rename already happened: the file is v2 now, and a retry must see the same content
+				after := readFile(t, p)
+				if !bytes.Contains(after, []byte(`"version":2`)) {
+					t.Fatalf("dir-synced: file not v2: %s", after)
+				}
+				st2 := mustOpen(t, dir, LegacySource{})
+				if !bytes.Equal(after, readFile(t, p)) || st2.Snapshot().Version != 2 || len(st2.Snapshot().Projects) != 2 {
+					t.Fatal("dir-synced: retry changed or misread the file")
+				}
+				continue
 			}
 			if string(readFile(t, p)) != v1Sample {
 				t.Fatalf("%s: v1 file changed", stage)
@@ -142,6 +154,14 @@ func TestRegistryV1MigratesToV2Atomically(t *testing.T) {
 			"version string":        `{"version":"2",` + good + `,"orphans":[]}`,
 			"version float":         `{"version":2.0,` + good + `,"orphans":[]}`,
 			"v2 unknown key":        `{"version":2,"extra":1,` + good + `,"orphans":[]}`,
+			"dup version 1 then 2":  `{"version":1,"version":2,` + good + `,"orphans":[]}`,
+			"dup version 2 then 1":  `{"version":2,"version":1,` + good + `}`,
+			"mixed-case Version":    `{"version":1,` + good + `,"Version":2}`,
+			"only Version":          `{"Version":2,` + good + `,"orphans":[]}`,
+			"VERSION extra":         `{"version":2,"VERSION":1,` + good + `,"orphans":[]}`,
+			"dup providers key":     `{"version":2,"providers":[],"providers":[],"projects":[],"auto_merge_global":{"enabled":false,"max_per_day":5},"orphans":[]}`,
+			"dup projects key":      `{"version":2,"providers":[],"projects":[],"projects":[],"auto_merge_global":{"enabled":false,"max_per_day":5},"orphans":[]}`,
+			"mixed-case Orphans v1": `{"version":1,` + good + `,"Orphans":[]}`,
 			"v2 trailing data":      `{"version":2,` + good + `,"orphans":[]}{}`,
 			"v2 provider unknown":   `{"version":2,"providers":[{"id":"gl","kind":"gitlab","base_url":"http://h","ssh_url":"ssh://git@h","token_ref":"t","extra":1}],"projects":[],"auto_merge_global":{"enabled":false,"max_per_day":5},"orphans":[]}`,
 			"v2 orphan unknown key": `{"version":2,"providers":[],"projects":[],"auto_merge_global":{"enabled":false,"max_per_day":5},"orphans":[{"provider":"gl","project":"g/p","project_id":null,"step":"commit","at":"2026-11-10T00:00:00Z","x":1}]}`,
@@ -423,9 +443,17 @@ func TestOrphansBounded(t *testing.T) {
 			t.Fatalf("missing key %s", k)
 		}
 	}
+	// AddOrphan reports whether it dropped a record
+	var full Registry
+	full.Orphans = makeOrphans(maxOrphans)
+	if !full.AddOrphan(Orphan{Provider: "gl", Project: "team/xx", Step: "commit", At: "2026-11-10T00:00:00Z"}) || len(full.Orphans) != maxOrphans {
+		t.Fatal("AddOrphan at the cap must drop and say so")
+	}
 	// AddOrphan on an empty list and on a nil list
 	var r Registry
-	r.AddOrphan(Orphan{Provider: "gl", Project: "team/xx", Step: "commit", At: "2026-11-10T00:00:00Z"})
+	if r.AddOrphan(Orphan{Provider: "gl", Project: "team/xx", Step: "commit", At: "2026-11-10T00:00:00Z"}) {
+		t.Fatal("AddOrphan below the cap reported a drop")
+	}
 	if len(r.Orphans) != 1 {
 		t.Fatal("AddOrphan on nil list")
 	}
@@ -490,5 +518,39 @@ func TestOldBrokerVersionRefusesV2(t *testing.T) {
 	forced, _ := json.Marshal(f)
 	if oldAccepts(forced) {
 		t.Fatal("v2-only keys would pass the W3b strict decoder")
+	}
+}
+
+func TestStoreAddOrphanLogsFixedLineOnDrop(t *testing.T) {
+	var lines []string
+	o := regOpts()
+	o.Logf = func(format string, a ...any) { lines = append(lines, fmt.Sprintf(format, a...)) }
+	st, err := OpenRegistry(stateDirFor(t), LegacySource{}, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canary := "canary-secret-project"
+	for i := 0; i < maxOrphans; i++ {
+		dropped, err := st.AddOrphan(Orphan{Provider: "gl", Project: fmt.Sprintf("team/app-%03d", i), Step: "commit", At: "2026-11-10T00:00:00Z"})
+		if err != nil || dropped {
+			t.Fatalf("add %d: dropped=%v err=%v", i, dropped, err)
+		}
+	}
+	if len(lines) != 0 {
+		t.Fatalf("logged before the cap: %v", lines)
+	}
+	dropped, err := st.AddOrphan(Orphan{Provider: "gl", Project: "team/" + canary, Step: "commit", At: "2026-11-10T00:00:00Z"})
+	if err != nil || !dropped {
+		t.Fatalf("dropped=%v err=%v", dropped, err)
+	}
+	if len(lines) != 1 || lines[0] != orphanDroppedLog || strings.Contains(lines[0], "team") || strings.Contains(lines[0], canary) {
+		t.Fatalf("log lines %v", lines)
+	}
+	if got := st.Snapshot().Orphans; len(got) != maxOrphans || got[0].Project != "team/app-001" {
+		t.Fatalf("state %d %v", len(got), got[0].Project)
+	}
+	// an invalid orphan is refused and logs nothing more
+	if _, err := st.AddOrphan(Orphan{Provider: "GL", Project: "x", Step: "commit", At: "2026-11-10T00:00:00Z"}); err == nil || len(lines) != 1 {
+		t.Fatalf("invalid orphan: %v lines=%d", err, len(lines))
 	}
 }

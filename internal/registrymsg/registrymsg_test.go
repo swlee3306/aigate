@@ -177,8 +177,8 @@ func TestSigningDefinitionsDoNotDrift(t *testing.T) {
 		}
 	}
 	// W3c actions: constants and subject rules (the provider id rule for the
-	// provider/group actions, the project name shape for create_project; the
-	// reserved-name list is registrymsg-only on purpose).
+	// provider/group actions, the name rule for create_project; there is no
+	// reserved-word list, GitLab refuses those itself).
 	if ActionSetProvider != signing.RegistryActionSetProvider || ActionDeleteProvider != signing.RegistryActionDeleteProvider ||
 		ActionCreateGroup != signing.RegistryActionCreateGroup || ActionCreateProject != signing.RegistryActionCreateProject {
 		t.Fatal("W3c action constants differ between registrymsg and signing")
@@ -192,7 +192,7 @@ func TestSigningDefinitionsDoNotDrift(t *testing.T) {
 			}
 			want := ValidProviderID(s)
 			if a == ActionCreateProject {
-				want = nameRE.MatchString(s)
+				want = ValidName(s)
 			}
 			if got := m.Validate() == nil; got != want {
 				t.Errorf("%s subject %q: signing accepts=%v registrymsg accepts=%v", a, s, got, want)
