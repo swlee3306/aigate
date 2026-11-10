@@ -1,6 +1,6 @@
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { createHash, webcrypto } from 'node:crypto';
 import { findAll } from './dom-stub.js';
 import { fakeCtx, apiError } from './fake-ctx.js';
@@ -131,14 +131,14 @@ async function mount(over, extra) {
 
 async function openForm(ctx, over) {
   click(byLabel(ctx.root, '토큰 추가')[0]);
-  await until(() => byId(ctx.root, 't-value'), 'form');
+  await until(() => byId(ctx.root, 'x-field-b'), 'form');
   if (over) fillForm(ctx, over);
 }
 function fillForm(ctx, o) {
   if (o.kind !== undefined) { byId(ctx.root, 't-kind').value = o.kind; fire(byId(ctx.root, 't-kind'), 'change'); }
-  if (o.ref !== undefined) byId(ctx.root, 't-ref').value = o.ref;
+  if (o.ref !== undefined) byId(ctx.root, 'x-field-a').value = o.ref;
   if (o.expires !== undefined) byId(ctx.root, 't-expires').value = o.expires;
-  if (o.value !== undefined) { byId(ctx.root, 't-value').value = o.value; fire(byId(ctx.root, 't-value'), 'input'); }
+  if (o.value !== undefined) { byId(ctx.root, 'x-field-b').value = o.value; fire(byId(ctx.root, 'x-field-b'), 'input'); }
 }
 const GOOD = { kind: 'gitlab', ref: 'gitlab-main', expires: '2027-06-30', value: VALUE };
 async function toConfirm(ctx, o) {
@@ -258,45 +258,146 @@ test('TestConfigRowHasNoDeleteAndUnusableIsShown', async () => {
 });
 
 test('TestPasswordInputAttributes', async () => {
-  // D9 said type=password. Chrome ignores autocomplete=off on password fields and
-  // offers "Save password?" (username = the name field, password = the token), so
-  // the field is a masked TEXT input plus every opt-out hint. Still masked (CSS).
+  // History: type=password failed (Chrome ignores autocomplete=off); a masked text
+  // input with CSS text masking also failed in real Chrome (treated as password-like,
+  // the name field looked like a username). Now: a plain text input whose text is
+  // transparent, with a bullet overlay drawn by this page; autocomplete=one-time-code.
   const ctx = await mount();
   await openForm(ctx);
-  const v = byId(ctx.root, 't-value');
+  const v = byId(ctx.root, 'x-field-b');
   assert.equal(v.tagName, 'INPUT');
-  assert.equal(v.getAttribute('type'), 'text', 'not type=password: no password-manager heuristics');
-  assert.notEqual(v.getAttribute('type'), 'password');
-  assert.match(v.getAttribute('class'), /\bsecret\b/, 'masked by CSS');
-  for (const [k, want] of Object.entries({ autocomplete: 'off', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false',
+  assert.equal(v.getAttribute('type'), 'text');
+  assert.match(v.getAttribute('class'), /\bovlin\b/, 'text made transparent by CSS');
+  for (const [k, want] of Object.entries({ autocomplete: 'one-time-code', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false',
     'data-lpignore': 'true', 'data-1p-ignore': 'true', 'data-bwignore': 'true', 'data-form-type': 'other' })) {
     assert.equal(v.getAttribute(k), want, k);
   }
   assert.equal(v.getAttribute('value'), null, 'no value attribute');
   assert.equal(v.getAttribute('maxlength'), String(T.TOKEN_VALUE_MAX + 1), 'longer input is still seen (and refused with a sentence)');
   assert.equal(v.getAttribute('data-focus-key'), 'value');
-  // neutral names: nothing username/password/token-like on the value or the name field
-  const r = byId(ctx.root, 't-ref');
+  assert.equal(v.getAttribute('name'), 'x-field-b');
+  // the label and the length description: never the value
+  assert.equal(findAll(ctx.root, (e) => e.getAttribute('for') === 'x-field-b').length, 1);
+  const desc = v.getAttribute('aria-describedby');
+  assert.match(desc, /^[A-Za-z0-9_-]+$/);
+  assert.equal(text(byId(ctx.root, desc)), '입력한 글자 수: 0');
+  // neutral names: nothing username/password/token/secret/key-like on ids, names, placeholders, classes
+  const r = byId(ctx.root, 'x-field-a');
+  const bad = /user|login|pass|pwd|secret|token|email|account|key|name/i;
   for (const inp of [v, r]) {
-    const all = [inp.getAttribute('id'), inp.getAttribute('name'), inp.getAttribute('placeholder')].join(' ');
-    assert.ok(!/user|login|pass|pwd|secret|token|email|account/i.test(all.replace(/^t-value|^t-ref/g, '')), 'neutral name: ' + all);
+    for (const k of ['id', 'name', 'placeholder', 'aria-label']) assert.ok(!bad.test(inp.getAttribute(k) || ''), k + ' of ' + inp.getAttribute('id'));
   }
+  assert.ok(!/secret|pass|token|key/i.test(v.getAttribute('class')));
+  // the label field: not "name", not username-like; off + readonly until focus
   assert.equal(r.getAttribute('autocomplete'), 'off');
-  assert.equal(r.getAttribute('data-lpignore'), 'true');
   assert.equal(r.getAttribute('autocapitalize'), 'off');
-  // no <form> anywhere (the tag is not even allowed by el), no password field at all
+  assert.equal(r.getAttribute('data-lpignore'), 'true');
+  assert.equal(r.getAttribute('type'), 'text', 'no email/tel/search tricks');
+  assert.equal(r.hasAttribute('readonly'), true, 'readonly at render');
+  fire(r, 'focus');
+  assert.equal(r.hasAttribute('readonly'), false, 'removed on focus');
+  const c2 = await mount();
+  await openForm(c2);
+  const r2 = byId(c2.root, 'x-field-a');
+  assert.equal(r2.hasAttribute('readonly'), true);
+  fire(r2, 'pointerdown');
+  assert.equal(r2.hasAttribute('readonly'), false, 'removed on pointerdown');
+  for (const lb of findAll(ctx.root, (e) => e.tagName === 'LABEL')) {
+    assert.ok(!/이름|사용자|비밀번호|password|username|아이디/i.test(text(lb)), 'label wording: ' + text(lb));
+  }
+  assert.match(text(findAll(ctx.root, (e) => e.tagName === 'LABEL' && e.getAttribute('for') === 'x-field-a')[0]), /식별 라벨/);
+  // no <form>, no password-type field, nothing text-masking anywhere
   assert.equal(findAll(ctx.root, (e) => e.tagName === 'FORM').length, 0);
   assert.equal(findAll(ctx.root, (e) => e.getAttribute('type') === 'password').length, 0);
-  assert.equal(findAll(ctx.root, (e) => e.getAttribute('for') === 't-value').length, 1);
-  // the CSS really masks it
-  const css = src('style.css');
-  assert.match(css, /\.secret\s*\{[^}]*-webkit-text-security:\s*disc/);
-  assert.match(css, /\.secret\s*\{[^}]*\btext-security:\s*disc/);
   const code = src('views/tokens.js');
-  for (const bad of ['localStorage', 'sessionStorage', 'indexedDB', 'document.cookie', 'caches.', 'navigator.storage', 'history.']) {
-    assert.ok(!code.includes(bad), 'tokens.js uses ' + bad);
+  for (const bad2 of ['localStorage', 'sessionStorage', 'indexedDB', 'document.cookie', 'caches.', 'navigator.storage', 'history.']) {
+    assert.ok(!code.includes(bad2), 'tokens.js uses ' + bad2);
   }
   assert.ok(!/\.paste|onpaste/.test(code), 'pasting stays allowed');
+  // the CSS: transparent text, visible caret, an overlay that ignores the pointer
+  const css = src('style.css');
+  assert.match(css, /input\.ovlin\s*\{[^}]*color:\s*transparent/);
+  assert.match(css, /input\.ovlin\s*\{[^}]*caret-color:/);
+  assert.match(css, /\.ovlmask\s*\{[^}]*pointer-events:\s*none/);
+});
+
+test('TestNoPasswordLikeMarkupShipped', () => {
+  // The failed approaches must not come back: no password type, no CSS text masking, anywhere in static/.
+  const dir = new URL('../static/', import.meta.url);
+  const walk = (u) => readdirSync(u, { withFileTypes: true }).flatMap((d) => (d.isDirectory() ? walk(new URL(d.name + '/', u)) : [new URL(d.name, u)]));
+  const files = walk(dir);
+  assert.ok(files.length > 15);
+  for (const f of files) {
+    if (!/\.(js|css|html)$/.test(f.pathname)) continue;
+    const t = readFileSync(f, 'utf8');
+    assert.ok(!/text-security/i.test(t), f.pathname + ' has text-security');
+    assert.ok(!/type\s*[:=]\s*['"]?password/i.test(t) && !/type=["']password/i.test(t) && !/\[type=["']?password/i.test(t), f.pathname + ' has a password type');
+    assert.ok(!/autocomplete['"]?\s*[:=]\s*['"](?:new-password|current-password|username)/i.test(t), f.pathname + ' uses a credential autocomplete');
+  }
+});
+
+test('TestMaskOverlayFollowsValue', async () => {
+  const mask = (ctx) => byData(ctx.root, 'mask', 'value')[0];
+  const lenText = (ctx) => text(byId(ctx.root, byId(ctx.root, 'x-field-b').getAttribute('aria-describedby')));
+  const ctx = await mount();
+  await openForm(ctx);
+  const inp = byId(ctx.root, 'x-field-b');
+  const m0 = mask(ctx);
+  assert.equal(mask(ctx).getAttribute('aria-hidden'), 'true', 'the bullets are not read out');
+  assert.equal(text(mask(ctx)), '');
+  const type = (v) => { inp.value = v; fire(inp, 'input'); };
+  type('a'); assert.equal(text(mask(ctx)), '•');
+  type(VALUE); // paste
+  assert.equal(text(mask(ctx)), '•'.repeat(VALUE.length));
+  assert.equal(lenText(ctx), '입력한 글자 수: ' + VALUE.length);
+  type(VALUE.slice(0, 10)); // partial delete
+  assert.equal(text(mask(ctx)), '•'.repeat(10));
+  assert.equal(lenText(ctx), '입력한 글자 수: 10');
+  type(''); assert.equal(text(mask(ctx)), '');
+  assert.equal(lenText(ctx), '입력한 글자 수: 0');
+  // never the real characters, never the value, in the overlay, the description or any attribute
+  type(VALUE);
+  assert.deepEqual(leaks(mask(ctx), NEEDLES), []);
+  assert.ok(!/[A-Za-z0-9]/.test(text(mask(ctx))));
+  assert.equal(inp.value, VALUE, 'copy from the field still yields the real characters (documented trade-off)');
+  // cancel empties input and overlay together
+  click(byLabel(ctx.root, '취소')[0]);
+  assert.equal(inp.value, '');
+  assert.equal(text(m0), '', 'overlay cleared on cancel');
+  // leave
+  const c2 = await mount();
+  await openForm(c2, GOOD);
+  const i2 = byId(c2.root, 'x-field-b'); const m2 = mask(c2);
+  assert.equal(text(m2), '•'.repeat(VALUE.length));
+  c2.leave();
+  assert.equal(i2.value, ''); assert.equal(text(m2), '', 'overlay cleared on leave');
+  // submit while busy: field and overlay already empty; typing while busy then confirmation: both cleared
+  let gate;
+  const hold = new Promise((r) => { gate = r; });
+  const c3 = await mount({ 'POST /api/v1/tokens/begin': async () => { await hold; seq++; return { request: seq.toString(16).padStart(32, '0'), issued: '2026-11-10T03:00:00Z' }; } });
+  await openForm(c3, GOOD);
+  const i3 = byId(c3.root, 'x-field-b'); const m3 = mask(c3);
+  click(byLabel(c3.root, '변경 내용 확인')[0]);
+  await until(() => posts(c3, 'begin').length === 1, 'begin');
+  assert.equal(i3.value, ''); assert.equal(text(m3), '', 'overlay empty right after submit');
+  i3.value = 'late'; fire(i3, 'input');
+  assert.equal(text(m3), '••••');
+  gate();
+  await waitSignable(c3);
+  assert.equal(i3.value, ''); assert.equal(text(m3), '', 'overlay cleared when the confirmation is built');
+  // an error path (begin fails): overlay empty
+  const c4 = await mount({ 'POST /api/v1/tokens/begin': () => { throw apiError(500, 'internal_error', SECRET); } });
+  await openForm(c4, GOOD);
+  const m4 = mask(c4);
+  click(byLabel(c4.root, '변경 내용 확인')[0]);
+  await until(() => text(c4.root).includes(T.PREP_TEXT.server), 'error');
+  assert.equal(text(m4), '');
+  // a refused local validation keeps what was typed (and its bullets)
+  const c5 = await mount();
+  await openForm(c5, { ...GOOD, value: 'short' });
+  click(byLabel(c5.root, '변경 내용 확인')[0]);
+  await until(() => text(c5.root).includes(T.ERROR_TEXT.token_too_short), 'too short');
+  assert.equal(text(mask(c5)), '•••••');
 });
 
 test('TestConfirmShowsKindRefExpiryLast4AndHashPrefixOnly', async () => {
@@ -395,7 +496,7 @@ test('TestValueNeverInDOMOrStateAfterSubmit', async () => {
   const noValueAnywhere = (ctx, what) => {
     assert.deepEqual(leaks(ctx.root, NEEDLES), [], what + ': DOM');
     assert.equal(T.heldValueLength(), 0, what + ': variable');
-    const input = byId(ctx.root, 't-value');
+    const input = byId(ctx.root, 'x-field-b');
     if (input) assert.equal(input.value, '', what + ': input');
     assert.ok(!JSON.stringify(ctx.calls).includes(VALUE) && !JSON.stringify(ctx.nav).includes(VALUE), what + ': urls');
     assert.equal(ctx.guard, null, what + ': guard released');
@@ -405,7 +506,7 @@ test('TestValueNeverInDOMOrStateAfterSubmit', async () => {
   await toConfirm(a);
   await waitSignable(a);
   assert.deepEqual(leaks(a.root, NEEDLES), []);
-  assert.equal(byId(a.root, 't-value'), undefined, 'the password field is gone');
+  assert.equal(byId(a.root, 'x-field-b'), undefined, 'the password field is gone');
   assert.equal(T.heldValueLength(), VALUE.length, 'held only for the apply');
   // 2. after the apply
   click(signBtn(a));
@@ -444,7 +545,7 @@ test('TestValueNeverInDOMOrStateAfterSubmit', async () => {
       await until(() => /너무 잦|형식이 올바르지/.test(text(d.root)), name);
       await d.settle();
       assert.equal(T.heldValueLength(), 0, name + ': variable');
-      assert.equal(byId(d.root, 't-value').value, '', name + ': input');
+      assert.equal(byId(d.root, 'x-field-b').value, '', name + ': input');
       assert.deepEqual(leaks(d.root, NEEDLES), [], name);
       assert.equal(d.guard, null, name + ': no trap after an error');
     } else {
@@ -478,7 +579,7 @@ test('TestDeleteNeedsNameConfirmAndSignature', async () => {
   const row = findAll(ctx.root, (e) => e.tagName === 'TR' && text(e).includes('gitlab-main'))[0];
   click(byLabel(row, '삭제')[0]);
   await until(() => byId(ctx.root, 't-confirm-ref'), 'delete form');
-  assert.equal(byId(ctx.root, 't-value'), undefined, 'a delete never asks for a value');
+  assert.equal(byId(ctx.root, 'x-field-b'), undefined, 'a delete never asks for a value');
   const go = () => byLabel(ctx.root, '삭제 내용 확인')[0];
   // no name, a wrong name, a name with a space: nothing is requested
   for (const typed of ['', 'gitlab-other', 'gitlab-main ', 'GITLAB-MAIN']) {
@@ -579,7 +680,7 @@ test('TestExpiresRequiredHintForGitHostTokens', async () => {
   assert.match(hint(), /권장/, 'github: recommended');
   fillForm(ctx, { kind: 'openai' });
   assert.ok(!/권장/.test(hint()), 'openai: no recommendation');
-  assert.equal(byId(ctx.root, 't-ref').value, 'openai', 'the openai kind has one name');
+  assert.equal(byId(ctx.root, 'x-field-a').value, 'openai', 'the openai kind has one name');
   // the expiry is typed by the user: the form says so
   assert.match(text(ctx.root), /직접 적은 날짜/);
   // expiry rules, checked by the browser before anything is requested
@@ -1035,7 +1136,7 @@ test('TestInputClearedWhileBusyGuardReleasedAndBodyCleared', async () => {
   click(byLabel(ctx.root, '변경 내용 확인')[0]);
   await until(() => posts(ctx, 'begin').length === 1, 'begin pending');
   // pending begin: the field is empty and disabled, the holder has the value, the guard says so with a button that exists
-  const inp = byId(ctx.root, 't-value');
+  const inp = byId(ctx.root, 'x-field-b');
   assert.equal(inp.value, '', 'input empty right after submit, while busy');
   assert.equal(inp.disabled, true, 'input disabled while busy');
   assert.equal(T.heldValueLength(), VALUE.length);
@@ -1143,7 +1244,7 @@ test('TestTypingWhileBusyAndLeavingClearTheField', async () => {
     'POST /api/v1/tokens/begin': async () => { await hold; seq++; return { request: seq.toString(16).padStart(32, '0'), issued: '2026-11-10T03:00:00Z' }; },
   });
   await openForm(ctx, GOOD);
-  const inp = byId(ctx.root, 't-value');
+  const inp = byId(ctx.root, 'x-field-b');
   click(byLabel(ctx.root, '변경 내용 확인')[0]);
   await until(() => posts(ctx, 'begin').length === 1, 'begin pending');
   inp.value = 'late typing';
@@ -1157,7 +1258,7 @@ test('TestTypingWhileBusyAndLeavingClearTheField', async () => {
   // leaving while a value is typed in the field empties the field itself
   const c2 = await mount();
   await openForm(c2, GOOD);
-  const i2 = byId(c2.root, 't-value');
+  const i2 = byId(c2.root, 'x-field-b');
   assert.equal(i2.value, VALUE);
   c2.leave();
   assert.equal(i2.value, '', 'the input is emptied on leave');
@@ -1165,7 +1266,7 @@ test('TestTypingWhileBusyAndLeavingClearTheField', async () => {
   // cancelling the form with a value typed empties the field
   const c3 = await mount();
   await openForm(c3, GOOD);
-  const i3 = byId(c3.root, 't-value');
+  const i3 = byId(c3.root, 'x-field-b');
   click(byLabel(c3.root, '취소')[0]);
   assert.equal(i3.value, '');
 });

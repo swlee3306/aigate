@@ -377,3 +377,24 @@ func TestTokensViewClockOnlyForExpiry(t *testing.T) {
 		}
 	}
 }
+
+// TestNoPasswordLikeMarkupShipped: two approaches to hiding the token value were
+// tried in real Chrome and both made it offer to save the token as a password (a
+// password-type field, and CSS text masking on a text field). Neither may come
+// back anywhere in the shipped files.
+func TestNoPasswordLikeMarkupShipped(t *testing.T) {
+	bad := regexp.MustCompile(`(?i)text-security|type\s*[:=]\s*['"]?password|\[type=["']?password|autocomplete['"]?\s*[:=]\s*['"](?:new-password|current-password|username)`)
+	n := 0
+	for name, b := range staticFiles(t) {
+		if !strings.HasSuffix(name, ".js") && !strings.HasSuffix(name, ".css") && !strings.HasSuffix(name, ".html") {
+			continue
+		}
+		n++
+		if m := bad.Find(b); m != nil {
+			t.Errorf("static/%s contains %q", name, m)
+		}
+	}
+	if n < 15 {
+		t.Fatalf("only %d files scanned", n)
+	}
+}

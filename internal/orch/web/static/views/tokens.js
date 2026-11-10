@@ -373,7 +373,7 @@ export function tokensView(ctx) {
     st.last4 = '';
     st.hash8 = '';
     st.typed = false;
-    if (st.form && st.form.value) st.form.value.value = '';
+    if (st.form && st.form.value) { st.form.value.value = ''; syncMask(st.form); }
     syncGuard();
   }
 
@@ -437,27 +437,46 @@ export function tokensView(ctx) {
       TOKEN_KINDS.map((k) => el('option', { value: k }, k)));
     f.kind.value = kind0;
     f.ref = el('input', {
-      type: 'text', id: 't-ref', name: 'x-tr', class: 'mono', autocomplete: 'off', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false',
-      maxlength: String(TOKEN_REF_MAX + 1), disabled: !!pre, 'data-focus-key': 'ref', 'data-lpignore': 'true', 'data-1p-ignore': 'true', 'data-bwignore': 'true', 'data-form-type': 'other',
+      type: 'text', id: 'x-field-a', name: 'x-field-a', class: 'mono', autocomplete: 'off', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false',
+      maxlength: String(TOKEN_REF_MAX + 1), disabled: !!pre, readonly: true, 'data-focus-key': 'ref', 'data-lpignore': 'true', 'data-1p-ignore': 'true', 'data-bwignore': 'true', 'data-form-type': 'other',
+      on: { focus: unlockRef, pointerdown: unlockRef },
     });
     f.ref.value = pre ? pre.ref : '';
     if (!pre && kind0 === TOKEN_SINGLETON_KIND) f.ref.value = TOKEN_SINGLETON_KIND;
-    // A masked TEXT input, not type=password: Chrome ignores autocomplete=off on
-    // password fields and offers to save them (username = the name field). The
-    // masking is CSS (.secret); the opt-out hints cover the common managers.
+    // A plain text input whose text is transparent (CSS) with a bullet overlay drawn
+    // here. Neither a password-type field nor CSS text masking: Chrome treated both
+    // as a password and offered to save the token. one-time-code is not saved, and the
+    // opt-out hints cover the common managers. Nothing is inside a form.
     f.value = el('input', {
-      type: 'text', id: 't-value', name: 'x-tv', class: ['mono', 'secret'], autocomplete: 'off', autocapitalize: 'off', autocorrect: 'off',
-      spellcheck: 'false', maxlength: String(TOKEN_VALUE_MAX + 1), 'data-focus-key': 'value',
+      type: 'text', id: 'x-field-b', name: 'x-field-b', class: ['mono', 'ovlin'], autocomplete: 'one-time-code', autocapitalize: 'off', autocorrect: 'off',
+      spellcheck: 'false', maxlength: String(TOKEN_VALUE_MAX + 1), 'data-focus-key': 'value', 'aria-describedby': 'x-field-b-len',
       'data-lpignore': 'true', 'data-1p-ignore': 'true', 'data-bwignore': 'true', 'data-form-type': 'other',
       on: { input: onTyped },
     });
+    f.mask = el('span', { class: 'ovlmask', 'aria-hidden': 'true', 'data-mask': 'value' });
+    f.len = el('span', { class: 'sr', id: 'x-field-b-len' });
     f.value.value = '';
+    syncMask(f);
     f.expires = el('input', { type: 'text', id: 't-expires', class: 'mono', autocomplete: 'off', spellcheck: 'false', maxlength: '10', placeholder: 'YYYY-MM-DD', 'data-focus-key': 'expires' });
     f.expires.value = '';
     f.hint = el('span', { class: 'hint', 'data-hint': 'expires' }, hintText(kind0));
     f.problem = el('p', { class: ['note', 'err'], role: 'alert', 'data-problem': 'form' });
     f.problem.hidden = true;
     return f;
+  }
+
+  // The label field is readonly until the person touches it: browsers do not
+  // offer autofill on a readonly field, so no dropdown appears on page load.
+  function unlockRef() {
+    if (st.form && st.form.ref) st.form.ref.removeAttribute('readonly');
+  }
+
+  // syncMask redraws the overlay: one bullet per character now in the field
+  // (never the characters) and the length for screen readers.
+  function syncMask(f) {
+    const n = f && typeof f.value.value === 'string' ? f.value.value.length : 0;
+    clear(f.mask).append('•'.repeat(Math.min(n, TOKEN_VALUE_MAX + 1)));
+    clear(f.len).append('입력한 글자 수: ' + n);
   }
 
   function onKind() {
@@ -474,6 +493,7 @@ export function tokensView(ctx) {
   function onTyped() {
     const f = st.form;
     st.typed = !!f && typeof f.value.value === 'string' && f.value.value.length > 0;
+    if (f) syncMask(f);
     syncGuard();
   }
 
@@ -507,6 +527,7 @@ export function tokensView(ctx) {
     formProblem(f.problem, '');
     held.value = value;
     f.value.value = ''; // from here on the value is in the holder only
+    syncMask(f);
     st.typed = false;
     syncGuard();
     propose(ACTION_SET_TOKEN, ref, { kind, expires }, true);
@@ -602,7 +623,7 @@ export function tokensView(ctx) {
       st.last4 = held.value.slice(-4);
       st.hash8 = fields.value_hash.slice(0, 8);
     }
-    if (st.form && st.form.value) st.form.value.value = ''; // anything typed while the request was out
+    if (st.form && st.form.value) { st.form.value.value = ''; syncMask(st.form); } // anything typed while the request was out
     st.typed = false;
     syncGuard();
     paint();
@@ -813,8 +834,8 @@ export function tokensView(ctx) {
       el('p', { class: 'lead' }, '값은 이 화면에서만 입력하고, 다음 화면에서 바뀔 내용을 확인한 뒤 패스키로 서명합니다. 서명에는 값의 해시만 묶이고, 값은 마지막 전송 한 번에만 실립니다.'),
       el('div', { class: 'form' }, [
         field('종류', 't-kind', f.kind, f.replace ? el('span', { class: 'hint' }, '교체할 때는 종류와 이름을 바꿀 수 없습니다.') : null),
-        field('이름', 't-ref', f.ref, el('span', { class: 'hint' }, '소문자로 시작, 소문자·숫자·하이픈, 40자 이내. openai 종류는 이름이 openai 하나뿐입니다.')),
-        field('토큰 값', 't-value', f.value, el('span', { class: 'hint' }, '32~512자의 인쇄 가능한 ASCII 문자, 공백 없음. 붙여넣어도 됩니다. 입력한 값은 가려지고, 확인 화면에는 마지막 4자만 보입니다.')),
+        field('식별 라벨 (영문 소문자·숫자·-)', 'x-field-a', f.ref, el('span', { class: 'hint' }, '소문자로 시작, 소문자·숫자·하이픈, 40자 이내. openai 종류의 라벨은 openai 하나뿐입니다.')),
+        field('토큰 값', 'x-field-b', el('div', { class: 'ovlbox' }, [f.value, f.mask, f.len]), el('span', { class: 'hint' }, '32~512자의 인쇄 가능한 ASCII 문자, 공백 없음. 붙여넣어도 됩니다. 입력한 값은 가려지고, 확인 화면에는 마지막 4자만 보입니다.')),
         field('만료일 (선택)', 't-expires', f.expires, f.hint),
         f.problem,
         noteNode(),
