@@ -18,10 +18,10 @@
 실행: 2026-11-10, macOS(Apple Silicon), Go 1.27.1, Node v26.5.0. 세는 방식은 W3a(21번 문서 2장)와 같다: 최상위 시험 함수와 하위 시험(`t.Run`)을 따로 센다(`go test -json` 결과 줄에서 집계).
 
 - `go vet ./...`, `GOOS=darwin go vet ./cmd/... ./internal/...`, `GOOS=linux go vet ./cmd/... ./internal/...`: 통과. `gofmt -l .`: 출력 없음.
-- `go test ./... -count=1 -race`: **종료 코드 0**, 표준 오류 출력 없음. 최상위 시험 함수 1294개 중 **1292 통과, 0 실패, 2 건너뜀**(하위 시험 833개 모두 통과). 건너뜀 2개는 W1~W3a와 같다: `internal/orch/web` `TestDevServer`(수동 개발 서버), `internal/pathfold` `TestCollectionsPerformance`(-race 빌드에서만 건너뛰는 시간 검사). 이 숫자는 B6 시험을 더한 **최종 코드**에서 한 번에 돌린 결과다(커밋 `test: adversarial suite for W3b` 시점의 트리).
-- `node --test "internal/orch/web/test/*.test.js"`: **193개 전부 통과**(W3a 165개 + W3b 28개: `tokens.test.js`와 `guard.test.js`의 새 시험)
+- `go test ./... -count=1 -race`: **종료 코드 0**, 표준 오류 출력 없음. 최상위 시험 함수 1297개 중 **1295 통과, 0 실패, 2 건너뜀**(하위 시험 833개 모두 통과). 건너뜀 2개는 W1~W3a와 같다: `internal/orch/web` `TestDevServer`(수동 개발 서버), `internal/pathfold` `TestCollectionsPerformance`(-race 빌드에서만 건너뛰는 시간 검사). 이 숫자는 최종 수정 라운드(3c)까지 넣은 **최종 코드**에서 한 번에 돌린 결과다(최종 수정 라운드의 코드 커밋 시점의 트리).
+- `node --test "internal/orch/web/test/*.test.js"`: **193개 전부 통과**(W3a 165개 + W3b 28개: `tokens.test.js` 27개 + `guard.test.js` 1개(`TestHashGuardStringIsItsOwnNotice`))
 - **B5 게이트:** `go test -run TestConstantsAgreeWithWeb -v ./internal/orch/api` → `--- PASS: TestConstantsAgreeWithWeb`, `--- PASS: TestConstantsAgreeWithWeb/tokens`, **`SKIP` 없음**(웹 파일이 없거나 상수가 어긋나면 `t.Fatal`이므로 건너뛰는 경로가 없다. 토큰 하위 시험 `tokens`도 PASS). 이 명령은 런북 13장 1-0에 들어 있다.
-- W3a(21번 문서) 대비 최상위 통과 1198 → 1292(+94), 하위 시험 804 → 833(+29). 늘어난 곳: `internal/broker` 139 → 191(+52), `internal/orch/api` 265 → 292(+27), `internal/registrymsg` 4 → 13(+9), `internal/approval/signing` 63 → 65, `internal/orch/broker` 5 → 6, `cmd/orch-broker` 11 → 12, `cmd/orchd` 31 → 32, `internal/orch/web` 9 → 10. 새 패키지는 없다. B6의 새 시험은 broker 9개 + orchd 4개(`TestBeginAndMessageNeverWriteBroker`, `TestTokensApplyForgedFieldsRefusedBeforeBroker`, `TestTokensApplyValueRulesBeforeBroker`(변이 ⑪ 때 추가), `TestDeployKeyNeverReadsPrivateKey`)다.
+- W3a(21번 문서) 대비 최상위 통과 1198 → 1295(+97), 하위 시험 804 → 833(+29). 늘어난 곳: `internal/broker` 139 → 194(+55), `internal/orch/api` 265 → 292(+27), `internal/registrymsg` 4 → 13(+9), `internal/approval/signing` 63 → 65, `internal/orch/broker` 5 → 6, `cmd/orch-broker` 11 → 12, `cmd/orchd` 31 → 32, `internal/orch/web` 9 → 10. 새 패키지는 없다. B6의 새 시험은 broker 9개 + orchd 4개(그리고 최종 수정 라운드의 broker 3개: `TestLogRedactsCurrentConfigKey`, `TestDaysLeftFarFuture`, `TestTokensJSONYearBefore2000IsBroken`, `final_w3b_test.go`)(`TestBeginAndMessageNeverWriteBroker`, `TestTokensApplyForgedFieldsRefusedBeforeBroker`, `TestTokensApplyValueRulesBeforeBroker`(변이 ⑪ 때 추가), `TestDeployKeyNeverReadsPrivateKey`)다.
 
 | 패키지 | 통과 | 실패 | 건너뜀 | 하위 시험 |
 |---|---|---|---|---|
@@ -33,7 +33,7 @@
 | `internal/adapter` | 13 | 0 | 0 | 0 |
 | `internal/approval` | 33 | 0 | 0 | 80 |
 | `internal/approval/signing` | 65 | 0 | 0 | 76 |
-| `internal/broker` | 191 | 0 | 0 | 136 |
+| `internal/broker` | 194 | 0 | 0 | 136 |
 | `internal/config` | 8 | 0 | 0 | 0 |
 | `internal/gate` | 60 | 0 | 0 | 63 |
 | `internal/gitx` | 45 | 0 | 0 | 3 |
@@ -118,6 +118,11 @@ broker `internal/broker/adversarial_w3b_test.go`(9개)와 orchd `internal/orch/a
 ## 3b. 단계별 검토에서 나온 수정 (B1~B5, 요약)
 각 작업은 검토를 거쳤고 수정 라운드의 항목은 `.superpowers/sdd/22-PLAN-webconsole-W3b/progress.md`에 있다. 큰 것만: B2 `Put`이 rename 뒤 폴더 `fsync` 실패에서 새 키는 살아 있는데 메타데이터는 옛것인 상태를 남김(이전 값을 다시 쓰도록 수정), 시작 때 비밀 임시 파일 청소가 1분 나이 제한이라 값이 든 임시 파일이 남을 수 있었음(제한 없이·0으로 덮은 뒤 삭제), 로그 가림이 줄마다 모든 비밀 파일을 다시 읽음(캐시); B3 `change` 인자를 바꿔도 요청 ID가 소모되지 않음을 시험이 고정하지 못했음(인자별 단언 추가), 핸들러 패닉 로그가 저장되지 않은 값을 그대로 찍음(형식만 찍도록 수정), `refine`까지 이어지는 통합 시험 부재(추가); B4 `ai_key_missing`이 orchd의 시간당 `refine` 슬롯을 돌려주지 않아 키를 등록한 뒤에도 사용자가 잠길 수 있었음(환급), 본문 검사에서 거부될 때 값 사본을 안 지움(수정), 죽은 코드·`apply` 도중 패닉이 원장에 안 남음(수정); B5 목록 다시 읽기 실패가 **옛 목록을 현재인 것처럼** 보여 줌(`outcome_unknown` 뒤 변경이 일어났는지 알 수 없게 됨 → 실패 화면으로 수정), 비밀번호 관리자 저장 제안 위험(`type=password` → `type=text` + CSS 가림 + 힌트, 5장), 입력 칸·보관 변수 덮어쓰기 구멍들(시험 추가).
 
+## 3c. 최종 수정 라운드 (전체 브랜치 검토 뒤, 같은 날)
+검토에서 치명적인 코드 문제는 없었고 런북 중요 2건과 사소한 항목을 고쳤다.
+- **코드(시험 먼저, 실패 확인):** F3 broker 로그 가림이 **지금의** 설정 OpenAI 키도 포함한다(`refine`이 호출마다 다시 읽으므로 시작 때 값과 다를 수 있음; `redactionValues`, 시험 `TestLogRedactsCurrentConfigKey`: 실행 중 키 파일 내용을 바꾸고 그 값을 로그에 찍어도 가려짐, 고치기 전 실패). F4 `days_left`가 `time.Duration` 오버플로 없이 Unix 초로 날짜 차이를 계산(`TestDaysLeftFarFuture`: 2026-11-10 대비 2028-02-29=476, 3000-01-01=355433, 9999-12-31=2912129, 2500-01-01 등; 고치기 전 실패). F5 broker의 `validExpires`가 `registrymsg.ValidExpires`(연도 2000 이상, 달력 검사)를 그대로 쓴다. **정한 규칙:** 손으로 고친 `tokens.json`에 2000년 이전 날짜 행이 있으면 그 파일은 **깨진 것으로 거부**(`tokens_unavailable`, 파일은 건드리지 않음, `-check`도 거부)하고, orchd가 한 행 때문에 목록 전체를 502로 만드는 일이 없다(시험 `TestTokensJSONYearBefore2000IsBroken`: 1999-12-31·0001-01-01·0000-01-01, 고치기 전 실패). 죽은 함수 `registrymsgDate`를 지웠다.
+- **문서(런북 13장, 이 문서):** I1 **오타 난 OpenAI 키 경고**(알아둘 것 0, 3-5(b)): 유효성은 검사하지 않고 저장소 키가 설정 키를 가리며 실패한 `refine`마다 최악 예산 예약이 남음, 복구는 먼저 삭제(3-6). I2 3-5(b)를 바로잡음: 설정 키와 **같은 값**으로 교체해도 핫 리로드·저장소 우선순위는 확인되지 않고 실제 패스키 서명 검증·0400 파일 쓰기와 `rename`·`source: store`만 확인된다. F6 삭제는 0으로 한 번 덮고 unlink(`shred` 아님). F7 백업 안의 `secrets/`도 안정 뒤 `shred` 대상(8장). F8 롤백 A: 설정 키 파일이 **아직 유효해야** 한다. F9 받아들인 한계 추가(7장). F10 위의 node 시험 구성.
+
 ## 4. 배포 현실 표 (경로·소유자·모드·실행 사용자·샌드박스)
 
 B2~B4가 각자 적은 표를 한 곳에 모았다. **이 표의 모든 "예상"은 코드·유닛 파일 읽기와 임시 폴더 시험(소유자·모드 흉내)에 기초한 것이고 실서버에서 본 것이 아니다.** 컷오버 전 확인 목록은 런북 13.0.
@@ -163,6 +168,9 @@ B2~B4가 각자 적은 표를 한 곳에 모았다. **이 표의 모든 "예상"
 | W3b-14 | **만료일:** UTC 날짜로 센다(`DaysLeft`: 만료일 당일이 0, 14일은 경고, 15일은 아님, 지난 것은 음수). `expires == 오늘`은 등록 가능, 이미 지난 날짜는 `bad_request`, 연도는 2000~9999. 브라우저의 UTC 시계는 지난 날짜 검사에만 쓰고 서명 경로에는 안 쓴다(`TestTokensViewClockOnlyForExpiry`) | KST 새벽 9시간 동안 하루 차이 |
 | W3b-15 | **공유 웹 파일 두 개를 바꿨다:** `webauthn.js`의 `REGISTRY_MESSAGE_RE`가 네 동작 모두를 받도록 넓힘(W3a의 상수 단언을 네 Go 상수로 갱신, 의미 유지), `guard.js`가 화면별 고정 안내문 문자열을 돌려줄 수 있게 함(`true`는 옛 문구 그대로, 기존 시험 불변) | W3a 화면 회귀(시험이 지킴) |
 | W3b-16 | **핸들러 패닉 로그는 형식(`%T`)만**: W3a까지는 패닉 값을 찍었고 B3 검토에서 저장되지 않은 값이 그대로 로그에 남음을 재현했다 | 없음 |
+| W3b-17 | **broker와 orchd의 날짜 규칙을 하나로**(`registrymsg.ValidExpires`, 연도 2000~9999). 손으로 고친 `tokens.json`의 규칙 위반 행은 파일 전체를 깨진 것으로 거부(`tokens_unavailable`)하고 일부만 걸러 쓰지 않는다 | 한 행 때문에 토큰 기능 전체가 꺼짐(다른 기능은 계속, 런북 알아둘 것 4) |
+| W3b-18 | **`days_left`는 Unix 초의 정수 일수**(Duration 오버플로 방지). 9999-12-31까지 정확 | 없음 |
+| W3b-19 | **로그 가림 목록**에 지금의 설정 OpenAI 키를 포함(호출마다 파일을 다시 읽음: 로그 한 줄마다 작은 파일 한 번 읽기) | 로그가 아주 많을 때 약간의 읽기 비용 |
 
 ## 6. 실서버에서 확인하지 못한 것
 
@@ -171,6 +179,7 @@ B2~B4가 각자 적은 표를 한 곳에 모았다. **이 표의 모든 "예상"
 - **실서버의 `/var/lib/orch-broker` 소유·모드, `/etc/orch-broker/openai.key` 소유·모드와 broker의 읽기, `systemctl show`의 `ReadWritePaths`·`ProtectSystem`·`UMask`.** 사전 점검 (a)(b)(c)로 컨트롤러가 컷오버 전에 본다.
 - **실제 패스키 서명을 broker가 `set_token`에 대해 검증하는지.** 시험은 시험용 ed25519(SSHSIG)와 ES256 모의 인증기만 썼다. 화면의 눈으로 본 확인도 **대역 패스키**였으므로 실제 인증기·실제 서명·서버 검증은 한 번도 지나가지 않았다. W3a 컷오버는 `set_flag`에 대해서만 확인했다(21번 문서 10장).
 - **실제 OpenAI 키를 웹에서 교체한 뒤 `refine`이 새 키를 쓰는지.** 시험은 가짜 OpenAI 서버가 본 `Authorization` 헤더로 확인했다(`TestOpenAIKeyHotReloadNextCall`, `TestOpenAIKeyViaSignedHandlersReachesRefine`, `TestHotReloadRaceNoTornKey`). 실제 키 교체는 사용자 결정이고 확인에는 AI 호출 한 번의 비용이 든다.
+- **핫 리로드·저장소 우선순위를 실서버에서 확인하려면 설정 키와 *다른* 유효한 OpenAI 키가 필요하다.** 같은 값으로 교체하면(런북 3-5(b)) 저장소 키든 설정 키든 결과가 같아 이 둘은 **확인되지 않는다**; 그 경우 실제로 확인되는 것은 실제 패스키 `set_token` 서명 검증, 0400 파일 쓰기와 `rename`, 목록의 `source: store`뿐이다.
 - **삭제 뒤 설정 키 폴백**의 실서버 동작(시험은 임시 폴더의 가짜 설정 키).
 - **브라우저의 "비밀번호 저장/업데이트/제안" 프롬프트가 뜨지 않는지**, 가림(`text-security`) 표시, 붙여넣기. 코드가 정한 속성 묶음(W3b-12)은 시험이 고정하지만 **실제 Chrome·Safari의 동작은 한 번도 보지 못했다**(런북 3-3, 사용자). 비밀번호 관리자 확장은 더 알 수 없다.
 - **JS 문자열을 메모리에서 지울 수 없다.** 보관 변수를 덮어써도 문자 데이터는 GC가 재사용할 때까지 남고, 입력 위젯·JSON 본문·네트워크 스택의 사본은 지울 수 없다(바이트 배열만 지움).
@@ -196,6 +205,10 @@ B2~B4가 각자 적은 표를 한 곳에 모았다. **이 표의 모든 "예상"
 8. **비밀 파일의 모드 검사는 `Perm()`(하위 9비트)만 본다**: setuid·setgid·sticky 비트가 붙은 0400 파일도 신뢰한다. 데이터 파일이고 다른 사용자의 읽기 권한과 무관해 고치지 않았다(B6 시험 작성 중 확인).
 9. **orchd의 세 곳 중복 규칙**(W3b-8)과 **공유 웹 파일 변경**(W3b-15).
 10. **`gitlab`·`github` 토큰은 W3c까지 소비자가 없다.** 지금 등록해도 아무것도 바뀌지 않는다.
+11. **OpenAI 키의 유효성을 저장 전에 검사하지 않는다**(검사에는 AI 호출 한 번의 비용이 든다): 오타 난 키는 정상인 설정 키를 가리고 `refine`마다 `upstream_error`와 최악 예산 예약 소모를 만든다. 복구는 저장소 키 삭제(런북 알아둘 것 0, 3-6). 확인 화면의 마지막 4자 대조가 유일한 사전 방어다.
+12. **브라우저 `api.js`의 CSRF 자동 재시도**는 403 `csrf_failed` 뒤 세션을 새로 고치고 **같은 본문(값과 서명 포함)을 한 번 다시 보낸다**(이때 broker 호출은 일어나지 않음).
+13. **유닛에 `LimitCORE=0`이 없다**: `apply` 도중 충돌하면 systemd-coredump가 값이 든 메모리를 저장할 수 있다. 선택적 유닛 강화로 적어 두었고 **적용하지 않았다**(유닛은 바뀌지 않는다).
+14. **저장소 키 삭제는 0으로 한 번 덮고 unlink**한다(`shred`가 아님, SSD·COW 파일 시스템에서는 옛 블록이 남을 수 있음).
 
 ## 8. 사용자 결정 목록
 
@@ -204,9 +217,11 @@ B2~B4가 각자 적은 표를 한 곳에 모았다. **이 표의 모든 "예상"
 2. **브라우저의 비밀번호 저장 제안**(3-3): 뜨면 어떤 브라우저인지 기록하고 이 방식(`type=text` + 가림)을 계속 쓸지, 아니면 다른 방식을 택할지.
 3. **GitLab 관리자 토큰을 언제 줄지**(W3c 준비: W3b의 토큰 메뉴가 필요). 사용자가 직접 입력한다. 관리자 토큰의 영향 범위는 설계서 6장.
 4. **배포 키 `.pub`을 만들지**(런북 사전 점검 d, 알아둘 것 12): W3c 전에는 쓸 곳이 없다. 만들면 `ssh-keygen -y`가 개인 키를 읽는다.
-5. **컷오버가 안정되면 `/root/backup-w3b`를 언제 지울지**(`openai.key` 사본이 들어 있으므로 `shred`), 그리고 **`/etc/orch-broker/openai.key`를 언제 정리할지**(롤백을 쉽게 하려면 지우지 않는다. 웹 저장소 키만 쓰려면 broker 시작 규칙 완화 작업이 먼저 필요, 7장 7).
+5. **컷오버가 안정되면 `/root/backup-w3b`를 언제 지울지**(`openai.key` 사본이 들어 있으므로 `shred`. **1단계를 `secrets/`가 이미 생긴 뒤에 다시 했다면 백업의 `var-lib-orch-broker/secrets/` 안 파일도 `shred` 대상이다**), 그리고 **`/etc/orch-broker/openai.key`를 언제 정리할지**(롤백을 쉽게 하려면 지우지 않는다. 웹 저장소 키만 쓰려면 broker 시작 규칙 완화 작업이 먼저 필요, 7장 7).
 6. 다음 단계(W3c 제공자·프로젝트 생성)로 갈지, 그 전에 W3a의 "후보 등록" 흐름(21번 문서 10장의 미확인)을 확인할지.
 7. WebAuthn 카운터 없이 가는 것(W3a-2)을 계속 받아들일지.
+8. **OpenAI 키를 저장 전에 OpenAI로 검증하지 않는 것**(AI 호출 한 번의 비용이 든다)을 받아들일지, 검증 호출(저장 전 시험 호출 또는 저장 후 자동 시험과 실패 시 자동 삭제)을 만들지. 지금은 오타 방어가 확인 화면의 마지막 4자 대조뿐이다(7장 11).
+9. 핫 리로드를 실서버에서 확인하려고 설정 키와 다른 유효한 키를 쓸지(런북 3-5(b), 6장).
 
 ## 9. 컷오버 기록
 아직 없음(컷오버 전). 컷오버를 하면 이 장에 서버에서 본 것만 적는다(21번 문서 10장과 같은 방식).
