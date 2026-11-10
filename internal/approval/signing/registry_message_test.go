@@ -323,3 +323,48 @@ func TestSubjectRuleIsPerAction(t *testing.T) {
 		t.Fatal("project actions must not follow the token rule")
 	}
 }
+
+func TestSigningAcceptsW3cActions(t *testing.T) {
+	accepts := func(action, subject string) bool {
+		m := regMsg(testNow)
+		m.Action, m.Subject = action, subject
+		return m.Validate() == nil
+	}
+	for _, a := range []string{RegistryActionSetProvider, RegistryActionDeleteProvider, RegistryActionCreateGroup} {
+		if !accepts(a, "gl") || !accepts(a, "a") || accepts(a, "") || accepts(a, "A") || accepts(a, "gl/x") || accepts(a, "a.b") {
+			t.Errorf("%s: provider id rule not applied", a)
+		}
+	}
+	if !accepts(RegistryActionCreateProject, "my-app") || accepts(RegistryActionCreateProject, "a") || accepts(RegistryActionCreateProject, "A1") || accepts(RegistryActionCreateProject, "") {
+		t.Error("create_project: project name rule not applied")
+	}
+	m := regMsg(testNow)
+	m.Action, m.Subject = RegistryActionCreateProject, "my-app"
+	back, err := ParseRegistryMessage(m.Text())
+	if err != nil || back != m {
+		t.Fatalf("round trip: %v", err)
+	}
+	if !strings.Contains(m.Text(), "action: create_project\n") {
+		t.Fatalf("text %q", m.Text())
+	}
+}
+
+// Each W3c subject family follows its own signing regex.
+func TestSigningW3cSubjectRulesAreSeparate(t *testing.T) {
+	accepts := func(action, subject string) bool {
+		m := regMsg(testNow)
+		m.Action, m.Subject = action, subject
+		return m.Validate() == nil
+	}
+	savedP, savedN := registryProviderIDRE, registryProjectNameRE
+	defer func() { registryProviderIDRE, registryProjectNameRE = savedP, savedN }()
+	registryProviderIDRE = regexp.MustCompile(`^p-[a-z0-9-]{0,37}$`)
+	if accepts(RegistryActionSetProvider, "ab-1") || !accepts(RegistryActionSetProvider, "p-x") || !accepts(RegistryActionCreateProject, "ab-1") || !accepts(RegistryActionSetFlag, "ab-1") {
+		t.Fatal("provider rule must govern only provider/group actions")
+	}
+	registryProviderIDRE = savedP
+	registryProjectNameRE = regexp.MustCompile(`^n-[a-z0-9-]{0,37}$`)
+	if accepts(RegistryActionCreateProject, "ab-1") || !accepts(RegistryActionCreateProject, "n-x") || !accepts(RegistryActionSetProvider, "ab-1") || !accepts(RegistryActionRegisterProject, "ab-1") {
+		t.Fatal("project name rule must govern only create_project")
+	}
+}

@@ -25,6 +25,12 @@ const (
 	ActionSetFlag         = "set_flag"
 	ActionSetToken        = "set_token"
 	ActionDeleteToken     = "delete_token"
+
+	// W3c: provider and project-creation actions.
+	ActionSetProvider    = "set_provider"
+	ActionDeleteProvider = "delete_provider"
+	ActionCreateGroup    = "create_group"
+	ActionCreateProject  = "create_project"
 )
 
 var (
@@ -57,6 +63,82 @@ var schema = map[string]map[string]fieldKind{
 	ActionSetFlag:         {"flag": kindString, "value": kindBool},
 	ActionSetToken:        {"kind": kindString, "expires": kindString, "value_hash": kindString},
 	ActionDeleteToken:     {},
+	// W3c (D2). Subjects: provider id for the first three, new project name
+	// for create_project.
+	ActionSetProvider:    {"kind": kindString, "base_url": kindString, "ssh_url": kindString, "token_ref": kindString},
+	ActionDeleteProvider: {},
+	ActionCreateGroup:    {"name": kindString, "path": kindString, "parent_path": kindString},
+	ActionCreateProject: {"provider": kindString, "group_path": kindString, "template": kindString, "description": kindString,
+		"ai_context": kindBool, "publish": kindString, "deploy_key_sha256": kindString},
+}
+
+// emptyOK lists the only string fields that may be "": a token's expires (no
+// expiry), a group's parent_path (top level) and a project's description.
+// Every other string field of every action must be non-empty.
+var emptyOK = map[string]map[string]bool{
+	ActionSetToken:      {"expires": true},
+	ActionCreateGroup:   {"parent_path": true},
+	ActionCreateProject: {"description": true},
+}
+
+func isNewAction(action string) bool {
+	switch action {
+	case ActionSetProvider, ActionDeleteProvider, ActionCreateGroup, ActionCreateProject:
+		return true
+	}
+	return false
+}
+
+// validSubject applies the subject rule of the action. The rules are separate
+// on purpose: project ids of the older actions, token refs, provider ids and
+// new project names can each change without moving the others.
+func validSubject(action, subject string) bool {
+	switch action {
+	case ActionSetToken, ActionDeleteToken:
+		return tokenRefRE.MatchString(subject)
+	case ActionSetProvider, ActionDeleteProvider, ActionCreateGroup:
+		return providerIDRE.MatchString(subject)
+	case ActionCreateProject:
+		return ValidName(subject)
+	default:
+		return subjectRE.MatchString(subject)
+	}
+}
+
+// validateNewField checks a string field of a W3c action.
+func validateNewField(action, name, s string) error {
+	ok := false
+	switch action + "." + name {
+	case ActionSetProvider + ".kind":
+		ok = s == "gitlab"
+	case ActionSetProvider + ".base_url":
+		ok = ValidBaseURL(s)
+	case ActionSetProvider + ".ssh_url":
+		ok = ValidSSHURL(s)
+	case ActionSetProvider + ".token_ref":
+		ok = tokenRefRE.MatchString(s)
+	case ActionCreateGroup + ".name", ActionCreateGroup + ".path":
+		ok = ValidName(s)
+	case ActionCreateGroup + ".parent_path":
+		// "" is the top level; otherwise the new group must still fit the depth limit.
+		ok = s == "" || (ValidGroupPath(s) && strings.Count(s, "/")+1 < MaxGroupDepth)
+	case ActionCreateProject + ".provider":
+		ok = providerIDRE.MatchString(s)
+	case ActionCreateProject + ".group_path":
+		ok = ValidGroupPath(s)
+	case ActionCreateProject + ".template":
+		ok = s == "basic" || s == "go"
+	case ActionCreateProject + ".description":
+		ok = ValidDescription(s)
+	case ActionCreateProject + ".publish":
+		ok = s == "write" || s == "read"
+	case ActionCreateProject + ".deploy_key_sha256":
+		ok = hashRE.MatchString(s)
+	}
+	if !ok {
+		return errors.New("registrymsg: bad " + name)
+	}
+	return nil
 }
 
 func isTokenAction(action string) bool {
@@ -129,11 +211,7 @@ func validate(action, subject string, fields map[string]any) error {
 	if !ok {
 		return errors.New("registrymsg: unknown action")
 	}
-	subjectOK := subjectRE.MatchString(subject)
-	if isTokenAction(action) {
-		subjectOK = tokenRefRE.MatchString(subject)
-	}
-	if !subjectOK {
+	if !validSubject(action, subject) {
 		return errors.New("registrymsg: bad subject")
 	}
 	if len(fields) != len(spec) {
@@ -151,12 +229,18 @@ func validate(action, subject string, fields map[string]any) error {
 			}
 		case kindString:
 			s, ok := v.(string)
-			// Only a token's expires may be empty ("no expiry").
-			if !ok || (s == "" && !(action == ActionSetToken && name == "expires")) {
+			// Only the fields listed in emptyOK may be empty.
+			if !ok || (s == "" && !emptyOK[action][name]) {
 				return errors.New("registrymsg: field has the wrong type")
 			}
 			if err := checkString(s); err != nil {
 				return err
+			}
+			if isNewAction(action) {
+				if err := validateNewField(action, name, s); err != nil {
+					return err
+				}
+				continue
 			}
 			switch name {
 			case "kind":

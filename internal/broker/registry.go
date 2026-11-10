@@ -13,6 +13,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"aigate/internal/registrymsg"
 )
 
 // The project registry (decision D1) is owned by the broker: one JSON file in
@@ -22,19 +24,33 @@ import (
 //
 // Fail closed: only a truly missing file starts a fresh registry (and migrates
 // the legacy broker.json entries once). A file that is broken, unknown-keyed,
-// of another version, not owned by the broker account or not 0600 is never
-// treated as "absent": the broker keeps running but every read and write that
-// depends on the registry answers registry_unavailable.
+// of a version other than 1 or 2, not owned by the broker account or not 0600
+// is never treated as "absent": the broker keeps running but every read and
+// write that depends on the registry answers registry_unavailable.
+//
+// Versions. The file is version 2 (W3c: providers, project provider links and
+// GitLab ids, orphan records). A valid version 1 file (W3a/W3b) is migrated to
+// 2 when it is opened: same content, rewritten atomically as 0600 (temp file,
+// fsync, rename); if the write fails the v1 file is untouched and the open is a
+// start failure. A W3b broker accepts only version 1 and unknown keys are
+// refused, so it treats a version 2 file as broken (fail closed): rolling the
+// broker back means restoring the registry from the pre-migration backup.
 
 const (
 	// RegistryFileName and UsedRequestsFileName live in the state directory.
 	RegistryFileName     = "registry.json"
 	UsedRequestsFileName = "used-requests.json"
 
-	registryVersion = 1
-	maxStateFile    = 1 << 20
-	maxProjects     = 500
-	maxPathBytes    = 4096
+	// registryVersion is what this code writes. registryVersionV1 is the only
+	// older version it still reads (and migrates). TestOldBrokerVersionRefusesV2
+	// pins both.
+	registryVersion   = 2
+	registryVersionV1 = 1
+	maxStateFile      = 1 << 20
+	maxProjects       = 500
+	maxPathBytes      = 4096
+	maxProviders      = 20
+	maxOrphans        = 100
 )
 
 var (
@@ -45,33 +61,76 @@ var (
 
 	projectIDRE   = regexp.MustCompile(`^[a-z][a-z0-9-]{0,39}$`)
 	projectKindRE = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+	orphanStepRE  = regexp.MustCompile(`^[a-z][a-z_]{0,31}$`)
 )
+
+// orphanTimeLayout is the only accepted form of Orphan.At (UTC, whole seconds).
+const orphanTimeLayout = "2006-01-02T15:04:05Z"
 
 // legacyKind is the policy class name given to projects migrated from
 // broker.json (the old config knows no classes).
 const legacyKind = "legacy"
 
-// Registry is the D1 shape.
+// Registry is the D1 shape (version 2).
 type Registry struct {
 	Version         int           `json:"version"`
-	Providers       []struct{}    `json:"providers"`
+	Providers       []Provider    `json:"providers"`
 	Projects        []Project     `json:"projects"`
 	AutoMergeGlobal AutoMergeGlob `json:"auto_merge_global"`
+	Orphans         []Orphan      `json:"orphans"`
 }
 
-// Project is one registered repository. Provider is a placeholder that W3a
-// keeps null; GitLab carries the project path used by create_mr.
+// Provider is a configured Git provider. Only "gitlab" exists. TokenRef names
+// a gitlab-kind token in the token store; the token value is never here.
+type Provider struct {
+	ID       string `json:"id"`
+	Kind     string `json:"kind"`
+	BaseURL  string `json:"base_url"`
+	SSHURL   string `json:"ssh_url"`
+	TokenRef string `json:"token_ref"`
+}
+
+// Orphan records a GitLab project that a failed create_project left behind
+// (the broker never deletes it). Values only: no tokens, no response bodies.
+// ProjectID is null when GitLab did not confirm the id. At is UTC
+// "2006-01-02T15:04:05Z". Provider need not exist any more.
+type Orphan struct {
+	Provider  string `json:"provider"`
+	Project   string `json:"project"`
+	ProjectID *int64 `json:"project_id"`
+	Step      string `json:"step"`
+	At        string `json:"at"`
+}
+
+// AddOrphan appends o. The registry never holds more than maxOrphans (100)
+// records: when the list overflows, the OLDEST records are dropped.
+func (r *Registry) AddOrphan(o Orphan) {
+	if o.ProjectID != nil {
+		id := *o.ProjectID
+		o.ProjectID = &id
+	}
+	r.Orphans = append(r.Orphans, o)
+	if n := len(r.Orphans) - maxOrphans; n > 0 {
+		r.Orphans = append([]Orphan(nil), r.Orphans[n:]...)
+	}
+}
+
+// Project is one registered repository. Provider is a provider id or null (a
+// project that has no provider, such as every project of a v1 registry). GitLab
+// carries the project path used by create_mr; with a provider it also carries
+// the numeric GitLab project id.
 type Project struct {
 	ID        string      `json:"id"`
 	Path      string      `json:"path"`
 	Kind      string      `json:"kind"`
 	AIContext bool        `json:"ai_context"`
-	Provider  *struct{}   `json:"provider"`
+	Provider  *string     `json:"provider"`
 	GitLab    *GitLabLink `json:"gitlab"`
 	AutoMerge AutoMerge   `json:"auto_merge"`
 }
 
-// GitLabLink is the project's GitLab name; ProjectID is a W3b+ placeholder.
+// GitLabLink is the project's GitLab name; ProjectID is the GitLab numeric id
+// (null for a link without a provider, such as a migrated broker.json entry).
 type GitLabLink struct {
 	Project   string `json:"project"`
 	ProjectID *int64 `json:"project_id"`
@@ -153,10 +212,18 @@ func OpenRegistry(dir string, legacy LegacySource, o RegistryOptions) (*Registry
 			return st, ErrRegistryBroken
 		}
 		if exists {
-			reg, err := parseRegistry(data)
+			reg, migrated, err := parseRegistry(data)
 			if err != nil {
 				st.broken = true
 				return st, ErrRegistryBroken
+			}
+			if migrated {
+				// v1 -> v2: same content, atomic replace (never exclusive:
+				// the v1 file is the one being replaced). On failure the v1
+				// file is untouched and we do not start.
+				if _, werr := writeAtomic(st.path, mustMarshalRegistry(reg), o.failAt, false); werr != nil {
+					return nil, errors.New("프로젝트 등록부를 저장할 수 없습니다")
+				}
 			}
 			st.reg = reg
 			return st, nil
@@ -303,7 +370,7 @@ func RegistryStatus(dir string, o RegistryOptions) (exists bool, err error) {
 		return false, ErrRegistryBroken
 	}
 	if exists {
-		if _, perr := parseRegistry(data); perr != nil {
+		if _, _, perr := parseRegistry(data); perr != nil {
 			return true, ErrRegistryBroken
 		}
 	}
@@ -319,13 +386,21 @@ func MigrationDryRun(cfg Config) error {
 }
 
 func emptyRegistry() Registry {
-	return Registry{Version: registryVersion, Providers: []struct{}{}, Projects: []Project{},
-		AutoMergeGlobal: AutoMergeGlob{Enabled: false, MaxPerDay: 5}}
+	return Registry{Version: registryVersion, Providers: []Provider{}, Projects: []Project{},
+		AutoMergeGlobal: AutoMergeGlob{Enabled: false, MaxPerDay: 5}, Orphans: []Orphan{}}
 }
 
 func cloneRegistry(r Registry) Registry {
 	c := r
-	c.Providers = append([]struct{}{}, r.Providers...)
+	c.Providers = append([]Provider{}, r.Providers...)
+	c.Orphans = make([]Orphan, len(r.Orphans))
+	for i, o := range r.Orphans {
+		if o.ProjectID != nil {
+			id := *o.ProjectID
+			o.ProjectID = &id
+		}
+		c.Orphans[i] = o
+	}
 	c.Projects = make([]Project, len(r.Projects))
 	for i, p := range r.Projects {
 		if p.GitLab != nil {
@@ -337,7 +412,8 @@ func cloneRegistry(r Registry) Registry {
 			p.GitLab = &g
 		}
 		if p.Provider != nil {
-			p.Provider = &struct{}{}
+			v := *p.Provider
+			p.Provider = &v
 		}
 		c.Projects[i] = p
 	}
@@ -346,10 +422,13 @@ func cloneRegistry(r Registry) Registry {
 
 func mustMarshalRegistry(r Registry) []byte {
 	if r.Providers == nil {
-		r.Providers = []struct{}{}
+		r.Providers = []Provider{}
 	}
 	if r.Projects == nil {
 		r.Projects = []Project{}
+	}
+	if r.Orphans == nil {
+		r.Orphans = []Orphan{}
 	}
 	b, err := json.Marshal(r)
 	if err != nil { // plain structs: cannot happen
@@ -358,26 +437,78 @@ func mustMarshalRegistry(r Registry) []byte {
 	return append(b, '\n')
 }
 
-func parseRegistry(data []byte) (Registry, error) {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	var r Registry
-	if err := dec.Decode(&r); err != nil {
-		return Registry{}, ErrRegistryBroken
+// registryV1 is the exact version 1 file shape (W3a/W3b): no orphans, empty
+// providers, no provider links, no GitLab ids.
+type registryV1 struct {
+	Version         int           `json:"version"`
+	Providers       []struct{}    `json:"providers"`
+	Projects        []projectV1   `json:"projects"`
+	AutoMergeGlobal AutoMergeGlob `json:"auto_merge_global"`
+}
+
+type projectV1 struct {
+	ID        string      `json:"id"`
+	Path      string      `json:"path"`
+	Kind      string      `json:"kind"`
+	AIContext bool        `json:"ai_context"`
+	Provider  *struct{}   `json:"provider"`
+	GitLab    *GitLabLink `json:"gitlab"`
+	AutoMerge AutoMerge   `json:"auto_merge"`
+}
+
+// parseRegistry decodes and validates a registry file. Only version 1 and 2
+// are known; both are decoded strictly (unknown keys, trailing data and wrong
+// types are refused). migrated reports that data was a valid version 1 file
+// that was converted to the version 2 shape in memory: the caller rewrites it.
+func parseRegistry(data []byte) (r Registry, migrated bool, err error) {
+	var head map[string]json.RawMessage
+	if json.Unmarshal(data, &head) != nil {
+		return Registry{}, false, ErrRegistryBroken
 	}
-	if _, err := dec.Token(); err != io.EOF {
-		return Registry{}, ErrRegistryBroken
+	strict := func(v any) bool {
+		dec := json.NewDecoder(bytes.NewReader(data))
+		dec.DisallowUnknownFields()
+		if dec.Decode(v) != nil {
+			return false
+		}
+		_, terr := dec.Token()
+		return terr == io.EOF
 	}
-	if r.Providers == nil {
-		r.Providers = []struct{}{}
-	}
-	if r.Projects == nil {
-		r.Projects = []Project{}
+	switch string(head["version"]) {
+	case "2":
+		if !strict(&r) {
+			return Registry{}, false, ErrRegistryBroken
+		}
+		if r.Providers == nil {
+			r.Providers = []Provider{}
+		}
+		if r.Projects == nil {
+			r.Projects = []Project{}
+		}
+		if r.Orphans == nil {
+			r.Orphans = []Orphan{}
+		}
+	case "1":
+		var v1 registryV1
+		if !strict(&v1) || len(v1.Providers) != 0 {
+			return Registry{}, false, ErrRegistryBroken
+		}
+		r = emptyRegistry()
+		r.AutoMergeGlobal = v1.AutoMergeGlobal
+		for _, p := range v1.Projects {
+			if p.Provider != nil || (p.GitLab != nil && p.GitLab.ProjectID != nil) {
+				return Registry{}, false, ErrRegistryBroken
+			}
+			r.Projects = append(r.Projects, Project{ID: p.ID, Path: p.Path, Kind: p.Kind, AIContext: p.AIContext, GitLab: p.GitLab, AutoMerge: p.AutoMerge})
+		}
+		migrated = true
+	default:
+		return Registry{}, false, ErrRegistryBroken
 	}
 	if err := validateRegistry(&r); err != nil {
-		return Registry{}, ErrRegistryBroken
+		return Registry{}, false, ErrRegistryBroken
 	}
-	return r, nil
+	return r, migrated, nil
 }
 
 // Validation errors are fixed sentences without values.
@@ -388,15 +519,29 @@ var (
 	errRegDupPath  = errors.New("등록부에 같은 경로가 중복되어 있습니다")
 	errRegAutoOff  = errors.New("자동 병합은 이 버전에서 켤 수 없습니다")
 	errRegTooBig   = errors.New("등록부가 너무 커서 저장할 수 없습니다")
-	errRegProvider = errors.New("제공자(provider) 항목은 이 버전에서 비어 있어야 합니다")
+	errRegProvider = errors.New("제공자(provider) 항목이 올바르지 않습니다")
+	errRegOrphan   = errors.New("등록부의 고아 기록이 올바르지 않습니다")
 )
 
 func validateRegistry(r *Registry) error {
 	if r.Version != registryVersion {
 		return errRegVersion
 	}
-	if len(r.Providers) != 0 {
+	if len(r.Providers) > maxProviders || len(r.Orphans) > maxOrphans {
 		return errRegProvider
+	}
+	providers := map[string]bool{}
+	for _, p := range r.Providers {
+		if !registrymsg.ValidProviderID(p.ID) || p.Kind != "gitlab" || !registrymsg.ValidBaseURL(p.BaseURL) ||
+			!registrymsg.ValidSSHURL(p.SSHURL) || !registrymsg.ValidTokenRef(p.TokenRef) || providers[p.ID] {
+			return errRegProvider
+		}
+		providers[p.ID] = true
+	}
+	for _, o := range r.Orphans {
+		if !validOrphan(o) {
+			return errRegOrphan
+		}
 	}
 	if r.AutoMergeGlobal.Enabled {
 		return errRegAutoOff
@@ -413,8 +558,8 @@ func validateRegistry(r *Registry) error {
 		if len(p.Path) > maxPathBytes || !projectIDRE.MatchString(p.ID) || !projectKindRE.MatchString(p.Kind) || !cleanAbs(p.Path) {
 			return errRegProject
 		}
-		if p.Provider != nil {
-			return errRegProvider
+		if p.Provider != nil && !providers[*p.Provider] {
+			return errRegProvider // unknown provider id (this also keeps a referenced provider from being removed)
 		}
 		if p.AutoMerge.Enabled {
 			return errRegAutoOff
@@ -422,7 +567,12 @@ func validateRegistry(r *Registry) error {
 		if p.GitLab != nil {
 			g := p.GitLab
 			if !projectRE.MatchString(g.Project) || strings.Contains("/"+g.Project+"/", "/../") ||
-				strings.Contains("/"+g.Project+"/", "/./") || g.ProjectID != nil {
+				strings.Contains("/"+g.Project+"/", "/./") {
+				return errRegProject
+			}
+			// A GitLab id belongs to a provider. A link without a provider is
+			// only the legacy form (migrated from broker.json or a v1 file).
+			if g.ProjectID != nil && (p.Provider == nil || *g.ProjectID <= 0) {
 				return errRegProject
 			}
 		}
@@ -436,6 +586,24 @@ func validateRegistry(r *Registry) error {
 		paths[p.Path] = true
 	}
 	return nil
+}
+
+// validOrphan: values only, every field in a fixed shape. The provider id need
+// not be configured any more (the record outlives set_provider/delete_provider).
+func validOrphan(o Orphan) bool {
+	if !registrymsg.ValidProviderID(o.Provider) || !orphanStepRE.MatchString(o.Step) {
+		return false
+	}
+	i := strings.LastIndexByte(o.Project, '/')
+	if i < 0 || !registrymsg.ValidGroupPath(o.Project[:i]) || !registrymsg.ValidName(o.Project[i+1:]) ||
+		strings.Count(o.Project, "/")+1 > registrymsg.MaxGroupDepth+1 {
+		return false
+	}
+	if o.ProjectID != nil && *o.ProjectID <= 0 {
+		return false
+	}
+	t, err := time.Parse(orphanTimeLayout, o.At)
+	return err == nil && t.Format(orphanTimeLayout) == o.At
 }
 
 func cleanAbs(p string) bool {

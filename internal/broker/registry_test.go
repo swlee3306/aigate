@@ -49,7 +49,7 @@ func TestRegistryFreshStartMigratesLegacyConfig(t *testing.T) {
 	l := legacyFor("/srv")
 	st := mustOpen(t, dir, l)
 	reg := st.Snapshot()
-	if reg.Version != 1 || len(reg.Providers) != 0 || reg.AutoMergeGlobal.Enabled || reg.AutoMergeGlobal.MaxPerDay != 5 {
+	if reg.Version != 2 || len(reg.Providers) != 0 || reg.AutoMergeGlobal.Enabled || reg.AutoMergeGlobal.MaxPerDay != 5 {
 		t.Fatalf("shape %+v", reg)
 	}
 	got := st.AIContextPaths()
@@ -142,8 +142,8 @@ func TestRegistryBrokenIsFailClosedNotMigrated(t *testing.T) {
 	}{
 		"broken json":      {content: `{"version":1,`, mode: 0o600},
 		"empty file":       {content: ``, mode: 0o600},
-		"unknown key":      {content: strings.Replace(good, `"version":1`, `"version":1,"extra":true`, 1), mode: 0o600},
-		"version mismatch": {content: strings.Replace(good, `"version":1`, `"version":2`, 1), mode: 0o600},
+		"unknown key":      {content: strings.Replace(good, `"version":2`, `"version":2,"extra":true`, 1), mode: 0o600},
+		"version mismatch": {content: strings.Replace(good, `"version":2`, `"version":3`, 1), mode: 0o600},
 		"trailing data":    {content: good + `{}`, mode: 0o600},
 		"duplicate id":     {content: `{"version":1,"providers":[],"projects":[{"id":"a","path":"/x/a","kind":"k"},{"id":"a","path":"/x/b","kind":"k"}],"auto_merge_global":{"enabled":false,"max_per_day":5}}`, mode: 0o600},
 		"auto merge on":    {content: `{"version":1,"providers":[],"projects":[{"id":"a","path":"/x/a","kind":"k","auto_merge":{"enabled":true}}],"auto_merge_global":{"enabled":false,"max_per_day":5}}`, mode: 0o600},
@@ -291,7 +291,7 @@ func TestRegistryRejectsInvalidProjects(t *testing.T) {
 		"bad kind":          {ID: "x", Path: "/srv/x", Kind: "Bad Kind"},
 		"empty kind":        {ID: "x", Path: "/srv/x"},
 		"auto merge on":     {ID: "x", Path: "/srv/x", Kind: "k", AutoMerge: AutoMerge{Enabled: true}},
-		"provider set":      {ID: "x", Path: "/srv/x", Kind: "k", Provider: &struct{}{}},
+		"provider set":      {ID: "x", Path: "/srv/x", Kind: "k", Provider: strp("gl")}, // no such provider in the registry
 		"gitlab dotdot":     {ID: "x", Path: "/srv/x", Kind: "k", GitLab: gl("a/../b")},
 		"gitlab one part":   {ID: "x", Path: "/srv/x", Kind: "k", GitLab: gl("solo")},
 		"gitlab project id": {ID: "x", Path: "/srv/x", Kind: "k", GitLab: &GitLabLink{Project: "a/b", ProjectID: &id}},
@@ -318,9 +318,9 @@ func TestRegistryRejectsInvalidProjects(t *testing.T) {
 			t.Fatal("global auto merge accepted")
 		}
 	})
-	t.Run("providers non-empty", func(t *testing.T) {
+	t.Run("invalid provider entry", func(t *testing.T) {
 		st := mustOpen(t, stateDirFor(t), LegacySource{})
-		if err := st.Update(func(r *Registry) error { r.Providers = append(r.Providers, struct{}{}); return nil }); err == nil {
+		if err := st.Update(func(r *Registry) error { r.Providers = append(r.Providers, Provider{}); return nil }); err == nil {
 			t.Fatal("provider accepted")
 		}
 	})

@@ -114,7 +114,7 @@ func (s *Server) projectsHandler(context.Context, json.RawMessage) (any, *OpErro
 	}
 	return map[string]any{
 		"projects":          projects,
-		"providers":         []struct{}{},
+		"providers":         r.Providers,
 		"auto_merge_global": r.AutoMergeGlobal,
 	}, nil
 }

@@ -21,6 +21,10 @@ const (
 	RegistryActionSetFlag         = "set_flag"
 	RegistryActionSetToken        = "set_token"
 	RegistryActionDeleteToken     = "delete_token"
+	RegistryActionSetProvider     = "set_provider"
+	RegistryActionDeleteProvider  = "delete_provider"
+	RegistryActionCreateGroup     = "create_group"
+	RegistryActionCreateProject   = "create_project"
 )
 
 const registryMagic = "aigate-registry-v1"
@@ -28,12 +32,17 @@ const registryMagic = "aigate-registry-v1"
 var (
 	registrySubjectRE  = regexp.MustCompile(`^[a-z][a-z0-9-]{0,39}$`)
 	registryTokenRefRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,39}$`)
+	// Provider id: subject of set_provider, delete_provider and create_group.
+	registryProviderIDRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,39}$`)
+	// Project name: subject of create_project (2..40 chars). The reserved-name
+	// list lives in registrymsg only; the signed change rejects those names.
+	registryProjectNameRE = regexp.MustCompile(`^[a-z][a-z0-9-]{1,39}$`)
 )
 
 // RegistryMessage is the content signed to change the project registry.
 type RegistryMessage struct {
-	Action  string // register_project, set_flag, set_token or delete_token
-	Subject string // project id, or token ref for the token actions
+	Action  string // register_project, set_flag, set_token, delete_token, set_provider, delete_provider, create_group or create_project
+	Subject string // project id, token ref, provider id or new project name, by action
 	Change  string // 64 lowercase hex: SHA-256 of the canonical change JSON
 	Request string // 32 lowercase hex: one-time request id
 	Issued  time.Time
@@ -41,14 +50,22 @@ type RegistryMessage struct {
 
 // Validate reports whether the message can be rendered canonically.
 func (m RegistryMessage) Validate() error {
-	isToken := m.Action == RegistryActionSetToken || m.Action == RegistryActionDeleteToken
+	var subjectRE *regexp.Regexp
+	switch m.Action {
+	case RegistryActionRegisterProject, RegistryActionSetFlag:
+		subjectRE = registrySubjectRE
+	case RegistryActionSetToken, RegistryActionDeleteToken:
+		subjectRE = registryTokenRefRE
+	case RegistryActionSetProvider, RegistryActionDeleteProvider, RegistryActionCreateGroup:
+		subjectRE = registryProviderIDRE
+	case RegistryActionCreateProject:
+		subjectRE = registryProjectNameRE
+	}
 	switch {
-	case m.Action != RegistryActionRegisterProject && m.Action != RegistryActionSetFlag && !isToken:
+	case subjectRE == nil:
 		return fmt.Errorf("signing: unknown registry action %q", m.Action)
-	case isToken && !registryTokenRefRE.MatchString(m.Subject):
-		return errors.New("signing: subject is not a valid token ref")
-	case !isToken && !registrySubjectRE.MatchString(m.Subject):
-		return errors.New("signing: subject is not a valid project id")
+	case !subjectRE.MatchString(m.Subject):
+		return errors.New("signing: subject is not valid for the action")
 	case !isLowerHex(m.Change, 64):
 		return errors.New("signing: change must be 64 lowercase hex characters")
 	case !isLowerHex(m.Request, 32):

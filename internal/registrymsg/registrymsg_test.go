@@ -176,6 +176,29 @@ func TestSigningDefinitionsDoNotDrift(t *testing.T) {
 			t.Errorf("subject %q: signing accepts=%v registrymsg accepts=%v", s, got, want)
 		}
 	}
+	// W3c actions: constants and subject rules (the provider id rule for the
+	// provider/group actions, the project name shape for create_project; the
+	// reserved-name list is registrymsg-only on purpose).
+	if ActionSetProvider != signing.RegistryActionSetProvider || ActionDeleteProvider != signing.RegistryActionDeleteProvider ||
+		ActionCreateGroup != signing.RegistryActionCreateGroup || ActionCreateProject != signing.RegistryActionCreateProject {
+		t.Fatal("W3c action constants differ between registrymsg and signing")
+	}
+	w3cCorpus := append([]string{"aa", "admin", "a" + strings.Repeat("b", 38)}, corpus...)
+	for _, s := range w3cCorpus {
+		for _, a := range []string{ActionSetProvider, ActionDeleteProvider, ActionCreateGroup, ActionCreateProject} {
+			m := signing.RegistryMessage{
+				Action: a, Subject: s, Change: valid, Request: strings.Repeat("1", 32),
+				Issued: time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC),
+			}
+			want := ValidProviderID(s)
+			if a == ActionCreateProject {
+				want = nameRE.MatchString(s)
+			}
+			if got := m.Validate() == nil; got != want {
+				t.Errorf("%s subject %q: signing accepts=%v registrymsg accepts=%v", a, s, got, want)
+			}
+		}
+	}
 	// token actions use the token ref rule
 	for _, s := range corpus {
 		for _, a := range []string{ActionSetToken, ActionDeleteToken} {
