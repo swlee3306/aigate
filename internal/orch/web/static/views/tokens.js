@@ -451,13 +451,13 @@ export function tokensView(ctx) {
       type: 'text', id: 'x-field-b', name: 'x-field-b', class: ['mono', 'ovlin'], autocomplete: 'one-time-code', autocapitalize: 'off', autocorrect: 'off',
       spellcheck: 'false', maxlength: String(TOKEN_VALUE_MAX + 1), 'data-focus-key': 'value', 'aria-describedby': 'x-field-b-len',
       'data-lpignore': 'true', 'data-1p-ignore': 'true', 'data-bwignore': 'true', 'data-form-type': 'other',
-      on: { input: onTyped },
+      on: { input: onTyped, scroll: followScroll, keyup: followScroll, select: followScroll, copy: noCopy, cut: noCopy, dragstart: noCopy },
     });
     f.mask = el('span', { class: 'ovlmask', 'aria-hidden': 'true', 'data-mask': 'value' });
     f.len = el('span', { class: 'sr', id: 'x-field-b-len' });
     f.value.value = '';
     syncMask(f);
-    f.expires = el('input', { type: 'text', id: 't-expires', class: 'mono', autocomplete: 'off', spellcheck: 'false', maxlength: '10', placeholder: 'YYYY-MM-DD', 'data-focus-key': 'expires' });
+    f.expires = el('input', { type: 'text', id: 't-expires', name: 'x-field-c', class: 'mono', autocomplete: 'off', spellcheck: 'false', maxlength: '10', placeholder: 'YYYY-MM-DD', 'data-focus-key': 'expires' });
     f.expires.value = '';
     f.hint = el('span', { class: 'hint', 'data-hint': 'expires' }, hintText(kind0));
     f.problem = el('p', { class: ['note', 'err'], role: 'alert', 'data-problem': 'form' });
@@ -465,10 +465,25 @@ export function tokensView(ctx) {
     return f;
   }
 
-  // The label field is readonly until the person touches it: browsers do not
-  // offer autofill on a readonly field, so no dropdown appears on page load.
+  // The label field is readonly until the person touches it. This only prevents a
+  // dropdown at page load or auto-focus; it does NOT stop one when the person clicks
+  // or tabs in (defence in depth, not a guarantee).
   function unlockRef() {
     if (st.form && st.form.ref) st.form.ref.removeAttribute('readonly');
+  }
+
+  // noCopy: copy, cut and dragging the selected text out of the value field are
+  // cancelled, as in a password field. Paste is not touched. Still possible: reading
+  // the value with browser tools or assistive technology.
+  function noCopy(ev) {
+    if (ev && typeof ev.preventDefault === 'function') ev.preventDefault();
+  }
+
+  // followScroll keeps the overlay at the same horizontal offset as the field, so
+  // the bullets and the caret stay together on a long value.
+  function followScroll() {
+    const f = st.form;
+    if (f && f.mask) f.mask.scrollLeft = f.value.scrollLeft || 0;
   }
 
   // syncMask redraws the overlay: one bullet per character now in the field
@@ -477,6 +492,7 @@ export function tokensView(ctx) {
     const n = f && typeof f.value.value === 'string' ? f.value.value.length : 0;
     clear(f.mask).append('•'.repeat(Math.min(n, TOKEN_VALUE_MAX + 1)));
     clear(f.len).append('입력한 글자 수: ' + n);
+    f.mask.scrollLeft = f.value.scrollLeft || 0;
   }
 
   function onKind() {
@@ -538,7 +554,7 @@ export function tokensView(ctx) {
     if (st.busy) return;
     st.note = null;
     const d = { ref };
-    d.input = el('input', { type: 'text', id: 't-confirm-ref', class: 'mono', autocomplete: 'off', spellcheck: 'false', maxlength: String(TOKEN_REF_MAX + 1), 'data-focus-key': 'confirm-ref' });
+    d.input = el('input', { type: 'text', id: 't-confirm-ref', name: 'x-field-d', class: 'mono', autocomplete: 'off', 'data-lpignore': 'true', 'data-1p-ignore': 'true', 'data-bwignore': 'true', 'data-form-type': 'other', spellcheck: 'false', maxlength: String(TOKEN_REF_MAX + 1), 'data-focus-key': 'confirm-ref' });
     d.input.value = '';
     d.problem = el('p', { class: ['note', 'err'], role: 'alert', 'data-problem': 'form' });
     d.problem.hidden = true;

@@ -252,6 +252,7 @@ pre.block-pre { font-family: var(--mono); font-size: 13px; background: var(--bg)
 
 /* the token value field: a plain text input whose text is transparent; the bullets are an overlay drawn by tokens.js */
 .ovlbox { position: relative; min-width: 0; }
-.form .ovlbox input.ovlin { color: transparent; caret-color: var(--text); }
+.form .ovlbox input.ovlin { color: transparent; caret-color: var(--text); forced-color-adjust: none; font-family: var(--mono); font-size: 13px; letter-spacing: 0; }
+@media (forced-colors: active) { .form .ovlbox input.ovlin { color: transparent; forced-color-adjust: none; caret-color: CanvasText; } .ovlbox .ovlmask { color: CanvasText; forced-color-adjust: none; } }
 .form .ovlbox input.ovlin::selection { color: transparent; background: var(--accent-bg); }
-.ovlbox .ovlmask { position: absolute; left: 13px; right: 13px; top: 0; bottom: 0; display: flex; align-items: center; overflow: hidden; white-space: pre; pointer-events: none; font-family: var(--mono); font-size: 12.5px; color: var(--text); }
+.ovlbox .ovlmask { position: absolute; left: 13px; right: 13px; top: 0; bottom: 0; display: flex; align-items: center; overflow: hidden; white-space: pre; pointer-events: none; font-family: var(--mono); font-size: 13px; letter-spacing: 0; color: var(--text); }

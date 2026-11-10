@@ -319,6 +319,14 @@ test('TestPasswordInputAttributes', async () => {
   assert.match(css, /input\.ovlin\s*\{[^}]*color:\s*transparent/);
   assert.match(css, /input\.ovlin\s*\{[^}]*caret-color:/);
   assert.match(css, /\.ovlmask\s*\{[^}]*pointer-events:\s*none/);
+  // forced colors / high contrast must not override the transparent text and print the characters
+  assert.match(css, /^\.form \.ovlbox input\.ovlin\s*\{[^}]*forced-color-adjust:\s*none/m);
+  assert.match(css, /@media \(forced-colors: active\)\s*\{[^}]*input\.ovlin\s*\{[^}]*color:\s*transparent/);
+  // the expiry field asks for nothing from the browser either
+  const ex = byId(ctx.root, 't-expires');
+  assert.equal(ex.getAttribute('autocomplete'), 'off');
+  assert.equal(ex.getAttribute('name'), 'x-field-c');
+  assert.ok(!bad.test(ex.getAttribute('id') + ex.getAttribute('name')));
 });
 
 test('TestNoPasswordLikeMarkupShipped', () => {
@@ -330,8 +338,8 @@ test('TestNoPasswordLikeMarkupShipped', () => {
   for (const f of files) {
     if (!/\.(js|css|html)$/.test(f.pathname)) continue;
     const t = readFileSync(f, 'utf8');
-    assert.ok(!/text-security/i.test(t), f.pathname + ' has text-security');
-    assert.ok(!/type\s*[:=]\s*['"]?password/i.test(t) && !/type=["']password/i.test(t) && !/\[type=["']?password/i.test(t), f.pathname + ' has a password type');
+    assert.ok(!/text-?security/i.test(t), f.pathname + ' has text-security (or webkitTextSecurity)');
+    assert.ok(!/type\s*[:=]\s*['"`]?password/i.test(t) && !/type=["']password/i.test(t) && !/\[type=["']?password/i.test(t), f.pathname + ' has a password type');
     assert.ok(!/autocomplete['"]?\s*[:=]\s*['"](?:new-password|current-password|username)/i.test(t), f.pathname + ' uses a credential autocomplete');
   }
 });
@@ -359,7 +367,7 @@ test('TestMaskOverlayFollowsValue', async () => {
   type(VALUE);
   assert.deepEqual(leaks(mask(ctx), NEEDLES), []);
   assert.ok(!/[A-Za-z0-9]/.test(text(mask(ctx))));
-  assert.equal(inp.value, VALUE, 'copy from the field still yields the real characters (documented trade-off)');
+  assert.equal(inp.value, VALUE, 'the typed characters are the field value (copy is blocked, see TestCopyCutDragBlockedPasteKept)');
   // cancel empties input and overlay together
   click(byLabel(ctx.root, '취소')[0]);
   assert.equal(inp.value, '');
@@ -1283,4 +1291,44 @@ test('TestFarFutureAndFarPastDaysLeftRenderSanely', async () => {
   assert.ok(t.includes('2912129일'), 'exact day count shown');
   assert.ok(t.includes('2900000일 지남'));
   assert.ok(!/NaN|Infinity|undefined|e\+/.test(t));
+});
+
+test('TestCopyCutDragBlockedPasteKept', async () => {
+  const ctx = await mount();
+  await openForm(ctx, GOOD);
+  const inp = byId(ctx.root, 'x-field-b');
+  for (const ev of ['copy', 'cut', 'dragstart']) {
+    assert.ok((inp.listeners[ev] || []).length > 0, ev + ' is handled');
+    let prevented = false;
+    for (const f of inp.listeners[ev]) f({ preventDefault() { prevented = true; } });
+    assert.equal(prevented, true, ev + ' is cancelled');
+  }
+  assert.equal(inp.listeners.paste, undefined, 'paste stays allowed');
+  assert.equal(inp.value, VALUE, 'cutting did not remove anything');
+  // the other fields are not affected
+  assert.equal(byId(ctx.root, 'x-field-a').listeners.copy, undefined);
+  assert.equal(byId(ctx.root, 'x-field-a').listeners.cut, undefined);
+});
+
+test('TestMaskScrollSyncIsWired', async () => {
+  const ctx = await mount();
+  await openForm(ctx);
+  const inp = byId(ctx.root, 'x-field-b');
+  const m = byData(ctx.root, 'mask', 'value')[0];
+  for (const ev of ['input', 'scroll', 'keyup', 'select']) assert.ok((inp.listeners[ev] || []).length > 0, ev + ' keeps the overlay in step');
+  inp.value = 'a'.repeat(200);
+  inp.scrollLeft = 123;
+  fire(inp, 'scroll');
+  assert.equal(m.scrollLeft, 123, 'overlay follows the field when it scrolls');
+  inp.scrollLeft = 400;
+  fire(inp, 'input');
+  assert.equal(m.scrollLeft, 400, 'and after typing');
+  inp.scrollLeft = 0;
+  fire(inp, 'keyup');
+  assert.equal(m.scrollLeft, 0);
+  inp.value = '';
+  fire(inp, 'input');
+  assert.equal(m.scrollLeft, 0);
+  const css = src('style.css');
+  assert.match(css, /\.ovlmask\s*\{[^}]*overflow:\s*hidden/);
 });
