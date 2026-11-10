@@ -136,6 +136,11 @@ type Server struct {
 	ReadTimeout time.Duration                  // 0: 5s
 	OpTimeouts  map[string]time.Duration       // overrides per op
 
+	// apiSeams is a TEST-ONLY seam (address policy, resolver, timeouts of the
+	// provider GitLab client). Production code never sets it
+	// (TestProductionCannotEnableSeams).
+	apiSeams *apiSeams
+
 	keyOwnerOK func(uint32) bool // trust of the config key file (nil: current euid)
 
 	logOnce sync.Once

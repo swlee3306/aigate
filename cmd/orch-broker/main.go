@@ -120,6 +120,16 @@ func checkConfig(cfgPath, stateDir string, o checkOptions, out io.Writer) int {
 	for _, w := range warns {
 		fmt.Fprintf(out, "orch-broker: %s\n", w)
 	}
+	// Providers, read-only and without network: a stored provider whose address
+	// breaks the shape or address rules is refused; a missing or unusable
+	// gitlab token only warns (the broker still starts).
+	pRefuse, pWarns := broker.ProviderStatus(stateDir, broker.RegistryOptions{OwnerOK: o.KeyOwnerOK})
+	if pRefuse != nil {
+		return refuse(pRefuse)
+	}
+	for _, w := range pWarns {
+		fmt.Fprintf(out, "orch-broker: %s\n", w)
+	}
 	if len(cfg.RepoRoots) == 0 {
 		fmt.Fprintln(out, "orch-broker: 경고: repo_roots가 비어 있어 프로젝트 등록이 모두 path_not_allowed가 됩니다")
 	}

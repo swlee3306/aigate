@@ -426,3 +426,77 @@ func TestCheckValidatesSecretsDirAndMeta(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckValidatesProviders(t *testing.T) {
+	cfg, state, _, gitlabAddr, hits := checkEnv(t)
+	co := trustForTest(filepath.Dir(cfg))
+	canary := "canary-NOT-A-REAL-TOKEN-0123456789abcdefXYZ"
+	snapshot := func() string {
+		var sb strings.Builder
+		filepath.Walk(state, func(p string, fi os.FileInfo, err error) error {
+			if err == nil {
+				b, _ := os.ReadFile(p)
+				sb.WriteString(p + "|" + fi.Mode().String() + "|" + string(b) + "\n")
+			}
+			return nil
+		})
+		return sb.String()
+	}
+	reg := func(base, ssh, ref string) {
+		body := `{"version":2,"providers":[{"id":"corp","kind":"gitlab","base_url":"` + base + `","ssh_url":"` + ssh + `","token_ref":"` + ref + `"}],"projects":[],"auto_merge_global":{"enabled":false,"max_per_day":5},"orphans":[]}`
+		os.Remove(filepath.Join(state, "registry.json"))
+		os.WriteFile(filepath.Join(state, "registry.json"), []byte(body), 0o600)
+		os.Chmod(filepath.Join(state, "registry.json"), 0o600)
+	}
+	run1 := func() (int, string) {
+		var out bytes.Buffer
+		rc := checkConfig(cfg, state, co, &out)
+		return rc, out.String()
+	}
+	// valid provider, token missing: passes with a warning
+	reg("http://100.64.0.10:18082", "ssh://git@100.64.0.10", "gl-admin")
+	before := snapshot()
+	rc, out := run1()
+	if rc != 0 || !strings.Contains(out, "경고") || !strings.Contains(out, "token_ref_unknown") {
+		t.Fatalf("missing token: rc=%d %s", rc, out)
+	}
+	if snapshot() != before {
+		t.Fatal("-check wrote into the state dir")
+	}
+	// token present and usable: no provider warning
+	os.Mkdir(filepath.Join(state, "secrets"), 0o700)
+	os.Chmod(filepath.Join(state, "secrets"), 0o700)
+	os.WriteFile(filepath.Join(state, "secrets", "gl-admin"), []byte(canary), 0o400)
+	os.Chmod(filepath.Join(state, "secrets", "gl-admin"), 0o400)
+	os.WriteFile(filepath.Join(state, "tokens.json"), []byte(`{"version":1,"tokens":[{"ref":"gl-admin","kind":"gitlab","last4":"0XYZ","expires":"","set_at":"2026-11-10T00:00:00Z"}]}`), 0o600)
+	os.Chmod(filepath.Join(state, "tokens.json"), 0o600)
+	before = snapshot()
+	rc, out = run1()
+	if rc != 0 || strings.Contains(out, "token_ref_unknown") || strings.Contains(out, canary) {
+		t.Fatalf("healthy provider: rc=%d %s", rc, out)
+	}
+	if snapshot() != before {
+		t.Fatal("-check changed the state")
+	}
+	// forbidden addresses in a stored provider are refused
+	for _, c := range [][2]string{
+		{"http://127.0.0.1:" + strings.TrimPrefix(gitlabAddr, "127.0.0.1:"), "ssh://git@10.0.0.1"},
+		{"http://169.254.169.254", "ssh://git@10.0.0.1"},
+		{"http://localhost", "ssh://git@10.0.0.1"},
+		{"http://10.0.0.1/api/v4", "ssh://git@10.0.0.1"},
+		{"http://10.0.0.1", "ssh://git@127.0.0.1"},
+	} {
+		reg(c[0], c[1], "gl-admin")
+		before = snapshot()
+		if rc, out := run1(); rc == 0 || !(strings.Contains(out, "제공자") || strings.Contains(out, "등록부")) {
+			t.Fatalf("%v accepted: rc=%d %s", c, rc, out)
+		}
+		if snapshot() != before {
+			t.Fatal("-check changed the state of a refused provider")
+		}
+	}
+	// no connection attempt at all (the fake GitLab counts them)
+	if hits.Load() != 0 {
+		t.Fatalf("-check connected %d times", hits.Load())
+	}
+}
