@@ -14,7 +14,7 @@
 // 32..512 printable ASCII characters, no whitespace anywhere, never trimmed),
 // so nobody spends a one-time signature on a value the broker would refuse.
 //
-// Value hygiene: the password field is emptied the moment the value moves to
+// Value hygiene: the value field is emptied the moment the value moves to
 // the one holder variable below; the holder is overwritten with '' when the
 // body of the apply request has been built, on cancel, on every error and when
 // the page is left. The value is never put into DOM text, an attribute, a
@@ -221,6 +221,24 @@ function failureText(err) {
   return '요청을 처리하지 못했습니다. 변경은 적용되지 않았습니다.';
 }
 
+// PREP_TEXT: begin and message store and apply nothing, so a failure there never
+// says "unknown whether applied".
+export const PREP_TEXT = {
+  server: '서버에서 오류가 발생했습니다. 이 단계에서는 아무것도 저장하거나 적용하지 않았습니다. 입력한 값은 지웠습니다. 잠시 후 처음부터 다시 시도하세요.',
+};
+
+// prepFailureText: the fixed sentence for a failed begin or message.
+function prepFailureText(err) {
+  const code = err && typeof err.code === 'string' ? err.code : '';
+  const st = err && typeof err.status === 'number' ? err.status : 0;
+  if (st === 0) return TEXT.connect;
+  if (['outcome_unknown', 'broker_error', 'internal_error', 'tokens_unavailable'].includes(code)) return PREP_TEXT.server;
+  if (has(ERROR_TEXT, code)) return ERROR_TEXT[code];
+  if (has(STATUS_TEXT, st)) return STATUS_TEXT[st];
+  if (st >= 500) return PREP_TEXT.server;
+  return '요청을 처리하지 못했습니다. 아무것도 저장하거나 적용하지 않았습니다.';
+}
+
 const TEXT = {
   mismatch: '서버가 보낸 변경 내용이 화면의 내용과 맞지 않아 서명할 수 없습니다. 아무것도 서명하거나 보내지 않았습니다. 입력한 값은 지웠습니다. 처음부터 다시 하세요. 계속 같으면 관리자에게 알려 주세요.',
   badAnswer: '서버가 예상하지 못한 응답을 했습니다. 아무것도 서명하거나 보내지 않았습니다. 입력한 값은 지웠습니다.',
@@ -331,7 +349,7 @@ export function tokensView(ctx) {
     signer: null,
     signerNote: null,
     busy: false,
-    typed: false, // something is typed in the password field
+    typed: false, // something is typed in the value field
     result: null, // {error, text, pending}
   };
   let signerP = null;
@@ -349,7 +367,7 @@ export function tokensView(ctx) {
     ctx.setLeaveGuard(want ? () => (held.value !== '' || st.typed ? TEXT.guard : false) : null);
   }
 
-  // wipe overwrites the holder and empties the password field.
+  // wipe overwrites the holder and empties the value field.
   function wipe() {
     held.value = '';
     st.last4 = '';
@@ -376,6 +394,7 @@ export function tokensView(ctx) {
       st.listFailed = null;
     } catch (err) {
       if (gone() || my !== listSeq) return;
+      st.list = null; // never show the rows read before as if they were current
       st.listFailed = err;
     }
     if (st.step === 'loading' || st.step === 'list') {
@@ -418,14 +437,18 @@ export function tokensView(ctx) {
       TOKEN_KINDS.map((k) => el('option', { value: k }, k)));
     f.kind.value = kind0;
     f.ref = el('input', {
-      type: 'text', id: 't-ref', class: 'mono', autocomplete: 'off', spellcheck: 'false', maxlength: String(TOKEN_REF_MAX + 1),
-      disabled: !!pre, 'data-focus-key': 'ref',
+      type: 'text', id: 't-ref', name: 'x-tr', class: 'mono', autocomplete: 'off', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false',
+      maxlength: String(TOKEN_REF_MAX + 1), disabled: !!pre, 'data-focus-key': 'ref', 'data-lpignore': 'true', 'data-1p-ignore': 'true', 'data-bwignore': 'true', 'data-form-type': 'other',
     });
     f.ref.value = pre ? pre.ref : '';
     if (!pre && kind0 === TOKEN_SINGLETON_KIND) f.ref.value = TOKEN_SINGLETON_KIND;
+    // A masked TEXT input, not type=password: Chrome ignores autocomplete=off on
+    // password fields and offers to save them (username = the name field). The
+    // masking is CSS (.secret); the opt-out hints cover the common managers.
     f.value = el('input', {
-      type: 'password', id: 't-value', class: 'mono', autocomplete: 'off', spellcheck: 'false',
-      maxlength: String(TOKEN_VALUE_MAX + 1), 'data-focus-key': 'value',
+      type: 'text', id: 't-value', name: 'x-tv', class: ['mono', 'secret'], autocomplete: 'off', autocapitalize: 'off', autocorrect: 'off',
+      spellcheck: 'false', maxlength: String(TOKEN_VALUE_MAX + 1), 'data-focus-key': 'value',
+      'data-lpignore': 'true', 'data-1p-ignore': 'true', 'data-bwignore': 'true', 'data-form-type': 'other',
       on: { input: onTyped },
     });
     f.value.value = '';
@@ -539,7 +562,7 @@ export function tokensView(ctx) {
     try {
       b = await ctx.post('/api/v1/tokens/begin', { action, subject, fields: beginFields }, WRITE_OPTS);
     } catch (err) {
-      return fail(err && err.status === 0 ? TEXT.connect : failureText(err), my);
+      return fail(prepFailureText(err), my);
     }
     if (gone() || my !== propSeq) return;
     if (!isObj(b) || typeof b.request !== 'string' || !REQUEST_ID_RE.test(b.request) || typeof b.issued !== 'string' || !ISSUED_RE.test(b.issued)) {
@@ -559,7 +582,7 @@ export function tokensView(ctx) {
     try {
       resp = await ctx.post('/api/v1/tokens/message', { action, subject, fields, request: b.request, issued: b.issued }, WRITE_OPTS);
     } catch (err) {
-      return fail(err && err.status === 0 ? TEXT.connect : failureText(err), my);
+      return fail(prepFailureText(err), my);
     }
     if (gone() || my !== propSeq) return;
     const problems = await analyze(sent, resp);
@@ -579,7 +602,9 @@ export function tokensView(ctx) {
       st.last4 = held.value.slice(-4);
       st.hash8 = fields.value_hash.slice(0, 8);
     }
-    if (st.form && st.form.value) st.form.value.value = '';
+    if (st.form && st.form.value) st.form.value.value = ''; // anything typed while the request was out
+    st.typed = false;
+    syncGuard();
     paint();
     if (problems.length === 0) await resolveSignerOnce(sent);
   }
@@ -779,6 +804,7 @@ export function tokensView(ctx) {
 
   function renderForm() {
     const f = st.form;
+    f.value.disabled = st.busy; // no typing while a request is out
     const field = (labelText, id, control, hint) => el('div', { class: 'field' }, [
       el('label', { for: id }, labelText), control, hint || null,
     ]);

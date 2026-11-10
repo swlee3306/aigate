@@ -258,24 +258,45 @@ test('TestConfigRowHasNoDeleteAndUnusableIsShown', async () => {
 });
 
 test('TestPasswordInputAttributes', async () => {
+  // D9 said type=password. Chrome ignores autocomplete=off on password fields and
+  // offers "Save password?" (username = the name field, password = the token), so
+  // the field is a masked TEXT input plus every opt-out hint. Still masked (CSS).
   const ctx = await mount();
   await openForm(ctx);
   const v = byId(ctx.root, 't-value');
   assert.equal(v.tagName, 'INPUT');
-  assert.equal(v.getAttribute('type'), 'password');
-  assert.equal(v.getAttribute('autocomplete'), 'off');
-  assert.equal(v.getAttribute('spellcheck'), 'false');
+  assert.equal(v.getAttribute('type'), 'text', 'not type=password: no password-manager heuristics');
+  assert.notEqual(v.getAttribute('type'), 'password');
+  assert.match(v.getAttribute('class'), /\bsecret\b/, 'masked by CSS');
+  for (const [k, want] of Object.entries({ autocomplete: 'off', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false',
+    'data-lpignore': 'true', 'data-1p-ignore': 'true', 'data-bwignore': 'true', 'data-form-type': 'other' })) {
+    assert.equal(v.getAttribute(k), want, k);
+  }
   assert.equal(v.getAttribute('value'), null, 'no value attribute');
   assert.equal(v.getAttribute('maxlength'), String(T.TOKEN_VALUE_MAX + 1), 'longer input is still seen (and refused with a sentence)');
   assert.equal(v.getAttribute('data-focus-key'), 'value');
-  // the label belongs to it, and it is the only password field
+  // neutral names: nothing username/password/token-like on the value or the name field
+  const r = byId(ctx.root, 't-ref');
+  for (const inp of [v, r]) {
+    const all = [inp.getAttribute('id'), inp.getAttribute('name'), inp.getAttribute('placeholder')].join(' ');
+    assert.ok(!/user|login|pass|pwd|secret|token|email|account/i.test(all.replace(/^t-value|^t-ref/g, '')), 'neutral name: ' + all);
+  }
+  assert.equal(r.getAttribute('autocomplete'), 'off');
+  assert.equal(r.getAttribute('data-lpignore'), 'true');
+  assert.equal(r.getAttribute('autocapitalize'), 'off');
+  // no <form> anywhere (the tag is not even allowed by el), no password field at all
+  assert.equal(findAll(ctx.root, (e) => e.tagName === 'FORM').length, 0);
+  assert.equal(findAll(ctx.root, (e) => e.getAttribute('type') === 'password').length, 0);
   assert.equal(findAll(ctx.root, (e) => e.getAttribute('for') === 't-value').length, 1);
-  assert.equal(findAll(ctx.root, (e) => e.getAttribute('type') === 'password').length, 1);
+  // the CSS really masks it
+  const css = src('style.css');
+  assert.match(css, /\.secret\s*\{[^}]*-webkit-text-security:\s*disc/);
+  assert.match(css, /\.secret\s*\{[^}]*\btext-security:\s*disc/);
   const code = src('views/tokens.js');
   for (const bad of ['localStorage', 'sessionStorage', 'indexedDB', 'document.cookie', 'caches.', 'navigator.storage', 'history.']) {
     assert.ok(!code.includes(bad), 'tokens.js uses ' + bad);
   }
-  assert.ok(!/\.paste|onpaste|preventDefault\(\)\s*;?\s*\/\/ paste/.test(code), 'pasting stays allowed');
+  assert.ok(!/\.paste|onpaste/.test(code), 'pasting stays allowed');
 });
 
 test('TestConfirmShowsKindRefExpiryLast4AndHashPrefixOnly', async () => {
@@ -840,7 +861,7 @@ test('TestLeaveGuardOnlyWhenValueTyped', async () => {
   const err = await mount({ 'POST /api/v1/tokens/begin': () => { throw apiError(500, 'internal_error', SECRET); } });
   await openForm(err, GOOD);
   click(byLabel(err.root, '변경 내용 확인')[0]);
-  await until(() => text(err.root).includes(T.ERROR_TEXT.internal_error), 'error');
+  await until(() => text(err.root).includes(T.PREP_TEXT.server), 'error');
   assert.equal(err.guard, null);
   // a refused proposal releases it too
   const mm = await mount({ 'POST /api/v1/tokens/message': async (b) => ({ ...(await messageFor(b)), change: '0'.repeat(64) }) });
@@ -974,4 +995,177 @@ test('TestPreviewSentencesAreTextNodes', async () => {
     for (const [k, v] of e.attrs) assert.ok(!/onerror|javascript:|<img|굵게/.test(v), 'attribute ' + k + ' carries a server sentence');
   }
   for (const li of items) assert.deepEqual([...li.attrs.keys()], ['data-preview'], 'the sentence is only a text node');
+});
+
+// ---- fix round 1 ----
+
+test('TestFailedReloadNeverShowsOldList', async () => {
+  let n = 0;
+  const ctx = await mount({
+    '/api/v1/settings/tokens': () => { n++; if (n === 1) return LIST; throw apiError(503, 'tokens_unavailable', SECRET); },
+    'POST /api/v1/tokens/apply': () => { throw apiError(504, 'outcome_unknown', SECRET); },
+  });
+  assert.ok(text(ctx.root).includes('gitlab-main'));
+  await toConfirm(ctx);
+  await waitSignable(ctx);
+  click(signBtn(ctx));
+  await until(() => byData(ctx.root, 'result', 'error').length === 1, 'unknown outcome');
+  await until(() => n >= 2, 'reload attempt');
+  await ctx.settle();
+  click(byLabel(ctx.root, '목록으로')[0]);
+  await until(() => text(ctx.root).includes('불러오지 못했습니다'), 'failure pane');
+  assert.ok(!text(ctx.root).includes('gitlab-main'), 'the pre-change rows are not shown as current');
+  assert.equal(byData(ctx.root, 'banner', 'expiry').length, 0, 'no banner from old data');
+  assert.ok(text(ctx.root).includes(T.ERROR_TEXT.tokens_unavailable));
+  assert.equal(byLabel(ctx.root, '토큰 추가').length, 0, 'no change offered on a list that could not be read');
+  // a retry that works brings the list back
+  n = 0;
+  click(byLabel(ctx.root, '다시 시도')[0]);
+  await until(() => byLabel(ctx.root, '토큰 추가').length === 1, 'list again');
+});
+
+test('TestInputClearedWhileBusyGuardReleasedAndBodyCleared', async () => {
+  let gate; let bodies = [];
+  const hold = new Promise((r) => { gate = r; });
+  const ctx = await mount({
+    'POST /api/v1/tokens/begin': async () => { await hold; seq++; return { request: seq.toString(16).padStart(32, '0'), issued: '2026-11-10T03:00:00Z' }; },
+    'POST /api/v1/tokens/apply': (b) => { bodies.push(b); return { ...APPLIED_SET, ref: b.subject, kind: b.fields.kind }; },
+  });
+  await openForm(ctx, GOOD);
+  click(byLabel(ctx.root, '변경 내용 확인')[0]);
+  await until(() => posts(ctx, 'begin').length === 1, 'begin pending');
+  // pending begin: the field is empty and disabled, the holder has the value, the guard says so with a button that exists
+  const inp = byId(ctx.root, 't-value');
+  assert.equal(inp.value, '', 'input empty right after submit, while busy');
+  assert.equal(inp.disabled, true, 'input disabled while busy');
+  assert.equal(T.heldValueLength(), VALUE.length);
+  const g = ctx.guard();
+  assert.equal(typeof g, 'string');
+  assert.ok(byLabel(ctx.root, '취소').length === 1 && g.includes('취소'), 'the guard names a button that is on this screen');
+  gate();
+  await until(() => !!byId(ctx.root, 'h-says'), 'confirm');
+  await waitSignable(ctx);
+  assert.ok(typeof ctx.guard() === 'string' && g.includes('취소') && byLabel(ctx.root, '취소').length === 1);
+  click(signBtn(ctx));
+  await until(() => /저장했습니다/.test(text(ctx.root)), 'done');
+  assert.equal(T.heldValueLength(), 0);
+  assert.equal(ctx.guard, null, 'released after apply');
+  assert.equal(bodies.length, 1);
+  assert.equal(bodies[0].value, '', 'the body object no longer carries the value after the post');
+  // the same on a failing apply
+  bodies = [];
+  const bad = await mount({ 'POST /api/v1/tokens/apply': (b) => { bodies.push(b); throw apiError(403, 'bad_signature', SECRET); } });
+  await toConfirm(bad);
+  await waitSignable(bad);
+  click(signBtn(bad));
+  await until(() => byData(bad.root, 'result', 'error').length === 1, 'error');
+  assert.equal(bodies[0].value, '', 'cleared after a failed post too');
+  assert.equal(bad.guard, null);
+  assert.equal(T.heldValueLength(), 0);
+});
+
+test('TestRealGoMessageFixturesAreAccepted', async () => {
+  // The browser rebuilds the canonical message and change itself; the answers
+  // below are Go's own bytes (value hash, change, message, sentences).
+  const begin = fx('tokens-begin.json');
+  const cases = [
+    ['tokens-message-set.json', { kind: 'gitlab', ref: 'gitlab-main', expires: '2027-06-30', value: VALUE }],
+    ['tokens-message-set-noexp.json', { kind: 'gitlab', ref: 'gitlab-main', expires: '', value: VALUE }],
+    ['tokens-message-set-openai.json', { kind: 'openai', ref: 'openai', expires: '', value: VALUE }],
+  ];
+  for (const [file, form] of cases) {
+    const ctx = await mount({
+      'POST /api/v1/tokens/begin': () => begin,
+      'POST /api/v1/tokens/message': () => fx(file),
+    });
+    await openForm(ctx, form);
+    click(byLabel(ctx.root, '변경 내용 확인')[0]);
+    await until(() => !!byId(ctx.root, 'h-says') || byData(ctx.root, 'warn', 'mismatch').length > 0, file);
+    await waitSignable(ctx);
+    assert.equal(byData(ctx.root, 'warn', 'mismatch').length, 0, file + ': Go\'s message equals the browser\'s rebuild');
+    assert.deepEqual(byData(ctx.root, 'preview', 'item').map(text), fx(file).preview, file);
+    click(byLabel(ctx.root, '취소')[0]);
+  }
+  for (const [file, ref] of [['tokens-message-delete.json', 'gitlab-main'], ['tokens-message-delete-openai.json', 'openai']]) {
+    const ctx = await mount({
+      'POST /api/v1/tokens/begin': () => begin,
+      'POST /api/v1/tokens/message': () => fx(file),
+    });
+    const row = findAll(ctx.root, (e) => e.tagName === 'TR' && text(e).startsWith(ref) && byLabel(e, '삭제').length === 1)[0];
+    click(byLabel(row, '삭제')[0]);
+    await until(() => byId(ctx.root, 't-confirm-ref'), 'delete form');
+    byId(ctx.root, 't-confirm-ref').value = ref;
+    click(byLabel(ctx.root, '삭제 내용 확인')[0]);
+    await waitSignable(ctx);
+    assert.equal(byData(ctx.root, 'warn', 'mismatch').length, 0, file);
+  }
+  // a Go answer for ANOTHER value (changed by one character) is refused by the browser
+  const ctx = await mount({
+    'POST /api/v1/tokens/begin': () => begin,
+    'POST /api/v1/tokens/message': () => fx('tokens-message-set.json'),
+  });
+  await openForm(ctx, { ...GOOD, value: VALUE.slice(0, -1) + 'X' });
+  click(byLabel(ctx.root, '변경 내용 확인')[0]);
+  await until(() => byData(ctx.root, 'warn', 'mismatch').length === 1, 'mismatch for another value');
+});
+
+test('TestPrepFailuresSayNothingWasApplied', async () => {
+  assert.ok(T.PREP_TEXT.server.includes('아무것도'));
+  assert.ok(!/알 수 없|목록을 다시 읽어/.test(T.PREP_TEXT.server));
+  for (const [path, mk] of [['begin', () => apiError(504, 'outcome_unknown', SECRET)], ['message', () => apiError(502, 'broker_error', SECRET)],
+    ['begin', () => apiError(500, 'internal_error', SECRET)], ['message', () => apiError(503, 'tokens_unavailable', SECRET)],
+    ['begin', () => apiError(500, 'weird', SECRET)], ['message', () => apiError(504, 'timeout', SECRET)]]) {
+    const ctx = await mount({ ['POST /api/v1/tokens/' + path]: () => { throw mk(); } });
+    await openForm(ctx, GOOD);
+    click(byLabel(ctx.root, '변경 내용 확인')[0]);
+    await until(() => byData(ctx.root, 'problem', 'form')[0].hidden === false, path);
+    const shown = text(byData(ctx.root, 'problem', 'form')[0]);
+    assert.match(shown, /아무것도|적용되지 않았/, shown);
+    assert.ok(!/알 수 없|목록을 다시 읽어/.test(shown), 'a step that stores nothing never says "unknown": ' + shown);
+    assert.ok(!shown.includes('SERVER-WORDS'));
+    await ctx.settle();
+    assert.equal(ctx.calls.filter((c) => c === '/api/v1/settings/tokens').length, 1, 'no list reload after a prep failure');
+  }
+  // apply keeps its "not known" wording
+  const ap = await mount({ 'POST /api/v1/tokens/apply': () => { throw apiError(504, 'outcome_unknown', SECRET); } });
+  await toConfirm(ap);
+  await waitSignable(ap);
+  click(signBtn(ap));
+  await until(() => byData(ap.root, 'result', 'error').length === 1, 'apply unknown');
+  assert.match(text(ap.root), /알 수 없/);
+});
+
+test('TestTypingWhileBusyAndLeavingClearTheField', async () => {
+  // something typed while the begin is out (a real browser disables the field, but events can still arrive)
+  let gate;
+  const hold = new Promise((r) => { gate = r; });
+  const ctx = await mount({
+    'POST /api/v1/tokens/begin': async () => { await hold; seq++; return { request: seq.toString(16).padStart(32, '0'), issued: '2026-11-10T03:00:00Z' }; },
+  });
+  await openForm(ctx, GOOD);
+  const inp = byId(ctx.root, 't-value');
+  click(byLabel(ctx.root, '변경 내용 확인')[0]);
+  await until(() => posts(ctx, 'begin').length === 1, 'begin pending');
+  inp.value = 'late typing';
+  fire(inp, 'input');
+  gate();
+  await waitSignable(ctx);
+  assert.equal(inp.value, '', 'cleared when the confirmation is built');
+  click(signBtn(ctx));
+  await until(() => /저장했습니다/.test(text(ctx.root)), 'done');
+  assert.equal(ctx.guard, null, 'the guard is released: typed was reset');
+  // leaving while a value is typed in the field empties the field itself
+  const c2 = await mount();
+  await openForm(c2, GOOD);
+  const i2 = byId(c2.root, 't-value');
+  assert.equal(i2.value, VALUE);
+  c2.leave();
+  assert.equal(i2.value, '', 'the input is emptied on leave');
+  assert.equal(T.heldValueLength(), 0);
+  // cancelling the form with a value typed empties the field
+  const c3 = await mount();
+  await openForm(c3, GOOD);
+  const i3 = byId(c3.root, 't-value');
+  click(byLabel(c3.root, '취소')[0]);
+  assert.equal(i3.value, '');
 });

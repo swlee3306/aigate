@@ -1730,7 +1730,14 @@ func checkTokenConstants(t *testing.T) {
 	if _, err := registrymsg.CanonicalChange(registrymsg.ActionDeleteToken, "a", map[string]any{"kind": "gitlab"}); err == nil {
 		t.Error("Go accepts delete_token with a field")
 	}
-	// The expiry may be empty only for set_token (as the browser's schema says).
+	// The expiry may be empty only for set_token (as the browser's schema says):
+	// Go accepts the empty expiry there, and the browser's schema code says the same.
+	if _, err := registrymsg.CanonicalChange(registrymsg.ActionSetToken, "a", map[string]any{"kind": "gitlab", "expires": "", "value_hash": strings.Repeat("a", 64)}); err != nil {
+		t.Errorf("Go refuses an empty expires for set_token: %v", err)
+	}
+	if !regexp.MustCompile(`name === 'expires' && v !== '' && !validExpires\(v\)`).MatchString(js) {
+		t.Error("tokens.js canonicalChange no longer treats an empty expires as the only empty field")
+	}
 	if got := jsRegex("VALUE_HASH_RE"); got != `^[0-9a-f]{64}$` {
 		t.Errorf("VALUE_HASH_RE %q", got)
 	}

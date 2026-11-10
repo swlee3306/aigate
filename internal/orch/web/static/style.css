@@ -249,3 +249,6 @@ pre.block-pre { font-family: var(--mono); font-size: 13px; background: var(--bg)
 .expbar p { margin: 0 0 6px; overflow-wrap: anywhere; min-width: 0; } .expbar p:last-child { margin-bottom: 0; }
 .expbar-head { font-weight: 600; font-size: 15px; }
 .expbar .note { color: var(--muted); }
+
+/* the token value field: a masked TEXT input (type=password triggers browser save prompts) */
+.secret { -webkit-text-security: disc; text-security: disc; }

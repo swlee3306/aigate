@@ -15,7 +15,7 @@ const TAGS = new Set([
 ]);
 const PLAIN_ATTRS = new Set([
   'class', 'id', 'role', 'type', 'disabled', 'title', 'tabindex', 'for', 'name', 'value', 'href',
-  'hidden', 'scope', 'colspan', 'placeholder', 'maxlength', 'autocomplete', 'spellcheck', 'inputmode',
+  'hidden', 'scope', 'colspan', 'placeholder', 'maxlength', 'autocomplete', 'spellcheck', 'inputmode', 'autocapitalize', 'autocorrect',
   'target', 'rel',
 ]);
 const PATTERN_ATTRS = [/^aria-[a-z]+$/, /^data-[a-z0-9-]+$/];

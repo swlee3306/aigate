@@ -344,3 +344,36 @@ func lastLines(s string, n int) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// TestTokensViewClockOnlyForExpiry: tokens.js may read the browser clock only in
+// the clock seam (deps, configure, todayUTC) and in validExpires (Date.UTC for
+// the calendar check). Nothing else in the file, the signing path included, may
+// read the clock.
+func TestTokensViewClockOnlyForExpiry(t *testing.T) {
+	files := staticFiles(t)
+	b, ok := files["views/tokens.js"]
+	if !ok {
+		t.Fatal("static/views/tokens.js missing")
+	}
+	allowed := map[string]bool{"deps": true, "configure": true, "todayUTC": true, "validExpires": true}
+	decl := regexp.MustCompile(`^(?:export )?(?:async )?(?:function|const|let|class) ([A-Za-z0-9_]+)`)
+	clock := regexp.MustCompile(`\bnew Date\b|Date\.now|performance\.now|\bDate\(`)
+	cur := ""
+	seen := map[string]bool{}
+	for i, line := range strings.Split(string(b), "\n") {
+		if m := decl.FindStringSubmatch(line); m != nil {
+			cur = m[1]
+		}
+		if clock.MatchString(line) && !strings.HasPrefix(strings.TrimSpace(line), "//") {
+			if !allowed[cur] {
+				t.Errorf("tokens.js line %d reads the clock in %q: %s", i+1, cur, line)
+			}
+			seen[cur] = true
+		}
+	}
+	for _, need := range []string{"deps", "validExpires"} {
+		if !seen[need] {
+			t.Errorf("expected a clock read in %s (the scan found none: is it still scanning?)", need)
+		}
+	}
+}
