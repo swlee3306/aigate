@@ -416,8 +416,8 @@ func TestNoRedirectFollowedProviderAPI(t *testing.T) {
 func TestProviderURLRules(t *testing.T) {
 	ok := []string{
 		"http://100.64.0.10:18082", "https://gitlab.example.com", "http://10.0.0.5", "http://172.16.0.1:8080", "http://192.168.1.10",
-		"http://100.64.0.1", "http://[fd00::1]", "https://[fc00::1]:8443", "http://gitlab", "https://git.corp.example.org:8443",
-		"http://[2001:db8::1]",
+		"http://100.64.0.1", "http://[fd00::1]", "https://[fc00::1]:8443", "https://gitlab", "https://git.corp.example.org:8443",
+		"https://[2001:db8::1]",
 	}
 	for _, s := range ok {
 		if err := ValidateProviderURL(s); err != nil {
@@ -496,7 +496,7 @@ func TestDialTimeIPRecheck(t *testing.T) {
 		return []netip.Addr{netip.MustParseAddr(answer.Load().(string))}, nil
 	}
 	// production policy: the resolved loopback address is refused at connect time
-	a, err := newGitLabAPI(prov, ts, &apiSeams{lookup: lookup})
+	a, err := newGitLabAPI(prov, ts, &apiSeams{lookup: lookup, plainHTTP: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -543,13 +543,13 @@ func TestCheckProviderResolves(t *testing.T) {
 		}
 	}
 	ctx := context.Background()
-	if err := CheckProviderResolves(ctx, "http://gitlab.example.com", look("127.0.0.1", "169.254.169.254")); ErrCode(err) != CodeBadURL {
+	if err := CheckProviderResolves(ctx, "https://gitlab.example.com", look("127.0.0.1", "169.254.169.254")); ErrCode(err) != CodeBadURL {
 		t.Errorf("only-forbidden accepted: %v", err)
 	}
-	if err := CheckProviderResolves(ctx, "http://gitlab.example.com", look("10.1.1.1")); err != nil {
+	if err := CheckProviderResolves(ctx, "https://gitlab.example.com", look("10.1.1.1")); err != nil {
 		t.Errorf("private refused: %v", err)
 	}
-	if err := CheckProviderResolves(ctx, "http://gitlab.example.com", look()); ErrCode(err) != CodeProviderUnreachable {
+	if err := CheckProviderResolves(ctx, "https://gitlab.example.com", look()); ErrCode(err) != CodeProviderUnreachable {
 		t.Errorf("no answer: %v", err)
 	}
 	if err := CheckProviderResolves(ctx, "http://localhost", look("10.1.1.1")); ErrCode(err) != CodeBadURL {
@@ -870,7 +870,7 @@ func TestProductionCannotEnableSeams(t *testing.T) {
 	}
 	allowedUse := map[string]bool{
 		"gitlabapi.go|(type/var)|apiSeams":   true, // type declaration
-		"gitlabapi.go|newGitLabAPI|apiSeams": true, "gitlabapi.go|newGitLabAPI|newGitLabAPI": true,
+		"gitlabapi.go|newGitLabAPI|apiSeams": true, "gitlabapi.go|strictHTTP|apiSeams": true, "gitlabapi.go|newGitLabAPI|newGitLabAPI": true,
 		"gitlabapi.go|NewGitLabAPI|newGitLabAPI": true, // production: passes nil
 		"server.go|(type/var)|apiSeams":          true, // the Server field (never assigned)
 		"provider.go|GitLabAPIFor|newGitLabAPI":  true,

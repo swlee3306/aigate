@@ -78,6 +78,7 @@ const (
 	CodeProviderExists      = "provider_exists"
 	CodeProviderInUse       = "provider_in_use"
 	CodeBadInput            = "bad_request"
+	CodeProtectionWeaker    = "protection_weaker"      // internal; WireCode maps it to gitlab_refused
 	CodeNotAllowlisted      = "gitlab_not_allowlisted" // a bug, never a user error; not a registered code -> internal_error
 )
 
@@ -105,6 +106,16 @@ func ErrCode(err error) string {
 	return ""
 }
 
+// WireCode is the code to send to the client: the internal protection_weaker
+// is gitlab_refused on the wire. "" for a nil or non-CodeError error.
+func WireCode(err error) string {
+	c := ErrCode(err)
+	if c == CodeProtectionWeaker {
+		return CodeGitLabRefused
+	}
+	return c
+}
+
 // ErrStatus returns the HTTP status recorded in err (0 if none).
 func ErrStatus(err error) int {
 	var ce *CodeError
@@ -127,7 +138,7 @@ var (
 	ErrNotAllowlisted      = &CodeError{Code: CodeNotAllowlisted}
 	// ErrProtectionWeaker: a rule for main exists but allows more than
 	// Maintainer or force pushes. The client never edits it.
-	ErrProtectionWeaker = &CodeError{Code: CodeGitLabRefused}
+	ErrProtectionWeaker = &CodeError{Code: CodeProtectionWeaker}
 )
 
 // ---------- address policy ----------
@@ -157,6 +168,9 @@ func ipForbidden(a netip.Addr) bool {
 		if b[0] == 0 || b[0] >= 240 { // 0/8, 240/4 incl. 255.255.255.255
 			return true
 		}
+		if (b[0] == 192 && b[1] == 0 && b[2] == 0) || (b[0] == 198 && (b[1] == 18 || b[1] == 19)) { // 192.0.0.0/24, 198.18.0.0/15
+			return true
+		}
 		return a == netip.AddrFrom4([4]byte{100, 100, 100, 200})
 	}
 	b := a.As16()
@@ -168,6 +182,12 @@ func ipForbidden(a netip.Addr) bool {
 		return true
 	}
 	if b[0] == 0x00 && b[1] == 0x64 && b[2] == 0xff && b[3] == 0x9b && allZero(b[4:12]) { // 64:ff9b::/96
+		return ipForbidden(netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]}))
+	}
+	if b[0] == 0xfe && b[1]&0xc0 == 0xc0 { // fec0::/10 site-local (deprecated)
+		return true
+	}
+	if allZero(b[:8]) && b[8] == 0xff && b[9] == 0xff && b[10] == 0 && b[11] == 0 { // SIIT ::ffff:0:a.b.c.d
 		return ipForbidden(netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]}))
 	}
 	if b[0] == 0x20 && b[1] == 0x02 { // 2002::/16
@@ -226,14 +246,32 @@ func checkHostStatic(host string, allow ipPolicy) error {
 // shape (http/https, canonical lowercase host, optional port, no userinfo,
 // path, query or fragment; numeric host variants such as 0x7f.1 are refused
 // there) plus the address rules. Host names are checked again when connecting.
-func ValidateProviderURL(s string) error { return validateProviderURL(s, defaultIPPolicy) }
+func ValidateProviderURL(s string) error { return validateProviderURL(s, defaultIPPolicy, true) }
 
-func validateProviderURL(s string, allow ipPolicy) error {
+// plainHTTPHost: plain http is only for literal private (10/8, 172.16/12,
+// 192.168/16, fc00::/7) and tailnet (100.64/10) addresses; host names and
+// public addresses need https.
+func plainHTTPHost(host string) bool {
+	a, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	a = a.Unmap()
+	return a.IsPrivate() || (a.Is4() && a.As4()[0] == 100 && a.As4()[1]&0xc0 == 64)
+}
+
+// strict: enforce the http-only-for-private-literals rule (production). Tests
+// with a plain-http fake on loopback pass false through apiSeams.
+func validateProviderURL(s string, allow ipPolicy, strict bool) error {
 	if !registrymsg.ValidBaseURL(s) {
 		return ErrBadURL
 	}
-	_, rest, _ := strings.Cut(s, "://")
-	return checkHostStatic(authorityHost(rest), allow)
+	scheme, rest, _ := strings.Cut(s, "://")
+	host := authorityHost(rest)
+	if strict && scheme == "http" && !plainHTTPHost(host) {
+		return ErrBadURL
+	}
+	return checkHostStatic(host, allow)
 }
 
 // ValidateSSHURL checks an ssh_url: ssh://git@host[:port] shape plus the same
@@ -255,7 +293,7 @@ func CheckProviderResolves(ctx context.Context, baseURL string, lookup func(cont
 }
 
 func checkResolves(ctx context.Context, baseURL string, lookup func(context.Context, string) ([]netip.Addr, error), allow ipPolicy) error {
-	if err := validateProviderURL(baseURL, allow); err != nil {
+	if err := validateProviderURL(baseURL, allow, true); err != nil {
 		return err
 	}
 	_, rest, _ := strings.Cut(baseURL, "://")
@@ -355,7 +393,13 @@ type apiSeams struct {
 	lookup func(context.Context, string) ([]netip.Addr, error)
 	conn   time.Duration
 	total  time.Duration
+	// plainHTTP lifts the http-only-for-private-literals rule (the fakes are
+	// http on loopback). A custom policy implies it.
+	plainHTTP bool
 }
+
+// strictHTTP reports whether the plain-http rule applies (always in production).
+func (sm *apiSeams) strictHTTP() bool { return sm == nil || (sm.policy == nil && !sm.plainHTTP) }
 
 // GitLabAPI is the client of one provider. Safe for concurrent use. It holds
 // no token: the value is read from the token store for every request.
@@ -394,7 +438,7 @@ func newGitLabAPI(p Provider, tokens *TokenStore, sm *apiSeams) (*GitLabAPI, err
 	if p.Kind != "gitlab" || !registrymsg.ValidTokenRef(p.TokenRef) {
 		return nil, ErrBadInput
 	}
-	if err := validateProviderURL(p.BaseURL, a.policy); err != nil {
+	if err := validateProviderURL(p.BaseURL, a.policy, sm.strictHTTP()); err != nil {
 		return nil, err
 	}
 	a.base = p.BaseURL
@@ -485,6 +529,9 @@ func (a *GitLabAPI) do(ctx context.Context, method, path string, q url.Values, b
 	}
 	resp, err := a.hc.Do(req) // url.Error would quote the URL: never returned
 	if err != nil {
+		if errors.Is(err, ErrBadURL) { // the dial-time address policy refused
+			return nil, ErrBadURL
+		}
 		return nil, ErrProviderUnreachable
 	}
 	defer resp.Body.Close()
@@ -799,6 +846,9 @@ type ProtectedBranch struct {
 	PushLevels     []int
 	MergeLevels    []int
 	AllowForcePush bool
+	// Scoped: some push/merge entry names a user, group or deploy key (any
+	// non-null, non-zero user_id/group_id/deploy_key_id): counts as weaker.
+	Scoped bool
 }
 
 // Strong reports whether the rule is at least "Maintainer may push and merge,
@@ -815,11 +865,18 @@ func (p ProtectedBranch) Strong() bool {
 		}
 		return true
 	}
-	return !p.AllowForcePush && good(p.PushLevels) && good(p.MergeLevels)
+	return !p.AllowForcePush && !p.Scoped && good(p.PushLevels) && good(p.MergeLevels)
 }
 
 type levelJSON struct {
-	AccessLevel *int `json:"access_level"`
+	AccessLevel *int   `json:"access_level"`
+	UserID      *int64 `json:"user_id"`
+	GroupID     *int64 `json:"group_id"`
+	DeployKeyID *int64 `json:"deploy_key_id"`
+}
+
+func (l levelJSON) scoped() bool {
+	return (l.UserID != nil && *l.UserID != 0) || (l.GroupID != nil && *l.GroupID != 0) || (l.DeployKeyID != nil && *l.DeployKeyID != 0)
 }
 
 type protectedJSON struct {
@@ -859,7 +916,11 @@ func (a *GitLabAPI) ProtectedMain(ctx context.Context, projectID int64) (Protect
 	if !ok1 || !ok2 {
 		return ProtectedBranch{}, badResponse()
 	}
-	return ProtectedBranch{PushLevels: push, MergeLevels: merge, AllowForcePush: *j.AllowForcePush}, nil
+	scoped := false
+	for _, l := range append(append([]levelJSON(nil), j.Push...), j.Merge...) {
+		scoped = scoped || l.scoped()
+	}
+	return ProtectedBranch{PushLevels: push, MergeLevels: merge, AllowForcePush: *j.AllowForcePush, Scoped: scoped}, nil
 }
 
 // EnsureProtectedMain makes sure main needs Maintainer to push and merge and
@@ -881,6 +942,15 @@ func (a *GitLabAPI) EnsureProtectedMain(ctx context.Context, projectID int64) er
 	body := map[string]any{"name": apiBranch, "push_access_level": 40, "merge_access_level": 40, "allow_force_push": false}
 	raw, err := a.do(ctx, http.MethodPost, "/api/v4/projects/"+ids+"/protected_branches", nil, postJSON(body), http.StatusCreated)
 	if err != nil {
+		if st := ErrStatus(err); st == http.StatusConflict || st == http.StatusUnprocessableEntity {
+			// GitLab may have created the rule meanwhile (first push): look once more.
+			if pb, gerr := a.ProtectedMain(ctx, projectID); gerr == nil {
+				if pb.Strong() {
+					return nil
+				}
+				return ErrProtectionWeaker
+			}
+		}
 		return err
 	}
 	var j protectedJSON

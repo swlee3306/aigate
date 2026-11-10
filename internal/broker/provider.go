@@ -13,11 +13,11 @@ import (
 
 // providerShape checks one provider entry: id, kind, token_ref, base_url and
 // ssh_url shapes plus the address rules (no loopback, link-local, ...).
-func providerShape(p Provider, allow ipPolicy) error {
+func providerShape(p Provider, allow ipPolicy, strictHTTP bool) error {
 	if !registrymsg.ValidProviderID(p.ID) || p.Kind != "gitlab" || !registrymsg.ValidTokenRef(p.TokenRef) {
 		return ErrBadInput
 	}
-	if err := validateProviderURL(p.BaseURL, allow); err != nil {
+	if err := validateProviderURL(p.BaseURL, allow, strictHTTP); err != nil {
 		return err
 	}
 	return validateSSHURL(p.SSHURL, allow)
@@ -33,15 +33,17 @@ func findProvider(r *Registry, id string) int {
 }
 
 // AddProvider adds p; ErrProviderExists when the id is taken.
-func (s *RegistryStore) AddProvider(p Provider) error { return s.putProvider(p, true, defaultIPPolicy) }
+func (s *RegistryStore) AddProvider(p Provider) error {
+	return s.putProvider(p, true, defaultIPPolicy, true)
+}
 
 // ReplaceProvider replaces the entry with p's id; ErrProviderUnknown when none.
 func (s *RegistryStore) ReplaceProvider(p Provider) error {
-	return s.putProvider(p, false, defaultIPPolicy)
+	return s.putProvider(p, false, defaultIPPolicy, true)
 }
 
-func (s *RegistryStore) putProvider(p Provider, add bool, allow ipPolicy) error {
-	if err := providerShape(p, allow); err != nil {
+func (s *RegistryStore) putProvider(p Provider, add bool, allow ipPolicy, strictHTTP bool) error {
+	if err := providerShape(p, allow, strictHTTP); err != nil {
 		return err
 	}
 	return s.Update(func(r *Registry) error {
@@ -106,18 +108,18 @@ func (s *Server) validateProviderEntry(p Provider) error {
 	if s.apiSeams != nil && s.apiSeams.policy != nil {
 		allow = s.apiSeams.policy
 	}
-	return providerShape(p, allow)
+	return providerShape(p, allow, s.apiSeams.strictHTTP())
 }
 
 // AddProviderChecked and ReplaceProviderChecked store p after the server's
 // address rules (identical to AddProvider/ReplaceProvider in production).
 func (s *Server) AddProviderChecked(p Provider) error {
-	return s.Registry.putProvider(p, true, s.policy())
+	return s.Registry.putProvider(p, true, s.policy(), s.apiSeams.strictHTTP())
 }
 
 // ReplaceProviderChecked: see AddProviderChecked.
 func (s *Server) ReplaceProviderChecked(p Provider) error {
-	return s.Registry.putProvider(p, false, s.policy())
+	return s.Registry.putProvider(p, false, s.policy(), s.apiSeams.strictHTTP())
 }
 
 func (s *Server) policy() ipPolicy {
@@ -155,7 +157,7 @@ func ProviderStatus(stateDir string, o RegistryOptions) (refuse error, warnings 
 	}
 	sec := &SecretStore{Dir: filepath.Join(stateDir, "secrets"), opts: o}
 	for _, p := range reg.Providers {
-		if providerShape(p, defaultIPPolicy) != nil {
+		if providerShape(p, defaultIPPolicy, true) != nil {
 			return errProviderAddress, warnings
 		}
 		if kinds[p.TokenRef] != "gitlab" {
