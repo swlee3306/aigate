@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"syscall"
 )
 
@@ -62,7 +63,7 @@ func OpenSecretStore(stateDir string, o RegistryOptions) (*SecretStore, error) {
 	if err := ensureStateDir(s.Dir, o.ownerOK()); err != nil {
 		return s, ErrSecretStoreUnavailable
 	}
-	sweepStaleTemps(s.Dir)
+	sweepSecretTemps(s.Dir)
 	return s, nil
 }
 
@@ -88,7 +89,7 @@ func (s *SecretStore) Lookup(ref string) SecretState {
 func (s *SecretStore) fileTrusted(fi os.FileInfo) bool {
 	st, ok := fi.Sys().(*syscall.Stat_t)
 	return ok && fi.Mode().IsRegular() && fi.Mode().Perm() == secretFileMode &&
-		s.opts.fileOwner()(st.Uid) && fi.Size() > 0 && fi.Size() <= maxSecretBytes
+		s.opts.fileOwner()(st.Uid) && st.Nlink == 1 && fi.Size() > 0 && fi.Size() <= maxSecretBytes
 }
 
 // Get returns the stored value of ref exactly as written. ok is false when the
@@ -132,10 +133,25 @@ func (s *SecretStore) Put(ref, value string) error {
 	if !s.dirOK() {
 		return ErrSecretStoreUnavailable
 	}
-	if _, err := writeAtomicMode(s.path(ref), []byte(value), secretFileMode, s.opts.failAt, false); err != nil {
-		return errSecretWrite // the underlying error is dropped: it could quote a path
+	prev, hadPrev := s.Get(ref)
+	renamed, err := writeAtomicMode(s.path(ref), []byte(value), secretFileMode, s.opts.failAt, false)
+	if err == nil {
+		return nil
 	}
-	return nil
+	if renamed {
+		// The new file is already in place and only the directory fsync
+		// failed. An error return must mean the previous value is the live
+		// one (callers keep their metadata for it), so put it back; with no
+		// previous value remove the new file. The restore ignores failAt.
+		if hadPrev {
+			if r2, e2 := writeAtomicMode(s.path(ref), []byte(prev), secretFileMode, nil, false); e2 != nil && !r2 {
+				s.wipeAndRemove(ref)
+			}
+		} else {
+			s.wipeAndRemove(ref)
+		}
+	}
+	return errSecretWrite // the underlying error is dropped: it could quote a path
 }
 
 // Delete overwrites the file's content with zeros, syncs and removes it. A
@@ -148,6 +164,20 @@ func (s *SecretStore) Delete(ref string) error {
 	if !s.dirOK() {
 		return ErrSecretStoreUnavailable
 	}
+	if err := s.wipeAndRemove(ref); err != nil {
+		return err
+	}
+	if d, err := os.Open(s.Dir); err == nil {
+		d.Sync()
+		d.Close()
+	}
+	return nil
+}
+
+// wipeAndRemove overwrites the file's content with zeros, syncs and unlinks
+// it. Symlinks and other non-regular entries are only unlinked. If the unlink
+// fails the file goes back to 0400 (never left wider than 0600). Missing is fine.
+func (s *SecretStore) wipeAndRemove(ref string) error {
 	p := s.path(ref)
 	fi, err := os.Lstat(p)
 	if errors.Is(err, os.ErrNotExist) {
@@ -156,9 +186,10 @@ func (s *SecretStore) Delete(ref string) error {
 	if err != nil {
 		return errSecretDelete
 	}
+	wiped := false
 	if st, ok := fi.Sys().(*syscall.Stat_t); fi.Mode().IsRegular() && ok && s.opts.fileOwner()(st.Uid) {
-		// best effort: wipe the content before the name goes away
 		if os.Chmod(p, 0o600) == nil {
+			wiped = true
 			if f, err := os.OpenFile(p, os.O_WRONLY|syscall.O_NOFOLLOW, 0); err == nil {
 				if fi2, err := f.Stat(); err == nil && os.SameFile(fi, fi2) {
 					f.Write(make([]byte, fi.Size()))
@@ -168,14 +199,47 @@ func (s *SecretStore) Delete(ref string) error {
 			}
 		}
 	}
-	if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+	err = os.Remove(p)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		err = os.Remove(p) // one retry
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		if wiped {
+			os.Chmod(p, secretFileMode)
+		}
 		return errSecretDelete
 	}
-	if d, err := os.Open(s.Dir); err == nil {
-		d.Sync()
-		d.Close()
-	}
 	return nil
+}
+
+// sweepSecretTemps removes every leftover temp file (.state-*) of secrets/ at
+// start. No age threshold: no writer exists yet. Content is zeroed first;
+// symlinks are only unlinked, never followed.
+func sweepSecretTemps(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), ".state-") {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
+		fi, err := os.Lstat(p)
+		if err != nil || fi.IsDir() {
+			continue
+		}
+		if fi.Mode().IsRegular() && os.Chmod(p, 0o600) == nil {
+			if f, err := os.OpenFile(p, os.O_WRONLY|syscall.O_NOFOLLOW, 0); err == nil {
+				if fi2, err := f.Stat(); err == nil && os.SameFile(fi, fi2) {
+					f.Write(make([]byte, fi.Size()))
+					f.Sync()
+				}
+				f.Close()
+			}
+		}
+		os.Remove(p)
+	}
 }
 
 // Refs lists the names that have an entry in the store (trusted or not),

@@ -238,3 +238,100 @@ func TestSecretStoreDeleteOverwritesThenRemoves(t *testing.T) {
 		t.Fatal("Delete wrote through a symlink")
 	}
 }
+
+func TestSecretStorePutRestoresPreviousOnPostRenameFailure(t *testing.T) {
+	s := newTestSecretStore(t)
+	old := "old-value-0123456789012345678901234567"
+	if err := s.Put("openai", old); err != nil {
+		t.Fatal(err)
+	}
+	s.opts.failAt = func(st string) error {
+		if st == "dir-synced" {
+			return errors.New("injected")
+		}
+		return nil
+	}
+	err := s.Put("openai", canaryValue)
+	if err == nil {
+		t.Fatal("post-rename failure hidden")
+	}
+	s.opts.failAt = nil
+	if got, ok := s.Get("openai"); !ok || got != old {
+		t.Fatalf("an error return must leave the previous value live, got %q %v", got, ok)
+	}
+	if fi, _ := os.Lstat(filepath.Join(s.Dir, "openai")); fi == nil || fi.Mode().Perm() != 0o400 {
+		t.Fatal("restored file has the wrong mode")
+	}
+	// first-time ref: nothing may stay live
+	s.opts.failAt = func(st string) error {
+		if st == "dir-synced" {
+			return errors.New("injected")
+		}
+		return nil
+	}
+	if s.Put("gitlab-a", canaryValue) == nil {
+		t.Fatal("no error")
+	}
+	s.opts.failAt = nil
+	if s.Lookup("gitlab-a") != SecretAbsent {
+		t.Fatal("a failed first Put left the new value live")
+	}
+	if entries, _ := os.ReadDir(s.Dir); len(entries) != 1 {
+		t.Fatalf("leftovers: %v", entries)
+	}
+}
+
+func TestOpenSecretStoreSweepsFreshTempsWithZeroing(t *testing.T) {
+	state := shortTempDir(t)
+	sec := filepath.Join(state, "secrets")
+	os.Mkdir(sec, 0o700)
+	os.Chmod(sec, 0o700)
+	tmp := filepath.Join(sec, ".state-fresh123")
+	if err := os.WriteFile(tmp, []byte(canaryValue), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	os.Chmod(tmp, 0o400)
+	keeper := filepath.Join(state, "keeper")
+	if err := os.Link(tmp, keeper); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(state, "target")
+	os.WriteFile(target, []byte("keepme"), 0o600)
+	os.Symlink(target, filepath.Join(sec, ".state-link"))
+	if err := os.WriteFile(filepath.Join(sec, "other"), []byte(canaryValue), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenSecretStore(state, RegistryOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{".state-fresh123", ".state-link"} {
+		if _, err := os.Lstat(filepath.Join(sec, n)); err == nil {
+			t.Errorf("%s survived the start-up sweep", n)
+		}
+	}
+	if b, _ := os.ReadFile(keeper); strings.Contains(string(b), "canary") {
+		t.Fatal("temp content was not zeroed before removal")
+	}
+	if b, _ := os.ReadFile(target); string(b) != "keepme" {
+		t.Fatal("sweep wrote through a symlink")
+	}
+	if _, err := os.Lstat(filepath.Join(sec, "other")); err != nil {
+		t.Fatal("sweep removed a real secret")
+	}
+}
+
+func TestSecretStoreRefusesHardLinkedFile(t *testing.T) {
+	s := newTestSecretStore(t)
+	if err := s.Put("gitlab-a", canaryValue); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(filepath.Join(s.Dir, "gitlab-a"), filepath.Join(filepath.Dir(s.Dir), "second-name")); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Get("gitlab-a"); ok {
+		t.Error("a file with a second hard link was trusted")
+	}
+	if s.Lookup("gitlab-a") != SecretUntrusted {
+		t.Error("hard-linked file must be untrusted")
+	}
+}

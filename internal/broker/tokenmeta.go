@@ -81,14 +81,29 @@ type TokenStore struct {
 	mu      sync.RWMutex
 	Secrets *SecretStore
 	Meta    *TokenMeta
+
+	// cache holds the currently usable secret values for log redaction. It has
+	// its own mutex so the logger never waits for (or takes) mu, and nothing
+	// logs while holding mu.
+	// It is a pointer so that printing a TokenStore never walks into the values.
+	cache *secretCache
 }
+
+// secretCache is the redaction value list with its own mutex.
+type secretCache struct {
+	mu sync.Mutex
+	v  []string
+}
+
+func (*secretCache) String() string   { return "[secrets]" }
+func (*secretCache) GoString() string { return "[secrets]" }
 
 // OpenTokenStore opens (creating secrets/ 0700 when missing) the store under
 // stateDir. A broken store is still returned, refusing everything, together
 // with ErrTokensBroken; no file is changed in that case.
 func OpenTokenStore(stateDir string, o RegistryOptions) (*TokenStore, error) {
 	sec, serr := OpenSecretStore(stateDir, o)
-	ts := &TokenStore{Secrets: sec, Meta: &TokenMeta{path: filepath.Join(stateDir, TokensFileName), opts: o}}
+	ts := &TokenStore{cache: &secretCache{}, Secrets: sec, Meta: &TokenMeta{path: filepath.Join(stateDir, TokensFileName), opts: o}}
 	if serr != nil {
 		ts.Meta.broken = true
 		return ts, ErrTokensBroken
@@ -106,6 +121,7 @@ func OpenTokenStore(stateDir string, o RegistryOptions) (*TokenStore, error) {
 		}
 		ts.Meta.entries = entries
 	}
+	ts.refreshCache()
 	return ts, nil
 }
 
@@ -204,22 +220,44 @@ func (t *TokenStore) find(ref string) int {
 	return -1
 }
 
-// writeMeta saves entries atomically and adopts them in memory when the file
-// holds them (even if only the directory fsync failed: memory equals disk).
-func (t *TokenStore) writeMeta(entries []TokenEntry) error {
+// writeMeta saves entries atomically. renamed reports that the file now holds
+// them (even if only the directory fsync failed); memory then equals disk.
+func (t *TokenStore) writeMeta(entries []TokenEntry, failAt func(string) error) (renamed bool, err error) {
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Ref < entries[j].Ref })
 	b, err := json.Marshal(tokensFile{Version: 1, Tokens: entries})
 	if err != nil {
-		return errTokenSave
+		return false, errTokenSave
 	}
-	renamed, err := writeAtomic(t.Meta.path, append(b, '\n'), t.Meta.opts.failAt, false)
+	renamed, err = writeAtomic(t.Meta.path, append(b, '\n'), failAt, false)
 	if renamed {
 		t.Meta.entries = entries
 	}
 	if err != nil {
-		return errTokenSave
+		return renamed, errTokenSave
 	}
-	return nil
+	return renamed, nil
+}
+
+// refreshCache recomputes the redaction cache from the trusted files.
+// Callers hold mu (any mode); it never logs.
+func (t *TokenStore) refreshCache() {
+	var out []string
+	if !t.Meta.broken {
+		for _, e := range t.Meta.entries {
+			if v, ok := t.Secrets.Get(e.Ref); ok {
+				out = append(out, v)
+			}
+		}
+	}
+	t.cache.mu.Lock()
+	t.cache.v = out
+	t.cache.mu.Unlock()
+}
+
+func (t *TokenStore) addToCache(v string) {
+	t.cache.mu.Lock()
+	t.cache.v = append(t.cache.v, v)
+	t.cache.mu.Unlock()
 }
 
 // Set stores value for ref and records its metadata. The secret file is
@@ -255,6 +293,16 @@ func (t *TokenStore) Set(ref, kind, expires, value string, now time.Time) error 
 	if len(last4) > 4 {
 		last4 = last4[len(last4)-4:]
 	}
+	// Invariant: the file in secrets/ and its metadata agree about which
+	// value is live, and an error return means the previous one still is.
+	// Secret.Put restores the previous file itself when it fails after its
+	// rename; the metadata is written second and, on failure, put back (also
+	// when only its directory fsync failed) before the secret is restored.
+	// Accepted limit: a crash between the secret rename and the metadata
+	// write of a REPLACEMENT leaves the new value live with the old last4 and
+	// expiry (the value works, the listing is stale until the next set).
+	t.addToCache(value) // redact it from the first moment it can exist
+	defer t.refreshCache()
 	prev, hadPrev := t.Secrets.Get(ref)
 	if err := t.Secrets.Put(ref, value); err != nil {
 		return err
@@ -266,7 +314,11 @@ func (t *TokenStore) Set(ref, kind, expires, value string, now time.Time) error 
 	} else {
 		next = append(next, e)
 	}
-	if err := t.writeMeta(next); err != nil {
+	oldEntries := append([]TokenEntry(nil), t.Meta.entries...)
+	if renamed, err := t.writeMeta(next, t.Meta.opts.failAt); err != nil {
+		if renamed {
+			t.writeMeta(oldEntries, nil)
+		}
 		if hadPrev {
 			t.Secrets.Put(ref, prev)
 		} else {
@@ -298,11 +350,16 @@ func (t *TokenStore) Delete(ref string) error {
 	// Metadata first: after a crash in between, the leftover is an orphan
 	// file (ignored), never a usable secret the operator thinks is gone.
 	if i >= 0 {
+		old := append([]TokenEntry(nil), t.Meta.entries...)
 		next := append(append([]TokenEntry(nil), t.Meta.entries[:i]...), t.Meta.entries[i+1:]...)
-		if err := t.writeMeta(next); err != nil {
+		if renamed, err := t.writeMeta(next, t.Meta.opts.failAt); err != nil {
+			if renamed {
+				t.writeMeta(append([]TokenEntry(nil), old...), nil)
+			}
 			return err
 		}
 	}
+	defer t.refreshCache()
 	return t.Secrets.Delete(ref)
 }
 
@@ -320,23 +377,15 @@ func (t *TokenStore) Value(ref string) (string, bool) {
 	return t.Secrets.Get(ref)
 }
 
-// values returns every usable stored secret (for log redaction).
+// values returns the cached usable secret values (for log redaction). It
+// takes only the cache mutex.
 func (t *TokenStore) values() []string {
 	if t == nil {
 		return nil
 	}
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	if t.Meta.broken {
-		return nil
-	}
-	var out []string
-	for _, e := range t.Meta.entries {
-		if v, ok := t.Secrets.Get(e.Ref); ok {
-			out = append(out, v)
-		}
-	}
-	return out
+	t.cache.mu.Lock()
+	defer t.cache.mu.Unlock()
+	return append([]string(nil), t.cache.v...)
 }
 
 // List returns the metadata with usability and days left, sorted by ref.
@@ -438,3 +487,8 @@ func TokenStoreStatus(stateDir string, o RegistryOptions) (warnings []string, er
 	}
 	return warnings, nil
 }
+
+// String and GoString keep any formatting of a TokenStore from walking into
+// its fields (the redaction cache holds values).
+func (*TokenStore) String() string   { return "[tokenstore]" }
+func (*TokenStore) GoString() string { return "[tokenstore]" }

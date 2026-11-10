@@ -50,15 +50,10 @@ func (s *Server) tokensHandler(context.Context, json.RawMessage) (any, *OpError)
 		})
 	}
 	if !haveOpenAI {
+		// Keep a broken stored row visible (usable:false, with its expiry)
+		// and add the row of the config key that is actually in effect.
 		if _, ok := s.currentOpenAIKey(); ok {
-			// Replace an unusable stored entry's row by the one that is in effect.
-			rows := out[:0]
-			for _, r := range out {
-				if r["ref"] != "openai" {
-					rows = append(rows, r)
-				}
-			}
-			out = append(rows, map[string]any{
+			out = append(out, map[string]any{
 				"ref": "openai", "kind": "openai", "last4": "", "expires": "",
 				"set_at": "", "source": "config", "days_left": nil, "usable": true,
 			})

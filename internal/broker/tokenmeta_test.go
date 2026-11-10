@@ -568,7 +568,7 @@ func TestNoValueInAnyOutput(t *testing.T) {
 		seen = append(seen, string(out))
 	}
 	// a panicking handler must not print the value either
-	s.Handlers["boom"] = func(context.Context, json.RawMessage) (any, *OpError) { panic("boom") }
+	s.Handlers["boom"] = func(context.Context, json.RawMessage) (any, *OpError) { panic("boom " + canaryValue) }
 	_, out := call(t, sock, `{"v":1,"op":"boom"}`)
 	seen = append(seen, string(out))
 	// a log line that does contain the value is scrubbed by the logger
@@ -589,5 +589,142 @@ func TestNoValueInAnyOutput(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(logs.String()), []byte("[redacted]")) {
 		t.Fatal("the stored value is not part of the log redaction")
+	}
+}
+
+func TestSetFailureKeepsPreviousLiveAndMetaAgree(t *testing.T) {
+	old := "old-value-0123456789012345678901234567"
+	for _, target := range []string{"secret", "meta"} {
+		for _, stage := range []string{"temp-written", "synced", "dir-synced"} {
+			for _, replace := range []bool{false, true} {
+				name := fmt.Sprintf("%s/%s/replace=%v", target, stage, replace)
+				t.Run(name, func(t *testing.T) {
+					ts, _ := newTestTokenStore(t)
+					if replace {
+						if err := ts.Set("gitlab-a", "gitlab", "2027-01-01", old, tokNow); err != nil {
+							t.Fatal(err)
+						}
+					}
+					inj := func(st string) error {
+						if st == stage {
+							return errors.New("injected")
+						}
+						return nil
+					}
+					if target == "secret" {
+						ts.Secrets.opts.failAt = inj
+					} else {
+						ts.Meta.opts.failAt = inj
+					}
+					if ts.Set("gitlab-a", "gitlab", "2028-02-02", canaryValue, tokNow.Add(time.Hour)) == nil {
+						t.Fatal("injected failure hidden")
+					}
+					ts.Secrets.opts.failAt, ts.Meta.opts.failAt = nil, nil
+					list, _ := ts.List(tokNow)
+					if !replace {
+						if len(list) != 0 {
+							t.Fatalf("meta of a failed first set: %+v", list)
+						}
+						if _, ok := ts.Value("gitlab-a"); ok || ts.Secrets.Lookup("gitlab-a") != SecretAbsent {
+							t.Fatal("a failed first set left a live value")
+						}
+						return
+					}
+					if len(list) != 1 || list[0].Expires != "2027-01-01" || list[0].Last4 != old[len(old)-4:] || !list[0].Usable {
+						t.Fatalf("metadata changed by a failed set: %+v", list)
+					}
+					if v, _ := ts.Value("gitlab-a"); v != old {
+						t.Fatalf("live value is not the previous one: %q", v)
+					}
+					// and what is on disk agrees after a restart
+					ts2, err := OpenTokenStore(filepath.Dir(ts.Meta.path), RegistryOptions{})
+					if err != nil {
+						t.Fatal(err)
+					}
+					l2, _ := ts2.List(tokNow)
+					if v, _ := ts2.Value("gitlab-a"); v != old || len(l2) != 1 || l2[0].Expires != "2027-01-01" {
+						t.Fatalf("disk disagrees: %q %+v", v, l2)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestTokensHandlerShowsBrokenStoredAndConfigRows(t *testing.T) {
+	r := newRefineEnv(t, nil, nil)
+	s := r.srv
+	s.Now = func() time.Time { return tokNow }
+	if err := s.Tokens.Set("openai", "openai", "2026-11-20", "store-key-NOT-REAL-0123456789abcdef0123", tokNow); err != nil {
+		t.Fatal(err)
+	}
+	os.Chmod(filepath.Join(s.Tokens.Secrets.Dir, "openai"), 0o644)
+	res, oerr := s.tokensHandler(context.Background(), nil)
+	if oerr != nil {
+		t.Fatal(oerr)
+	}
+	rows := res.(map[string]any)["tokens"].([]map[string]any)
+	var stored, cfg map[string]any
+	for _, row := range rows {
+		if row["ref"] != "openai" {
+			continue
+		}
+		if row["source"] == "store" {
+			stored = row
+		} else {
+			cfg = row
+		}
+	}
+	if stored == nil || stored["usable"] != false || stored["expires"] != "2026-11-20" {
+		t.Fatalf("the broken stored row is hidden: %+v", rows)
+	}
+	if cfg == nil || cfg["source"] != "config" || cfg["usable"] != true {
+		t.Fatalf("the config row is missing: %+v", rows)
+	}
+}
+
+func TestConcurrentPutDeleteGetConsistent(t *testing.T) {
+	ts, _ := newTestTokenStore(t)
+	known := map[string]bool{}
+	var vals []string
+	for i := 0; i < 8; i++ {
+		v := fmt.Sprintf("concurrent-value-%02d-%s", i, strings.Repeat("x", 30))
+		vals = append(vals, v)
+		known[v] = true
+	}
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 20; i++ {
+				switch (g + i) % 3 {
+				case 0:
+					ts.Set("gitlab-a", "gitlab", "", vals[g], tokNow)
+				case 1:
+					ts.Delete("gitlab-a")
+				default:
+					if v, ok := ts.Value("gitlab-a"); ok && !known[v] {
+						t.Errorf("torn value %q", v)
+					}
+					ts.List(tokNow)
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	list, err := ts.List(tokNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, ok := ts.Value("gitlab-a")
+	if ok != (len(list) == 1 && list[0].Usable) {
+		t.Fatalf("value and metadata disagree: ok=%v list=%+v", ok, list)
+	}
+	if ok && (!known[v] || list[0].Last4 != v[len(v)-4:]) {
+		t.Fatalf("final value %q does not match metadata %+v", v, list)
+	}
+	if len(ts.Orphans()) != 0 {
+		t.Fatal("orphan after the race")
 	}
 }
