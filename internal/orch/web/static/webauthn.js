@@ -342,7 +342,7 @@ async function signWithPasskey(challenge, signer) {
 // with \n. The prefix differs from the approval message, so neither format
 // passes as the other.
 const REGISTRY_MESSAGE_RE = new RegExp('^aigate-registry-v1\\n' +
-  'action: (register_project|set_flag)\\n' +
+  'action: (register_project|set_flag|set_token|delete_token)\\n' +
   'subject: ([a-z][a-z0-9-]{0,39})\\n' +
   'change: ([0-9a-f]{64})\\n' +
   'request: ([0-9a-f]{32})\\n' +
@@ -361,6 +361,15 @@ export function checkRegistryMessage(message) {
 }
 
 // sha256Hex is the lowercase hex SHA-256 of a string's UTF-8 bytes.
+// sha256HexBytes is the same for a byte array the caller owns (and can wipe
+// afterwards): the token screen hashes request ':' value without building a
+// string out of the value.
+export async function sha256HexBytes(bytes) {
+  const s = deps.subtle();
+  if (!s || typeof s.digest !== 'function') throw new WebAuthnError('unsupported');
+  return hex(new Uint8Array(await s.digest('SHA-256', bytes)));
+}
+
 export async function sha256Hex(textValue) {
   const s = deps.subtle();
   if (!s || typeof s.digest !== 'function') throw new WebAuthnError('unsupported');

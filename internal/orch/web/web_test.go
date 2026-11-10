@@ -43,7 +43,7 @@ func staticFiles(t *testing.T) map[string][]byte {
 
 func TestWebAssetsEmbedded(t *testing.T) {
 	files := staticFiles(t)
-	for _, need := range []string{"index.html", "app.js", "api.js", "render.js", "router.js", "style.css", "views/tasks.js", "views/task.js", "views/diff.js", "views/approvals.js", "views/login.js", "views/new.js", "views/plan.js", "guard.js", "views/ops.js", "views/projects.js", "webauthn.js"} {
+	for _, need := range []string{"index.html", "app.js", "api.js", "render.js", "router.js", "style.css", "views/tasks.js", "views/task.js", "views/diff.js", "views/approvals.js", "views/login.js", "views/new.js", "views/plan.js", "guard.js", "views/ops.js", "views/projects.js", "views/tokens.js", "expiry.js", "webauthn.js"} {
 		if len(files[need]) == 0 {
 			t.Errorf("static/%s is missing or empty", need)
 		}

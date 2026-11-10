@@ -2,7 +2,9 @@
 // from app.js so it can be tested. A view that holds work (the AI plan)
 // registers a guard function; while it answers true a hash change is undone
 // and the person is told how to leave. A missing, released or failing guard
-// never blocks (a bug here must not trap anyone).
+// never blocks (a bug here must not trap anyone). A guard may answer with a
+// short string instead of `true`: it blocks and the string is the notice (the
+// token screen says its own words, not the plan's).
 
 export const LEAVE_BLOCKED_TEXT = '작성 중인 계획서가 있어 이동하지 않았습니다. 계획서 화면의 "계획서 버리기"로 나가세요.';
 
@@ -14,14 +16,20 @@ export function makeHashGuard(env) {
     const g = env.guard();
     if (typeof g !== 'function') return false;
     let hold = false;
+    let text = LEAVE_BLOCKED_TEXT;
     try {
-      hold = g() === true;
+      const r = g();
+      hold = r === true;
+      if (typeof r === 'string' && r !== '' && r.length <= 200) {
+        hold = true;
+        text = r;
+      }
     } catch {
       hold = false;
     }
     if (!hold) return false;
     env.restore(env.current() || '#/overview');
-    env.notice(LEAVE_BLOCKED_TEXT);
+    env.notice(text);
     return true;
   };
 }

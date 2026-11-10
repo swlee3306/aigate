@@ -5,6 +5,8 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -1545,21 +1547,9 @@ func TestRefineAIKeyMissingIsFixed(t *testing.T) {
 // file is a failure. B5 must change this to an unconditional t.Fatal.
 func checkTokenConstants(t *testing.T) {
 	static := "../web/static"
-	referenced := false
-	_ = filepath.Walk(static, func(p string, fi os.FileInfo, err error) error {
-		if err == nil && fi.Mode().IsRegular() && (strings.HasSuffix(p, ".js") || strings.HasSuffix(p, ".html")) {
-			if b, _ := os.ReadFile(p); strings.Contains(string(b), "tokens.js") {
-				referenced = true
-			}
-		}
-		return nil
-	})
 	src, err := os.ReadFile(filepath.Join(static, "views", "tokens.js"))
 	if err != nil {
-		if referenced {
-			t.Fatalf("the shell references tokens.js but views/tokens.js is unreadable: %v", err)
-		}
-		t.Skip("views/tokens.js does not exist yet (B5): token constants not compared; B5 must make this a hard failure")
+		t.Fatalf("views/tokens.js must exist and be readable (the token constants are compared with it): %v", err)
 	}
 	js := string(src)
 	jsRegex := func(name string) string {
@@ -1693,6 +1683,74 @@ func checkTokenConstants(t *testing.T) {
 	if got := jsString("ACTION_DELETE_TOKEN"); got != registrymsg.ActionDeleteToken {
 		t.Errorf("ACTION_DELETE_TOKEN %q", got)
 	}
+	// SCHEMA: the field names the browser's canonical change allows for each
+	// token action are exactly registrymsg's (a missing, extra or renamed field
+	// is refused by Go, so the browser must not build it).
+	schemaFields := func(action string) []string {
+		m := regexp.MustCompile(`(?m)^\s*\[` + action + `\]: \{([^}]*)\},\s*$`).FindStringSubmatch(js)
+		if m == nil {
+			t.Fatalf("JS SCHEMA entry for %s not found", action)
+		}
+		var names []string
+		for _, f := range regexp.MustCompile(`([a-z_]+): 's'`).FindAllStringSubmatch(m[1], -1) {
+			names = append(names, f[1])
+		}
+		return names
+	}
+	validValue := map[string]any{"kind": "gitlab", "expires": "2030-01-01", "value_hash": strings.Repeat("a", 64)}
+	setNames := schemaFields("ACTION_SET_TOKEN")
+	sort.Strings(setNames)
+	if strings.Join(setNames, ",") != "expires,kind,value_hash" {
+		t.Errorf("JS SCHEMA set_token fields %v", setNames)
+	}
+	built := map[string]any{}
+	for _, n := range setNames {
+		built[n] = validValue[n]
+	}
+	if _, err := registrymsg.CanonicalChange(registrymsg.ActionSetToken, "a", built); err != nil {
+		t.Errorf("fields from the JS SCHEMA are refused by Go: %v", err)
+	}
+	for _, n := range setNames {
+		less := map[string]any{}
+		for k, v := range built {
+			if k != n {
+				less[k] = v
+			}
+		}
+		if _, err := registrymsg.CanonicalChange(registrymsg.ActionSetToken, "a", less); err == nil {
+			t.Errorf("Go accepts set_token without %q", n)
+		}
+	}
+	if names := schemaFields("ACTION_DELETE_TOKEN"); len(names) != 0 {
+		t.Errorf("JS SCHEMA delete_token fields %v, want none", names)
+	}
+	if _, err := registrymsg.CanonicalChange(registrymsg.ActionDeleteToken, "a", map[string]any{}); err != nil {
+		t.Errorf("Go refuses delete_token with no fields: %v", err)
+	}
+	if _, err := registrymsg.CanonicalChange(registrymsg.ActionDeleteToken, "a", map[string]any{"kind": "gitlab"}); err == nil {
+		t.Error("Go accepts delete_token with a field")
+	}
+	// The expiry may be empty only for set_token (as the browser's schema says).
+	if got := jsRegex("VALUE_HASH_RE"); got != `^[0-9a-f]{64}$` {
+		t.Errorf("VALUE_HASH_RE %q", got)
+	}
+	for _, h := range []string{strings.Repeat("a", 63), strings.Repeat("a", 65), strings.Repeat("A", 64), ""} {
+		if _, err := registrymsg.CanonicalChange(registrymsg.ActionSetToken, "a", map[string]any{"kind": "gitlab", "expires": "", "value_hash": h}); err == nil {
+			t.Errorf("Go accepts value_hash %q", h)
+		}
+	}
+	if got := jsRegex("REQUEST_ID_RE"); got != `^[0-9a-f]{32}$` {
+		t.Errorf("REQUEST_ID_RE %q", got)
+	}
+	for r, ok := range map[string]bool{strings.Repeat("a", 32): true, strings.Repeat("a", 31): false, strings.Repeat("a", 33): false, strings.Repeat("A", 32): false, "": false, strings.Repeat("a", 31) + ":": false} {
+		if (registrymsg.ValueHash(r, "v") != "") != ok {
+			t.Errorf("ValueHash accepts request %q = %v, want %v", r, !ok, ok)
+		}
+	}
+	// The browser hashes the same bytes as Go: UTF-8 of request ':' value.
+	if got := registrymsg.ValueHash(strings.Repeat("a", 32), "v"); got != hex.EncodeToString(sha256Sum(strings.Repeat("a", 32)+":v")) {
+		t.Errorf("ValueHash is not SHA-256(request ':' value): %s", got)
+	}
 	// The salted value hash: the browser hashes request + ':' + value.
 	if !strings.Contains(js, "':'") {
 		t.Error("tokens.js does not build the salted value hash request + ':' + value")
@@ -1788,4 +1846,9 @@ func TestPanicAfterBrokerWriteIsRecorded(t *testing.T) {
 		got[0]["subject"] != "gitlab-main" || got[0]["kind"] != "gitlab" || got[0]["actor"] != socketActor() {
 		t.Fatalf("%v\n%s", got, raw)
 	}
+}
+
+func sha256Sum(s string) []byte {
+	h := sha256.Sum256([]byte(s))
+	return h[:]
 }

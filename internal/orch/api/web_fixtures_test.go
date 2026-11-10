@@ -438,3 +438,184 @@ func TestWebFixturesProjects(t *testing.T) {
 			"issued": issued.Format(registryTimeFormat), "text": m.Text(), "digest": hex.EncodeToString(d[:])},
 	})
 }
+
+// TestWebFixturesTokens pins the token JSON the console reads (list, begin,
+// message, apply success) and the golden vectors the browser's computeValueHash
+// and canonical change must reproduce byte for byte. Row shapes come from the
+// real TokenView; the key sets of begin and message are compared with REAL
+// responses, so a renamed or added field fails here.
+func TestWebFixturesTokens(t *testing.T) {
+	days := func(n int) *int { return &n }
+	checkFixture(t, "tokens-list.json", map[string]any{
+		"tokens": []TokenView{
+			{Ref: "openai", Kind: "openai", Last4: "ZQxw", Expires: "2027-06-30", SetAt: "2026-11-09T10:04:05Z", Source: "store", DaysLeft: days(233), Usable: true},
+			{Ref: "gitlab-main", Kind: "gitlab", Last4: "a1B2", Expires: "2026-11-13", SetAt: "2026-10-01T09:00:00Z", Source: "store", DaysLeft: days(3), Usable: true},
+			{Ref: "github-old", Kind: "github", Last4: "x9Y8", Expires: "2026-11-08", SetAt: "2026-05-01T09:00:00Z", Source: "store", DaysLeft: days(-2), Usable: true},
+			{Ref: "gitlab-docs", Kind: "gitlab", Last4: "q7w6", Expires: "", SetAt: "2026-09-01T09:00:00Z", Source: "store", DaysLeft: nil, Usable: true},
+			{Ref: "github-lost", Kind: "github", Last4: "m5n4", Expires: "2027-01-31", SetAt: "2026-08-01T09:00:00Z", Source: "store", DaysLeft: days(82), Usable: false},
+		},
+		"warn_days": 14,
+	})
+	checkFixture(t, "tokens-list-config.json", map[string]any{
+		"tokens": []TokenView{
+			{Ref: "openai", Kind: "openai", Last4: "", Expires: "", SetAt: "", Source: "config", DaysLeft: nil, Usable: true},
+		},
+		"warn_days": 14,
+	})
+
+	issued := time.Date(2026, 11, 9, 10, 4, 5, 0, time.UTC)
+	request := "00112233445566778899aabbccddeeff"
+	begin := map[string]string{"request": request, "issued": issued.Format(registryTimeFormat)}
+	checkFixture(t, "tokens-begin.json", begin)
+
+	valueHash := registrymsg.ValueHash(request, canaryValue)
+	message := func(c tokenChange) map[string]any {
+		change, err := c.hash()
+		if err != nil {
+			t.Fatal(err)
+		}
+		msg := signing.RegistryMessage{Action: c.Action, Subject: c.Subject, Change: change, Request: request, Issued: issued}
+		return map[string]any{"message": msg.Text(), "change": change, "request": request, "issued": issued.Format(registryTimeFormat), "preview": tokenPreview(c)}
+	}
+	setFields := map[string]any{"kind": "gitlab", "expires": "2027-06-30", "value_hash": valueHash}
+	setNoExp := map[string]any{"kind": "gitlab", "expires": "", "value_hash": valueHash}
+	setOpenAI := map[string]any{"kind": "openai", "expires": "", "value_hash": valueHash}
+	checkFixture(t, "tokens-message-set.json", message(tokenChange{Action: "set_token", Subject: "gitlab-main", Fields: setFields}))
+	checkFixture(t, "tokens-message-set-noexp.json", message(tokenChange{Action: "set_token", Subject: "gitlab-main", Fields: setNoExp}))
+	checkFixture(t, "tokens-message-set-openai.json", message(tokenChange{Action: "set_token", Subject: "openai", Fields: setOpenAI}))
+	checkFixture(t, "tokens-message-delete.json", message(tokenChange{Action: "delete_token", Subject: "gitlab-main", Fields: map[string]any{}}))
+	checkFixture(t, "tokens-message-delete-openai.json", message(tokenChange{Action: "delete_token", Subject: "openai", Fields: map[string]any{}}))
+	checkFixture(t, "tokens-apply-set.json", TokenView{Ref: "gitlab-main", Kind: "gitlab", Last4: "ZQxw", Expires: "2027-06-30", SetAt: "2026-11-09T10:04:06Z", Source: "store", DaysLeft: days(233), Usable: true})
+	checkFixture(t, "tokens-apply-delete.json", map[string]any{"ref": "gitlab-main", "deleted": true})
+
+	// The key sets of begin and message are those of the REAL responses.
+	e := newTokEnv(t)
+	code, b := e.call(t, "begin", jsonBody(map[string]any{"action": "set_token", "subject": "gitlab-main", "fields": map[string]any{"kind": "gitlab", "expires": tokExpires}}))
+	if code != 200 {
+		t.Fatalf("begin %d %s", code, b)
+	}
+	sameKeys := func(what string, real []byte, fixture map[string]any) {
+		var rk map[string]json.RawMessage
+		if err := json.Unmarshal(real, &rk); err != nil {
+			t.Fatal(err)
+		}
+		if len(rk) != len(fixture) {
+			t.Errorf("%s: real response has %d keys, fixture %d", what, len(rk), len(fixture))
+		}
+		for k := range fixture {
+			if _, ok := rk[k]; !ok {
+				t.Errorf("%s: fixture key %q is not in the real response", what, k)
+			}
+		}
+	}
+	sameKeys("begin", b, map[string]any{"request": 0, "issued": 0})
+	f := e.setFlow(t)
+	code, b = e.call(t, "message", jsonBody(map[string]any{"action": f.Action, "subject": f.Subject, "fields": f.Fields, "request": f.Request, "issued": f.Issued}))
+	if code != 200 {
+		t.Fatalf("message %d %s", code, b)
+	}
+	sameKeys("message", b, message(tokenChange{Action: "set_token", Subject: "gitlab-main", Fields: setFields}))
+
+	// Golden vectors: the salted value hash and the canonical change.
+	type hashVec struct {
+		Name    string `json:"name"`
+		Request string `json:"request"`
+		Value   string `json:"value"`
+		Hash    string `json:"hash"`
+	}
+	long := ""
+	for i := 0; i < maxTokenValue; i++ {
+		long += string(rune(0x21 + i%94))
+	}
+	var hashes []hashVec
+	for _, c := range []hashVec{
+		{Name: "canary", Request: request, Value: canaryValue},
+		{Name: "minimum length", Request: request, Value: "0123456789abcdef0123456789abcdef"},
+		{Name: "maximum length, every printable character", Request: request, Value: long},
+		{Name: "json-special characters", Request: request, Value: "\"quote\\backslash/slash<tag>&amp;'x'-0123456789abcdef"},
+		{Name: "another request, same value", Request: "ffeeddccbbaa99887766554433221100", Value: canaryValue},
+	} {
+		c.Hash = registrymsg.ValueHash(c.Request, c.Value)
+		if len(c.Hash) != 64 {
+			t.Fatalf("%s: no hash", c.Name)
+		}
+		hashes = append(hashes, c)
+	}
+	badRequests := []hashVec{
+		{Name: "request too short", Request: "0011", Value: canaryValue},
+		{Name: "request upper case", Request: "00112233445566778899AABBCCDDEEFF", Value: canaryValue},
+		{Name: "request with colon", Request: "0011223344556677889900aabbcc:dd", Value: canaryValue},
+		{Name: "request empty", Request: "", Value: canaryValue},
+	}
+	for _, c := range badRequests {
+		if registrymsg.ValueHash(c.Request, c.Value) != "" {
+			t.Fatalf("%s: Go hashes it", c.Name)
+		}
+	}
+
+	type vec struct {
+		Name      string         `json:"name"`
+		Action    string         `json:"action"`
+		Subject   string         `json:"subject"`
+		Fields    map[string]any `json:"fields"`
+		Canonical string         `json:"canonical,omitempty"`
+		Change    string         `json:"change,omitempty"`
+	}
+	good := []vec{
+		{Name: "set with expiry", Action: "set_token", Subject: "gitlab-main", Fields: setFields},
+		{Name: "set without expiry", Action: "set_token", Subject: "gitlab-main", Fields: setNoExp},
+		{Name: "set openai", Action: "set_token", Subject: "openai", Fields: setOpenAI},
+		{Name: "set github, latest year", Action: "set_token", Subject: "github", Fields: map[string]any{"kind": "github", "expires": "9999-12-31", "value_hash": valueHash}},
+		{Name: "delete", Action: "delete_token", Subject: "gitlab-main", Fields: map[string]any{}},
+	}
+	for i := range good {
+		c, err := registrymsg.CanonicalChange(good[i].Action, good[i].Subject, good[i].Fields)
+		if err != nil {
+			t.Fatalf("%s: %v", good[i].Name, err)
+		}
+		h, _ := registrymsg.ChangeHash(good[i].Action, good[i].Subject, good[i].Fields)
+		good[i].Canonical, good[i].Change = string(c), h
+	}
+	hv := func(k string, v any) map[string]any {
+		m := map[string]any{"kind": "gitlab", "expires": "2027-06-30", "value_hash": valueHash}
+		if v == nil {
+			delete(m, k)
+		} else {
+			m[k] = v
+		}
+		return m
+	}
+	refused := []vec{
+		{Name: "missing value_hash", Action: "set_token", Subject: "a", Fields: hv("value_hash", nil)},
+		{Name: "missing expires", Action: "set_token", Subject: "a", Fields: hv("expires", nil)},
+		{Name: "missing kind", Action: "set_token", Subject: "a", Fields: hv("kind", nil)},
+		{Name: "upper case hash", Action: "set_token", Subject: "a", Fields: hv("value_hash", "ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef0123456789")},
+		{Name: "short hash", Action: "set_token", Subject: "a", Fields: hv("value_hash", "abcd")},
+		{Name: "empty hash", Action: "set_token", Subject: "a", Fields: hv("value_hash", "")},
+		{Name: "bad expires format", Action: "set_token", Subject: "a", Fields: hv("expires", "2027-6-30")},
+		{Name: "impossible date", Action: "set_token", Subject: "a", Fields: hv("expires", "2027-02-30")},
+		{Name: "year 1999", Action: "set_token", Subject: "a", Fields: hv("expires", "1999-12-31")},
+		{Name: "kind outside the set", Action: "set_token", Subject: "a", Fields: hv("kind", "slack")},
+		{Name: "kind upper case", Action: "set_token", Subject: "a", Fields: hv("kind", "GitLab")},
+		{Name: "extra field", Action: "set_token", Subject: "a", Fields: map[string]any{"kind": "gitlab", "expires": "", "value_hash": valueHash, "value": "x"}},
+		{Name: "bad ref upper", Action: "set_token", Subject: "A", Fields: hv("kind", "gitlab")},
+		{Name: "bad ref underscore", Action: "set_token", Subject: "a_b", Fields: hv("kind", "gitlab")},
+		{Name: "delete with a field", Action: "delete_token", Subject: "a", Fields: map[string]any{"kind": "gitlab"}},
+		{Name: "unknown action", Action: "purge_token", Subject: "a", Fields: map[string]any{}},
+	}
+	for _, r := range refused {
+		if _, err := registrymsg.CanonicalChange(r.Action, r.Subject, r.Fields); err == nil {
+			t.Fatalf("Go accepts %q; it must be in the refused vectors only if registrymsg refuses it", r.Name)
+		}
+	}
+	m := signing.RegistryMessage{Action: "set_token", Subject: "gitlab-main", Change: good[0].Change, Request: request, Issued: issued}
+	d := m.Digest()
+	checkFixture(t, "token-vectors.json", map[string]any{
+		"value_hash":         hashes,
+		"value_hash_refused": badRequests,
+		"change":             good,
+		"refused":            refused,
+		"message": map[string]any{"action": m.Action, "subject": m.Subject, "change": m.Change, "request": m.Request,
+			"issued": issued.Format(registryTimeFormat), "text": m.Text(), "digest": hex.EncodeToString(d[:])},
+	})
+}

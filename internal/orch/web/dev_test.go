@@ -313,6 +313,164 @@ func TestDevServer(t *testing.T) {
 			json(w, `{"error":{"code":"project_unknown","message":"dev"}}`)
 		}
 	})
+	// W3b: the token menu. State in memory; a successful apply changes the list.
+	// No signature is verified and no value is stored: the dev apply only checks
+	// the rules the real broker checks (D3, hash bound to the request) and then
+	// drops the value. Select behaviour with /dev-set-tokens?apply=ok|<code>&propose=ok|mismatch.
+	var tokMu sync.Mutex
+	dd := func(n int) *int { return &n }
+	tokRows := []api.TokenView{
+		{Ref: "openai", Kind: "openai", Last4: "ZQxw", Expires: "2027-06-30", SetAt: "2026-11-09T10:04:05Z", Source: "store", DaysLeft: dd(233), Usable: true},
+		{Ref: "gitlab-main", Kind: "gitlab", Last4: "a1B2", Expires: "2026-11-13", SetAt: "2026-10-01T09:00:00Z", Source: "store", DaysLeft: dd(3), Usable: true},
+		{Ref: "github-old", Kind: "github", Last4: "x9Y8", Expires: "2026-11-08", SetAt: "2026-05-01T09:00:00Z", Source: "store", DaysLeft: dd(-2), Usable: true},
+		{Ref: "gitlab-docs", Kind: "gitlab", Last4: "q7w6", Source: "store", Usable: true},
+		{Ref: "github-lost", Kind: "github", Last4: "m5n4", Expires: "2027-01-31", SetAt: "2026-08-01T09:00:00Z", Source: "store", DaysLeft: dd(82), Usable: false},
+	}
+	if os.Getenv("ORCH_WEB_LONGTOKEN") != "" { // long names and path-like strings, for the 390px check
+		tokRows = append(tokRows,
+			api.TokenView{Ref: "gitlab-" + strings.Repeat("abcdefghij", 3) + "xy", Kind: "gitlab", Last4: "w1w2", Expires: "2026-11-20", Source: "store", DaysLeft: dd(10), Usable: true},
+			api.TokenView{Ref: "<img src=x onerror=alert(1)>", Kind: "javascript:" + strings.Repeat("k", 80), Last4: "<b>x", Expires: "2026-11-20", Source: "/very/long/path/" + strings.Repeat("segment/", 12), DaysLeft: dd(10), Usable: true})
+	}
+	tokApply, tokPropose := "ok", "ok"
+	tokStatus := map[string]int{"not_signed": 400, "bad_signature": 403, "unknown_signer": 403, "stale_signature": 403, "signers_unavailable": 503,
+		"request_reused": 409, "change_mismatch": 400, "bad_request": 400, "token_unknown": 404, "bad_kind": 400, "token_too_short": 400,
+		"token_bad_format": 400, "value_mismatch": 400, "openai_singleton": 400, "token_exists_other_kind": 409, "tokens_unavailable": 503,
+		"outcome_unknown": 504, "broker_unavailable": 503, "token_rate_limited": 429, "internal_error": 500, "broker_error": 502}
+	tokErr := func(w http.ResponseWriter, code string) {
+		st := tokStatus[code]
+		if st == 0 {
+			st = 500
+		}
+		w.WriteHeader(st)
+		json(w, `{"error":{"code":"`+code+`","message":"dev <img src=x onerror=alert(1)> SERVER-WORDS"}}`)
+	}
+	mux.HandleFunc("/api/v1/settings/tokens", func(w http.ResponseWriter, r *http.Request) {
+		tokMu.Lock()
+		defer tokMu.Unlock()
+		b, _ := stdjson.Marshal(map[string]any{"tokens": tokRows, "warn_days": 14})
+		serve(w, b)
+	})
+	type tokBody struct {
+		Action    string         `json:"action"`
+		Subject   string         `json:"subject"`
+		Fields    map[string]any `json:"fields"`
+		Change    string         `json:"change"`
+		Request   string         `json:"request"`
+		Issued    string         `json:"issued"`
+		Value     string         `json:"value"`
+		Signature any            `json:"signature"`
+	}
+	mux.HandleFunc("/api/v1/tokens/begin", func(w http.ResponseWriter, r *http.Request) {
+		var in tokBody
+		_ = stdjson.NewDecoder(r.Body).Decode(&in)
+		tokMu.Lock()
+		mode := tokApply
+		tokMu.Unlock()
+		if mode == "token_rate_limited_begin" {
+			tokErr(w, "token_rate_limited")
+			return
+		}
+		b, _ := stdjson.Marshal(map[string]string{"request": registrymsg.NewRequestID(), "issued": time.Now().UTC().Truncate(time.Second).Format("2006-01-02T15:04:05Z")})
+		serve(w, b)
+	})
+	mux.HandleFunc("/api/v1/tokens/message", func(w http.ResponseWriter, r *http.Request) {
+		var in tokBody
+		_ = stdjson.NewDecoder(r.Body).Decode(&in)
+		change, err := registrymsg.ChangeHash(in.Action, in.Subject, in.Fields)
+		issued, ierr := time.Parse("2006-01-02T15:04:05Z", in.Issued)
+		if err != nil || ierr != nil {
+			w.WriteHeader(400)
+			json(w, `{"error":{"code":"bad_request","message":"dev"}}`)
+			return
+		}
+		tokMu.Lock()
+		mode := tokPropose
+		tokMu.Unlock()
+		shown := change
+		if mode == "mismatch" {
+			shown = strings.Repeat("0", 64)
+		}
+		msg := signing.RegistryMessage{Action: in.Action, Subject: in.Subject, Change: shown, Request: in.Request, Issued: issued.UTC()}
+		stamp := "서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다"
+		var pv []string
+		if in.Action == "delete_token" {
+			pv = []string{"토큰 '" + in.Subject + "'을(를) 삭제합니다. 이 이름으로 저장된 값이 지워집니다", "삭제 서명에는 토큰의 종류가 들어가지 않습니다. 이름이 맞는지만 확인하세요", stamp}
+		} else {
+			kind, _ := in.Fields["kind"].(string)
+			exp, _ := in.Fields["expires"].(string)
+			pv = []string{"토큰 '" + in.Subject + "'을(를) 저장합니다(종류: " + kind + "). 같은 이름이 같은 종류로 이미 있으면 새 값으로 바꿉니다"}
+			if exp == "" {
+				pv = append(pv, "만료일: 없음")
+			} else {
+				pv = append(pv, "만료일: "+exp+" (직접 적은 날짜입니다. 서버가 확인하지 않으며 날짜는 UTC로 셉니다)")
+			}
+			pv = append(pv, "이 토큰은 저장만 되고 아직 어떤 기능도 쓰지 않습니다(이후 연결 기능이 이름으로 가져다 씁니다)",
+				"토큰 값은 이 화면과 서명 메시지에 들어가지 않고, 서명에는 값의 해시만 묶입니다", stamp)
+		}
+		b, _ := stdjson.Marshal(map[string]any{"message": msg.Text(), "change": shown, "request": in.Request, "issued": in.Issued, "preview": pv})
+		serve(w, b)
+	})
+	mux.HandleFunc("/api/v1/tokens/apply", func(w http.ResponseWriter, r *http.Request) {
+		var in tokBody
+		_ = stdjson.NewDecoder(r.Body).Decode(&in)
+		tokMu.Lock()
+		defer tokMu.Unlock()
+		if tokApply != "ok" {
+			tokErr(w, tokApply)
+			return
+		}
+		if in.Action == "delete_token" {
+			if in.Value != "" {
+				tokErr(w, "bad_request")
+				return
+			}
+			for i, row := range tokRows {
+				if row.Ref == in.Subject && row.Source == "store" {
+					tokRows = append(tokRows[:i], tokRows[i+1:]...)
+					b, _ := stdjson.Marshal(map[string]any{"ref": in.Subject, "deleted": true})
+					serve(w, b)
+					return
+				}
+			}
+			tokErr(w, "token_unknown")
+			return
+		}
+		// the rules the real broker applies; the value is dropped, never stored or logged
+		kind, _ := in.Fields["kind"].(string)
+		exp, _ := in.Fields["expires"].(string)
+		hash, _ := in.Fields["value_hash"].(string)
+		if hash != registrymsg.ValueHash(in.Request, in.Value) {
+			tokErr(w, "value_mismatch")
+			return
+		}
+		if len(in.Value) < 32 {
+			tokErr(w, "token_too_short")
+			return
+		}
+		for _, c := range []byte(in.Value) {
+			if c < 0x21 || c > 0x7e {
+				tokErr(w, "token_bad_format")
+				return
+			}
+		}
+		row := api.TokenView{Ref: in.Subject, Kind: kind, Last4: in.Value[len(in.Value)-4:], Expires: exp, SetAt: time.Now().UTC().Format("2006-01-02T15:04:05Z"), Source: "store", Usable: true}
+		if exp != "" {
+			if d, err := time.Parse("2006-01-02", exp); err == nil {
+				row.DaysLeft = dd(int(time.Until(d).Hours() / 24))
+			}
+		}
+		replaced := false
+		for i := range tokRows {
+			if tokRows[i].Ref == in.Subject && tokRows[i].Source == "store" {
+				tokRows[i], replaced = row, true
+			}
+		}
+		if !replaced {
+			tokRows = append(tokRows, row)
+		}
+		b, _ := stdjson.Marshal(row)
+		serve(w, b)
+	})
 	console := web.Handler()
 	srv := &http.Server{Addr: "127.0.0.1:" + port, ReadHeaderTimeout: 5 * time.Second,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -327,6 +485,18 @@ func TestDevServer(t *testing.T) {
 					projApply = v
 				}
 				projMu.Unlock()
+				_, _ = w.Write([]byte("ok"))
+				return
+			}
+			if r.URL.Path == "/dev-set-tokens" {
+				tokMu.Lock()
+				if v := r.URL.Query().Get("propose"); v != "" {
+					tokPropose = v
+				}
+				if v := r.URL.Query().Get("apply"); v != "" {
+					tokApply = v
+				}
+				tokMu.Unlock()
 				_, _ = w.Write([]byte("ok"))
 				return
 			}

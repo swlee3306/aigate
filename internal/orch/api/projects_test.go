@@ -1151,7 +1151,7 @@ func TestConstantsAgreeWithWeb(t *testing.T) {
 	waText := string(wa)
 	bare := func(p string) string { return strings.TrimSuffix(strings.TrimPrefix(p, "^"), "$") }
 	for _, piece := range []string{
-		"action: (" + registrymsg.ActionRegisterProject + "|" + registrymsg.ActionSetFlag + ")",
+		"action: (" + registrymsg.ActionRegisterProject + "|" + registrymsg.ActionSetFlag + "|" + registrymsg.ActionSetToken + "|" + registrymsg.ActionDeleteToken + ")",
 		"subject: (" + bare(subjectPattern) + ")",
 		"change: ([0-9a-f]{64})",
 		"request: ([0-9a-f]{32})",

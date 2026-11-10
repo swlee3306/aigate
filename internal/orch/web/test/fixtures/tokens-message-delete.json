@@ -1,0 +1,11 @@
+{
+  "change": "b0a332bf547e5cbb7314c8eb143e8bcabc043f2e2f1a8a2f11694e178f7e0c2f",
+  "issued": "2026-11-09T10:04:05Z",
+  "message": "aigate-registry-v1\naction: delete_token\nsubject: gitlab-main\nchange: b0a332bf547e5cbb7314c8eb143e8bcabc043f2e2f1a8a2f11694e178f7e0c2f\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-09T10:04:05Z\n",
+  "preview": [
+    "토큰 'gitlab-main'을(를) 삭제합니다. 이 이름으로 저장된 값이 지워집니다",
+    "삭제 서명에는 토큰의 종류가 들어가지 않습니다. 이름이 맞는지만 확인하세요",
+    "서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다"
+  ],
+  "request": "00112233445566778899aabbccddeeff"
+}

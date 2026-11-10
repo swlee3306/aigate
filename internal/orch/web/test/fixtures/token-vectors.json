@@ -1,0 +1,281 @@
+{
+  "change": [
+    {
+      "name": "set with expiry",
+      "action": "set_token",
+      "subject": "gitlab-main",
+      "fields": {
+        "expires": "2027-06-30",
+        "kind": "gitlab",
+        "value_hash": "0f7522ceb751f4bff06c39f74051e68c191cadbfacfc39e93078301caa9b4e27"
+      },
+      "canonical": "{\"action\":\"set_token\",\"fields\":{\"expires\":\"2027-06-30\",\"kind\":\"gitlab\",\"value_hash\":\"0f7522ceb751f4bff06c39f74051e68c191cadbfacfc39e93078301caa9b4e27\"},\"subject\":\"gitlab-main\"}",
+      "change": "3c61b3a61041b6dca78f1370ca7e77d45b9f9c272f7ee195d1dd74a9e046f13c"
+    },
+    {
+      "name": "set without expiry",
+      "action": "set_token",
+      "subject": "gitlab-main",
+      "fields": {
+        "expires": "",
+        "kind": "gitlab",
+        "value_hash": "0f7522ceb751f4bff06c39f74051e68c191cadbfacfc39e93078301caa9b4e27"
+      },
+      "canonical": "{\"action\":\"set_token\",\"fields\":{\"expires\":\"\",\"kind\":\"gitlab\",\"value_hash\":\"0f7522ceb751f4bff06c39f74051e68c191cadbfacfc39e93078301caa9b4e27\"},\"subject\":\"gitlab-main\"}",
+      "change": "feab89569b4edb1560f9e7e34f356d68038106b4decd2fea18aca8c6ebba2761"
+    },
+    {
+      "name": "set openai",
+      "action": "set_token",
+      "subject": "openai",
+      "fields": {
+        "expires": "",
+        "kind": "openai",
+        "value_hash": "0f7522ceb751f4bff06c39f74051e68c191cadbfacfc39e93078301caa9b4e27"
+      },
+      "canonical": "{\"action\":\"set_token\",\"fields\":{\"expires\":\"\",\"kind\":\"openai\",\"value_hash\":\"0f7522ceb751f4bff06c39f74051e68c191cadbfacfc39e93078301caa9b4e27\"},\"subject\":\"openai\"}",
+      "change": "14a51654dddae39eed1dc6b243b55549061098b6c22813931d5da870a502347a"
+    },
+    {
+      "name": "set github, latest year",
+      "action": "set_token",
+      "subject": "github",
+      "fields": {
+        "expires": "9999-12-31",
+        "kind": "github",
+        "value_hash": "0f7522ceb751f4bff06c39f74051e68c191cadbfacfc39e93078301caa9b4e27"
+      },
+      "canonical": "{\"action\":\"set_token\",\"fields\":{\"expires\":\"9999-12-31\",\"kind\":\"github\",\"value_hash\":\"0f7522ceb751f4bff06c39f74051e68c191cadbfacfc39e93078301caa9b4e27\"},\"subject\":\"github\"}",
+      "change": "e6c35a5b99c85e980b219b37b2491675c2d8d76498b21a4e9297b0df5515cc34"
+    },
+    {
+      "name": "delete",
+      "action": "delete_token",
+      "subject": "gitlab-main",
+      "fields": {},
+      "canonical": "{\"action\":\"delete_token\",\"fields\":{},\"subject\":\"gitlab-main\"}",
+      "change": "b0a332bf547e5cbb7314c8eb143e8bcabc043f2e2f1a8a2f11694e178f7e0c2f"
+    }
+  ],
+  "message": {
+    "action": "set_token",
+    "change": "3c61b3a61041b6dca78f1370ca7e77d45b9f9c272f7ee195d1dd74a9e046f13c",
+    "digest": "9c0c22e284df9934fc5019e0cac45b98879085bd5c0793e48c4e90449374cb48",
+    "issued": "2026-11-09T10:04:05Z",
+    "request": "00112233445566778899aabbccddeeff",
+    "subject": "gitlab-main",
+    "text": "aigate-registry-v1\naction: set_token\nsubject: gitlab-main\nchange: 3c61b3a61041b6dca78f1370ca7e77d45b9f9c272f7ee195d1dd74a9e046f13c\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-09T10:04:05Z\n"
+  },
+  "refused": [
+    {
+      "name": "missing value_hash",
+      "action": "set_token",
+      "subject": "a",
+      "fields": {
+        "expires": "2027-06-30",
+        "kind": "gitlab"
+      }
+    },
+    {
+      "name": "missing expires",
+      "action": "set_token",
+      "subject": "a",
+      "fields": {
+        "kind": "gitlab",
+        "value_hash": "0f7522ceb751f4bff06c39f74051e68c191cadbfacfc39e93078301caa9b4e27"
+      }
+    },
+    {
+      "name": "missing kind",
+      "action": "set_token",
+      "subject": "a",
+      "fields": {
+        "expires": "2027-06-30",
+        "value_hash": "0f7522ceb751f4bff06c39f74051e68c191cadbfacfc39e93078301caa9b4e27"
+      }
+    },
+    {
+      "name": "upper case hash",
+      "action": "set_token",
+      "subject": "a",
+      "fields": {
+        "expires": "2027-06-30",
+        "kind": "gitlab",
+        "value_hash": "ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+      }
+    },
+    {
+      "name": "short hash",
+      "action": "set_token",
+      "subject": "a",
+      "fields": {
+        "expires": "2027-06-30",
+        "kind": "gitlab",
+        "value_hash": "abcd"
+      }
+    },
+    {
+      "name": "empty hash",
+      "action": "set_token",
+      "subject": "a",
+      "fields": {
+        "expires": "2027-06-30",
+        "kind": "gitlab",
+        "value_hash": ""
+      }
+    },
+    {
+      "name": "bad expires format",
+      "action": "set_token",
+      "subject": "a",
+      "fields": {
+        "expires": "2027-6-30",
+        "kind": "gitlab",
+        "value_hash": "0f7522ceb751f4bff06c39f74051e68c191cadbfacfc39e93078301caa9b4e27"
+      }
+    },
+    {
+      "name": "impossible date",
+      "action": "set_token",
+      "subject": "a",
+      "fields": {
+        "expires": "2027-02-30",
+        "kind": "gitlab",
+        "value_hash": "0f7522ceb751f4bff06c39f74051e68c191cadbfacfc39e93078301caa9b4e27"
+      }
+    },
+    {
+      "name": "year 1999",
+      "action": "set_token",
+      "subject": "a",
+      "fields": {
+        "expires": "1999-12-31",
+        "kind": "gitlab",
+        "value_hash": "0f7522ceb751f4bff06c39f74051e68c191cadbfacfc39e93078301caa9b4e27"
+      }
+    },
+    {
+      "name": "kind outside the set",
+      "action": "set_token",
+      "subject": "a",
+      "fields": {
+        "expires": "2027-06-30",
+        "kind": "slack",
+        "value_hash": "0f7522ceb751f4bff06c39f74051e68c191cadbfacfc39e93078301caa9b4e27"
+      }
+    },
+    {
+      "name": "kind upper case",
+      "action": "set_token",
+      "subject": "a",
+      "fields": {
+        "expires": "2027-06-30",
+        "kind": "GitLab",
+        "value_hash": "0f7522ceb751f4bff06c39f74051e68c191cadbfacfc39e93078301caa9b4e27"
+      }
+    },
+    {
+      "name": "extra field",
+      "action": "set_token",
+      "subject": "a",
+      "fields": {
+        "expires": "",
+        "kind": "gitlab",
+        "value": "x",
+        "value_hash": "0f7522ceb751f4bff06c39f74051e68c191cadbfacfc39e93078301caa9b4e27"
+      }
+    },
+    {
+      "name": "bad ref upper",
+      "action": "set_token",
+      "subject": "A",
+      "fields": {
+        "expires": "2027-06-30",
+        "kind": "gitlab",
+        "value_hash": "0f7522ceb751f4bff06c39f74051e68c191cadbfacfc39e93078301caa9b4e27"
+      }
+    },
+    {
+      "name": "bad ref underscore",
+      "action": "set_token",
+      "subject": "a_b",
+      "fields": {
+        "expires": "2027-06-30",
+        "kind": "gitlab",
+        "value_hash": "0f7522ceb751f4bff06c39f74051e68c191cadbfacfc39e93078301caa9b4e27"
+      }
+    },
+    {
+      "name": "delete with a field",
+      "action": "delete_token",
+      "subject": "a",
+      "fields": {
+        "kind": "gitlab"
+      }
+    },
+    {
+      "name": "unknown action",
+      "action": "purge_token",
+      "subject": "a",
+      "fields": {}
+    }
+  ],
+  "value_hash": [
+    {
+      "name": "canary",
+      "request": "00112233445566778899aabbccddeeff",
+      "value": "canary-NOT-A-REAL-TOKEN-0123456789abcdefghij-ZQxw",
+      "hash": "0f7522ceb751f4bff06c39f74051e68c191cadbfacfc39e93078301caa9b4e27"
+    },
+    {
+      "name": "minimum length",
+      "request": "00112233445566778899aabbccddeeff",
+      "value": "0123456789abcdef0123456789abcdef",
+      "hash": "cc3e33023c319195f14603d87beb3094b5b91105c0426d35c5d7d787d2698754"
+    },
+    {
+      "name": "maximum length, every printable character",
+      "request": "00112233445566778899aabbccddeeff",
+      "value": "!\"#$%\u0026'()*+,-./0123456789:;\u003c=\u003e?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~!\"#$%\u0026'()*+,-./0123456789:;\u003c=\u003e?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~!\"#$%\u0026'()*+,-./0123456789:;\u003c=\u003e?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~!\"#$%\u0026'()*+,-./0123456789:;\u003c=\u003e?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~!\"#$%\u0026'()*+,-./0123456789:;\u003c=\u003e?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~!\"#$%\u0026'()*+,-./0123456789:;\u003c=\u003e?@ABCDEFGHIJ",
+      "hash": "5f0d443341e93025588e7f27295bff57dae0258198ce1071e3c795a70ea938f9"
+    },
+    {
+      "name": "json-special characters",
+      "request": "00112233445566778899aabbccddeeff",
+      "value": "\"quote\\backslash/slash\u003ctag\u003e\u0026amp;'x'-0123456789abcdef",
+      "hash": "c14e1e9883d4630dc2d939d585ad3f9f86f80ec79f9b080b127cae3ce4f3ca09"
+    },
+    {
+      "name": "another request, same value",
+      "request": "ffeeddccbbaa99887766554433221100",
+      "value": "canary-NOT-A-REAL-TOKEN-0123456789abcdefghij-ZQxw",
+      "hash": "94810f7375891f0f8bb4be2a7a7767de117c3447b7fcf3f5e685a1ffdee8c9ec"
+    }
+  ],
+  "value_hash_refused": [
+    {
+      "name": "request too short",
+      "request": "0011",
+      "value": "canary-NOT-A-REAL-TOKEN-0123456789abcdefghij-ZQxw",
+      "hash": ""
+    },
+    {
+      "name": "request upper case",
+      "request": "00112233445566778899AABBCCDDEEFF",
+      "value": "canary-NOT-A-REAL-TOKEN-0123456789abcdefghij-ZQxw",
+      "hash": ""
+    },
+    {
+      "name": "request with colon",
+      "request": "0011223344556677889900aabbcc:dd",
+      "value": "canary-NOT-A-REAL-TOKEN-0123456789abcdefghij-ZQxw",
+      "hash": ""
+    },
+    {
+      "name": "request empty",
+      "request": "",
+      "value": "canary-NOT-A-REAL-TOKEN-0123456789abcdefghij-ZQxw",
+      "hash": ""
+    }
+  ]
+}
