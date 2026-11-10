@@ -190,7 +190,7 @@ pre.msg { font-family: var(--mono); font-size: 13px; background: var(--bg); bord
 /* submit, server status, progress and task actions (Task A5) */
 .form .field { display: grid; gap: 6px; margin: 0 0 14px; min-width: 0; }
 .form label { color: var(--muted); font-size: 13px; }
-.form select, .form input[type="text"], .form input[type="password"], .form textarea { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; color: var(--text); padding: 8px 12px; font: inherit; width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box; }
+.form select, .form input[type="text"], .form textarea { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; color: var(--text); padding: 8px 12px; font: inherit; width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box; }
 .form textarea { min-height: 84px; resize: vertical; line-height: 1.5; }
 .form select:focus-visible, .form input:focus-visible, .form textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .form .hint { color: var(--faint); font-size: 12px; }
@@ -250,5 +250,9 @@ pre.block-pre { font-family: var(--mono); font-size: 13px; background: var(--bg)
 .expbar-head { font-weight: 600; font-size: 15px; }
 .expbar .note { color: var(--muted); }
 
-/* the token value field: a masked TEXT input (type=password triggers browser save prompts) */
-.secret { -webkit-text-security: disc; text-security: disc; }
+/* the token value field: a plain text input whose text is transparent; the bullets are an overlay drawn by tokens.js */
+.ovlbox { position: relative; min-width: 0; }
+.form .ovlbox input.ovlin { color: transparent; caret-color: var(--text); forced-color-adjust: none; font-family: var(--mono); font-size: 13px; letter-spacing: 0; }
+@media (forced-colors: active) { .form .ovlbox input.ovlin { color: transparent; forced-color-adjust: none; caret-color: CanvasText; } .ovlbox .ovlmask { color: CanvasText; forced-color-adjust: none; } }
+.form .ovlbox input.ovlin::selection { color: transparent; background: var(--accent-bg); }
+.ovlbox .ovlmask { position: absolute; left: 13px; right: 13px; top: 0; bottom: 0; display: flex; align-items: center; overflow: hidden; white-space: pre; pointer-events: none; font-family: var(--mono); font-size: 13px; letter-spacing: 0; color: var(--text); }
