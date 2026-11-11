@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"aigate/internal/orch/broker"
+	"aigate/internal/orch/clone"
 	"aigate/internal/orch/machine"
 	"aigate/internal/orch/store"
 	"aigate/internal/orch/web"
@@ -203,6 +204,12 @@ func NewDaemon(cfg Config, st *store.Store, p StepProvider) (*Daemon, error) {
 		h.knownHosts = cfg.GitSSHKnownHosts
 	}
 	h.onRegistryChange = cfg.OnRegistryChange
+	// git and ssh are looked up once, in fixed directories (never the
+	// environment); a crashed clone's .clone-* staging dirs are swept.
+	h.gitPath, h.sshPath = clone.FindTool("git"), clone.FindTool("ssh")
+	if n := clone.SweepStale(h.roots); n > 0 {
+		log.Printf("orchd: removed %d stale clone staging directories", n)
+	}
 	h.reportDir = cfg.ReportDir
 	h.policy, h.ops, h.cloud = cfg.Policy, cfg.Ops, cfg.CloudStatus
 	h.socketUIDs = socketUIDSet(cfg.SocketUIDs)

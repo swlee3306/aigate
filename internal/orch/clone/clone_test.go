@@ -80,21 +80,34 @@ func TestCloneUsesFixedSafeOptions(t *testing.T) {
 	}
 	sm, calls := recorder(nil, func(_ context.Context, c *exec.Cmd) {
 		if fi, err := os.Lstat(c.Args[len(c.Args)-1]); err != nil || !fi.IsDir() {
-			t.Errorf("destination directory not created before git runs: %v", err)
+			t.Errorf("staging directory not created before git runs: %v", err)
+		}
+		if _, err := os.Lstat(filepath.Join(f.root, "proj-a")); err == nil {
+			t.Errorf("the destination exists before the clone finished")
 		}
 	})
 	o := f.opts("proj-a")
 	if err := clone(context.Background(), o, sm); err != nil {
 		t.Fatal(err)
 	}
+	if fi, err := os.Lstat(o.Dest); err != nil || !fi.IsDir() {
+		t.Fatalf("destination missing after success: %v", err)
+	}
+	if left, _ := filepath.Glob(filepath.Join(f.root, ".clone-*")); len(left) != 0 {
+		t.Fatalf("staging dir left behind: %v", left)
+	}
 	if len(*calls) != 1 {
 		t.Fatalf("%d runs", len(*calls))
 	}
 	c := (*calls)[0]
+	staging := c.args[len(c.args)-1]
 	want := []string{"git", "-c", "protocol.allow=never", "-c", "protocol.ssh.allow=always", "-c", "core.hooksPath=/dev/null",
-		"-c", "core.fsmonitor=false", "clone", "--no-recurse-submodules", "--no-local", "--", goodRemote, o.Dest}
+		"-c", "core.fsmonitor=false", "clone", "--no-recurse-submodules", "--no-local", "--", goodRemote, staging}
 	if strings.Join(c.args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("command line:\n got %q\nwant %q", c.args, want)
+	}
+	if filepath.Dir(staging) != f.root || !strings.HasPrefix(filepath.Base(staging), ".clone-") || staging == o.Dest {
+		t.Fatalf("git must clone into a .clone-* staging dir next to the destination, got %s", staging)
 	}
 	env := map[string]string{}
 	for _, e := range c.env {
@@ -115,7 +128,7 @@ func TestCloneUsesFixedSafeOptions(t *testing.T) {
 		t.Errorf("config isolation missing: %v", env)
 	}
 	ssh := env["GIT_SSH_COMMAND"]
-	for _, must := range []string{"-i " + f.keyFile, "IdentitiesOnly=yes", "StrictHostKeyChecking=yes", "UserKnownHostsFile=" + f.known,
+	for _, must := range []string{"UpdateHostKeys=no", "-i " + f.keyFile, "IdentitiesOnly=yes", "StrictHostKeyChecking=yes", "UserKnownHostsFile=" + f.known,
 		"BatchMode=yes", "IdentityAgent=none", "-F /dev/null", "GlobalKnownHostsFile=/dev/null", "ProxyCommand=none", "ForwardAgent=no", "ConnectTimeout="} {
 		if !strings.Contains(ssh, must) {
 			t.Errorf("GIT_SSH_COMMAND lacks %q: %s", must, ssh)
@@ -126,6 +139,32 @@ func TestCloneUsesFixedSafeOptions(t *testing.T) {
 	}
 	if _, err := os.Lstat(env["HOME"]); err == nil {
 		t.Errorf("scratch HOME %s left behind", env["HOME"])
+	}
+}
+
+// The ssh binary the API resolved at startup is used by absolute path; a path
+// that cannot sit inside the command string is refused.
+func TestCloneUsesGivenSSHPath(t *testing.T) {
+	f := newFix(t)
+	var got string
+	sm, _ := recorder(nil, func(_ context.Context, c *exec.Cmd) {
+		for _, e := range c.Env {
+			if strings.HasPrefix(e, "GIT_SSH_COMMAND=") {
+				got = e
+			}
+		}
+	})
+	o := f.opts("proj-a")
+	o.SSH, o.Git = "/usr/bin/ssh", "/usr/bin/git"
+	if err := clone(context.Background(), o, sm); err != nil || !strings.HasPrefix(got, "GIT_SSH_COMMAND=/usr/bin/ssh -F /dev/null") {
+		t.Fatalf("%v %q", err, got)
+	}
+	for _, bad := range []string{"ssh", "/usr/bin/s sh", "/usr/bin/ssh;x", "/usr/../bin/ssh"} {
+		o := f.opts("proj-b")
+		o.SSH = bad
+		if err := clone(context.Background(), o, sm); !errors.Is(err, ErrBadConfig) {
+			t.Errorf("ssh %q: %v", bad, err)
+		}
 	}
 }
 
@@ -362,6 +401,9 @@ func TestCloneCleansOnlyItsOwnPartialDir(t *testing.T) {
 	if _, e := os.Lstat(o.Dest); !os.IsNotExist(e) {
 		t.Errorf("partial dir left behind: %v", e)
 	}
+	if left, _ := filepath.Glob(filepath.Join(f.root, ".clone-*")); len(left) != 0 {
+		t.Errorf("staging dir left behind: %v", left)
+	}
 	for _, p := range []string{"proj-b/data", "proj-a2/data", "note.txt"} {
 		if _, e := os.Stat(filepath.Join(f.root, p)); e != nil {
 			t.Errorf("neighbour %s damaged: %v", p, e)
@@ -377,8 +419,10 @@ func TestCloneCleansOnlyItsOwnPartialDir(t *testing.T) {
 	victim := t.TempDir()
 	os.WriteFile(filepath.Join(victim, "important"), []byte("i"), 0o644)
 	o2 := f2.opts("proj-a")
+	var swapped string
 	sm3, _ := recorder(errors.New("x"), func(_ context.Context, c *exec.Cmd) {
 		d := c.Args[len(c.Args)-1]
+		swapped = d
 		os.RemoveAll(d)
 		os.Symlink(victim, d)
 	})
@@ -389,7 +433,7 @@ func TestCloneCleansOnlyItsOwnPartialDir(t *testing.T) {
 		t.Fatal("a swapped-in symlink's target was deleted")
 	}
 	// ... and the foreign symlink itself is not ours to remove either.
-	if fi, e := os.Lstat(o2.Dest); e != nil || fi.Mode()&os.ModeSymlink == 0 {
+	if fi, e := os.Lstat(swapped); e != nil || fi.Mode()&os.ModeSymlink == 0 {
 		t.Fatalf("the swapped-in symlink was removed: %v", e)
 	}
 }
@@ -413,6 +457,9 @@ func TestCloneTimeoutAndCancel(t *testing.T) {
 	}
 	if _, e := os.Lstat(o.Dest); !os.IsNotExist(e) {
 		t.Error("partial dir left after timeout")
+	}
+	if left, _ := filepath.Glob(filepath.Join(f.root, ".clone-*")); len(left) != 0 {
+		t.Errorf("staging dir left after timeout: %v", left)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -461,6 +508,97 @@ func TestCloneDirectoryMode(t *testing.T) {
 	fi, err := os.Stat(o.Dest)
 	if err != nil || fi.Mode().Perm() != 0o700 {
 		t.Fatalf("destination mode %v %v", fi, err)
+	}
+}
+
+// The destination appearing while git runs (a directory or a symlink put there
+// by someone else) is never replaced: the clone is refused, the foreign entry
+// and a symlink's target stay as they were, and the staging dir is removed.
+func TestCloneDestAppearsDuringCloneIsNotReplaced(t *testing.T) {
+	victim := t.TempDir()
+	os.WriteFile(filepath.Join(victim, "important"), []byte("i"), 0o644)
+	for name, mk := range map[string]func(dest string){
+		"empty dir": func(d string) { os.Mkdir(d, 0o700) },
+		"symlink":   func(d string) { os.Symlink(victim, d) },
+		"file":      func(d string) { os.WriteFile(d, []byte("f"), 0o644) },
+	} {
+		f := newFix(t)
+		o := f.opts("proj-a")
+		sm, _ := recorder(nil, func(_ context.Context, c *exec.Cmd) { mk(o.Dest) })
+		if err := clone(context.Background(), o, sm); !errors.Is(err, ErrExists) {
+			t.Errorf("%s: %v", name, err)
+		}
+		fi, e := os.Lstat(o.Dest)
+		if e != nil {
+			t.Errorf("%s: the foreign entry was removed: %v", name, e)
+		} else if name == "symlink" && fi.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("%s: the symlink was replaced", name)
+		}
+		if _, e := os.Stat(filepath.Join(victim, "important")); e != nil {
+			t.Errorf("%s: a symlink target was touched", name)
+		}
+		if left, _ := filepath.Glob(filepath.Join(f.root, ".clone-*")); len(left) != 0 {
+			t.Errorf("%s: staging dir left: %v", name, left)
+		}
+	}
+}
+
+// A crash leaves a .clone-* directory behind. It never blocks a new clone, and
+// the startup sweep removes real directories of that name directly under a root
+// (never following a symlink, never touching anything else).
+func TestSweepStaleClones(t *testing.T) {
+	f := newFix(t)
+	outside := t.TempDir()
+	os.WriteFile(filepath.Join(outside, "keep"), []byte("k"), 0o644)
+	os.MkdirAll(filepath.Join(f.root, ".clone-crashed", ".git", "objects"), 0o700)
+	os.WriteFile(filepath.Join(f.root, ".clone-crashed", "half"), []byte("h"), 0o644)
+	os.MkdirAll(filepath.Join(f.root, ".clone-second"), 0o700)
+	os.Symlink(outside, filepath.Join(f.root, ".clone-link"))
+	os.WriteFile(filepath.Join(f.root, ".clone-file"), []byte("f"), 0o644)
+	os.MkdirAll(filepath.Join(f.root, "proj-b", ".clone-nested"), 0o700)
+	os.MkdirAll(filepath.Join(f.root, "clone-notdot"), 0o700)
+	// the crashed leftover does not stop a clone
+	sm, _ := recorder(nil, nil)
+	if err := clone(context.Background(), f.opts("proj-a"), sm); err != nil {
+		t.Fatal(err)
+	}
+	if n := SweepStale([]string{f.root}); n != 2 {
+		t.Fatalf("swept %d, want 2", n)
+	}
+	for _, gone := range []string{".clone-crashed", ".clone-second"} {
+		if _, err := os.Lstat(filepath.Join(f.root, gone)); err == nil {
+			t.Errorf("%s survived the sweep", gone)
+		}
+	}
+	for _, kept := range []string{".clone-link", ".clone-file", "proj-b/.clone-nested", "clone-notdot", "proj-a"} {
+		if _, err := os.Lstat(filepath.Join(f.root, kept)); err != nil {
+			t.Errorf("%s was removed: %v", kept, err)
+		}
+	}
+	if b, _ := os.ReadFile(filepath.Join(outside, "keep")); string(b) != "k" {
+		t.Error("the sweep followed a symlink")
+	}
+	if SweepStale([]string{filepath.Join(f.root, "does-not-exist"), ""}) != 0 {
+		t.Error("sweeping a missing root removed something")
+	}
+}
+
+func TestFindToolUsesOnlyFixedDirs(t *testing.T) {
+	d := t.TempDir()
+	os.WriteFile(filepath.Join(d, "git"), []byte("#!/bin/sh\n"), 0o755)
+	os.WriteFile(filepath.Join(d, "ssh"), []byte("x"), 0o644) // not executable
+	os.Mkdir(filepath.Join(d, "dirtool"), 0o755)
+	if got := findIn([]string{"/nonexistent", d}, "git"); got != filepath.Join(d, "git") {
+		t.Errorf("git: %q", got)
+	}
+	for _, n := range []string{"ssh", "dirtool", "missing", "../git", "a/b", ""} {
+		if got := findIn([]string{d}, n); got != "" {
+			t.Errorf("%q found as %q", n, got)
+		}
+	}
+	t.Setenv("PATH", d)
+	if got := FindTool("git-no-such-tool-xyz"); got != "" {
+		t.Errorf("FindTool read PATH: %q", got)
 	}
 }
 
@@ -617,6 +755,48 @@ func TestProductionCannotEnableCloneSeams(t *testing.T) {
 	for _, u := range uses {
 		if !allowed[u.file+"|"+u.fn] {
 			t.Errorf("unexpected reference to seams in %s (%s)", u.file, u.fn)
+		}
+	}
+	// Package-level variables of production code: only the fixed Err* sentinels
+	// and the in-flight set (reachable from nowhere else) may exist, and none may
+	// be a function or hook: nothing here can be swapped from outside.
+	allowedVars := map[string]bool{"inflightMu": true, "inflight": true}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		af, err := parser.ParseFile(fset, f, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range af.Decls {
+			gd, ok := d.(*ast.GenDecl)
+			if !ok || gd.Tok != token.VAR {
+				continue
+			}
+			for _, sp := range gd.Specs {
+				vs := sp.(*ast.ValueSpec)
+				for i, nm := range vs.Names {
+					if _, isFn := vs.Type.(*ast.FuncType); isFn {
+						t.Errorf("%s: package-level func variable %s", f, nm.Name)
+					}
+					if i < len(vs.Values) {
+						if _, isLit := vs.Values[i].(*ast.FuncLit); isLit {
+							t.Errorf("%s: package-level func variable %s", f, nm.Name)
+						}
+					}
+					if strings.HasPrefix(nm.Name, "Err") && i < len(vs.Values) {
+						if ce, ok := vs.Values[i].(*ast.CallExpr); ok {
+							if se, ok := ce.Fun.(*ast.SelectorExpr); ok && se.Sel.Name == "New" {
+								continue
+							}
+						}
+					}
+					if !allowedVars[nm.Name] && nm.Name != "_" {
+						t.Errorf("%s: unexpected package-level variable %s (a hook production could set?)", f, nm.Name)
+					}
+				}
+			}
 		}
 	}
 	src, _ := os.ReadFile("clone.go")

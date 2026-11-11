@@ -22,6 +22,8 @@ package clone
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"io"
 	"os"
@@ -60,6 +62,8 @@ type Options struct {
 	// Dest is the absolute, clean path of the new folder.
 	Dest  string
 	Roots []string
+	// SSH is the ssh binary's absolute path ("" = "ssh", found by git).
+	SSH string
 	// SSHKey is the deploy key's PRIVATE path (only named in the ssh command)
 	// and KnownHosts the pinning file; both absolute without special characters.
 	SSHKey, KnownHosts string
@@ -95,9 +99,13 @@ func sshSafe(s string) bool {
 
 // sshCommand is the only ssh git may run: this key, the pinned host keys, no
 // agent, config file, proxy, forwarding or prompt.
-func sshCommand(key, knownHosts string) string {
-	return "ssh -F /dev/null -i " + key + " -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes" +
-		" -o StrictHostKeyChecking=yes -o UserKnownHostsFile=" + knownHosts + " -o GlobalKnownHostsFile=/dev/null" +
+func sshCommand(sshBin, key, knownHosts string) string {
+	if sshBin == "" {
+		sshBin = "ssh"
+	}
+	// UpdateHostKeys=no: ssh may never add or rewrite entries in the pinning file.
+	return sshBin + " -F /dev/null -i " + key + " -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes" +
+		" -o StrictHostKeyChecking=yes -o UpdateHostKeys=no -o UserKnownHostsFile=" + knownHosts + " -o GlobalKnownHostsFile=/dev/null" +
 		" -o ForwardAgent=no -o ForwardX11=no -o ClearAllForwardings=yes -o ProxyCommand=none -o ControlMaster=no -o ConnectTimeout=20"
 }
 
@@ -124,7 +132,7 @@ func destOK(dest string, roots []string) bool {
 }
 
 func clone(ctx context.Context, o Options, sm *seams) error {
-	if !sshSafe(o.SSHKey) || !sshSafe(o.KnownHosts) {
+	if !sshSafe(o.SSHKey) || !sshSafe(o.KnownHosts) || (o.SSH != "" && !sshSafe(o.SSH)) {
 		return ErrBadConfig
 	}
 	host, port, ok := knownhosts.SplitSSHRemote(o.Remote)
@@ -150,21 +158,24 @@ func clone(ctx context.Context, o Options, sm *seams) error {
 		inflightMu.Unlock()
 	}()
 
-	// The destination is claimed by mkdir: it fails if anything is there, a
-	// symlink included, and what it creates is the only thing cleaned later.
-	if err := os.Mkdir(o.Dest, 0o700); err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return ErrExists
-		}
+	// The destination must not exist (a symlink included). git clones into a
+	// staging directory next to it, .clone-<random> (never a valid project
+	// name), claimed with mkdir; a finished clone is renamed to the destination
+	// without replacing anything. A crash leaves only a .clone-* directory,
+	// which SweepStale removes at startup. Only the staging directory this call
+	// created is ever cleaned.
+	if _, err := os.Lstat(o.Dest); err == nil {
+		return ErrExists
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return ErrBadPath
 	}
-	made, err := os.Lstat(o.Dest)
+	staging, made, err := makeStaging(filepath.Dir(o.Dest))
 	if err != nil {
 		return ErrFailed
 	}
 	cleanup := func() {
-		if fi, err := os.Lstat(o.Dest); err == nil && fi.IsDir() && os.SameFile(fi, made) {
-			_ = os.RemoveAll(o.Dest)
+		if fi, err := os.Lstat(staging); err == nil && fi.IsDir() && os.SameFile(fi, made) {
+			_ = os.RemoveAll(staging)
 		}
 	}
 	scratch, err := os.MkdirTemp("", "orch-clone-")
@@ -192,7 +203,7 @@ func clone(ctx context.Context, o Options, sm *seams) error {
 			args = append(args, "-c", kv)
 		}
 	}
-	args = append(args, "clone", "--no-recurse-submodules", "--no-local", "--", remote, o.Dest)
+	args = append(args, "clone", "--no-recurse-submodules", "--no-local", "--", remote, staging)
 
 	timeout := o.Timeout
 	if timeout <= 0 {
@@ -205,7 +216,7 @@ func clone(ctx context.Context, o Options, sm *seams) error {
 	cmd.Env = []string{
 		"PATH=/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin", "HOME=" + scratch, "LC_ALL=C",
 		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0",
-		"GIT_SSH_COMMAND=" + sshCommand(o.SSHKey, o.KnownHosts),
+		"GIT_SSH_COMMAND=" + sshCommand(o.SSH, o.SSHKey, o.KnownHosts),
 	}
 	if sm != nil {
 		cmd.Env = append(cmd.Env, sm.extraEnv...)
@@ -227,5 +238,86 @@ func clone(ctx context.Context, o Options, sm *seams) error {
 		}
 		return ErrFailed
 	}
+	if err := renameNoReplace(staging, o.Dest); err != nil {
+		cleanup()
+		if errors.Is(err, os.ErrExist) {
+			return ErrExists
+		}
+		return ErrFailed
+	}
 	return nil
+}
+
+// tempPrefix starts every staging directory name; it is not a valid project name.
+const tempPrefix = ".clone-"
+
+func makeStaging(parent string) (string, os.FileInfo, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", nil, err
+	}
+	p := filepath.Join(parent, tempPrefix+hex.EncodeToString(b[:]))
+	if err := os.Mkdir(p, 0o700); err != nil {
+		return "", nil, err
+	}
+	fi, err := os.Lstat(p)
+	if err != nil {
+		os.Remove(p)
+		return "", nil, err
+	}
+	return p, fi, nil
+}
+
+// SweepStale removes the .clone-* directories a crashed clone left directly
+// under each root. Only real directories are removed (a symlink or a file of
+// that name is left alone, nothing is followed, nothing deeper is looked at).
+// It returns how many were removed. orchd calls it once at startup.
+func SweepStale(roots []string) int {
+	n := 0
+	for _, root := range roots {
+		if root == "" || !filepath.IsAbs(root) {
+			continue
+		}
+		ents, err := os.ReadDir(root)
+		if err != nil {
+			continue
+		}
+		for _, e := range ents {
+			if !strings.HasPrefix(e.Name(), tempPrefix) {
+				continue
+			}
+			p := filepath.Join(root, e.Name())
+			if fi, err := os.Lstat(p); err == nil && fi.IsDir() && fi.Mode()&os.ModeSymlink == 0 {
+				if os.RemoveAll(p) == nil {
+					n++
+				}
+			}
+		}
+	}
+	return n
+}
+
+// IsStaging reports whether a directory name is a clone staging name.
+func IsStaging(name string) bool { return strings.HasPrefix(name, tempPrefix) }
+
+// toolDirs are the only directories git and ssh are looked for in.
+func toolDirs() []string {
+	return []string{"/usr/local/bin", "/usr/bin", "/bin", "/opt/homebrew/bin"}
+}
+
+// FindTool returns the absolute path of the executable name in the fixed tool
+// directories ("" if absent). It never reads the environment.
+func FindTool(name string) string { return findIn(toolDirs(), name) }
+
+func findIn(dirs []string, name string) string {
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\\x00") {
+		return ""
+	}
+	for _, d := range dirs {
+		p := filepath.Join(d, name)
+		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() && fi.Mode().Perm()&0o111 != 0 {
+			return p
+		}
+	}
+	return ""
 }

@@ -625,7 +625,7 @@ func sshSafe(s string) bool {
 // the pinned host key only, never an agent, config file, proxy or prompt.
 func sshCommand(key, knownHosts string) string {
 	return "ssh -F /dev/null -i " + key + " -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes" +
-		" -o StrictHostKeyChecking=yes -o UserKnownHostsFile=" + knownHosts + " -o GlobalKnownHostsFile=/dev/null" +
+		" -o StrictHostKeyChecking=yes -o UpdateHostKeys=no -o UserKnownHostsFile=" + knownHosts + " -o GlobalKnownHostsFile=/dev/null" +
 		" -o ForwardAgent=no -o ForwardX11=no -o ClearAllForwardings=yes -o ProxyCommand=none -o ControlMaster=no -o ConnectTimeout=20"
 }
 

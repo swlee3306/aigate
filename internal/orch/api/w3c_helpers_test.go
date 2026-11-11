@@ -21,6 +21,12 @@ import (
 	"aigate/internal/registrymsg"
 )
 
+// Hermetic tests never run git or ssh: the handler is given fixed fake paths.
+const (
+	w3cFakeGit = "/fake/bin/git"
+	w3cFakeSSH = "/fake/bin/ssh"
+)
+
 const w3cKnownKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
 
 // w3cBroker is a stand-in orch-broker for the W3c ops on a temp unix socket.
@@ -253,6 +259,7 @@ func newW3cEnv(t *testing.T, opts ...func(*Config)) *w3cEnv {
 	e.d.pauseWorkers()
 	we.env = e
 	wb.pathRoot = e.root
+	e.d.handler.gitPath, e.d.handler.sshPath = w3cFakeGit, w3cFakeSSH
 	e.d.handler.cloneFn = func(ctx context.Context, o clone.Options) error {
 		we.cmu.Lock()
 		we.cloned = append(we.cloned, o)

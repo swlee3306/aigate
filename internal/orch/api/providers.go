@@ -34,7 +34,12 @@ const (
 	// ProviderWritePerActorHour is one bucket for set_provider and delete_provider.
 	ProviderWritePerActorHour = 10
 	ListGroupsPerActorHour    = 60
-	W3cProposePerActorHour    = 60
+	// CloneProjectPerActorHour caps POST /projects/{id}/clone per actor: a
+	// clone runs git and ssh for up to two minutes, so it is not free. The
+	// slot is given back when the request stopped before git ran. (The
+	// automatic clone after a create is covered by the create limit.)
+	CloneProjectPerActorHour = 10
+	W3cProposePerActorHour   = 60
 
 	maxProviderRows = 50
 	maxOrphanRows   = 100

@@ -39,8 +39,9 @@ const DefaultResolverTTL = 30 * time.Second
 // Resolve returns:
 //
 //	(remote, true)  a project linked to a provider, resolved and pinned: push there;
-//	("",     true)  a project that is (or, with the broker unreachable, may be)
-//	                linked but cannot be resolved safely: REFUSE the push;
+//	("",     true)  a project that is (or, while the registry cannot be read
+//	                and the cached table is stale, may be) linked but cannot be
+//	                resolved safely: REFUSE the push;
 //	("",     false) not a provider-linked project: the caller's own default applies.
 type Resolver struct {
 	Client     *broker.Client
@@ -51,7 +52,6 @@ type Resolver struct {
 	Now func() time.Time
 
 	mu     sync.Mutex
-	loaded bool // a registry read succeeded at least once
 	fresh  bool // the cache is current (not invalidated, within the TTL)
 	at     time.Time
 	byPath map[string]string // provider-linked project path -> remote ("" = refuse)
@@ -90,14 +90,15 @@ func (r *Resolver) Resolve(repo string) (string, bool) {
 	if !r.fresh || r.now().Sub(r.at) >= ttl {
 		r.refresh()
 	}
-	if remote, ok := r.byPath[repo]; ok {
-		if !r.fresh {
-			return "", true // the broker is unreachable and the table is stale: refuse
-		}
-		return remote, true
+	if !r.fresh {
+		// The table is stale (invalidated or past its TTL) and the registry could
+		// not be read again: which repositories are provider-linked is UNKNOWN, so
+		// nothing is pushed anywhere by guessing, a repository the old table did
+		// not list included (it may be the one just created).
+		return "", true
 	}
-	if !r.loaded {
-		return "", true // never read the registry: nothing is guessed
+	if remote, ok := r.byPath[repo]; ok {
+		return remote, true
 	}
 	return "", false
 }
@@ -130,7 +131,7 @@ func (r *Resolver) refresh() {
 		}
 		table[p.Path] = remote
 	}
-	r.byPath, r.loaded, r.fresh, r.at = table, true, true, r.now()
+	r.byPath, r.fresh, r.at = table, true, r.now()
 }
 
 func lastSegmentIs(project, id string) bool {

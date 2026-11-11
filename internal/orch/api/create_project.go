@@ -6,13 +6,18 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"path/filepath"
 	"regexp"
 	"time"
 
+	"aigate/internal/gate"
+	"aigate/internal/ledger"
 	"aigate/internal/orch/broker"
 	"aigate/internal/orch/clone"
+	"aigate/internal/orch/policy"
+	"aigate/internal/orch/store"
 	"aigate/internal/registrymsg"
 )
 
@@ -37,6 +42,8 @@ const (
 
 var (
 	errPolicyClassMissing = apiErr(http.StatusBadRequest, "policy_class_missing", "정책에 'registered' 클래스가 없어 새 프로젝트를 만들 수 없습니다. 관리자가 정책(policy.yml)에 registered 클래스를 추가해야 합니다")
+	errGitMissing         = apiErr(http.StatusServiceUnavailable, "git_missing", "이 서버에서 git 실행 파일을 찾지 못해 복제할 수 없습니다. 관리자가 확인해야 합니다")
+	errSSHMissing         = apiErr(http.StatusServiceUnavailable, "ssh_missing", "이 서버에서 ssh 실행 파일을 찾지 못해 복제할 수 없습니다. 관리자가 확인해야 합니다")
 	errCloneUnavailable   = apiErr(http.StatusServiceUnavailable, "clone_unavailable", "복제 설정(배포 키와 known_hosts)이 없어 복제할 수 없습니다. 관리자가 확인해야 합니다")
 	errNotClonable        = apiErr(http.StatusBadRequest, "not_clonable", "이 프로젝트는 등록부의 제공자 연결로 복제 주소를 만들 수 없습니다")
 	errHostNotPinned      = apiErr(http.StatusBadRequest, "host_not_pinned", "이 GitLab 서버의 호스트 키가 고정되어 있지 않아(known_hosts) 복제하지 않았습니다. 관리자가 확인해야 합니다")
@@ -174,7 +181,10 @@ func (h *handler) finishCreate(r *http.Request, c registryChange, res json.RawMe
 	// The project exists now whatever the clone does; the clone has its own
 	// ending (a person may clone again later, with no signature).
 	ctx := context.WithoutCancel(r.Context())
-	cv, cr, herr := h.cloneProject(ctx, c.Subject, budget)
+	cv, cr, herr, ran := h.cloneProject(ctx, c.Subject, budget)
+	if ran {
+		h.recordClone(store.ActorFrom(r.Context()), c.Subject, herr == nil, cr.Code)
+	}
 	if herr == nil {
 		v = cv
 	} else {
@@ -196,15 +206,22 @@ type CloneResult struct {
 // as its folder name) the destination. It reads the registry itself (a fresh
 // read) and returns the project view, a CloneResult for the response and, on
 // failure, the fixed error.
-func (h *handler) cloneProject(ctx context.Context, id string, timeout time.Duration) (ProjectView, CloneResult, *httpError) {
-	fail := func(he *httpError) (ProjectView, CloneResult, *httpError) {
+func (h *handler) cloneProject(ctx context.Context, id string, timeout time.Duration) (ProjectView, CloneResult, *httpError, bool) {
+	ran := false // git was started (the clone helper was called)
+	fail := func(he *httpError) (ProjectView, CloneResult, *httpError, bool) {
 		if he == errAlreadyCloned {
-			return ProjectView{}, CloneResult{Status: "already_cloned", Code: he.v1Code}, he
+			return ProjectView{}, CloneResult{Status: "already_cloned", Code: he.v1Code}, he, ran
 		}
-		return ProjectView{}, CloneResult{Status: "failed", Code: he.v1Code}, he
+		return ProjectView{}, CloneResult{Status: "failed", Code: he.v1Code}, he, ran
 	}
 	if h.sshKey == "" || h.knownHosts == "" {
 		return fail(errCloneUnavailable)
+	}
+	if h.gitPath == "" {
+		return fail(errGitMissing)
+	}
+	if h.sshPath == "" {
+		return fail(errSSHMissing)
 	}
 	if h.broker == nil || h.broker.Socket == "" {
 		return fail(errBrokerUnavailable)
@@ -242,12 +259,30 @@ func (h *handler) cloneProject(ctx context.Context, id string, timeout time.Dura
 	if !h.directUnderRoot(entry.Path) || !safeProjectPath(entry.Path) {
 		return fail(errProjBadPath)
 	}
-	err := h.cloneFn(ctx, clone.Options{Remote: remote, Dest: entry.Path, Roots: h.roots, SSHKey: h.sshKey, KnownHosts: h.knownHosts, Timeout: timeout})
+	ran = true
+	err := h.cloneFn(ctx, clone.Options{Git: h.gitPath, SSH: h.sshPath, Remote: remote, Dest: entry.Path, Roots: h.roots,
+		SSHKey: h.sshKey, KnownHosts: h.knownHosts, Timeout: timeout})
 	if err != nil {
 		return fail(cloneError(err))
 	}
 	view.Cloned = h.isCloned(view.Path)
-	return view, CloneResult{Status: "cloned", Code: "ok"}, nil
+	return view, CloneResult{Status: "cloned", Code: "ok"}, nil, ran
+}
+
+// recordClone appends the project_clone ledger event: who, which project id,
+// the outcome and its fixed code. Never a path, a remote or a host.
+func (h *handler) recordClone(actor, subject string, ok bool, code string) {
+	home, err := gate.Home(h.grants.Home)
+	if err != nil {
+		log.Printf("orchd: project_clone not recorded in the ledger: home unknown")
+		return
+	}
+	err = ledger.Append(policy.OrchLedgerPath(home), "project_clone", policy.OrchRepo, map[string]any{
+		"actor": actor, "subject": subject, "ok": ok, "code": code,
+	}, h.clock().UTC())
+	if err != nil {
+		log.Printf("orchd: project_clone not recorded in the ledger")
+	}
 }
 
 func projectNameIs(project, id string) bool {
@@ -294,7 +329,18 @@ func (h *handler) projectClone(w http.ResponseWriter, r *http.Request) {
 	// Drain a bounded body so the connection is clean; its content is not used.
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	_, _ = readAllDiscard(r)
-	view, cr, herr := h.cloneProject(r.Context(), id, clone.DefaultTimeout)
+	actor := store.ActorFrom(r.Context())
+	slotAt := h.clock()
+	if !h.cloneLimit.take(actor, slotAt) {
+		writeErr(w, errProjRateLimited)
+		return
+	}
+	view, cr, herr, ran := h.cloneProject(r.Context(), id, clone.DefaultTimeout)
+	if !ran {
+		h.cloneLimit.refund(actor, slotAt) // nothing was cloned: the slot is free again
+	} else {
+		h.recordClone(actor, id, herr == nil, cr.Code)
+	}
 	if herr != nil {
 		writeErr(w, herr)
 		return

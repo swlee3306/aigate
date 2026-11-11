@@ -257,8 +257,12 @@ type handler struct {
 	// cache) and the clone runner (clone.Clone; tests replace it).
 	w3cProposeLimit, providerLimit, groupLimit, createLimit, groupsReadLimit *actorLimiter
 	sshKey, knownHosts                                                       string
-	onRegistryChange                                                         func()
-	cloneFn                                                                  func(ctx context.Context, o clone.Options) error
+	// gitPath and sshPath are resolved once at startup from fixed directories
+	// ("" = missing: clone answers git_missing / ssh_missing).
+	gitPath, sshPath string
+	cloneLimit       *actorLimiter
+	onRegistryChange func()
+	cloneFn          func(ctx context.Context, o clone.Options) error
 }
 
 func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome string) (*handler, error) {
@@ -283,6 +287,7 @@ func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome 
 	h.createLimit = newActorLimiter(CreateProjectPerActorHour, time.Hour)
 	h.groupsReadLimit = newActorLimiter(ListGroupsPerActorHour, time.Hour)
 	h.cloneFn = clone.Clone
+	h.cloneLimit = newActorLimiter(CloneProjectPerActorHour, time.Hour)
 	for _, r := range allowed {
 		if !filepath.IsAbs(r) || filepath.Clean(r) != r {
 			return nil, fmt.Errorf("allowed repo root %q must be an absolute clean path", r)

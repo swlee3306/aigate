@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"aigate/internal/gitx"
+	"aigate/internal/orch/clone"
 )
 
 const (
@@ -158,7 +159,7 @@ func (h *handler) findRepos(ctx context.Context) []string {
 			return
 		}
 		for _, e := range ents {
-			if e.Name() == ".git" {
+			if e.Name() == ".git" || clone.IsStaging(e.Name()) {
 				continue
 			}
 			switch t := e.Type(); {

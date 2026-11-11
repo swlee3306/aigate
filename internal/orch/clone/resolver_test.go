@@ -238,13 +238,27 @@ func TestResolverFailsClosedWhenBrokerDown(t *testing.T) {
 	if got, ok := r.Resolve("/r/app-one"); !ok || got != "" {
 		t.Fatalf("stale + broker down, linked repo: %q %v", got, ok)
 	}
-	if got, ok := r.Resolve("/r/never-listed"); ok || got != "" {
-		t.Fatalf("stale + broker down, unlisted repo: %q %v", got, ok)
+	// An unlisted repo is UNKNOWN while the table is stale (it may be the one
+	// just created): refused too. Tradeoff: repos that only use the default
+	// remote cannot publish until the registry can be read again.
+	if got, ok := r.Resolve("/r/never-listed"); !ok || got != "" {
+		t.Fatalf("stale + broker down, unlisted repo must be refused: %q %v", got, ok)
 	}
-	// The broker comes back: it resolves again.
+	// The broker comes back: it resolves again, and with a FRESH table a repo
+	// the registry does not list is known to be unlisted: the default applies.
 	f.listen(t)
 	if got, ok := r.Resolve("/r/app-one"); !ok || got == "" {
 		t.Fatalf("after recovery: %q %v", got, ok)
+	}
+	if got, ok := r.Resolve("/r/never-listed"); ok || got != "" {
+		t.Fatalf("fresh table, unlisted repo: %q %v", got, ok)
+	}
+	// Invalidated (a create just happened) and the broker gone again: a repo
+	// absent from the stale table is unknown, not unlisted.
+	r.Invalidate()
+	f.stop()
+	if got, ok := r.Resolve("/r/brand-new"); !ok || got != "" {
+		t.Fatalf("invalidated + broker down, new repo: %q %v", got, ok)
 	}
 }
 

@@ -56,7 +56,7 @@ func TestSSHRemoteValidation(t *testing.T) {
 	bad("ssh settings on local remote", Config{Remote: d, SSHKeyFile: key, SSHKnownHosts: kh})
 	bad("space in key path", Config{Remote: r, SSHKeyFile: key + " x", SSHKnownHosts: kh})
 	if c := sshCommand("/k", "/h"); !strings.Contains(c, "StrictHostKeyChecking=yes") || !strings.Contains(c, "IdentityAgent=none") ||
-		!strings.Contains(c, "-F /dev/null") || !strings.Contains(c, "GlobalKnownHostsFile=/dev/null") {
+		!strings.Contains(c, "-F /dev/null") || !strings.Contains(c, "UpdateHostKeys=no") || !strings.Contains(c, "GlobalKnownHostsFile=/dev/null") {
 		t.Fatalf("weak ssh command: %s", c)
 	}
 }

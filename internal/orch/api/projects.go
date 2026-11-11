@@ -21,6 +21,7 @@ import (
 	"aigate/internal/gitx"
 	"aigate/internal/ledger"
 	"aigate/internal/orch/broker"
+	"aigate/internal/orch/clone"
 	"aigate/internal/orch/policy"
 	"aigate/internal/orch/store"
 	"aigate/internal/registrymsg"
@@ -355,6 +356,9 @@ func (h *handler) candidatePath(ctx context.Context, path string) bool {
 // directUnderRoot reports whether p is exactly one level below an allowed
 // root (the shape the broker's registry accepts).
 func (h *handler) directUnderRoot(p string) bool {
+	if clone.IsStaging(filepath.Base(p)) {
+		return false
+	}
 	parent := filepath.Dir(p)
 	for _, r := range h.roots {
 		if parent == r && p != r {
@@ -480,6 +484,9 @@ func (h *handler) registryDataOf(rv *broker.RegistryView) (registryData, error) 
 // isCloned reports whether path is a directory (not a symlink) with a .git
 // entry. It looks at the file system only: no git runs.
 func (h *handler) isCloned(path string) bool {
+	if clone.IsStaging(filepath.Base(path)) {
+		return false // a half-cloned staging directory is not a clone
+	}
 	fi, err := os.Lstat(path)
 	if err != nil || !fi.IsDir() {
 		return false
