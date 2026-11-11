@@ -1,0 +1,24 @@
+{
+  "action": "create_project",
+  "change": "(change hash)",
+  "deploy_key": {
+    "fingerprint": "SHA256:…",
+    "public_key": "ssh-ed25519 AAAA… orchd@deploy"
+  },
+  "fields": {
+    "ai_context": false,
+    "deploy_key_sha256": "9f2b0f1d6a3c0e47b5a8d2c1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1",
+    "description": "첫 프로젝트",
+    "group_path": "team",
+    "provider": "gl",
+    "publish": "write",
+    "template": "go"
+  },
+  "issued": "2026-11-09T10:04:05Z",
+  "message": "(signing message text)",
+  "preview": [
+    "(fixed Korean sentences)"
+  ],
+  "request": "00112233445566778899aabbccddeeff",
+  "subject": "app-one"
+}

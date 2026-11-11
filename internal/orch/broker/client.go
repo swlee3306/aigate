@@ -52,6 +52,13 @@ type OpError struct {
 	// Only then is it certain the broker did no work for this call; after a
 	// complete write the broker may have spent money even if nothing came back.
 	Unsent bool
+	// TimedOut is true when the call's own time limit ended it while the
+	// request was already (completely or partly) written: no answer came in
+	// time. A broker `timeout` reply is Code "timeout" instead.
+	TimedOut bool
+	// Partial is set only for a create_partial reply whose detail passed
+	// validation (see PartialDetail); nothing else of a reply is kept.
+	Partial *PartialDetail
 }
 
 func (e *OpError) Error() string { return "broker: " + e.Code }
@@ -76,6 +83,8 @@ type reply struct {
 	OK     bool            `json:"ok"`
 	Result json.RawMessage `json:"result"`
 	Code   string          `json:"code"`
+	// Detail is read for create_partial only (see parsePartialDetail).
+	Detail json.RawMessage `json:"detail"`
 }
 
 // Encode is the request line without its newline. HTML escaping is off: <, >
@@ -147,7 +156,12 @@ func (c *Client) Do(ctx context.Context, op string, args any) (json.RawMessage, 
 	}
 	line, err := readLine(conn)
 	if err != nil {
-		return nil, unavailable()
+		e := unavailable()
+		// The connection deadline equals the context's, so the read can fail a
+		// hair before the context reports its own end: both count.
+		var ne net.Error
+		e.TimedOut = errors.Is(ctx.Err(), context.DeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout())
+		return nil, e
 	}
 	var r reply
 	dec := json.NewDecoder(bytes.NewReader(line))
@@ -161,7 +175,11 @@ func (c *Client) Do(ctx context.Context, op string, args any) (json.RawMessage, 
 		if !codeRe.MatchString(r.Code) {
 			return nil, unavailable()
 		}
-		return nil, &OpError{Code: r.Code}
+		e := &OpError{Code: r.Code}
+		if r.Code == CodeCreatePartial {
+			e.Partial = parsePartialDetail(r.Detail)
+		}
+		return nil, e
 	}
 	if len(r.Result) == 0 || r.Result[0] != '{' {
 		return nil, unavailable()

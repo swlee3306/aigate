@@ -33,6 +33,7 @@ import (
 	"aigate/internal/gate"
 	"aigate/internal/ledger"
 	"aigate/internal/orch/approvals"
+	"aigate/internal/orch/knownhosts"
 	"aigate/internal/orch/policy"
 	"aigate/internal/orch/store"
 )
@@ -111,7 +112,19 @@ type Config struct {
 	// repo path -> remote, same forms as Remote). A repository without an
 	// entry pushes to Remote.
 	RepoRemotes map[string]string
-	GitLab      GitLab
+	// RemoteResolver, when set, is asked about a repository that RepoRemotes
+	// does not name (and only then), with nothing but the repository path:
+	//
+	//	(remote, true)  push to this remote (it must be an ssh:// remote whose
+	//	                host is pinned in SSHKnownHosts, else the push is refused);
+	//	("",     true)  a registered project whose remote cannot be resolved
+	//	                safely: the push is REFUSED, never sent to Remote;
+	//	("",     false) not its repository: Remote is used, as without a resolver.
+	//
+	// orchd wires clone.Resolver.Resolve here (the registry and the pinning file
+	// are its only inputs). Without a resolver only the static remotes exist.
+	RemoteResolver func(repo string) (string, bool)
+	GitLab         GitLab
 	// TokenFile is the 0600 file holding the GitLab write token. Required
 	// for an https remote and for draft_pr.
 	TokenFile string
@@ -185,6 +198,9 @@ func New(cfg Config) (*Publisher, error) {
 		return nil, errors.New("publish: nothing configured (need a remote, GitLab or a notifier)")
 	}
 	anyRemote := func(prefix string) bool {
+		if prefix == "ssh://" && cfg.RemoteResolver != nil {
+			return true // a resolver hands out ssh remotes
+		}
 		if strings.HasPrefix(cfg.Remote, prefix) {
 			return true
 		}
@@ -280,10 +296,20 @@ func (p *Publisher) check(a Action) error {
 	return nil
 }
 
-// remoteFor is the remote a task of repo pushes to.
+// remoteFor is the remote a task of repo pushes to: the static per-repository
+// remote, else the resolver's answer, else the default. "" means the push is
+// refused (the resolver knows the repository but cannot give a safe remote).
 func (p *Publisher) remoteFor(repo string) string {
 	if r, ok := p.cfg.RepoRemotes[repo]; ok {
 		return r
+	}
+	if p.cfg.RemoteResolver != nil {
+		if r, ok := p.cfg.RemoteResolver(repo); ok {
+			if r != "" && knownhosts.RemotePinned(p.cfg.SSHKnownHosts, r) {
+				return r
+			}
+			return ""
+		}
 	}
 	return p.cfg.Remote
 }
@@ -291,7 +317,10 @@ func (p *Publisher) remoteFor(repo string) string {
 func (p *Publisher) target(kind, repo string) string {
 	switch kind {
 	case KindPushBranch:
-		return p.remoteFor(repo)
+		if r := p.remoteFor(repo); r != "" {
+			return r
+		}
+		return "(unresolved: refused)"
 	case KindDraftPR:
 		g := p.cfg.GitLab
 		return strings.TrimRight(g.BaseURL, "/") + " project=" + g.Project + " target=" + g.TargetBranch
@@ -485,6 +514,9 @@ func (p *Publisher) push(ctx context.Context, a Action) error {
 		"GIT_ALLOW_PROTOCOL=file:https:ssh",
 	}
 	remote := p.remoteFor(a.Repo)
+	if remote == "" {
+		return errors.New("publish: no safe remote could be resolved for this repository; nothing was pushed")
+	}
 	if strings.HasPrefix(remote, "ssh://") {
 		env = append(env, "GIT_SSH_COMMAND="+sshCommand(p.cfg.SSHKeyFile, p.cfg.SSHKnownHosts))
 	}

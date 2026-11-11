@@ -112,10 +112,15 @@ func (s *Server) projectsHandler(context.Context, json.RawMessage) (any, *OpErro
 	if projects == nil {
 		projects = []Project{}
 	}
+	orphans := r.Orphans
+	if orphans == nil {
+		orphans = []Orphan{}
+	}
 	return map[string]any{
 		"projects":          projects,
 		"providers":         r.Providers,
 		"auto_merge_global": r.AutoMergeGlobal,
+		"orphans":           orphans,
 	}, nil
 }
 

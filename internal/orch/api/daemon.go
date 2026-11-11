@@ -89,6 +89,14 @@ type Config struct {
 	// never opened by the API: only "<GitSSHKey>.pub" is read, by
 	// GET /api/v1/settings/deploy-key. Empty = that endpoint is unavailable.
 	GitSSHKey string
+	// GitSSHKnownHosts is orchd's --git-ssh-known-hosts: the pinning file the
+	// clone helper requires the GitLab host to be in. Empty = clone is
+	// unavailable (the endpoint and the automatic clone answer clone_unavailable).
+	GitSSHKnownHosts string
+	// OnRegistryChange, when set, is called after a provider, group or
+	// project-creation request that may have changed the registry (the publish
+	// resolver drops its cache).
+	OnRegistryChange func()
 }
 
 const (
@@ -189,7 +197,12 @@ func NewDaemon(cfg Config, st *store.Store, p StepProvider) (*Daemon, error) {
 	// unavailable; startup is not refused: the publisher judges the flag itself).
 	if broker.ValidSocketPath(cfg.GitSSHKey) {
 		h.deployKeyPath = cfg.GitSSHKey + ".pub"
+		h.sshKey = cfg.GitSSHKey
 	}
+	if broker.ValidSocketPath(cfg.GitSSHKnownHosts) {
+		h.knownHosts = cfg.GitSSHKnownHosts
+	}
+	h.onRegistryChange = cfg.OnRegistryChange
 	h.reportDir = cfg.ReportDir
 	h.policy, h.ops, h.cloud = cfg.Policy, cfg.Ops, cfg.CloudStatus
 	h.socketUIDs = socketUIDSet(cfg.SocketUIDs)

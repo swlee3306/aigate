@@ -1,0 +1,9 @@
+{
+  "provider": {
+    "id": "gl",
+    "kind": "gitlab",
+    "base_url": "http://gitlab.example:18082",
+    "ssh_url": "ssh://git@gitlab.example",
+    "token_ref": "gl-admin"
+  }
+}

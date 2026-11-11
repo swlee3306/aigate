@@ -1152,3 +1152,28 @@ func TestConcurrentIdenticalRequestsRegisterOnce(t *testing.T) {
 		t.Fatalf("%d projects", count)
 	}
 }
+
+// W3c C4: the `projects` read also lists the orphan records (public values
+// only: provider id, GitLab path, id, step, time), so orchd can show them.
+func TestProjectsReadListsOrphans(t *testing.T) {
+	w := newWEnv(t)
+	r, raw := call(t, w.sock, `{"v":1,"op":"projects"}`)
+	if !r.OK || !strings.Contains(string(r.Result), `"orphans":[]`) {
+		t.Fatalf("orphans must be an empty array when there are none: %s", raw)
+	}
+	pid := int64(77)
+	if _, err := w.s.Registry.AddOrphan(Orphan{Provider: "gl", Project: "team/x-app", ProjectID: &pid, Step: "deploy_key", At: "2026-11-09T12:00:00Z"}); err != nil {
+		t.Fatal(err)
+	}
+	r, raw = call(t, w.sock, `{"v":1,"op":"projects"}`)
+	var res struct {
+		Orphans []map[string]any `json:"orphans"`
+	}
+	if err := json.Unmarshal(r.Result, &res); err != nil || len(res.Orphans) != 1 {
+		t.Fatalf("%v %s", err, raw)
+	}
+	o := res.Orphans[0]
+	if len(o) != 5 || o["provider"] != "gl" || o["project"] != "team/x-app" || o["project_id"] != float64(77) || o["step"] != "deploy_key" || o["at"] != "2026-11-09T12:00:00Z" {
+		t.Fatalf("orphan row %v", o)
+	}
+}

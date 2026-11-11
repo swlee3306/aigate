@@ -47,6 +47,7 @@ import (
 	"aigate/internal/gitx"
 	"aigate/internal/orch/approvals"
 	"aigate/internal/orch/broker"
+	"aigate/internal/orch/clone"
 	"aigate/internal/orch/machine"
 	"aigate/internal/orch/refine"
 	"aigate/internal/orch/store"
@@ -156,6 +157,9 @@ type httpError struct {
 	// reason, when set, is a server-built fixed sentence that rides next to
 	// the message (v1: error.reason; legacy flat body: "reason").
 	reason string
+	// detail, when set, is a server-built object of public values that rides
+	// with the error (v1: error.detail). Only create_partial uses it.
+	detail any
 }
 
 // apiErr is an error with a fixed v1 envelope code. msg must be a fixed text:
@@ -246,6 +250,15 @@ type handler struct {
 	tokenPrepLimit, tokenApplyLimit *actorLimiter
 	tokenSeams                      tokenSeams
 	deployKeyPath                   string
+	// Provider, group and project-creation endpoints (providers.go,
+	// create_project.go): separate per-actor buckets (D9), the deploy key's
+	// PRIVATE path and the pinning file (named in clone's ssh command, never
+	// opened here), the registry-change hook (drops the publish resolver's
+	// cache) and the clone runner (clone.Clone; tests replace it).
+	w3cProposeLimit, providerLimit, groupLimit, createLimit, groupsReadLimit *actorLimiter
+	sshKey, knownHosts                                                       string
+	onRegistryChange                                                         func()
+	cloneFn                                                                  func(ctx context.Context, o clone.Options) error
 }
 
 func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome string) (*handler, error) {
@@ -264,6 +277,12 @@ func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome 
 	h.applyLimit = newActorLimiter(ProjectApplyPerActorHour, time.Hour)
 	h.tokenPrepLimit = newActorLimiter(TokenPrepPerActorHour, time.Hour)
 	h.tokenApplyLimit = newActorLimiter(TokenApplyPerActorHour, time.Hour)
+	h.w3cProposeLimit = newActorLimiter(W3cProposePerActorHour, time.Hour)
+	h.providerLimit = newActorLimiter(ProviderWritePerActorHour, time.Hour)
+	h.groupLimit = newActorLimiter(CreateGroupPerActorHour, time.Hour)
+	h.createLimit = newActorLimiter(CreateProjectPerActorHour, time.Hour)
+	h.groupsReadLimit = newActorLimiter(ListGroupsPerActorHour, time.Hour)
+	h.cloneFn = clone.Clone
 	for _, r := range allowed {
 		if !filepath.IsAbs(r) || filepath.Clean(r) != r {
 			return nil, fmt.Errorf("allowed repo root %q must be an absolute clean path", r)
@@ -364,12 +383,15 @@ func writeErr(w http.ResponseWriter, err error) {
 	if he.code == http.StatusUnauthorized {
 		w.Header().Set("WWW-Authenticate", "Bearer")
 	}
-	body := map[string]string{"error": he.msg}
+	body := map[string]any{"error": he.msg}
 	if he.v1Code != "" {
 		body["code"] = he.v1Code
 	}
 	if he.reason != "" {
 		body["reason"] = he.reason
+	}
+	if he.detail != nil {
+		body["detail"] = he.detail
 	}
 	writeJSON(w, he.code, body)
 }

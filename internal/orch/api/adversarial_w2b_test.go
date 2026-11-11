@@ -465,6 +465,27 @@ func TestOrchdWorksWithBrokerDown(t *testing.T) {
 			if c, b := e.sockDo2(t, "GET", "/api/v1/projects", ""); c != 200 {
 				t.Fatalf("old projects summary: %d %s", c, b)
 			}
+			// W3c: provider reads and the clone answer fixed codes; the proposal of a
+			// provider change stays local; its apply is unavailable, never a hang
+			for _, path := range []string{"/api/v1/providers", "/api/v1/providers/gl/groups"} {
+				if c, b := e.sockDo2(t, "GET", path, ""); c != 503 || v1Code(b) != "broker_unavailable" || strings.Contains(string(b), sock) {
+					t.Fatalf("%s: %d %s", path, c, b)
+				}
+			}
+			if c, b := e.sockDo2(t, "POST", "/api/v1/projects/some-proj/clone", ""); c != 503 || (v1Code(b) != "broker_unavailable" && v1Code(b) != "clone_unavailable") {
+				t.Fatalf("clone: %d %s", c, b)
+			}
+			dp := map[string]any{"action": "delete_provider", "subject": "gl", "fields": map[string]any{}}
+			c, b = e.sockDo2(t, "POST", "/api/v1/providers/propose", jsonBody(dp))
+			if c != 200 {
+				t.Fatalf("providers propose: %d %s", c, b)
+			}
+			var pp struct{ Change, Request, Issued string }
+			_ = json.Unmarshal(b, &pp)
+			dp["change"], dp["request"], dp["issued"], dp["signature"] = pp.Change, pp.Request, pp.Issued, webauthnSig
+			if c, b := e.sockDo2(t, "POST", "/api/v1/providers/apply", jsonBody(dp)); c != 503 || v1Code(b) != "broker_unavailable" {
+				t.Fatalf("providers apply: %d %s", c, b)
+			}
 			// and the daemon is still fine afterwards
 			if c, b := e.sockDo2(t, "GET", "/api/v1/tasks", ""); c != 200 {
 				t.Fatalf("list after: %d %s", c, b)

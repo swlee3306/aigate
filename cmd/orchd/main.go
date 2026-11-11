@@ -122,6 +122,7 @@ func run(args []string) int {
 	// The deploy key's public half (<path>.pub) is served to the console; the
 	// private key is never read by the API. Same flag, no new one.
 	cfg.GitSSHKey = vf.GitSSHKey
+	cfg.GitSSHKnownHosts = vf.GitSSHKnownHosts
 	if err := checkQueueLimit(cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "orchd:", err)
 		return 2
@@ -187,6 +188,11 @@ func run(args []string) int {
 	}
 	for _, l := range vf.describe(cfg.DB, cfg.Concurrency) {
 		log.Print("orchd: config: ", l)
+	}
+	if res := vf.remoteResolver(); res != nil {
+		// A registry change (create_project and the like) drops the resolver's
+		// cache at once instead of waiting for its 30 s TTL.
+		cfg.OnRegistryChange = res.Invalidate
 	}
 	cfg.Policy = policySupplier(vf.live, vf.baseCacheDir != "")
 	cfg.Ops = opsSupplier(buildID(), time.Now(), cfg.PolicyHash, vf.restoreRecord, vf.baseCacheDir)

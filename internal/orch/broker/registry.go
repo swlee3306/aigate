@@ -45,6 +45,7 @@ type Project struct {
 	Path      string      `json:"path"`
 	Kind      string      `json:"kind"`
 	AIContext bool        `json:"ai_context"`
+	Provider  *string     `json:"provider"`
 	GitLab    *GitLabLink `json:"gitlab"`
 	AutoMerge AutoMerge   `json:"auto_merge"`
 }
@@ -58,7 +59,29 @@ type AutoMergeGlobal struct {
 // RegistryView is the `projects` reply.
 type RegistryView struct {
 	Projects        []Project       `json:"projects"`
+	Providers       []ProviderRow   `json:"providers"`
 	AutoMergeGlobal AutoMergeGlobal `json:"auto_merge_global"`
+	Orphans         []OrphanRow     `json:"orphans"`
+}
+
+// ProviderRow is one provider as the registry lists it (W3c): addresses and
+// the NAME of its token, never a value.
+type ProviderRow struct {
+	ID       string `json:"id"`
+	Kind     string `json:"kind"`
+	BaseURL  string `json:"base_url"`
+	SSHURL   string `json:"ssh_url"`
+	TokenRef string `json:"token_ref"`
+}
+
+// OrphanRow is a GitLab project a failed create_project left behind. Values
+// only; the broker never deletes it.
+type OrphanRow struct {
+	Provider  string `json:"provider"`
+	Project   string `json:"project"`
+	ProjectID *int64 `json:"project_id"`
+	Step      string `json:"step"`
+	At        string `json:"at"`
 }
 
 // Projects reads the registry (no signature, no side effect).

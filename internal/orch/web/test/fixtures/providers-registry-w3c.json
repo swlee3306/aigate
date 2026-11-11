@@ -1,0 +1,49 @@
+{
+  "auto_merge_global": {
+    "enabled": false,
+    "max_per_day": 5
+  },
+  "orphans": [
+    {
+      "provider": "gl",
+      "project": "team/lost-app",
+      "project_id": 99,
+      "step": "deploy_key",
+      "at": "2026-11-09T12:00:00Z"
+    },
+    {
+      "provider": "gl",
+      "project": "team/lost-two",
+      "project_id": null,
+      "step": "project",
+      "at": "2026-11-09T13:00:00Z"
+    }
+  ],
+  "projects": [
+    {
+      "id": "app-one",
+      "path": "/home/orch/repos/app-one",
+      "kind": "registered",
+      "ai_context": false,
+      "provider": "gl",
+      "gitlab": {
+        "project": "team/app-one",
+        "project_id": 99
+      },
+      "auto_merge": {
+        "enabled": false
+      },
+      "cloned": true
+    }
+  ],
+  "providers": [
+    {
+      "id": "gl",
+      "kind": "gitlab",
+      "base_url": "http://gitlab.example:18082",
+      "ssh_url": "ssh://git@gitlab.example",
+      "token_ref": "gl-admin",
+      "in_use": true
+    }
+  ]
+}

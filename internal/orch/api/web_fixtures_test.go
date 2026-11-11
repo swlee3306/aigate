@@ -14,6 +14,7 @@ import (
 	"aigate/internal/approval/signing"
 	"aigate/internal/gate"
 	"aigate/internal/orch/approvals"
+	"aigate/internal/orch/broker"
 	"aigate/internal/orch/publish"
 	"aigate/internal/orch/refine"
 	"aigate/internal/orch/steps"
@@ -331,7 +332,8 @@ func TestWebFixturesProjects(t *testing.T) {
 			{ID: "docs", Path: "/home/orch/repos/docs", Kind: "docs", AIContext: false, GitLab: gitlab},
 			{ID: "calc", Path: "/home/orch/repos/calc", Kind: "code", AIContext: true},
 		},
-		"providers":         []struct{}{},
+		"providers":         []ProviderView{},
+		"orphans":           []OrphanView{},
 		"auto_merge_global": map[string]any{"enabled": false, "max_per_day": 5},
 	})
 	checkFixture(t, "projects-candidates.json", map[string]any{
@@ -618,4 +620,100 @@ func TestWebFixturesTokens(t *testing.T) {
 		"message": map[string]any{"action": m.Action, "subject": m.Subject, "change": m.Change, "request": m.Request,
 			"issued": issued.Format(registryTimeFormat), "text": m.Text(), "digest": hex.EncodeToString(d[:])},
 	})
+}
+
+// TestWebFixturesW3c pins the JSON of the provider, group and project-creation
+// endpoints the console reads. Each fixture is built from the real Go types and
+// its key set is compared with a REAL response of the handler, so a renamed or
+// added field fails here.
+func TestWebFixturesW3c(t *testing.T) {
+	yes, no := true, false
+	pid := int64(99)
+	gl := ProviderView{ID: "gl", Kind: "gitlab", BaseURL: "http://gitlab.example:18082", SSHURL: "ssh://git@gitlab.example", TokenRef: "gl-admin"}
+	glUsed, glFree := gl, gl
+	glUsed.InUse, glFree.InUse = &yes, &no
+	checkFixture(t, "providers.json", map[string]any{"providers": []ProviderView{glUsed, {ID: "gl2", Kind: "gitlab", BaseURL: "https://git.example", SSHURL: "ssh://git@git.example:2222", TokenRef: "gl2-admin", InUse: &no}}})
+	checkFixture(t, "provider-groups.json", map[string]any{"groups": []GroupView{{Path: "team", Name: "team"}, {Path: "team/sub", Name: "sub"}}, "truncated": false})
+	checkFixture(t, "providers-registry-w3c.json", map[string]any{
+		"projects": []ProjectView{{ID: "app-one", Path: "/home/orch/repos/app-one", Kind: "registered", Provider: &gl.ID,
+			GitLab: &projectGitLab{Project: "team/app-one", ProjectID: &pid}, Cloned: true}},
+		"providers":         []ProviderView{glUsed},
+		"orphans":           []OrphanView{{Provider: "gl", Project: "team/lost-app", ProjectID: &pid, Step: "deploy_key", At: "2026-11-09T12:00:00Z"}, {Provider: "gl", Project: "team/lost-two", Step: "project", At: "2026-11-09T13:00:00Z"}},
+		"auto_merge_global": map[string]any{"enabled": false, "max_per_day": 5},
+	})
+	checkFixture(t, "provider-set-ok.json", map[string]any{"provider": glFree.withoutInUse()})
+	checkFixture(t, "provider-delete-ok.json", map[string]any{"id": "gl", "deleted": true})
+	checkFixture(t, "group-create-ok.json", map[string]any{"provider": "gl", "group": GroupView{Path: "team/newgroup", Name: "newgroup"}})
+	proj := ProjectView{ID: "app-one", Path: "/home/orch/repos/app-one", Kind: "registered", Provider: &gl.ID, GitLab: &projectGitLab{Project: "team/app-one", ProjectID: &pid}, Cloned: true}
+	checkFixture(t, "project-create-ok.json", map[string]any{"project": proj, "clone": CloneResult{Status: "cloned", Code: "ok"}})
+	notCloned := proj
+	notCloned.Cloned = false
+	checkFixture(t, "project-create-clone-failed.json", map[string]any{"project": notCloned, "clone": CloneResult{Status: "failed", Code: "host_not_pinned"}})
+	checkFixture(t, "project-clone-ok.json", map[string]any{"project": proj, "clone": CloneResult{Status: "cloned", Code: "ok"}})
+	partial := partialError(&broker.PartialDetail{Provider: "gl", Project: "team/app-one", ProjectID: &pid, Step: "deploy_key", Recorded: true})
+	checkFixture(t, "project-create-partial.json", map[string]any{"error": map[string]any{"code": partial.v1Code, "message": partial.msg, "detail": partial.detail}})
+
+	// Real responses: same key sets.
+	e := newW3cEnv(t)
+	keys := func(b []byte) string {
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(b, &m); err != nil {
+			t.Fatalf("%v: %s", err, b)
+		}
+		return ledgerKeys(anyMap(m))
+	}
+	_, b := e.sockJSON(t, "GET", "/api/v1/providers", "")
+	if keys(b) != "providers" {
+		t.Errorf("providers keys %s", keys(b))
+	}
+	p := e.proposeAction(t, "create_project")
+	code, b := e.apply(t, p)
+	if code != 200 || keys(b) != "clone,project" {
+		t.Fatalf("create apply %d %s", code, b)
+	}
+	var real struct {
+		Project map[string]json.RawMessage `json:"project"`
+		Clone   map[string]json.RawMessage `json:"clone"`
+	}
+	json.Unmarshal(b, &real)
+	if ledgerKeys(anyMap(real.Project)) != "ai_context,auto_merge,cloned,gitlab,id,kind,path,provider" || ledgerKeys(anyMap(real.Clone)) != "code,status" {
+		t.Errorf("create apply member keys: %s", b)
+	}
+	// create_partial envelope keys
+	e.wb.setReply(func(op string, _ json.RawMessage) string {
+		if op == "create_project" {
+			return `{"ok":false,"code":"create_partial","detail":{"provider":"gl","project":"team/app-one","project_id":99,"step":"deploy_key","orphan_recorded":true,"orphan_dropped":false}}`
+		}
+		return ""
+	})
+	_, b = e.apply(t, e.proposeAction(t, "create_project"))
+	var env struct {
+		Error map[string]json.RawMessage `json:"error"`
+	}
+	json.Unmarshal(b, &env)
+	if ledgerKeys(anyMap(env.Error)) != "code,detail,message" {
+		t.Errorf("partial envelope keys %s", b)
+	}
+	e.wb.setReply(nil)
+	pr := e.proposeAction(t, "create_project")
+	b, _ = json.Marshal(pr)
+	if keys(b) != "action,change,deploy_key,fields,issued,message,preview,request,subject" {
+		t.Errorf("create propose keys %s", keys(b))
+	}
+	checkFixture(t, "project-create-propose.json", map[string]any{"action": "create_project", "subject": "app-one",
+		"fields": map[string]any{"provider": "gl", "group_path": "team", "template": "go", "description": "첫 프로젝트", "ai_context": false, "publish": "write",
+			"deploy_key_sha256": "9f2b0f1d6a3c0e47b5a8d2c1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1"},
+		"message": "(signing message text)", "change": "(change hash)", "request": "00112233445566778899aabbccddeeff", "issued": "2026-11-09T10:04:05Z",
+		"preview":    []string{"(fixed Korean sentences)"},
+		"deploy_key": map[string]string{"public_key": "ssh-ed25519 AAAA… orchd@deploy", "fingerprint": "SHA256:…"}})
+}
+
+func (p ProviderView) withoutInUse() ProviderView { p.InUse = nil; return p }
+
+func anyMap(m map[string]json.RawMessage) map[string]any {
+	out := map[string]any{}
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }

@@ -17,6 +17,7 @@ import (
 	"aigate/internal/orch/api"
 	"aigate/internal/orch/approvals"
 	"aigate/internal/orch/broker"
+	"aigate/internal/orch/clone"
 	"aigate/internal/orch/policy"
 	"aigate/internal/orch/publish"
 	"aigate/internal/orch/steps"
@@ -52,6 +53,23 @@ type vmFlags struct {
 	PublishAllow, GitRemote, GitLabURL, GitLabProject, GitLabTarget, TokenFile string
 	GitRemoteFor                                                               stringList
 	GitSSHKey, GitSSHKnownHosts                                                string
+	// resolver turns the registry (through the broker) and the pinned
+	// known_hosts file into publish remotes for projects the static
+	// --git-remote-for list does not name. nil unless remoteResolver built it.
+	resolver *clone.Resolver
+}
+
+// remoteResolver builds the registry-backed publish remote resolver once. It
+// exists only when everything it needs is configured: the broker socket (the
+// registry), the default remote (the publisher needs one), the deploy key and
+// the pinning file. Otherwise nil: the publisher then has its static remotes
+// only. No new flag: the existing --git-ssh-key and --git-ssh-known-hosts are
+// the same files the clone endpoint uses.
+func (v *vmFlags) remoteResolver() *clone.Resolver {
+	if v.resolver == nil && v.BrokerSocket != "" && v.GitRemote != "" && v.GitSSHKey != "" && v.GitSSHKnownHosts != "" {
+		v.resolver = &clone.Resolver{Client: &broker.Client{Socket: v.BrokerSocket}, KnownHosts: v.GitSSHKnownHosts}
+	}
+	return v.resolver
 }
 
 func (v *vmFlags) register(fs *flag.FlagSet) {
@@ -233,6 +251,9 @@ func (v *vmFlags) provider(st *store.Store, dbPath string) (api.StepProvider, er
 			GitLab: publish.GitLab{BaseURL: v.GitLabURL, Project: v.GitLabProject, TargetBranch: v.GitLabTarget},
 			Grants: approvals.Grants{Home: gateHome},
 			Ledger: publish.LedgerRecorder(policy.OrchLedgerPath(gateHome))}
+		if res := v.remoteResolver(); res != nil {
+			pcfg.RemoteResolver = res.Resolve
+		}
 		if v.live != nil {
 			pcfg.AllowSource = func() policy.Allowlist { return v.live.Current().AllowList() }
 		}

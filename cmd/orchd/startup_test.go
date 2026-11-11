@@ -146,3 +146,29 @@ func TestBrokerFlagValidation(t *testing.T) {
 		t.Fatalf("rc %d stderr %q", rc, msg)
 	}
 }
+
+// The registry-backed publish resolver exists only when everything it needs is
+// configured (no new flag); otherwise the publisher keeps its static remotes
+// only. Its cache is the one the API drops after a registry change.
+func TestRemoteResolverWiredOnlyWhenConfigured(t *testing.T) {
+	full := vmFlags{BrokerSocket: "/run/orch-broker/b.sock", GitRemote: "/srv/r.git", GitSSHKey: "/home/orch/orchd/ssh/id", GitSSHKnownHosts: "/home/orch/orchd/ssh/kh"}
+	if r := full.remoteResolver(); r == nil || r.KnownHosts != full.GitSSHKnownHosts || r.Client == nil || r.Client.Socket != full.BrokerSocket {
+		t.Fatalf("not wired: %+v", r)
+	}
+	if full.remoteResolver() != full.resolver {
+		t.Fatal("the resolver is built once (the API hook and the publisher must share it)")
+	}
+	for name, mod := range map[string]func(v *vmFlags){
+		"no broker":      func(v *vmFlags) { v.BrokerSocket = "" },
+		"no default":     func(v *vmFlags) { v.GitRemote = "" },
+		"no key":         func(v *vmFlags) { v.GitSSHKey = "" },
+		"no known_hosts": func(v *vmFlags) { v.GitSSHKnownHosts = "" },
+	} {
+		v := full
+		v.resolver = nil
+		mod(&v)
+		if v.remoteResolver() != nil {
+			t.Errorf("%s: resolver built", name)
+		}
+	}
+}

@@ -3,8 +3,10 @@
   "path": "/home/orch/repos/notes",
   "kind": "docs",
   "ai_context": false,
+  "provider": null,
   "gitlab": null,
   "auto_merge": {
     "enabled": false
-  }
+  },
+  "cloned": false
 }

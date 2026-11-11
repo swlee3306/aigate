@@ -1,0 +1,7 @@
+{
+  "group": {
+    "path": "team/newgroup",
+    "name": "newgroup"
+  },
+  "provider": "gl"
+}

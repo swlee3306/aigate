@@ -1,0 +1,21 @@
+{
+  "clone": {
+    "status": "failed",
+    "code": "host_not_pinned"
+  },
+  "project": {
+    "id": "app-one",
+    "path": "/home/orch/repos/app-one",
+    "kind": "registered",
+    "ai_context": false,
+    "provider": "gl",
+    "gitlab": {
+      "project": "team/app-one",
+      "project_id": 99
+    },
+    "auto_merge": {
+      "enabled": false
+    },
+    "cloned": false
+  }
+}

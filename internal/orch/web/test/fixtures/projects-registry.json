@@ -3,29 +3,34 @@
     "enabled": false,
     "max_per_day": 5
   },
+  "orphans": [],
   "projects": [
     {
       "id": "docs",
       "path": "/home/orch/repos/docs",
       "kind": "docs",
       "ai_context": false,
+      "provider": null,
       "gitlab": {
         "project": "team/docs",
         "project_id": null
       },
       "auto_merge": {
         "enabled": false
-      }
+      },
+      "cloned": false
     },
     {
       "id": "calc",
       "path": "/home/orch/repos/calc",
       "kind": "code",
       "ai_context": true,
+      "provider": null,
       "gitlab": null,
       "auto_merge": {
         "enabled": false
-      }
+      },
+      "cloned": false
     }
   ],
   "providers": []

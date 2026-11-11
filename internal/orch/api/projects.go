@@ -377,12 +377,18 @@ type projectAutoMerge struct {
 
 // ProjectView is one registry entry as the console receives it.
 type ProjectView struct {
-	ID        string           `json:"id"`
-	Path      string           `json:"path"`
-	Kind      string           `json:"kind"`
-	AIContext bool             `json:"ai_context"`
+	ID        string `json:"id"`
+	Path      string `json:"path"`
+	Kind      string `json:"kind"`
+	AIContext bool   `json:"ai_context"`
+	// Provider is the provider id of a project created through W3c (null for a
+	// project registered by path).
+	Provider  *string          `json:"provider"`
 	GitLab    *projectGitLab   `json:"gitlab"`
 	AutoMerge projectAutoMerge `json:"auto_merge"`
+	// Cloned is what orchd sees on the file system right now (a directory,
+	// not a symlink, with a .git entry): the registry does not know it.
+	Cloned bool `json:"cloned"`
 }
 
 // projectView re-bounds a broker entry; false when it is not a plausible one.
@@ -391,6 +397,13 @@ func projectView(p broker.Project) (ProjectView, bool) {
 		return ProjectView{}, false
 	}
 	v := ProjectView{ID: p.ID, Path: p.Path, Kind: p.Kind, AIContext: p.AIContext, AutoMerge: projectAutoMerge{Enabled: p.AutoMerge.Enabled}}
+	if p.Provider != nil {
+		if !registrymsg.ValidProviderID(*p.Provider) {
+			return ProjectView{}, false
+		}
+		pr := *p.Provider
+		v.Provider = &pr
+	}
 	if p.GitLab != nil {
 		if p.GitLab.Project == "" || len(p.GitLab.Project) > 200 || hostileText(p.GitLab.Project) {
 			return ProjectView{}, false
@@ -400,42 +413,93 @@ func projectView(p broker.Project) (ProjectView, bool) {
 	return v, true
 }
 
+// registryData is the whole registry read as the console sees it.
+type registryData struct {
+	Projects  []ProjectView
+	Providers []ProviderView
+	Orphans   []OrphanView
+	Global    broker.AutoMergeGlobal
+}
+
 // registryList reads the registry through the broker. It is all or nothing:
-// if one entry does not look like a project (bad id, kind or path text) the
-// whole list is refused as broker_error rather than shown partially, because
-// a partial list would also make candidates offer an already registered
-// repository. A broker only reports entries it validated itself, so this
-// signals a broken or newer registry that an operator should look at.
-func (h *handler) registryList(ctx context.Context) ([]ProjectView, broker.AutoMergeGlobal, error) {
+// if one entry does not look like a project (bad id, kind or path text), a
+// provider or an orphan record is implausible, the whole list is refused as
+// broker_error rather than shown partially, because a partial list would also
+// make candidates offer an already registered repository. A broker only
+// reports entries it validated itself, so this signals a broken or newer
+// registry that an operator should look at.
+func (h *handler) registryList(ctx context.Context) (registryData, error) {
 	if h.broker == nil || h.broker.Socket == "" {
-		return nil, broker.AutoMergeGlobal{}, errBrokerUnavailable
+		return registryData{}, errBrokerUnavailable
 	}
 	rv, oerr := h.broker.Projects(ctx)
 	if oerr != nil {
-		return nil, broker.AutoMergeGlobal{}, projectsBrokerError(oerr, false)
+		return registryData{}, projectsBrokerError(oerr, false)
 	}
-	out := make([]ProjectView, 0, len(rv.Projects))
+	return h.registryDataOf(rv)
+}
+
+func (h *handler) registryDataOf(rv *broker.RegistryView) (registryData, error) {
+	out := registryData{Projects: make([]ProjectView, 0, len(rv.Projects)), Global: rv.AutoMergeGlobal}
+	used := map[string]bool{}
 	for _, p := range rv.Projects {
 		v, ok := projectView(p)
 		if !ok {
-			return nil, broker.AutoMergeGlobal{}, errProjBrokerBad
+			return registryData{}, errProjBrokerBad
 		}
-		out = append(out, v)
+		v.Cloned = h.isCloned(v.Path)
+		if v.Provider != nil {
+			used[*v.Provider] = true
+		}
+		out.Projects = append(out.Projects, v)
 	}
-	return out, rv.AutoMergeGlobal, nil
+	if len(rv.Providers) > maxProviderRows || len(rv.Orphans) > maxOrphanRows {
+		return registryData{}, errProjBrokerBad
+	}
+	out.Providers = make([]ProviderView, 0, len(rv.Providers))
+	for _, p := range rv.Providers {
+		v, ok := providerView(p.ID, p.Kind, p.BaseURL, p.SSHURL, p.TokenRef)
+		if !ok {
+			return registryData{}, errProjBrokerBad
+		}
+		inUse := used[v.ID]
+		v.InUse = &inUse
+		out.Providers = append(out.Providers, v)
+	}
+	out.Orphans = make([]OrphanView, 0, len(rv.Orphans))
+	for _, o := range rv.Orphans {
+		v, ok := orphanView(o)
+		if !ok {
+			return registryData{}, errProjBrokerBad
+		}
+		out.Orphans = append(out.Orphans, v)
+	}
+	return out, nil
+}
+
+// isCloned reports whether path is a directory (not a symlink) with a .git
+// entry. It looks at the file system only: no git runs.
+func (h *handler) isCloned(path string) bool {
+	fi, err := os.Lstat(path)
+	if err != nil || !fi.IsDir() {
+		return false
+	}
+	_, err = os.Lstat(filepath.Join(path, ".git"))
+	return err == nil
 }
 
 // projectsRegistry is GET /api/v1/projects/registry.
 func (h *handler) projectsRegistry(w http.ResponseWriter, r *http.Request) {
-	list, glob, err := h.registryList(r.Context())
+	reg, err := h.registryList(r.Context())
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"projects":          list,
-		"providers":         []struct{}{},
-		"auto_merge_global": map[string]any{"enabled": glob.Enabled, "max_per_day": glob.MaxPerDay},
+		"projects":          reg.Projects,
+		"providers":         reg.Providers,
+		"orphans":           reg.Orphans,
+		"auto_merge_global": map[string]any{"enabled": reg.Global.Enabled, "max_per_day": reg.Global.MaxPerDay},
 	})
 }
 
@@ -457,13 +521,13 @@ func (h *handler) projectsCandidates(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
-	list, _, err := h.registryList(ctx)
+	reg, err := h.registryList(ctx)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
 	registered := map[string]bool{}
-	for _, p := range list {
+	for _, p := range reg.Projects {
 		registered[p.Path] = true
 	}
 	var paths []string
@@ -763,6 +827,9 @@ func (h *handler) projectsApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	v, ok := projectView(*p)
+	if ok {
+		v.Cloned = h.isCloned(v.Path)
+	}
 	if !ok || v.ID != c.Subject {
 		// The broker said ok, so the change may well have happened.
 		h.recordProjectChange(actor, c.Action, c.Subject, false, errProjUnknownResult.v1Code)

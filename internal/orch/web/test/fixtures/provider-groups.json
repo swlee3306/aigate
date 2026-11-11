@@ -1,0 +1,13 @@
+{
+  "groups": [
+    {
+      "path": "team",
+      "name": "team"
+    },
+    {
+      "path": "team/sub",
+      "name": "sub"
+    }
+  ],
+  "truncated": false
+}

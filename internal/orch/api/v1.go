@@ -39,6 +39,14 @@ func (h *handler) mountV1(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+v1Prefix+"/projects/candidates", h.projectsCandidates)
 	mux.HandleFunc("POST "+v1Prefix+"/projects/propose", h.requireWrite(h.projectsPropose))
 	mux.HandleFunc("POST "+v1Prefix+"/projects/apply", h.requireWrite(h.projectsApply))
+	// Providers, groups and project creation (providers.go, create_project.go).
+	mux.HandleFunc("GET "+v1Prefix+"/providers", h.providersList)
+	mux.HandleFunc("GET "+v1Prefix+"/providers/{id}/groups", h.providerGroups)
+	mux.HandleFunc("POST "+v1Prefix+"/providers/propose", h.requireWrite(h.providersPropose))
+	mux.HandleFunc("POST "+v1Prefix+"/providers/apply", h.requireWrite(h.providersApply))
+	mux.HandleFunc("POST "+v1Prefix+"/projects/create/propose", h.requireWrite(h.createPropose))
+	mux.HandleFunc("POST "+v1Prefix+"/projects/create/apply", h.requireWrite(h.createApply))
+	mux.HandleFunc("POST "+v1Prefix+"/projects/{id}/clone", h.requireWrite(h.projectClone))
 	mux.HandleFunc("GET "+v1Prefix+"/settings/tokens", h.tokensList)
 	mux.HandleFunc("POST "+v1Prefix+"/tokens/begin", h.requireWrite(h.tokensBegin))
 	mux.HandleFunc("POST "+v1Prefix+"/tokens/message", h.requireWrite(h.tokensMessage))
@@ -101,9 +109,17 @@ func writeV1Err(w http.ResponseWriter, status int, code, msg string) {
 
 // writeV1ErrReason is writeV1Err plus an optional error.reason sentence.
 func writeV1ErrReason(w http.ResponseWriter, status int, code, msg, reason string) {
-	body := map[string]string{"code": code, "message": msg}
+	writeV1ErrDetail(w, status, code, msg, reason, nil)
+}
+
+// writeV1ErrDetail is writeV1ErrReason plus an optional error.detail object.
+func writeV1ErrDetail(w http.ResponseWriter, status int, code, msg, reason string, detail json.RawMessage) {
+	body := map[string]any{"code": code, "message": msg}
 	if reason != "" {
 		body["reason"] = reason
+	}
+	if len(detail) > 0 && !bytes.Equal(detail, []byte("null")) {
+		body["detail"] = detail
 	}
 	writeJSON(w, status, map[string]any{"error": body})
 }
@@ -138,14 +154,16 @@ func (e *envWriter) finish() {
 	h := e.ResponseWriter.Header()
 	h.Del("Content-Length")
 	msg, code, reason := "", "", ""
+	var detail json.RawMessage
 	if strings.HasPrefix(h.Get("Content-Type"), "application/json") {
 		var flat struct {
-			Error  string `json:"error"`
-			Code   string `json:"code"`
-			Reason string `json:"reason"`
+			Error  string          `json:"error"`
+			Code   string          `json:"code"`
+			Reason string          `json:"reason"`
+			Detail json.RawMessage `json:"detail"`
 		}
 		if json.Unmarshal(e.buf.Bytes(), &flat) == nil {
-			msg, code, reason = flat.Error, flat.Code, flat.Reason
+			msg, code, reason, detail = flat.Error, flat.Code, flat.Reason, flat.Detail
 		}
 	}
 	if code == "" {
@@ -161,5 +179,5 @@ func (e *envWriter) finish() {
 			msg = "요청을 처리할 수 없습니다"
 		}
 	}
-	writeV1ErrReason(e.ResponseWriter, e.status, code, msg, reason)
+	writeV1ErrDetail(e.ResponseWriter, e.status, code, msg, reason, detail)
 }
