@@ -216,7 +216,7 @@ func TestWebFixturesW3cVectors(t *testing.T) {
 		"aa/../bb", "aa/b", "Team", "team/Sub", "aa/bb cc")
 	descriptions := check(registrymsg.ValidDescription, "", "첫 프로젝트", "plain text.", strings.Repeat("a", 200), strings.Repeat("a", 201),
 		strings.Repeat("😀", 200), strings.Repeat("😀", 201), "tab\there", "a\nb", "a\u200Bb", "a\u202Eb", "a\u2028b", "a\u00ADb", "a\u0085b",
-		"a\uE000b", "a\uFEFFb", "a\uFFFDb", "e\u0301", "a\u00A0b", "a\u3000b", "<img src=x onerror=1>")
+		"a\uE000b", "a\uFEFFb", "a\uFFFDb", "e\u0301", "a\uFE0Fb", "a\u3164b", "a\u115Fb", "a\u1160b", "a\u034Fb", "a\u180Bb", "a\uFE00b", "a\u00A0b", "a\u3000b", "<img src=x onerror=1>")
 	baseURLs := check(registrymsg.ValidBaseURL, "http://gitlab.example", "https://gitlab.example", "http://100.64.0.10:18082", "http://gitlab.example:8080",
 		"http://localhost", "http://[::1]", "http://[::1]:8080", "http://[2001:db8::1]", "http://[2001:DB8::1]", "http://gitlab.example/", "http://gitlab.example/x",
 		"http://gitlab.example?x=1", "http://gitlab.example#f", "http://u@gitlab.example", "http://u:p@gitlab.example", "HTTP://gitlab.example",
@@ -521,6 +521,23 @@ func checkProviderConstants(t *testing.T) {
 				t.Errorf("%s.%s empty: Go accepts=%v, browser rule says %v", action, name, err == nil, allowed)
 			}
 		}
+	}
+	// The fixed lines of the server's preview that the browser's gate counts: exact lines, not marks.
+	lineOf := func(ai bool, publish string) (aiLine, pubLine string) {
+		c := registryChange{Action: "create_project", Subject: "ab", Fields: map[string]any{"provider": "gl", "group_path": "team", "template": "go", "description": "",
+			"ai_context": ai, "publish": publish, "deploy_key_sha256": strings.Repeat("a", 64)}}
+		pv := createPreview(c, "SHA256:x")
+		return pv[3], pv[4]
+	}
+	aiOff, pubWrite := lineOf(false, "write")
+	aiOn, pubRead := lineOf(true, "read")
+	for name, want := range map[string]string{"PREVIEW_AI_OFF": aiOff, "PREVIEW_AI_ON": aiOn, "PREVIEW_PUBLISH_WRITE": pubWrite, "PREVIEW_PUBLISH_READ": pubRead} {
+		if got := jsString(name); got != want {
+			t.Errorf("%s %q != the server's line %q", name, got, want)
+		}
+	}
+	if got := jsInt("GROUP_SETTLE_MS"); got < 200 || got > 2000 {
+		t.Errorf("GROUP_SETTLE_MS %d", got)
 	}
 	// Timeouts: longer than orchd's worst case for each call.
 	if got := jsInt("CREATE_APPLY_TIMEOUT_MS"); got < 130_000 {

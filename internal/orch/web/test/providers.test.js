@@ -254,7 +254,12 @@ test('TestChangeVectorsMatchGoForNewActions', async () => {
   };
   agree(P.validName, VEC.names, 'name');
   agree(P.validGroupPath, VEC.group_paths, 'group path');
-  agree(P.validDescription, VEC.descriptions, 'description');
+  // descriptions: Go's rule AND the page's own text rule (findHostile): the browser may be stricter than Go, never looser
+  const { findHostile } = await import('../static/render.js');
+  for (const v of VEC.descriptions) {
+    assert.equal(P.validDescription(v.value), v.ok && findHostile(v.value) === null, 'description: ' + JSON.stringify(v.value));
+  }
+  assert.ok(VEC.descriptions.some((v) => v.ok && findHostile(v.value) !== null), 'vectors where Go accepts and the page refuses exist');
   agree(P.validBaseUrl, VEC.base_urls.filter((v) => !v.value.includes('[')), 'base_url');
   agree(P.validSshUrl, VEC.ssh_urls.filter((v) => !v.value.includes('[')), 'ssh_url');
   for (const v of [...VEC.base_urls.filter((x) => x.value.includes('[')), ...VEC.ssh_urls.filter((x) => x.value.includes('['))]) {
@@ -1109,4 +1114,208 @@ test('TestNoClockAndConstants', () => {
   assert.equal(P.PROVIDER_ID_RE.test('a'), true);
   assert.deepEqual(P.TEMPLATES, ['basic', 'go']);
   assert.deepEqual(P.PUBLISH_MODES, ['write', 'read']);
+});
+
+// ---- fix round 1 (C5 review) ----------------------------------------------------
+
+const AI_ON_LINE = '[중요] 이 프로젝트의 파일 내용이 외부 AI 서비스(OpenAI)로 전송될 수 있게 허용합니다. AI 계획 기능을 쓰면 요구사항과 저장소의 일부 파일 내용이 서비스 밖으로 나갑니다';
+const AI_OFF_LINE = '이 프로젝트의 파일 내용은 AI 서비스로 전송되지 않습니다(전송 허용 꺼짐)';
+
+test('TestDescriptionRefusesWhatFindHostileRefuses', async () => {
+  const { findHostile } = await import('../static/render.js');
+  for (const ch of ['️', 'ㅤ', 'ᅟ', 'ᅠ', '͏', '᠋', '᠌', '᠍', '︀']) {
+    assert.notEqual(findHostile('a' + ch + 'b'), null, 'premise: findHostile refuses U+' + ch.codePointAt(0).toString(16));
+    assert.equal(P.validDescription('a' + ch + 'b'), false, 'validDescription refuses U+' + ch.codePointAt(0).toString(16));
+  }
+  assert.equal(P.validDescription('한글 😀 é'), true);
+  // the form refuses one before any proposal
+  const ctx = await mountProjects();
+  await openCreateForm(ctx, { ...GOOD_CREATE, desc: 'check ❤️' });
+  click(byLabel(ctx.root, '변경 내용 확인')[0]);
+  await sleep(10);
+  assert.match(text(byData(ctx.root, 'problem', 'form')[0]), /설명/);
+  assert.equal(posts(ctx, '/api/v1/projects/create/propose').length, 0);
+  assert.throws(() => P.canonicalChange('create_project', 'ab', { ...VEC.change.find((c) => c.name === 'create_project plain').fields, description: 'x️' }), { name: 'ChangeError' });
+});
+
+test('TestPreviewGateCountsOnlyFixedSentenceLines', async () => {
+  const descs = ['읽기: 문서', '쓰기: x', AI_ON_LINE, AI_OFF_LINE, '게시 권한 — 쓰기: 이 서버가 브랜치를 올릴 수 있는 배포 키로 등록합니다', '전송될 수 있게 허용합니다 AI 서비스로 전송되지 않습니다'];
+  for (const desc of descs) {
+    for (const [publish, ai] of [['write', false], ['read', true]]) {
+      const ctx = await mountProjects();
+      await toCreateConfirm(ctx, { ...GOOD_CREATE, desc, publish, ai });
+      await waitSignable(ctx);
+      assert.equal(byData(ctx.root, 'warn', 'mismatch').length, 0, desc.slice(0, 20) + ' ' + publish);
+    }
+  }
+  // the gate still catches a server that lies about the AI switch or the publish right (exact lines)
+  for (const [name, fn] of Object.entries({
+    'ai line says on while off': async (b) => { const r = await proposeFor(b); return { ...r, preview: r.preview.map((x) => (x === AI_OFF_LINE ? AI_ON_LINE : x)) }; },
+    'publish line says read while write': async (b) => { const r = await proposeFor(b); return { ...r, preview: r.preview.map((x) => x.replace('게시 권한 — 쓰기:', '게시 권한 — 읽기:')) }; },
+    'two ai lines': async (b) => { const r = await proposeFor(b); return { ...r, preview: [...r.preview, AI_OFF_LINE] }; },
+  })) {
+    const c = await mountProjects({ 'POST /api/v1/projects/create/propose': fn });
+    await toCreateConfirm(c);
+    assert.equal(byData(c.root, 'warn', 'mismatch').length, 1, name);
+  }
+});
+
+test('TestUnknownOutcomeForStatusZeroAndGatewayAndNoCode5xx', async () => {
+  const cases = [[0, 'network'], [0, 'timeout'], [500, 'http_500'], [502, 'http_502'], [503, 'http_503'], [504, 'http_504'], [502, 'bad_gateway'], [500, 'internal']];
+  for (const [status, code] of cases) {
+    const err = () => { throw apiError(status, code, SECRET); };
+    // create
+    const c = await mountProjects({ 'POST /api/v1/projects/create/apply': err });
+    await toCreateConfirm(c);
+    await waitSignable(c);
+    const reg = c.calls.filter((x) => x === '/api/v1/projects/registry').length;
+    const prov = c.calls.filter((x) => x === '/api/v1/providers').length;
+    click(signBtn(c));
+    await until(() => byData(c.root, 'result', 'error').length === 1, 'create ' + status + code);
+    assert.ok(text(c.root).includes(P.ERROR_TEXT.outcome_unknown), status + code);
+    assert.ok(!text(c.root).includes('적용되지 않았습니다'), 'no "not applied" claim: ' + status + code);
+    await until(() => c.calls.filter((x) => x === '/api/v1/projects/registry').length > reg && c.calls.filter((x) => x === '/api/v1/providers').length > prov, 'lists re-read ' + status + code);
+    assert.equal(posts(c, '/api/v1/projects/create/apply').length, 1);
+    // provider write
+    const p = await mountProviders({ 'POST /api/v1/providers/apply': err });
+    await openProviderForm(p, GOOD_PROVIDER);
+    click(byLabel(p.root, '변경 내용 확인')[0]);
+    await waitSignable(p);
+    const pn = p.calls.filter((x) => x === '/api/v1/providers').length;
+    click(signBtn(p));
+    await until(() => byData(p.root, 'result', 'error').length === 1, 'provider ' + status + code);
+    assert.ok(text(p.root).includes(P.ERROR_TEXT.outcome_unknown) && !text(p.root).includes('적용되지 않았습니다'), status + code);
+    await until(() => p.calls.filter((x) => x === '/api/v1/providers').length > pn, 'providers re-read');
+    // group write
+    const g = await mountProjects({ 'POST /api/v1/providers/apply': err });
+    await openCreateForm(g);
+    click(byLabel(g.root, '새 그룹 만들기')[0]);
+    await until(() => byId(g.root, 'cg-name'), 'group form');
+    byId(g.root, 'cg-name').value = 'grp-x';
+    fire(byId(g.root, 'cg-name'), 'input');
+    click(byLabel(g.root, '변경 내용 확인')[0]);
+    await waitSignable(g);
+    const gn = g.calls.filter((x) => x === '/api/v1/providers').length;
+    click(signBtn(g));
+    await until(() => byData(g.root, 'result', 'error').length === 1, 'group ' + status + code);
+    assert.ok(text(g.root).includes(P.ERROR_TEXT.outcome_unknown) && !text(g.root).includes('적용되지 않았습니다'), status + code);
+    await until(() => g.calls.filter((x) => x === '/api/v1/providers').length > gn, 'group: providers re-read');
+  }
+  // a code in the table keeps its own sentence (known refusal), an unknown 4xx claims nothing
+  assert.equal(P.failureText(apiError(503, 'broker_unavailable', SECRET)), P.ERROR_TEXT.broker_unavailable);
+  for (const st of [400, 403, 404, 409, 418]) {
+    assert.ok(!P.failureText(apiError(st, 'something_new', SECRET)).includes('적용되지 않았습니다'), 'unknown ' + st);
+  }
+  assert.equal(P.isUnknown(apiError(502, 'http_502')), true);
+  assert.equal(P.isUnknown(apiError(503, 'broker_unavailable')), false);
+  assert.equal(P.isUnknown(apiError(409, 'project_name_taken')), false);
+});
+
+test('TestGroupListFailureRetryButtonAndDebouncedProviderSelect', async () => {
+  let n = 0;
+  const ctx = await mountProjects({ '/api/v1/providers/gl/groups': () => { n++; if (n === 1) throw apiError(503, 'broker_unavailable', SECRET); return GROUPS; } });
+  click(byLabel(ctx.root, '새 프로젝트 만들기')[0]);
+  await until(() => byId(ctx.root, 'cp-name') && text(ctx.root).includes(P.ERROR_TEXT.broker_unavailable), 'group error');
+  assert.ok(!text(ctx.root).includes('SERVER-WORDS'));
+  assert.equal(byLabel(ctx.root, '다시 불러오기').length, 1);
+  const retry = byLabel(ctx.root, '다시 불러오기')[0];
+  click(retry); click(retry);
+  await until(() => byTag(byId(ctx.root, 'cp-group'), 'option').length > 1, 'groups after retry');
+  assert.equal(n, 2, 'one more call (a double click is one call)');
+  assert.equal(byLabel(ctx.root, '다시 불러오기').length, 0);
+  // provider select: arrow keys fire many change events: one call after the select settles
+  const sel = byId(ctx.root, 'cp-provider');
+  const before = ctx.calls.filter((c) => c === '/api/v1/providers/gl2/groups').length;
+  for (let i = 0; i < 4; i++) { sel.value = i % 2 ? 'gl' : 'gl2'; fire(sel, 'change'); }
+  sel.value = 'gl2';
+  fire(sel, 'change');
+  assert.equal(ctx.calls.filter((c) => c === '/api/v1/providers/gl2/groups').length, before, 'no call per change event');
+  await sleep(P.GROUP_SETTLE_MS + 150);
+  assert.equal(ctx.calls.filter((c) => c === '/api/v1/providers/gl2/groups').length, before + 1, 'one call after the settle');
+  // blur commits at once
+  const gl = ctx.calls.filter((c) => c === '/api/v1/providers/gl/groups').length;
+  sel.value = 'gl';
+  fire(sel, 'change');
+  fire(sel, 'blur');
+  await sleep(30);
+  assert.equal(ctx.calls.filter((c) => c === '/api/v1/providers/gl/groups').length, gl + 1, 'blur loads now');
+  await sleep(P.GROUP_SETTLE_MS + 150);
+  assert.equal(ctx.calls.filter((c) => c === '/api/v1/providers/gl/groups').length, gl + 1, 'and the pending timer does not call again');
+});
+
+test('TestBusyHeldUntilProposeAndSignerSettle', async () => {
+  const seen = [];
+  const ctx = ctxFor();
+  const flow = P.makeFlow(ctx, { onChange: () => { if (flow.phase === 'confirm' && !flow.signer && flow.problems.length === 0) seen.push(flow.busy); }, onResult: async () => {} });
+  const sent = { action: 'delete_provider', subject: 'gl2', fields: {} };
+  const first = flow.propose(sent);
+  const second = flow.propose(sent); // a second call while the first is out
+  await Promise.all([first, second]);
+  await until(() => !!flow.signer || !!flow.signerNote, 'signer settled');
+  assert.equal(posts(ctx, '/api/v1/providers/propose').length, 1, 'one propose');
+  assert.ok(seen.length > 0 && seen.every((b) => b === true), 'busy stays set while the signer is resolved: ' + seen);
+  assert.equal(flow.busy, false, 'and is released after');
+});
+
+test('TestOrphanNoticesDistinguishUnrecordedAndInvalidDetail', async () => {
+  const run = async (detail) => {
+    const c = await mountProjects({ 'POST /api/v1/projects/create/apply': () => { throw apiError(502, 'create_partial', SECRET, { detail }); } });
+    await toCreateConfirm(c);
+    await waitSignable(c);
+    click(signBtn(c));
+    await until(() => byData(c.root, 'result', 'error').length === 1, 'partial');
+    return text(c.root);
+  };
+  const d = CREATE_PARTIAL.error.detail;
+  const NOT_LISTED = '이 목록에 남지 않았습니다. 아래 경로를 직접 기록해 두세요.';
+  assert.ok(!(await run(d)).includes(NOT_LISTED), 'recorded: no such notice');
+  assert.ok((await run({ ...d, orphan_recorded: false })).includes(NOT_LISTED));
+  assert.ok((await run({ ...d, orphan_dropped: true })).includes(NOT_LISTED));
+  const invalid = await run({ ...d, project: 'Bad Path' });
+  assert.ok(invalid.includes('위치 정보를 확인할 수 없'), 'invalid detail says so');
+  assert.ok(!invalid.includes('GitLab이 프로젝트 ID를 확인해 주지 않았습니다'));
+  const unconfirmed = await run({ ...d, project_id: null, step: 'project' });
+  assert.ok(unconfirmed.includes('GitLab이 프로젝트 ID를 확인해 주지 않았습니다'), 'GitLab did not confirm an id');
+  assert.ok(!unconfirmed.includes('위치 정보를 확인할 수 없'));
+});
+
+test('TestConfirmationsShowProviderAddressKindAndKeyHint', async () => {
+  const ctx = await mountProjects();
+  await toCreateConfirm(ctx);
+  await waitSignable(ctx);
+  const f = facts(ctx);
+  assert.ok(f.provider_url.includes('http://gitlab.example:18082') && /목록|이 화면/.test(f.provider_url) === false || f.provider_url.includes('gitlab.example'), f.provider_url);
+  assert.match(text(byData(ctx.root, 'field', 'provider_url')[0]), /제공자 목록 기준/);
+  assert.ok(text(ctx.root).includes('ssh-keygen -l -f'), 'hint to compare on the server');
+  assert.ok(f.key_comment.includes('orchd@deploy'), 'the .pub comment tail');
+  assert.ok(f.key_prefix.length > 60, 'a longer prefix');
+  // group confirmation
+  const g = await mountProjects();
+  await openCreateForm(g);
+  click(byLabel(g.root, '새 그룹 만들기')[0]);
+  await until(() => byId(g.root, 'cg-name'), 'group form');
+  byId(g.root, 'cg-name').value = 'grp-y';
+  fire(byId(g.root, 'cg-name'), 'input');
+  click(byLabel(g.root, '변경 내용 확인')[0]);
+  await waitSignable(g);
+  assert.ok(facts(g).provider_url.includes('gitlab.example:18082'));
+  // set_provider shows the kind; delete shows the id and says the address is from the list
+  const p = await mountProviders();
+  await openProviderForm(p, GOOD_PROVIDER);
+  click(byLabel(p.root, '변경 내용 확인')[0]);
+  await waitSignable(p);
+  assert.ok(facts(p).kind.includes('gitlab'));
+  const d = await mountProviders();
+  click(byLabel(rowOf(d, 'gl2-admin'), '삭제')[0]);
+  await waitSignable(d);
+  assert.ok(facts(d).id.includes('gl2') && /목록 기준/.test(facts(d).base_url));
+});
+
+test('TestNavIconOfProvidersIsDistinctFromServerStatus', () => {
+  const html = src('index.html');
+  const icon = (nav) => (new RegExp('data-nav="' + nav + '"><svg[^>]*>([^]*?)</svg>').exec(html) || [])[1];
+  const a = icon('providers');
+  const b = icon('ops');
+  assert.ok(a && b && a !== b);
+  assert.ok(!a.includes('<rect'), 'not the two stacked boxes of 서버 상태');
 });

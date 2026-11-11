@@ -27,7 +27,7 @@ import {
   PROVIDER_ID_RE, TEMPLATES, PUBLISH_MODES, MAX_GROUP_DEPTH, PARTIAL_STEPS, ACTION_CREATE_GROUP, ACTION_CREATE_PROJECT,
   validName, validGroupPath, validDescription, validProjectPath, validBaseUrl, makeFlow, confirmPanel, li as factItem, stepStates, stepList, stepLabel,
   partialInfo, orphanBlock, ORPHAN_NOTICE, ERROR_TEXT as W3C_ERROR_TEXT, failureText as w3cFailureText, isUnknown, cloneText, CLONE_TEXT,
-  CLONE_TIMEOUT_MS, PROVIDER_TIMEOUT_MS, FLOW_TEXT,
+  CLONE_TIMEOUT_MS, PROVIDER_TIMEOUT_MS, FLOW_TEXT, GROUP_SETTLE_MS,
 } from './providers.js';
 
 // --- constants shared with the server (TestConstantsAgreeWithWeb compares them) ---
@@ -55,7 +55,7 @@ const MAX_PREVIEW_CHARS = 600;
 const MAX_KINDS = 64;
 const MAX_GROUPS = 500;
 const NAME_MAX_CHARS = 40;
-const KEY_PREFIX_CHARS = 48;
+const KEY_PREFIX_CHARS = 64;
 const TEMPLATE_TEXT = { basic: 'basic — README, .gitignore, .aigate.yml', go: 'go — Go 모듈, main.go, 시험, .aigate.yml' };
 const PUBLISH_TEXT = { write: '쓰기 — 이 서버가 브랜치를 올릴 수 있음', read: '읽기 — 읽기 전용' };
 
@@ -305,6 +305,7 @@ export function projectsView(ctx) {
   };
   // W3c: a new group or project (providers.js holds the signed-change flow).
   const cp = { providers: [], f: null, g: null, groups: null, truncated: false, groupsErr: null, groupsSeq: 0, which: 'create', clone: null, cloneBusy: false, pendingGroup: null };
+  let groupTimer = null; // the settle timer of the provider select
   const flow = makeFlow(ctx, { onChange: onFlowChange, onResult: onFlowResult });
   let signerP = null;
   let expiry = null; // {rows, warn}: the tokens that are due, for the banner on top of the list
@@ -363,6 +364,10 @@ export function projectsView(ctx) {
     cp.g = null;
     cp.groups = null;
     cp.groupsSeq++;
+    if (groupTimer !== null) {
+      clearTimeout(groupTimer);
+      groupTimer = null;
+    }
     cp.clone = null;
     st.step = 'list';
     st.note = null;
@@ -573,6 +578,7 @@ export function projectsView(ctx) {
       const g = result.ok && isObj(result.data) ? result.data.group : null;
       const made = isObj(g) && validGroupPath(g.path) ? g.path : (sent.fields.parent_path === '' ? '' : sent.fields.parent_path + '/') + sent.fields.path;
       await loadGroups(sent.subject, result.ok ? made : null);
+      if (!result.ok && result.unknown) await reloadProviders();
       if (result.ok && st.step === 'x_result') {
         flow.reset();
         st.step = 'cp_form';
@@ -635,7 +641,7 @@ export function projectsView(ctx) {
 
   function buildCreateForm() {
     const f = {};
-    f.provider = el('select', { id: 'cp-provider', 'data-focus-key': 'provider', on: { change: () => { loadGroups(f.provider.value, null); } } },
+    f.provider = el('select', { id: 'cp-provider', 'data-focus-key': 'provider', on: { change: scheduleGroups, blur: commitGroups } },
       cp.providers.map((p) => el('option', { value: p.id }, inline(p.id, 64) + ' — ' + inline(p.base_url, 80))));
     f.provider.value = cp.providers[0].id;
     f.group = el('select', { id: 'cp-group', 'data-focus-key': 'group' }, [el('option', { value: '' }, '그룹을 불러오는 중…')]);
@@ -659,6 +665,32 @@ export function projectsView(ctx) {
     if (text) f.problem.append(text);
     f.problem.hidden = !text;
   };
+
+  // scheduleGroups: the select fired a change (an arrow key fires one each). The old
+  // list is dropped at once, the GitLab call is made once the select is quiet.
+  function scheduleGroups() {
+    cp.groups = null;
+    cp.groupsErr = null;
+    cp.groupsSeq++;
+    fillGroupSelect(null);
+    if (groupTimer !== null) clearTimeout(groupTimer);
+    groupTimer = setTimeout(() => {
+      groupTimer = null;
+      if (!gone() && cp.f) loadGroups(cp.f.provider.value, null);
+    }, GROUP_SETTLE_MS);
+  }
+
+  function commitGroups() {
+    if (groupTimer === null) return;
+    clearTimeout(groupTimer);
+    groupTimer = null;
+    if (cp.f && !gone()) loadGroups(cp.f.provider.value, null);
+  }
+
+  function retryGroups() {
+    if (!cp.f || !cp.groupsErr) return; // a second click on a button that is already gone
+    loadGroups(cp.f.provider.value, null);
+  }
 
   // loadGroups reads the groups of a provider from GitLab (a call that costs a
   // slot of the hourly limit and is never waited out or repeated on its own).
@@ -844,7 +876,10 @@ export function projectsView(ctx) {
       el('div', { class: 'form' }, [
         field('제공자', 'cp-provider', f.provider),
         field('그룹', 'cp-group', f.group, cp.groupsErr ? cp.groupsErr : cp.truncated ? '그룹이 많아 일부만 보입니다. 찾는 그룹이 없으면 GitLab에서 확인하세요.' : 'GitLab에 실제로 물어 받은 그룹입니다(프로젝트를 만들 권한이 있는 것만).'),
-        el('div', { class: ['row', 'rowgap'] }, [f.newGroup]),
+        el('div', { class: ['row', 'rowgap'] }, [
+          f.newGroup,
+          cp.groupsErr ? [' ', el('button', { type: 'button', class: 'btn', 'data-focus-key': 'regroups', on: { click: retryGroups } }, '다시 불러오기')] : null,
+        ]),
         field('프로젝트 이름', 'cp-name', f.name, '소문자·숫자·하이픈, 2~40자. GitLab 프로젝트 이름·프로젝트 ID·폴더 이름이 모두 이것입니다. GitLab이 예약한 이름은 GitLab이 거부할 수 있습니다.'),
         field('설명(선택)', 'cp-desc', f.desc, '200자 이내.'),
         field('템플릿', 'cp-template', f.template, '코드에 고정된 파일들이 첫 커밋으로 들어갑니다.'),
@@ -884,6 +919,12 @@ export function projectsView(ctx) {
     ]);
   }
 
+  // The provider's GitLab address from this page's own provider list (not from the server's proposal).
+  function providerUrlFact(id) {
+    const prov = cp.providers.find((p) => p.id === id);
+    return factItem('제공자 GitLab 주소 (제공자 목록 기준)', prov ? inline(prov.base_url, 200) : '(목록에 없음)', { 'data-field': 'provider_url' });
+  }
+
   function renderXConfirm() {
     const s = flow.sent;
     if (s.action === ACTION_CREATE_GROUP) {
@@ -892,6 +933,7 @@ export function projectsView(ctx) {
         lead: '아래 내용이 전부입니다. 서명하면 GitLab에 그룹이 바로 만들어집니다.',
         facts: [
           factItem('제공자', s.subject, { 'data-field': 'provider' }),
+          providerUrlFact(s.subject),
           factItem('그룹 이름', s.fields.name, { 'data-field': 'name' }),
           factItem('그룹 경로', s.fields.path, { 'data-field': 'path' }),
           factItem('상위 그룹', s.fields.parent_path === '' ? '(최상위)' : s.fields.parent_path, { 'data-field': 'parent_path' }),
@@ -905,6 +947,7 @@ export function projectsView(ctx) {
     const yn = (b) => (b ? '예' : '아니오');
     const factsList = [
       factItem('제공자', s.fields.provider, { 'data-field': 'provider' }),
+      providerUrlFact(s.fields.provider),
       factItem('그룹 경로', s.fields.group_path, { 'data-field': 'group_path' }),
       factItem('프로젝트 이름', s.subject, { 'data-field': 'name' }),
       factItem('템플릿', f.template, { 'data-field': 'template' }),
@@ -916,6 +959,7 @@ export function projectsView(ctx) {
       factsList.push(
         factItem('배포 키 지문(ssh-keygen -l 형식)', key.fingerprint, { 'data-field': 'fingerprint' }),
         factItem('공개 키(.pub) 앞부분', key.line.slice(0, KEY_PREFIX_CHARS) + '…', { 'data-field': 'key_prefix' }),
+        factItem('공개 키(.pub) 주석', key.line.split(' ').slice(2).join(' ') || '(없음)', { 'data-field': 'key_comment' }),
         factItem('서명에 묶이는 키 해시(앞 16자)', key.hash.slice(0, 16) + '…', { 'data-field': 'key_hash' }),
       );
     }
@@ -923,7 +967,10 @@ export function projectsView(ctx) {
       title: '변경 내용 확인',
       lead: '아래 내용이 전부입니다. 서명하면 GitLab에 프로젝트가 바로 만들어지고, 이 도구는 만든 것을 삭제하지 못합니다.',
       facts: factsList,
-      extra: [f.ai_context ? el('div', { class: 'trunc', 'data-emph': 'ai-on', role: 'note' }, '[중요] AI 전송 허용: 예. 이 프로젝트의 파일 내용이 외부 AI 서비스(OpenAI)로 전송될 수 있습니다.') : null],
+      extra: [
+        key ? el('p', { class: 'note', 'data-hint': 'fingerprint' }, '이 지문이 서버의 배포 키와 같은지 서버에서 ssh-keygen -l -f <.pub 파일 경로> 로 직접 비교해 확인하세요. 이 화면은 서버가 보낸 공개 키에서 지문을 스스로 계산했습니다.') : null,
+        f.ai_context ? el('div', { class: 'trunc', 'data-emph': 'ai-on', role: 'note' }, '[중요] AI 전송 허용: 예. 이 프로젝트의 파일 내용이 외부 AI 서비스(OpenAI)로 전송될 수 있습니다.') : null,
+      ],
       onSign: () => flow.sign(),
       onCancel: backFromFlow,
     });

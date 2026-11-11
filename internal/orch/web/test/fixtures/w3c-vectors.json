@@ -371,6 +371,34 @@
       "ok": true
     },
     {
+      "value": "a️b",
+      "ok": true
+    },
+    {
+      "value": "aㅤb",
+      "ok": true
+    },
+    {
+      "value": "aᅟb",
+      "ok": true
+    },
+    {
+      "value": "aᅠb",
+      "ok": true
+    },
+    {
+      "value": "a͏b",
+      "ok": true
+    },
+    {
+      "value": "a᠋b",
+      "ok": true
+    },
+    {
+      "value": "a︀b",
+      "ok": true
+    },
+    {
       "value": "a b",
       "ok": true
     },

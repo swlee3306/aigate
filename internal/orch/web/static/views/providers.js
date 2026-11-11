@@ -66,9 +66,16 @@ const MAX_KEY_LINE = 1300;
 const MAX_ROWS = 200;
 const KEY_PREFIX_CHARS = 48;
 
-// The server's AI sentences (internal/orch/api createPreview), as in projects.js.
-const AI_ON_MARK = '전송될 수 있게 허용합니다';
-const AI_OFF_MARK = 'AI 서비스로 전송되지 않습니다';
+// The server's FIXED preview lines (internal/orch/api createPreview), compared whole:
+// a description that happens to contain such words is on its own "설명:" line and
+// can neither fake nor break the gate. TestConstantsAgreeWithWeb pins them.
+export const PREVIEW_AI_ON = '[중요] 이 프로젝트의 파일 내용이 외부 AI 서비스(OpenAI)로 전송될 수 있게 허용합니다. AI 계획 기능을 쓰면 요구사항과 저장소의 일부 파일 내용이 서비스 밖으로 나갑니다';
+export const PREVIEW_AI_OFF = '이 프로젝트의 파일 내용은 AI 서비스로 전송되지 않습니다(전송 허용 꺼짐)';
+export const PREVIEW_PUBLISH_WRITE = '게시 권한 — 쓰기: 이 서버가 브랜치를 올릴 수 있는 배포 키로 등록합니다';
+export const PREVIEW_PUBLISH_READ = '게시 권한 — 읽기: 배포 키는 읽기 전용으로 등록합니다(이 서버는 브랜치를 올리지 못합니다)';
+// The provider select fires a change per arrow key: the group list (a GitLab call
+// with an hourly limit) is read once the select has been quiet this long, or on blur.
+export const GROUP_SETTLE_MS = 400;
 
 const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 const isObj = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
@@ -106,7 +113,10 @@ const BAD_DESC_CHAR = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Co}\p{Cs}�]/u;
 export function validDescription(s) {
   if (typeof s !== 'string') return false;
   if ([...s].length > MAX_DESCRIPTION_RUNES) return false;
-  return !BAD_DESC_CHAR.test(s);
+  // Also what this page itself refuses to show on a signing screen (variation selectors,
+  // Hangul fillers, combining grapheme joiner, ...): Go is looser here, the page is stricter,
+  // so the form never makes a proposal whose own preview the page would then reject.
+  return !BAD_DESC_CHAR.test(s) && findHostile(s) === null;
 }
 
 const HOST_LABEL_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
@@ -310,8 +320,8 @@ export const ERROR_TEXT = {
 };
 
 const STATUS_TEXT = {
-  403: '이 변경을 할 권한이 없습니다. 변경은 적용되지 않았습니다.',
-  404: '찾을 수 없습니다. 변경은 적용되지 않았습니다.',
+  403: '이 변경을 할 권한이 없습니다.',
+  404: '찾을 수 없습니다. 목록을 새로 읽어 확인하세요.',
   429: ERROR_TEXT.project_rate_limited,
 };
 
@@ -323,12 +333,19 @@ export function failureText(err) {
   const st = err && typeof err.status === 'number' ? err.status : 0;
   if (has(STATUS_TEXT, st)) return STATUS_TEXT[st];
   if (st >= 500) return '서버에서 오류가 발생했습니다. 변경이 적용되었는지 목록에서 확인하세요.';
-  return '요청을 처리하지 못했습니다. 변경은 적용되지 않았습니다.';
+  return '요청을 처리하지 못했습니다. 목록을 새로 읽어 확인하세요.';
 }
 
-// isUnknown: the call may or may not have changed something (timeout, network,
-// the server's outcome_unknown). Never retried, never signed again.
-export const isUnknown = (err) => !!err && (err.status === 0 || err.code === 'outcome_unknown');
+// isUnknown: the call may or may not have changed something: a timeout or network
+// failure (status 0), the server's outcome_unknown, or a server/gateway error
+// (5xx) that carries no code of the table (a proxy answered, not orchd). Never
+// retried, never signed again; the page re-reads its lists and claims nothing.
+export const isUnknown = (err) => {
+  if (!err) return false;
+  if (err.status === 0 || err.code === 'outcome_unknown') return true;
+  const code = typeof err.code === 'string' ? err.code : '';
+  return typeof err.status === 'number' && err.status >= 500 && !has(ERROR_TEXT, code);
+};
 
 // CLONE_TEXT: what a clone result or a failed clone call says, by code.
 export const CLONE_TEXT = {
@@ -358,6 +375,7 @@ const TEXT = {
   noSigner: '로그인한 서명자의 활성 패스키를 찾지 못했습니다.',
   signersFailed: '패스키 목록을 불러오지 못했습니다. 잠시 후 다시 시도하세요.',
   connect: '서버에 연결하지 못했습니다. 아무것도 서명하거나 보내지 않았습니다.',
+  proposeFailed: '변경 내용을 만들지 못했습니다. 아무것도 서명하거나 보내지 않았습니다. 잠시 후 다시 시도하세요.',
   aiOn: 'AI 전송 허용: 예. 이 프로젝트의 파일 내용이 외부 AI 서비스(OpenAI)로 전송될 수 있습니다.',
   waiting: '패스키 확인을 기다리는 중…',
   sending: '서버로 변경을 보내는 중…',
@@ -405,29 +423,35 @@ export function stepList(states) {
 // server's `detail` is checked; if anything is off the page shows what it sent
 // itself (the group path and the name) and says it cannot tell the step.
 export function partialInfo(err, sent) {
-  const fallback = { provider: sent.fields.provider, project: sent.fields.group_path + '/' + sent.subject, projectId: null, step: null, recorded: null, valid: false };
+  const fallback = { provider: sent.fields.provider, project: sent.fields.group_path + '/' + sent.subject, projectId: null, step: null, recorded: null, dropped: false, valid: false };
   const d = err && err.detail;
   if (!isObj(d)) return fallback;
   const idOk = d.project_id === null || (Number.isSafeInteger(d.project_id) && d.project_id > 0);
   if (typeof d.provider !== 'string' || !PROVIDER_ID_RE.test(d.provider) || typeof d.project !== 'string' || !validProjectPath(d.project) ||
-      !idOk || typeof d.step !== 'string' || !PARTIAL_STEPS.includes(d.step) || typeof d.orphan_recorded !== 'boolean') {
+      !idOk || typeof d.step !== 'string' || !PARTIAL_STEPS.includes(d.step) || typeof d.orphan_recorded !== 'boolean' || typeof d.orphan_dropped !== 'boolean') {
     return fallback;
   }
-  return { provider: d.provider, project: d.project, projectId: d.project_id, step: d.step, recorded: d.orphan_recorded, valid: true };
+  return { provider: d.provider, project: d.project, projectId: d.project_id, step: d.step, recorded: d.orphan_recorded, dropped: d.orphan_dropped, valid: true };
 }
 
 export const ORPHAN_NOTICE = 'GitLab에서 직접 지우세요. 이 도구는 삭제하지 않습니다. 같은 이름으로 다시 만들려면 먼저 GitLab에서 그 프로젝트를 정리해야 합니다.';
 
 // orphanBlock shows one half-made project: the path and id as plain text.
+export const NOT_LISTED_NOTICE = '이 목록에 남지 않았습니다. 아래 경로를 직접 기록해 두세요.';
+export const DETAIL_INVALID_NOTICE = '서버가 알려 준 위치 정보를 확인할 수 없어(형식이 맞지 않음) 이 화면이 보낸 값으로 보여 드립니다. 실제 위치는 GitLab에서 확인하세요.';
+
 export function orphanBlock(info) {
+  const notListed = info.valid && (info.recorded === false || info.dropped === true);
   return el('div', { class: 'trunc', role: 'note', 'data-orphan': 'block' }, [
+    notListed ? el('p', { 'data-orphan': 'not-listed' }, NOT_LISTED_NOTICE) : null,
+    info.valid ? null : el('p', { 'data-orphan': 'invalid' }, DETAIL_INVALID_NOTICE),
     el('p', {}, [
       '이 프로젝트가 GitLab에 만들어졌을 수 있습니다(일부만): ',
       el('span', { class: 'mono', 'data-orphan': 'project' }, info.project),
     ]),
     el('p', {}, [
       '프로젝트 ID: ',
-      el('span', { class: 'mono', 'data-orphan': 'project_id' }, info.projectId === null ? '알 수 없음(GitLab이 확인해 주지 않았습니다)' : String(info.projectId)),
+      el('span', { class: 'mono', 'data-orphan': 'project_id' }, info.projectId !== null ? String(info.projectId) : info.valid ? '알 수 없음(GitLab이 프로젝트 ID를 확인해 주지 않았습니다)' : '알 수 없음(서버가 알려 준 정보를 확인할 수 없었습니다)'),
     ]),
     el('p', {}, ORPHAN_NOTICE),
   ]);
@@ -504,11 +528,11 @@ async function analyze(sent, resp) {
   } else {
     if (!mentions(sent, full, key).every((needle) => needle !== '' && pv.some((x) => x.includes(needle)))) problems.push('preview_values');
     if (sent.action === ACTION_CREATE_PROJECT) {
-      const on = pv.filter((x) => x.includes(AI_ON_MARK)).length;
-      const off = pv.filter((x) => x.includes(AI_OFF_MARK)).length;
+      const on = pv.filter((x) => x === PREVIEW_AI_ON).length;
+      const off = pv.filter((x) => x === PREVIEW_AI_OFF).length;
       if (full.ai_context ? !(on === 1 && off === 0) : !(off === 1 && on === 0)) problems.push('preview_ai');
-      const w = pv.filter((x) => x.includes('쓰기:')).length;
-      const r = pv.filter((x) => x.includes('읽기:')).length;
+      const w = pv.filter((x) => x === PREVIEW_PUBLISH_WRITE).length;
+      const r = pv.filter((x) => x === PREVIEW_PUBLISH_READ).length;
       if (full.publish === 'write' ? !(w === 1 && r === 0) : !(r === 1 && w === 0)) problems.push('preview_publish');
     }
   }
@@ -574,8 +598,6 @@ export function makeFlow(ctx, cfg) {
         f.signerNote = TEXT.signersFailed;
       }
     }
-    if (gone() || f.sent !== sent || f.phase !== 'confirm') return;
-    changed();
   }
 
   // propose: false when a proposal is already out (a double click); the view
@@ -594,7 +616,8 @@ export function makeFlow(ctx, cfg) {
       if (gone() || my !== propSeq) return;
       f.busy = false;
       f.phase = 'idle';
-      f.note = { error: true, text: err && err.status === 0 ? TEXT.connect : failureText(err) };
+      const code = err && typeof err.code === 'string' ? err.code : '';
+      f.note = { error: true, text: err && err.status === 0 ? TEXT.connect : has(ERROR_TEXT, code) ? ERROR_TEXT[code] : TEXT.proposeFailed };
       changed();
       return;
     }
@@ -607,11 +630,19 @@ export function makeFlow(ctx, cfg) {
     f.sent = sent;
     f.resp = resp;
     f.phase = 'confirm';
-    f.busy = false;
     f.signer = null;
     f.signerNote = null;
+    if (f.problems.length > 0) {
+      f.busy = false;
+      changed();
+      return;
+    }
+    // busy stays set until the signer is resolved too: no second proposal in between
     changed();
-    if (f.problems.length === 0) await resolveSignerOnce(sent);
+    await resolveSignerOnce(sent);
+    if (gone() || my !== propSeq) return;
+    f.busy = false;
+    changed();
   };
 
   f.canSign = () => f.phase === 'confirm' && !f.busy && f.problems.length === 0 && !!f.signer && !!f.resp && supported();
@@ -997,6 +1028,7 @@ export function providersView(ctx) {
       const change = (k, oldV, newV) => (old && oldV !== newV ? oldV + ' → ' + newV : newV);
       factsList = [
         li('제공자 id', s.subject, { 'data-field': 'id' }),
+        li('종류', s.fields.kind, { 'data-field': 'kind' }),
         li('GitLab 주소', change('base_url', old && old.base_url, s.fields.base_url), { 'data-field': 'base_url' }),
         li('ssh 주소', change('ssh_url', old && old.ssh_url, s.fields.ssh_url), { 'data-field': 'ssh_url' }),
         li('사용할 토큰', change('token_ref', old && old.token_ref, s.fields.token_ref), { 'data-field': 'token_ref' }),
@@ -1005,8 +1037,8 @@ export function providersView(ctx) {
       const row = (st.view && st.view.row) || {};
       factsList = [
         li('삭제할 제공자 id', s.subject, { 'data-field': 'id' }),
-        li('GitLab 주소', inline(row.base_url, 200), { 'data-field': 'base_url' }),
-        li('ssh 주소', inline(row.ssh_url, 200), { 'data-field': 'ssh_url' }),
+        li('GitLab 주소(목록 기준)', inline(row.base_url, 200), { 'data-field': 'base_url' }),
+        li('ssh 주소(목록 기준)', inline(row.ssh_url, 200), { 'data-field': 'ssh_url' }),
       ];
     }
     return confirmPanel(flow, {
