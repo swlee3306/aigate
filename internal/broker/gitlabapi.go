@@ -627,18 +627,28 @@ func printable(s string) bool {
 type ProjectInfo struct {
 	ID                int64
 	PathWithNamespace string
+	// DefaultBranch is the project's default branch when GitLab names one that
+	// fits the branch rule ("" when absent, e.g. on an empty project).
+	DefaultBranch string
 }
 
 type projectJSON struct {
 	ID                *int64  `json:"id"`
 	PathWithNamespace *string `json:"path_with_namespace"`
+	DefaultBranch     *string `json:"default_branch"`
 }
+
+var branchNameRE = regexp.MustCompile(`^` + reBr + `$`)
 
 func (p projectJSON) ok(want string) (ProjectInfo, bool) {
 	if p.ID == nil || *p.ID <= 0 || p.PathWithNamespace == nil || *p.PathWithNamespace != want {
 		return ProjectInfo{}, false
 	}
-	return ProjectInfo{ID: *p.ID, PathWithNamespace: want}, true
+	info := ProjectInfo{ID: *p.ID, PathWithNamespace: want}
+	if p.DefaultBranch != nil && branchNameRE.MatchString(*p.DefaultBranch) {
+		info.DefaultBranch = *p.DefaultBranch
+	}
+	return info, true
 }
 
 func esc(path string) string { return strings.ReplaceAll(path, "/", "%2F") }
@@ -666,28 +676,40 @@ func postJSON(v any) []byte {
 // at most 5 pages). Entries whose path does not fit our shape are skipped
 // (the broker could not create a project there anyway).
 func (a *GitLabAPI) Groups(ctx context.Context) ([]Group, error) {
-	var out []Group
+	out, _, err := a.GroupsTruncated(ctx)
+	return out, err
+}
+
+// GroupsTruncated is Groups plus a flag that tells the list is not complete:
+// the 5-page cap was reached with a full last page, or an entry was skipped
+// because its path does not fit our name rules.
+func (a *GitLabAPI) GroupsTruncated(ctx context.Context) (out []Group, truncated bool, err error) {
 	for page := 1; page <= apiMaxPages; page++ {
 		q := url.Values{"min_access_level": {"40"}, "order_by": {"path"}, "sort": {"asc"},
 			"per_page": {strconv.Itoa(apiPerPage)}, "page": {strconv.Itoa(page)}}
 		raw, err := a.do(ctx, http.MethodGet, "/api/v4/groups", q, nil, http.StatusOK)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		var list []groupJSON
 		if !decodeFields(raw, &list) {
-			return nil, badResponse()
+			return nil, false, badResponse()
 		}
 		for _, g := range list {
 			if gr, ok := g.ok(); ok {
 				out = append(out, gr)
+			} else {
+				truncated = true
 			}
 		}
 		if len(list) < apiPerPage {
 			break
 		}
+		if page == apiMaxPages {
+			truncated = true
+		}
 	}
-	return out, nil
+	return out, truncated, nil
 }
 
 // Group returns the group at path (ErrNotFound when GitLab has none).

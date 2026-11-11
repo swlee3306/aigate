@@ -39,6 +39,10 @@ type HandlerFunc func(ctx context.Context, args json.RawMessage) (any, *OpError)
 type OpError struct {
 	Code    string
 	Message string
+	// Data is optional machine-readable detail sent as "detail" with the
+	// failure. Only create_partial carries one (PartialDetail: public values,
+	// never a token or provider text); the server drops it for every other code.
+	Data any
 }
 
 var fixedMessages = map[string]string{
@@ -61,7 +65,7 @@ var fixedMessages = map[string]string{
 
 	"repo_not_mapped": "이 저장소는 GitLab 프로젝트에 연결되어 있지 않습니다.",
 	"bad_branch":      "브랜치 이름이 올바르지 않습니다.",
-	"bad_url":         "GitLab이 설정된 주소 밖의 주소를 돌려주었습니다.",
+	"bad_url":         "GitLab 주소가 허용되지 않습니다. 설정한 제공자 주소나 GitLab이 돌려준 주소가 허용 범위 밖입니다.",
 
 	"registry_unavailable": "프로젝트 등록부를 사용할 수 없습니다. 관리자가 확인해야 합니다.",
 
@@ -87,6 +91,21 @@ var fixedMessages = map[string]string{
 	"value_mismatch":          "서명한 토큰 값과 보낸 토큰 값이 다릅니다.",
 	"token_exists_other_kind": "같은 이름의 토큰이 다른 종류로 이미 있습니다.",
 	"openai_singleton":        "openai 종류는 이름이 openai인 토큰 하나만 둘 수 있습니다.",
+
+	// W3c: providers, groups, project creation. Fixed sentences only: nothing
+	// GitLab says is ever shown.
+	"provider_unknown":     "등록되지 않은 제공자입니다.",
+	"provider_exists":      "같은 id의 제공자가 이미 있습니다.",
+	"provider_in_use":      "이 제공자를 쓰는 프로젝트가 있어 삭제하거나 주소를 바꿀 수 없습니다.",
+	"token_ref_unknown":    "제공자가 쓸 gitlab 종류 토큰이 저장소에 없거나 쓸 수 없습니다. 토큰 화면에서 확인하세요.",
+	"provider_unreachable": "GitLab에 연결하지 못했거나 응답이 없었습니다. 잠시 후 다시 시도하세요.",
+	"gitlab_refused":       "GitLab이 요청을 받아들이지 않았습니다. 토큰 권한과 GitLab 설정을 확인하세요.",
+	"group_unknown":        "GitLab에 그런 그룹이 없습니다.",
+	"group_exists":         "같은 경로의 그룹이 이미 있습니다.",
+	"project_name_taken":   "같은 이름의 프로젝트가 이미 등록되어 있거나 GitLab에 있습니다. 기존 프로젝트는 가져오지 않습니다.",
+	"create_partial":       "GitLab에 일부만 만들어졌습니다. 이 도구는 삭제하지 않으니 GitLab에서 직접 정리한 뒤 다시 만드세요.",
+	"deploy_key_mismatch":  "서명한 배포 키와 보낸 배포 키가 다릅니다.",
+	"template_unknown":     "알 수 없는 템플릿입니다.",
 }
 
 // Default per-op processing time limits (decision D1).
@@ -106,6 +125,16 @@ var defaultOpTimeouts = map[string]time.Duration{
 	// re-read `tokens` before retrying.
 	"set_token":    10 * time.Second,
 	"delete_token": 10 * time.Second,
+
+	// W3c. create_project talks to GitLab many times (60 s overall, 15 s per
+	// call); a `timeout` reply to any of the writes means the outcome is
+	// UNKNOWN: re-read `projects`/`providers` (and the orphan records) first.
+	"providers":       5 * time.Second,
+	"list_groups":     20 * time.Second,
+	"set_provider":    15 * time.Second,
+	"delete_provider": 10 * time.Second,
+	"create_group":    20 * time.Second,
+	"create_project":  60 * time.Second,
 }
 
 // State is the broker's mutable limit state.
@@ -113,6 +142,10 @@ type State struct {
 	Refine   *HourlyLimiter
 	CreateMR *HourlyLimiter
 	Budget   *Budget
+
+	// Broker-wide caps of the W3c writes (D9; per-actor limits live in orchd).
+	CreateProject *HourlyLimiter
+	CreateGroup   *HourlyLimiter
 }
 
 // Server is the broker socket server. Zero-valued tuning fields take their
@@ -152,6 +185,9 @@ type Server struct {
 	logger      *log.Logger
 	sem         chan struct{}
 	mrLock      chan struct{} // serialises create_mr find+create
+
+	creatingMu sync.Mutex
+	creating   map[string]bool // project names being created (one create per name at a time)
 }
 
 // Options configures New.
@@ -214,6 +250,9 @@ func New(cfg Config, o Options) (*Server, error) {
 			Refine:   NewHourlyLimiter(cfg.Limits.RefinePerHour, o.Clock),
 			CreateMR: NewHourlyLimiter(cfg.Limits.CreateMRPerHour, o.Clock),
 			Budget:   bud,
+
+			CreateProject: NewHourlyLimiter(maxCreateProjectPerHour, o.Clock),
+			CreateGroup:   NewHourlyLimiter(maxCreateGroupPerHour, o.Clock),
 		},
 	}
 	s.OpenAI = &OpenAIClient{KeyFn: s.currentOpenAIKey, Model: cfg.OpenAI.Model}
@@ -239,6 +278,13 @@ func New(cfg Config, o Options) (*Server, error) {
 
 		"set_token":    s.setTokenHandler,
 		"delete_token": s.deleteTokenHandler,
+
+		"providers":       s.providersHandler,
+		"list_groups":     s.listGroupsHandler,
+		"set_provider":    s.setProviderHandler,
+		"delete_provider": s.deleteProviderHandler,
+		"create_group":    s.createGroupHandler,
+		"create_project":  s.createProjectHandler,
 	}
 	return s, nil
 }
@@ -453,7 +499,7 @@ func (s *Server) handle(ctx context.Context, c net.Conn) {
 	res, oerr := s.run(ctx, req.Op, h, req.Args)
 	if oerr != nil {
 		s.logf("op=%s failed: code=%s dur=%s", req.Op, safeCode(oerr.Code), time.Since(start).Round(time.Millisecond))
-		s.reply(c, nil, oerr.Code, oerr.Message)
+		s.replyDetail(c, nil, oerr.Code, oerr.Message, oerr.Data)
 	} else {
 		s.logf("op=%s ok dur=%s", req.Op, time.Since(start).Round(time.Millisecond))
 		s.reply(c, res, "", "")
@@ -550,6 +596,11 @@ func drain(c net.Conn) {
 // reply writes one JSON response; failures carry the registered fixed
 // sentence of their code (unregistered codes become internal_error).
 func (s *Server) reply(c net.Conn, result any, code, msg string) {
+	s.replyDetail(c, result, code, msg, nil)
+}
+
+// replyDetail is reply plus the optional "detail" of a create_partial failure.
+func (s *Server) replyDetail(c net.Conn, result any, code, msg string, detail any) {
 	c.SetWriteDeadline(time.Now().Add(writeTimeout))
 	var body []byte
 	if code == "" {
@@ -566,7 +617,11 @@ func (s *Server) reply(c net.Conn, result any, code, msg string) {
 			code, fixed = "internal_error", fixedMessages["internal_error"]
 		}
 		msg = fixed
-		body, _ = json.Marshal(map[string]any{"ok": false, "code": code, "message": msg})
+		out := map[string]any{"ok": false, "code": code, "message": msg}
+		if detail != nil && code == "create_partial" {
+			out["detail"] = detail
+		}
+		body, _ = json.Marshal(out)
 	}
 	c.Write(append(body, '\n'))
 }

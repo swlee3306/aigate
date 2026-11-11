@@ -777,6 +777,7 @@ func TestFixedMessagesRegisteredForNewCodes(t *testing.T) {
 		}
 		seen[m] = c
 	}
+	checkC3FixedMessages(t) // W3c codes: same rules (registered, distinct, plain Korean)
 	// over the wire a failing op answers with exactly the fixed sentence
 	w := newWEnv(t)
 	r, _ := call(t, w.sock, `{"v":1,"op":"register_project","args":{"id":"proj-a","path":"/x/REFLECT-ME","kind":"default","ai_context":true,"request":"`+
@@ -793,12 +794,14 @@ func TestOpAllowlistIncludesOnlyNewOps(t *testing.T) {
 		got = append(got, k)
 	}
 	sort.Strings(got)
-	want := []string{"create_mr", "delete_token", "projects", "refine", "register_project", "set_flag", "set_token", "status", "tokens"}
+	// W3c adds the provider, group and project-creation ops (and nothing else).
+	want := []string{"create_group", "create_mr", "create_project", "delete_provider", "delete_token", "list_groups", "projects", "providers",
+		"refine", "register_project", "set_flag", "set_provider", "set_token", "status", "tokens"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("ops = %v, want %v", got, want)
 	}
 	for _, op := range []string{"delete_project", "unregister_project", "remove_project",
-		"set_provider", "set_auto_merge", "update_project", "delete", "register"} {
+		"set_auto_merge", "update_project", "delete", "register", "delete_group", "set_providers"} {
 		r, _ := call(t, w.sock, `{"v":1,"op":"`+op+`","args":{}}`)
 		if r.OK || r.Code != "unknown_op" {
 			t.Fatalf("op %s: %+v", op, r)
