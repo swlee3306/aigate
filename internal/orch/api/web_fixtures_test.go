@@ -679,7 +679,8 @@ func TestWebFixturesW3c(t *testing.T) {
 	if ledgerKeys(anyMap(real.Project)) != "ai_context,auto_merge,cloned,gitlab,id,kind,path,provider" || ledgerKeys(anyMap(real.Clone)) != "code,status" {
 		t.Errorf("create apply member keys: %s", b)
 	}
-	// create_partial envelope keys
+	// create_partial envelope keys (the first create left its folder: a second create of the name is refused before the broker, so clear it)
+	os.RemoveAll(filepath.Join(e.root, "app-one"))
 	e.wb.setReply(func(op string, _ json.RawMessage) string {
 		if op == "create_project" {
 			return `{"ok":false,"code":"create_partial","detail":{"provider":"gl","project":"team/app-one","project_id":99,"step":"deploy_key","orphan_recorded":true,"orphan_dropped":false}}`
@@ -695,6 +696,7 @@ func TestWebFixturesW3c(t *testing.T) {
 		t.Errorf("partial envelope keys %s", b)
 	}
 	e.wb.setReply(nil)
+	os.RemoveAll(filepath.Join(e.root, "app-one"))
 	pr := e.proposeAction(t, "create_project")
 	b, _ = json.Marshal(pr)
 	if keys(b) != "action,change,deploy_key,fields,issued,message,preview,request,subject" {

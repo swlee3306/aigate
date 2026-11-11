@@ -303,6 +303,7 @@ export const ERROR_TEXT = {
   group_exists: '같은 경로의 그룹이 이미 있습니다. 변경은 적용되지 않았습니다.',
   project_name_taken: '같은 이름의 프로젝트가 이미 등록되어 있거나 GitLab에 있습니다. 기존 프로젝트는 가져오지 않습니다. 변경은 적용되지 않았습니다.',
   template_unknown: '알 수 없는 템플릿입니다. 변경은 적용되지 않았습니다.',
+  path_exists: '이 서버의 저장소 폴더에 같은 이름이 이미 있어 프로젝트를 만들지 않았습니다. 관리자가 그 폴더를 확인해야 합니다. 변경은 적용되지 않았습니다.',
   deploy_key_mismatch: '서명한 배포 키와 지금 서버의 배포 키가 다릅니다. 처음부터 다시 시작해 새로 서명하세요. 변경은 적용되지 않았습니다.',
   deploy_key_unavailable: '서버의 배포 키 공개 키 파일(.pub)을 읽을 수 없습니다. 관리자가 확인해야 합니다. 변경은 적용되지 않았습니다.',
   policy_class_missing: '서버 정책에 registered 클래스가 없어 새 프로젝트를 만들 수 없습니다. 관리자가 정책에 한 번 추가해야 합니다. 변경은 적용되지 않았습니다.',
@@ -361,6 +362,7 @@ export const CLONE_TEXT = {
   git_missing: ERROR_TEXT.git_missing,
   ssh_missing: ERROR_TEXT.ssh_missing,
   already_cloned: ERROR_TEXT.already_cloned,
+  check: '프로젝트는 만들어졌지만 이 서버에 같은 이름의 폴더가 이미 있어 복제하지 않았습니다. 그 폴더가 이 프로젝트의 것인지 확인이 필요합니다(관리자 확인).',
   unknown: '복제 결과를 알 수 없습니다. 자동으로 다시 시도하지 않았습니다. 목록을 다시 읽어 복제 여부를 확인하세요.',
   other: '복제하지 못했습니다. 잠시 후 다시 복제하거나 관리자에게 알려 주세요.',
 };

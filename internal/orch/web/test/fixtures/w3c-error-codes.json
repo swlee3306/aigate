@@ -23,6 +23,7 @@
     "not_clonable",
     "not_signed",
     "outcome_unknown",
+    "path_exists",
     "path_not_allowed",
     "policy_class_missing",
     "project_exists",

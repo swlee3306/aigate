@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"regexp"
 	"time"
@@ -33,8 +34,8 @@ import (
 const registeredClass = "registered"
 
 const (
-	// createClonePart is how long the whole create_project apply (broker call
-	// plus the automatic clone) may take: it stays under the browser's 90 s.
+	// createTotalBudget is how long the whole create_project apply (broker call
+	// plus the automatic clone) may take. The browser waits 130 s for it.
 	createTotalBudget = 88 * time.Second
 	// minAutoCloneBudget keeps a late clone from being given no time at all.
 	minAutoCloneBudget = 10 * time.Second
@@ -42,6 +43,7 @@ const (
 
 var (
 	errPolicyClassMissing = apiErr(http.StatusBadRequest, "policy_class_missing", "정책에 'registered' 클래스가 없어 새 프로젝트를 만들 수 없습니다. 관리자가 정책(policy.yml)에 registered 클래스를 추가해야 합니다")
+	errPathExists         = apiErr(http.StatusConflict, "path_exists", "이 서버의 저장소 폴더에 같은 이름이 이미 있어 프로젝트를 만들지 않았습니다. 관리자가 그 폴더를 확인해야 합니다. 변경은 적용되지 않았습니다")
 	errGitMissing         = apiErr(http.StatusServiceUnavailable, "git_missing", "이 서버에서 git 실행 파일을 찾지 못해 복제할 수 없습니다. 관리자가 확인해야 합니다")
 	errSSHMissing         = apiErr(http.StatusServiceUnavailable, "ssh_missing", "이 서버에서 ssh 실행 파일을 찾지 못해 복제할 수 없습니다. 관리자가 확인해야 합니다")
 	errCloneUnavailable   = apiErr(http.StatusServiceUnavailable, "clone_unavailable", "복제 설정(배포 키와 known_hosts)이 없어 복제할 수 없습니다. 관리자가 확인해야 합니다")
@@ -52,6 +54,19 @@ var (
 	errCloneTimeout       = apiErr(http.StatusGatewayTimeout, "clone_timeout", "복제 시간이 초과되었습니다. 만들다 만 폴더는 지웠습니다. 다시 복제할 수 있습니다")
 	errCloneFailed        = apiErr(http.StatusBadGateway, "clone_failed", "복제에 실패했습니다. 만들다 만 폴더는 지웠습니다. 배포 키 권한과 GitLab 연결을 확인한 뒤 다시 복제하세요")
 )
+
+// folderTaken reports whether name already exists (as anything, a dangling
+// symlink included) directly under an allowed repository root. A new project's
+// clone would find it and stop, leaving a created project without a checkout,
+// so the create is refused before anything is signed or sent.
+func (h *handler) folderTaken(name string) bool {
+	for _, r := range h.roots {
+		if _, err := os.Lstat(filepath.Join(r, name)); err == nil {
+			return true
+		}
+	}
+	return false
+}
 
 // hasPolicyClass reports whether the policy in force has a class named name.
 func (h *handler) hasPolicyClass(name string) bool {
@@ -121,6 +136,9 @@ func createPreview(c registryChange, fingerprint string) []string {
 func (h *handler) createPropose(w http.ResponseWriter, r *http.Request) {
 	var fp string
 	h.proposeCore(w, r, []string{registrymsg.ActionCreateProject}, func(c *registryChange) (map[string]any, error) {
+		if h.folderTaken(c.Subject) {
+			return nil, errPathExists
+		}
 		if !h.hasPolicyClass(registeredClass) {
 			return nil, errPolicyClassMissing
 		}
@@ -143,6 +161,9 @@ func (h *handler) createApply(w http.ResponseWriter, r *http.Request) {
 		// Local checks that cost nothing and must hold at the moment of the call
 		// too: the policy class may have gone, the .pub may have been replaced
 		// since the proposal.
+		if h.folderTaken(c.Subject) {
+			return errPathExists
+		}
 		if !h.hasPolicyClass(registeredClass) {
 			return errPolicyClassMissing
 		}

@@ -100,6 +100,9 @@ func TestCloneHookNotExecuted(t *testing.T) {
 			extraEnv:      []string{"GIT_TEMPLATE_DIR=" + tmpl},
 			dropHooksPath: drop,
 		}
+		if drop { // --template= ignores the template dir, so the control uses core.hooksPath
+			sm.extraConfig = append(sm.extraConfig, "core.hooksPath="+hp)
+		}
 		return o.Dest, clone(context.Background(), o, sm)
 	}
 	ran := func() []string {

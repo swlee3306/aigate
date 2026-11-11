@@ -102,7 +102,7 @@ func TestCloneUsesFixedSafeOptions(t *testing.T) {
 	c := (*calls)[0]
 	staging := c.args[len(c.args)-1]
 	want := []string{"git", "-c", "protocol.allow=never", "-c", "protocol.ssh.allow=always", "-c", "core.hooksPath=/dev/null",
-		"-c", "core.fsmonitor=false", "clone", "--no-recurse-submodules", "--no-local", "--", goodRemote, staging}
+		"-c", "core.fsmonitor=false", "clone", "--no-recurse-submodules", "--no-local", "--template=", "--", goodRemote, staging}
 	if strings.Join(c.args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("command line:\n got %q\nwant %q", c.args, want)
 	}
@@ -471,7 +471,7 @@ func TestCloneTimeoutAndCancel(t *testing.T) {
 		t.Error("partial dir left after cancel")
 	}
 	// The default limit is the 120 s of D5.
-	if DefaultTimeout != 120*time.Second {
+	if DefaultTimeout != 100*time.Second {
 		t.Errorf("default timeout %v", DefaultTimeout)
 	}
 }
@@ -649,6 +649,11 @@ func TestCloneRealGitLocalFixture(t *testing.T) {
 			extraConfig:   []string{"protocol.file.allow=always"},
 			extraEnv:      []string{"GIT_TEMPLATE_DIR=" + tmpl},
 			dropHooksPath: drop,
+		}
+		if drop {
+			// --template= ignores the template dir altogether, so the control
+			// reaches the hook through core.hooksPath instead
+			sm.extraConfig = append(sm.extraConfig, "core.hooksPath="+filepath.Join(tmpl, "hooks"))
 		}
 		return o.Dest, clone(context.Background(), o, sm)
 	}

@@ -368,7 +368,9 @@ func (s *RegistryStore) GitLabProject(path string) (string, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, p := range s.reg.Projects {
-		if p.Path == path && p.GitLab != nil {
+		// A provider-linked project (W3c) never takes the W2b create_mr path
+		// (it would use broker.json's legacy gitlab section): W3d moves it.
+		if p.Path == path && p.GitLab != nil && p.Provider == nil {
 			return p.GitLab.Project, true
 		}
 	}

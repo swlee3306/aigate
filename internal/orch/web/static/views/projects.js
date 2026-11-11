@@ -591,8 +591,8 @@ export function projectsView(ctx) {
     cp.clone = null;
     if (result.ok) {
       const c = validCloneResult(isObj(result.data) ? result.data.clone : null);
-      const done = c.status === 'cloned' || c.status === 'already_cloned';
-      cp.clone = { state: done ? 'ok' : 'failed', code: c.code, already: c.status === 'already_cloned' };
+      // the folder was already there: the project exists but what this server holds under that name is unknown
+      cp.clone = { state: c.status === 'cloned' ? 'ok' : c.status === 'already_cloned' ? 'check' : 'failed', code: c.code };
     }
     const reads = [loadList()];
     if (!result.ok && result.unknown) reads.push(reloadProviders());
@@ -998,7 +998,8 @@ export function projectsView(ctx) {
     if (r.ok) {
       const c = cp.clone || { state: 'ok', code: 'ok' };
       const cloneDone = c.state === 'ok';
-      const cloneLine = cloneDone ? (c.already ? CLONE_TEXT.already_cloned : '이 서버에 복제했습니다.')
+      const cloneLine = cloneDone ? '이 서버에 복제했습니다.'
+        : c.state === 'check' ? CLONE_TEXT.check
         : c.state === 'busy' ? '복제하는 중입니다(최대 2분)…' : (c.text || cloneText(c.code));
       return el('div', { class: ['panel', 'canvas'] }, [
         el('h1', { id: 'h-projects' }, '완료'),

@@ -37,8 +37,9 @@ import (
 	"aigate/internal/registrymsg"
 )
 
-// DefaultTimeout is the clone time limit of D5.
-const DefaultTimeout = 120 * time.Second
+// DefaultTimeout is the clone time limit (D5 said 120 s; 100 s keeps the retry
+// endpoint inside the web's 130 s write timeout).
+const DefaultTimeout = 100 * time.Second
 
 // Fixed errors. None carries git output, a path or a host.
 var (
@@ -203,7 +204,7 @@ func clone(ctx context.Context, o Options, sm *seams) error {
 			args = append(args, "-c", kv)
 		}
 	}
-	args = append(args, "clone", "--no-recurse-submodules", "--no-local", "--", remote, staging)
+	args = append(args, "clone", "--no-recurse-submodules", "--no-local", "--template=", "--", remote, staging)
 
 	timeout := o.Timeout
 	if timeout <= 0 {

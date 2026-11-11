@@ -439,6 +439,7 @@ func TestProvidersLedgerNoSecrets(t *testing.T) {
 			if a == "create_project" {
 				ff = f
 			}
+			os.RemoveAll(filepath.Join(e.root, s)) // a created project leaves its folder; a second create of the name would be refused before the broker
 			p := e.propose(t, a, s, ff)
 			reqs = append(reqs, p.Request, p.Change, p.Message)
 			e.apply(t, p)

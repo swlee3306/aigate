@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -554,6 +555,9 @@ func TestRequireWriteAndCSRF(t *testing.T) {
 			t.Errorf("%s: reached the broker or git without authority", tg.path)
 		}
 		for name, h := range map[string]hdr{"session": {"Cookie": cookie(tok), CSRFHeader: csrf}, "token": {"Authorization": "Bearer " + token}} {
+			if strings.HasSuffix(tg.path, "/create/apply") {
+				os.RemoveAll(filepath.Join(e.root, "app-one")) // the first create left its folder: a second create of the name is refused (path_exists)
+			}
 			code, _, b := httpDo(t, srv, "POST", tg.path, tg.body, h)
 			if code != 200 && !(strings.HasSuffix(tg.path, "/clone") && code == 409) {
 				t.Errorf("%s %s: %d %s", tg.path, name, code, b)

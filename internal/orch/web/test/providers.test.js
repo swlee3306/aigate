@@ -1319,3 +1319,21 @@ test('TestNavIconOfProvidersIsDistinctFromServerStatus', () => {
   assert.ok(a && b && a !== b);
   assert.ok(!a.includes('<rect'), 'not the two stacked boxes of 서버 상태');
 });
+
+// Final review I1: the automatic clone found the folder already there. The
+// project exists but this server may hold something else under that name: the
+// result is "needs checking", not a success line, and no retry button.
+test('TestCreateAlreadyClonedNeedsChecking', async () => {
+  const ALREADY = { project: CREATE_CLONE_FAILED.project, clone: { status: 'already_cloned', code: 'already_cloned' } };
+  const c = await mountProjects({ 'POST /api/v1/projects/create/apply': () => ALREADY });
+  await toCreateConfirm(c, { ...GOOD_CREATE, name: 'app-one' });
+  await waitSignable(c);
+  click(signBtn(c));
+  await until(() => byData(c.root, 'clone', 'check').length === 1, 'check state');
+  const t = text(c.root);
+  assert.ok(t.includes(P.CLONE_TEXT.check), 'the fixed "needs checking" sentence');
+  assert.ok(!t.includes('이 서버에 복제했습니다'), 'not shown as a success');
+  assert.equal(byLabel(c.root, '다시 복제').length, 0, 'a retry would only find the folder again');
+  assert.ok(P.ERROR_TEXT.path_exists.includes('변경은 적용되지 않았습니다'));
+  assert.ok(CODES.includes('path_exists'));
+});
