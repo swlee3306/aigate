@@ -342,7 +342,7 @@ async function signWithPasskey(challenge, signer) {
 // with \n. The prefix differs from the approval message, so neither format
 // passes as the other.
 const REGISTRY_MESSAGE_RE = new RegExp('^aigate-registry-v1\\n' +
-  'action: (register_project|set_flag|set_token|delete_token)\\n' +
+  'action: (register_project|set_flag|set_token|delete_token|set_provider|delete_provider|create_group|create_project)\\n' +
   'subject: ([a-z][a-z0-9-]{0,39})\\n' +
   'change: ([0-9a-f]{64})\\n' +
   'request: ([0-9a-f]{32})\\n' +

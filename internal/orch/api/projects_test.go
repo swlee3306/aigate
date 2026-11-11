@@ -1151,7 +1151,8 @@ func TestConstantsAgreeWithWeb(t *testing.T) {
 	waText := string(wa)
 	bare := func(p string) string { return strings.TrimSuffix(strings.TrimPrefix(p, "^"), "$") }
 	for _, piece := range []string{
-		"action: (" + registrymsg.ActionRegisterProject + "|" + registrymsg.ActionSetFlag + "|" + registrymsg.ActionSetToken + "|" + registrymsg.ActionDeleteToken + ")",
+		"action: (" + registrymsg.ActionRegisterProject + "|" + registrymsg.ActionSetFlag + "|" + registrymsg.ActionSetToken + "|" + registrymsg.ActionDeleteToken +
+			"|" + registrymsg.ActionSetProvider + "|" + registrymsg.ActionDeleteProvider + "|" + registrymsg.ActionCreateGroup + "|" + registrymsg.ActionCreateProject + ")",
 		"subject: (" + bare(subjectPattern) + ")",
 		"change: ([0-9a-f]{64})",
 		"request: ([0-9a-f]{32})",
@@ -1275,6 +1276,8 @@ func TestConstantsAgreeWithWeb(t *testing.T) {
 	}
 	// The token constants (W3b): see checkTokenConstants (tokens_test.go).
 	t.Run("tokens", checkTokenConstants)
+	// The provider and project-creation constants (W3c): see checkProviderConstants.
+	t.Run("providers", checkProviderConstants)
 
 }
 

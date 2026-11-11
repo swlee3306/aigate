@@ -1,0 +1,1209 @@
+{
+  "base_urls": [
+    {
+      "value": "http://gitlab.example",
+      "ok": true
+    },
+    {
+      "value": "https://gitlab.example",
+      "ok": true
+    },
+    {
+      "value": "http://100.64.0.10:18082",
+      "ok": true
+    },
+    {
+      "value": "http://gitlab.example:8080",
+      "ok": true
+    },
+    {
+      "value": "http://localhost",
+      "ok": true
+    },
+    {
+      "value": "http://[::1]",
+      "ok": true
+    },
+    {
+      "value": "http://[::1]:8080",
+      "ok": true
+    },
+    {
+      "value": "http://[2001:db8::1]",
+      "ok": true
+    },
+    {
+      "value": "http://[2001:DB8::1]",
+      "ok": false
+    },
+    {
+      "value": "http://gitlab.example/",
+      "ok": false
+    },
+    {
+      "value": "http://gitlab.example/x",
+      "ok": false
+    },
+    {
+      "value": "http://gitlab.example?x=1",
+      "ok": false
+    },
+    {
+      "value": "http://gitlab.example#f",
+      "ok": false
+    },
+    {
+      "value": "http://u@gitlab.example",
+      "ok": false
+    },
+    {
+      "value": "http://u:p@gitlab.example",
+      "ok": false
+    },
+    {
+      "value": "HTTP://gitlab.example",
+      "ok": false
+    },
+    {
+      "value": "http://GitLab.example",
+      "ok": false
+    },
+    {
+      "value": "ftp://gitlab.example",
+      "ok": false
+    },
+    {
+      "value": "gitlab.example",
+      "ok": false
+    },
+    {
+      "value": "",
+      "ok": false
+    },
+    {
+      "value": "http://",
+      "ok": false
+    },
+    {
+      "value": "http://:80",
+      "ok": false
+    },
+    {
+      "value": "http://gitlab.example:",
+      "ok": false
+    },
+    {
+      "value": "http://gitlab.example:0",
+      "ok": false
+    },
+    {
+      "value": "http://gitlab.example:08",
+      "ok": false
+    },
+    {
+      "value": "http://gitlab.example:65536",
+      "ok": false
+    },
+    {
+      "value": "http://gitlab.example:65535",
+      "ok": true
+    },
+    {
+      "value": "http://-a.example",
+      "ok": false
+    },
+    {
+      "value": "http://a-.example",
+      "ok": false
+    },
+    {
+      "value": "http://a..b",
+      "ok": false
+    },
+    {
+      "value": "http://a.b.",
+      "ok": false
+    },
+    {
+      "value": "http://2130706433",
+      "ok": false
+    },
+    {
+      "value": "http://0x7f.1",
+      "ok": false
+    },
+    {
+      "value": "http://010.1.1.1",
+      "ok": false
+    },
+    {
+      "value": "http://127.0.0.1",
+      "ok": true
+    },
+    {
+      "value": "http://1.2.3.4.5",
+      "ok": false
+    },
+    {
+      "value": "http://1.2.3",
+      "ok": false
+    },
+    {
+      "value": "http://a b",
+      "ok": false
+    },
+    {
+      "value": "http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example",
+      "ok": false
+    },
+    {
+      "value": "http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example",
+      "ok": true
+    },
+    {
+      "value": "https://git.example.com:2222",
+      "ok": true
+    },
+    {
+      "value": "http://gitlab.한글",
+      "ok": false
+    }
+  ],
+  "change": [
+    {
+      "name": "set_provider http ip port",
+      "action": "set_provider",
+      "subject": "gl",
+      "fields": {
+        "base_url": "http://100.64.0.10:18082",
+        "kind": "gitlab",
+        "ssh_url": "ssh://git@100.64.0.10",
+        "token_ref": "gitlab-main"
+      },
+      "canonical": "{\"action\":\"set_provider\",\"fields\":{\"base_url\":\"http://100.64.0.10:18082\",\"kind\":\"gitlab\",\"ssh_url\":\"ssh://git@100.64.0.10\",\"token_ref\":\"gitlab-main\"},\"subject\":\"gl\"}",
+      "change": "4d4649fb75f35cb05681158ba7de1afa88205f3803c3d3e15e299aadb1100f9c"
+    },
+    {
+      "name": "set_provider https host",
+      "action": "set_provider",
+      "subject": "gitlab-2",
+      "fields": {
+        "base_url": "https://git.example.com",
+        "kind": "gitlab",
+        "ssh_url": "ssh://git@git.example.com:2222",
+        "token_ref": "gitlab-main"
+      },
+      "canonical": "{\"action\":\"set_provider\",\"fields\":{\"base_url\":\"https://git.example.com\",\"kind\":\"gitlab\",\"ssh_url\":\"ssh://git@git.example.com:2222\",\"token_ref\":\"gitlab-main\"},\"subject\":\"gitlab-2\"}",
+      "change": "a3649968618b6ff5d0551f77e574f762035a66aa51d47a139f6803cd5376d988"
+    },
+    {
+      "name": "delete_provider",
+      "action": "delete_provider",
+      "subject": "gl",
+      "fields": {},
+      "canonical": "{\"action\":\"delete_provider\",\"fields\":{},\"subject\":\"gl\"}",
+      "change": "4a94906eb7737f123a9f74d48cc91389efb4f4c4d89115e35653e79771842bce"
+    },
+    {
+      "name": "create_group top level (empty parent)",
+      "action": "create_group",
+      "subject": "gl",
+      "fields": {
+        "name": "newgroup",
+        "parent_path": "",
+        "path": "newgroup"
+      },
+      "canonical": "{\"action\":\"create_group\",\"fields\":{\"name\":\"newgroup\",\"parent_path\":\"\",\"path\":\"newgroup\"},\"subject\":\"gl\"}",
+      "change": "cd5b77eb943337830d25d022965d00d5e8b4784b785f933c98d143f1f9c4f8dd"
+    },
+    {
+      "name": "create_group nested",
+      "action": "create_group",
+      "subject": "gl",
+      "fields": {
+        "name": "newgroup",
+        "parent_path": "team",
+        "path": "newgroup"
+      },
+      "canonical": "{\"action\":\"create_group\",\"fields\":{\"name\":\"newgroup\",\"parent_path\":\"team\",\"path\":\"newgroup\"},\"subject\":\"gl\"}",
+      "change": "c9c4de6c7fc6335d35366a58bb062188683f108bb10204c16afd1aaffd3c0470"
+    },
+    {
+      "name": "create_project plain",
+      "action": "create_project",
+      "subject": "app-one",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "첫 프로젝트",
+        "group_path": "team/sub",
+        "provider": "gl",
+        "publish": "write",
+        "template": "go"
+      },
+      "canonical": "{\"action\":\"create_project\",\"fields\":{\"ai_context\":false,\"deploy_key_sha256\":\"abababababababababababababababababababababababababababababababab\",\"description\":\"첫 프로젝트\",\"group_path\":\"team/sub\",\"provider\":\"gl\",\"publish\":\"write\",\"template\":\"go\"},\"subject\":\"app-one\"}",
+      "change": "c1ddeb26c1f5732429f6f290f3c24bd59908ff90f413fa654ad65cccf81a6db2"
+    },
+    {
+      "name": "create_project empty description",
+      "action": "create_project",
+      "subject": "app-one",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "",
+        "group_path": "team/sub",
+        "provider": "gl",
+        "publish": "write",
+        "template": "go"
+      },
+      "canonical": "{\"action\":\"create_project\",\"fields\":{\"ai_context\":false,\"deploy_key_sha256\":\"abababababababababababababababababababababababababababababababab\",\"description\":\"\",\"group_path\":\"team/sub\",\"provider\":\"gl\",\"publish\":\"write\",\"template\":\"go\"},\"subject\":\"app-one\"}",
+      "change": "50962a5f24ea55e9a53943b79fd7dc1295aa1f9846968bf73a14e3f6a2525021"
+    },
+    {
+      "name": "create_project special description",
+      "action": "create_project",
+      "subject": "ab",
+      "fields": {
+        "ai_context": true,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "say \"hi\" \\ \u003cb\u003e\u0026\u003c/b\u003e / 한글😀",
+        "group_path": "team",
+        "provider": "gl",
+        "publish": "read",
+        "template": "basic"
+      },
+      "canonical": "{\"action\":\"create_project\",\"fields\":{\"ai_context\":true,\"deploy_key_sha256\":\"abababababababababababababababababababababababababababababababab\",\"description\":\"say \\\"hi\\\" \\\\ \u003cb\u003e\u0026\u003c/b\u003e / 한글😀\",\"group_path\":\"team\",\"provider\":\"gl\",\"publish\":\"read\",\"template\":\"basic\"},\"subject\":\"ab\"}",
+      "change": "63a505d62063fcfe229c5eb3eb465b953e2fde682741b37395a91a7a86dd625b"
+    }
+  ],
+  "deploy_keys": [
+    {
+      "name": "ed25519 with comment",
+      "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIs orchd@deploy",
+      "line_sha256": "56e71264e1f729d3d3ac9b7bcd036b3478f19b7b8e342c3517c50bd1f7d7803f",
+      "fingerprint": "SHA256:z/fSv0Z0RZS+Lccbc6ZoOWwt/fbj1VFJGSBKQbo4icE"
+    },
+    {
+      "name": "ed25519 no comment",
+      "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP0XJDhaoMdbZPt4zWAvodmR/ev3axPFjtcC6sg16fYY",
+      "line_sha256": "cc0867021f928fb903c6e5da476fcd66a1ad266e360a06ca4f1403dbdd85dcaf",
+      "fingerprint": "SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo"
+    },
+    {
+      "name": "ed25519 other seed",
+      "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJf/yIPIC+5yN++V2bm3A9StY+YKIeYFhnaCt1uLP0MD k",
+      "line_sha256": "446e8f58900809c73f4b34aafcd5722b1be60c2035b50a65e8c84f6960171ebd",
+      "fingerprint": "SHA256:aNqEC7dZveK603hlDTylnHby1WGuEraeCkaL9ldKR3Q"
+    }
+  ],
+  "descriptions": [
+    {
+      "value": "",
+      "ok": true
+    },
+    {
+      "value": "첫 프로젝트",
+      "ok": true
+    },
+    {
+      "value": "plain text.",
+      "ok": true
+    },
+    {
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ok": true
+    },
+    {
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ok": false
+    },
+    {
+      "value": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+      "ok": true
+    },
+    {
+      "value": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+      "ok": false
+    },
+    {
+      "value": "tab\there",
+      "ok": false
+    },
+    {
+      "value": "a\nb",
+      "ok": false
+    },
+    {
+      "value": "a​b",
+      "ok": false
+    },
+    {
+      "value": "a‮b",
+      "ok": false
+    },
+    {
+      "value": "a\u2028b",
+      "ok": false
+    },
+    {
+      "value": "a­b",
+      "ok": false
+    },
+    {
+      "value": "ab",
+      "ok": false
+    },
+    {
+      "value": "ab",
+      "ok": false
+    },
+    {
+      "value": "a﻿b",
+      "ok": false
+    },
+    {
+      "value": "a�b",
+      "ok": false
+    },
+    {
+      "value": "é",
+      "ok": true
+    },
+    {
+      "value": "a b",
+      "ok": true
+    },
+    {
+      "value": "a　b",
+      "ok": true
+    },
+    {
+      "value": "\u003cimg src=x onerror=1\u003e",
+      "ok": true
+    }
+  ],
+  "group_paths": [
+    {
+      "value": "team",
+      "ok": true
+    },
+    {
+      "value": "team/sub",
+      "ok": true
+    },
+    {
+      "value": "aa/bb/cc/dd",
+      "ok": true
+    },
+    {
+      "value": "aa/bb/cc/dd/ee",
+      "ok": false
+    },
+    {
+      "value": "",
+      "ok": false
+    },
+    {
+      "value": "/aa",
+      "ok": false
+    },
+    {
+      "value": "aa/",
+      "ok": false
+    },
+    {
+      "value": "aa//bb",
+      "ok": false
+    },
+    {
+      "value": "aa/../bb",
+      "ok": false
+    },
+    {
+      "value": "aa/b",
+      "ok": false
+    },
+    {
+      "value": "Team",
+      "ok": false
+    },
+    {
+      "value": "team/Sub",
+      "ok": false
+    },
+    {
+      "value": "aa/bb cc",
+      "ok": false
+    }
+  ],
+  "messages": [
+    {
+      "action": "set_provider",
+      "subject": "gl",
+      "change": "4d4649fb75f35cb05681158ba7de1afa88205f3803c3d3e15e299aadb1100f9c",
+      "request": "00112233445566778899aabbccddeeff",
+      "issued": "2026-11-09T10:04:05Z",
+      "text": "aigate-registry-v1\naction: set_provider\nsubject: gl\nchange: 4d4649fb75f35cb05681158ba7de1afa88205f3803c3d3e15e299aadb1100f9c\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-09T10:04:05Z\n",
+      "digest": "e275a01a0645f3e51c54cad0e3385b26cc46b1684c6027aa3f6260e055a62684"
+    },
+    {
+      "action": "delete_provider",
+      "subject": "gl",
+      "change": "4a94906eb7737f123a9f74d48cc91389efb4f4c4d89115e35653e79771842bce",
+      "request": "00112233445566778899aabbccddeeff",
+      "issued": "2026-11-09T10:04:05Z",
+      "text": "aigate-registry-v1\naction: delete_provider\nsubject: gl\nchange: 4a94906eb7737f123a9f74d48cc91389efb4f4c4d89115e35653e79771842bce\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-09T10:04:05Z\n",
+      "digest": "7764cbe8d1a01c6611ddb17ac4f65c8e2e9c1d96701f589d700e8b63f874645a"
+    },
+    {
+      "action": "create_group",
+      "subject": "gl",
+      "change": "c9c4de6c7fc6335d35366a58bb062188683f108bb10204c16afd1aaffd3c0470",
+      "request": "00112233445566778899aabbccddeeff",
+      "issued": "2026-11-09T10:04:05Z",
+      "text": "aigate-registry-v1\naction: create_group\nsubject: gl\nchange: c9c4de6c7fc6335d35366a58bb062188683f108bb10204c16afd1aaffd3c0470\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-09T10:04:05Z\n",
+      "digest": "be24fc82b13a46e3ef37be48d4ec0c6f161b06e278615525f15792a739d29443"
+    },
+    {
+      "action": "create_project",
+      "subject": "app-one",
+      "change": "c1ddeb26c1f5732429f6f290f3c24bd59908ff90f413fa654ad65cccf81a6db2",
+      "request": "00112233445566778899aabbccddeeff",
+      "issued": "2026-11-09T10:04:05Z",
+      "text": "aigate-registry-v1\naction: create_project\nsubject: app-one\nchange: c1ddeb26c1f5732429f6f290f3c24bd59908ff90f413fa654ad65cccf81a6db2\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-09T10:04:05Z\n",
+      "digest": "6eef7e42b2fc5e97aeabbd72e780f3b261cf78eaf8184a4f69e046ac5dee9aaa"
+    }
+  ],
+  "names": [
+    {
+      "value": "ab",
+      "ok": true
+    },
+    {
+      "value": "a",
+      "ok": false
+    },
+    {
+      "value": "",
+      "ok": false
+    },
+    {
+      "value": "a-",
+      "ok": true
+    },
+    {
+      "value": "a--b",
+      "ok": true
+    },
+    {
+      "value": "a1",
+      "ok": true
+    },
+    {
+      "value": "1a",
+      "ok": false
+    },
+    {
+      "value": "Ab",
+      "ok": false
+    },
+    {
+      "value": "a_b",
+      "ok": false
+    },
+    {
+      "value": "a b",
+      "ok": false
+    },
+    {
+      "value": "한글",
+      "ok": false
+    },
+    {
+      "value": "abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "ok": true
+    },
+    {
+      "value": "abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "ok": false
+    },
+    {
+      "value": "-ab",
+      "ok": false
+    },
+    {
+      "value": "ab-",
+      "ok": true
+    }
+  ],
+  "previews": {
+    "create_group nested": [
+      "제공자 'gl'의 GitLab에 새 그룹을 만듭니다",
+      "그룹 이름: newgroup",
+      "그룹 경로: newgroup",
+      "상위 그룹: team",
+      "비공개 그룹으로 만들어집니다. 이 도구는 그룹을 삭제하지 않습니다",
+      "서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다"
+    ],
+    "create_group top level (empty parent)": [
+      "제공자 'gl'의 GitLab에 새 그룹을 만듭니다",
+      "그룹 이름: newgroup",
+      "그룹 경로: newgroup",
+      "상위 그룹: (최상위)",
+      "비공개 그룹으로 만들어집니다. 이 도구는 그룹을 삭제하지 않습니다",
+      "서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다"
+    ],
+    "create_project empty description": [
+      "GitLab 제공자 'gl'의 그룹 'team/sub'에 새 프로젝트 'app-one'를 만듭니다",
+      "템플릿: go (코드에 고정된 파일들이 첫 커밋으로 들어갑니다)",
+      "설명: (없음)",
+      "이 프로젝트의 파일 내용은 AI 서비스로 전송되지 않습니다(전송 허용 꺼짐)",
+      "게시 권한 — 쓰기: 이 서버가 브랜치를 올릴 수 있는 배포 키로 등록합니다",
+      "배포 키 지문(SHA-256): SHA256:z/fSv0Z0RZS+Lccbc6ZoOWwt/fbj1VFJGSBKQbo4icE (이 서버의 배포 키 공개 키 파일 기준)",
+      "등록 후 정책 종류(kind)는 registered 입니다",
+      "GitLab 프로젝트는 비공개로 만들어지고, 만든 뒤 이 도구는 삭제하지 않습니다",
+      "만든 뒤 이 서버에 자동으로 한 번 복제합니다",
+      "서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다"
+    ],
+    "create_project plain": [
+      "GitLab 제공자 'gl'의 그룹 'team/sub'에 새 프로젝트 'app-one'를 만듭니다",
+      "템플릿: go (코드에 고정된 파일들이 첫 커밋으로 들어갑니다)",
+      "설명: 첫 프로젝트",
+      "이 프로젝트의 파일 내용은 AI 서비스로 전송되지 않습니다(전송 허용 꺼짐)",
+      "게시 권한 — 쓰기: 이 서버가 브랜치를 올릴 수 있는 배포 키로 등록합니다",
+      "배포 키 지문(SHA-256): SHA256:z/fSv0Z0RZS+Lccbc6ZoOWwt/fbj1VFJGSBKQbo4icE (이 서버의 배포 키 공개 키 파일 기준)",
+      "등록 후 정책 종류(kind)는 registered 입니다",
+      "GitLab 프로젝트는 비공개로 만들어지고, 만든 뒤 이 도구는 삭제하지 않습니다",
+      "만든 뒤 이 서버에 자동으로 한 번 복제합니다",
+      "서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다"
+    ],
+    "create_project special description": [
+      "GitLab 제공자 'gl'의 그룹 'team'에 새 프로젝트 'ab'를 만듭니다",
+      "템플릿: basic (코드에 고정된 파일들이 첫 커밋으로 들어갑니다)",
+      "설명: say \"hi\" \\ \u003cb\u003e\u0026\u003c/b\u003e / 한글😀",
+      "[중요] 이 프로젝트의 파일 내용이 외부 AI 서비스(OpenAI)로 전송될 수 있게 허용합니다. AI 계획 기능을 쓰면 요구사항과 저장소의 일부 파일 내용이 서비스 밖으로 나갑니다",
+      "게시 권한 — 읽기: 배포 키는 읽기 전용으로 등록합니다(이 서버는 브랜치를 올리지 못합니다)",
+      "배포 키 지문(SHA-256): SHA256:z/fSv0Z0RZS+Lccbc6ZoOWwt/fbj1VFJGSBKQbo4icE (이 서버의 배포 키 공개 키 파일 기준)",
+      "등록 후 정책 종류(kind)는 registered 입니다",
+      "GitLab 프로젝트는 비공개로 만들어지고, 만든 뒤 이 도구는 삭제하지 않습니다",
+      "만든 뒤 이 서버에 자동으로 한 번 복제합니다",
+      "서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다"
+    ],
+    "delete_provider": [
+      "제공자 'gl'를 삭제합니다",
+      "이 제공자를 쓰는 프로젝트가 있으면 삭제되지 않습니다",
+      "GitLab의 그룹과 프로젝트는 지워지지 않습니다",
+      "서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다"
+    ],
+    "set_provider http ip port": [
+      "제공자 'gl'를 저장합니다(종류: gitlab). 같은 id가 있으면 이 값으로 바뀝니다",
+      "GitLab 주소: http://100.64.0.10:18082",
+      "ssh 주소: ssh://git@100.64.0.10",
+      "사용할 토큰 이름: gitlab-main (토큰 값은 이 화면에 나오지 않습니다)",
+      "[중요] 이 토큰의 권한으로 위 주소의 GitLab에 그룹과 프로젝트를 만듭니다",
+      "이 제공자를 쓰는 프로젝트가 있으면 주소는 바꿀 수 없습니다",
+      "서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다"
+    ],
+    "set_provider https host": [
+      "제공자 'gitlab-2'를 저장합니다(종류: gitlab). 같은 id가 있으면 이 값으로 바뀝니다",
+      "GitLab 주소: https://git.example.com",
+      "ssh 주소: ssh://git@git.example.com:2222",
+      "사용할 토큰 이름: gitlab-main (토큰 값은 이 화면에 나오지 않습니다)",
+      "[중요] 이 토큰의 권한으로 위 주소의 GitLab에 그룹과 프로젝트를 만듭니다",
+      "이 제공자를 쓰는 프로젝트가 있으면 주소는 바꿀 수 없습니다",
+      "서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다"
+    ]
+  },
+  "refused": [
+    {
+      "name": "project name one letter",
+      "action": "create_project",
+      "subject": "a",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "첫 프로젝트",
+        "group_path": "team/sub",
+        "provider": "gl",
+        "publish": "write",
+        "template": "go"
+      }
+    },
+    {
+      "name": "project name upper",
+      "action": "create_project",
+      "subject": "App",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "첫 프로젝트",
+        "group_path": "team/sub",
+        "provider": "gl",
+        "publish": "write",
+        "template": "go"
+      }
+    },
+    {
+      "name": "project name 41 chars",
+      "action": "create_project",
+      "subject": "abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "첫 프로젝트",
+        "group_path": "team/sub",
+        "provider": "gl",
+        "publish": "write",
+        "template": "go"
+      }
+    },
+    {
+      "name": "description newline",
+      "action": "create_project",
+      "subject": "app-one",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "a\nb",
+        "group_path": "team/sub",
+        "provider": "gl",
+        "publish": "write",
+        "template": "go"
+      }
+    },
+    {
+      "name": "description zero width",
+      "action": "create_project",
+      "subject": "app-one",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "a​b",
+        "group_path": "team/sub",
+        "provider": "gl",
+        "publish": "write",
+        "template": "go"
+      }
+    },
+    {
+      "name": "description bidi override",
+      "action": "create_project",
+      "subject": "app-one",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "a‮b",
+        "group_path": "team/sub",
+        "provider": "gl",
+        "publish": "write",
+        "template": "go"
+      }
+    },
+    {
+      "name": "description 201 code points",
+      "action": "create_project",
+      "subject": "app-one",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "group_path": "team/sub",
+        "provider": "gl",
+        "publish": "write",
+        "template": "go"
+      }
+    },
+    {
+      "name": "description 201 astral",
+      "action": "create_project",
+      "subject": "app-one",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+        "group_path": "team/sub",
+        "provider": "gl",
+        "publish": "write",
+        "template": "go"
+      }
+    },
+    {
+      "name": "description number",
+      "action": "create_project",
+      "subject": "app-one",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": 1,
+        "group_path": "team/sub",
+        "provider": "gl",
+        "publish": "write",
+        "template": "go"
+      }
+    },
+    {
+      "name": "missing deploy_key_sha256",
+      "action": "create_project",
+      "subject": "app-one",
+      "fields": {
+        "ai_context": false,
+        "description": "첫 프로젝트",
+        "group_path": "team/sub",
+        "provider": "gl",
+        "publish": "write",
+        "template": "go"
+      }
+    },
+    {
+      "name": "upper case key hash",
+      "action": "create_project",
+      "subject": "app-one",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB",
+        "description": "첫 프로젝트",
+        "group_path": "team/sub",
+        "provider": "gl",
+        "publish": "write",
+        "template": "go"
+      }
+    },
+    {
+      "name": "extra field",
+      "action": "create_project",
+      "subject": "app-one",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "첫 프로젝트",
+        "group_path": "team/sub",
+        "provider": "gl",
+        "publish": "write",
+        "template": "go",
+        "x": "y"
+      }
+    },
+    {
+      "name": "template unknown",
+      "action": "create_project",
+      "subject": "app-one",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "첫 프로젝트",
+        "group_path": "team/sub",
+        "provider": "gl",
+        "publish": "write",
+        "template": "rust"
+      }
+    },
+    {
+      "name": "publish unknown",
+      "action": "create_project",
+      "subject": "app-one",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "첫 프로젝트",
+        "group_path": "team/sub",
+        "provider": "gl",
+        "publish": "admin",
+        "template": "go"
+      }
+    },
+    {
+      "name": "ai_context string",
+      "action": "create_project",
+      "subject": "app-one",
+      "fields": {
+        "ai_context": "false",
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "첫 프로젝트",
+        "group_path": "team/sub",
+        "provider": "gl",
+        "publish": "write",
+        "template": "go"
+      }
+    },
+    {
+      "name": "group path upper",
+      "action": "create_project",
+      "subject": "app-one",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "첫 프로젝트",
+        "group_path": "Team",
+        "provider": "gl",
+        "publish": "write",
+        "template": "go"
+      }
+    },
+    {
+      "name": "group path five segments",
+      "action": "create_project",
+      "subject": "app-one",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "첫 프로젝트",
+        "group_path": "aa/bb/cc/dd/ee",
+        "provider": "gl",
+        "publish": "write",
+        "template": "go"
+      }
+    },
+    {
+      "name": "group path trailing slash",
+      "action": "create_project",
+      "subject": "app-one",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "첫 프로젝트",
+        "group_path": "team/",
+        "provider": "gl",
+        "publish": "write",
+        "template": "go"
+      }
+    },
+    {
+      "name": "group path double slash",
+      "action": "create_project",
+      "subject": "app-one",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "첫 프로젝트",
+        "group_path": "aa//bb",
+        "provider": "gl",
+        "publish": "write",
+        "template": "go"
+      }
+    },
+    {
+      "name": "group path dot dot",
+      "action": "create_project",
+      "subject": "app-one",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "첫 프로젝트",
+        "group_path": "aa/../bb",
+        "provider": "gl",
+        "publish": "write",
+        "template": "go"
+      }
+    },
+    {
+      "name": "group path empty",
+      "action": "create_project",
+      "subject": "app-one",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "첫 프로젝트",
+        "group_path": "",
+        "provider": "gl",
+        "publish": "write",
+        "template": "go"
+      }
+    },
+    {
+      "name": "provider upper",
+      "action": "create_project",
+      "subject": "app-one",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "첫 프로젝트",
+        "group_path": "team/sub",
+        "provider": "GL",
+        "publish": "write",
+        "template": "go"
+      }
+    },
+    {
+      "name": "group name one letter",
+      "action": "create_group",
+      "subject": "gl",
+      "fields": {
+        "name": "a",
+        "parent_path": "team",
+        "path": "newgroup"
+      }
+    },
+    {
+      "name": "group name upper",
+      "action": "create_group",
+      "subject": "gl",
+      "fields": {
+        "name": "A1",
+        "parent_path": "team",
+        "path": "newgroup"
+      }
+    },
+    {
+      "name": "group path with slash",
+      "action": "create_group",
+      "subject": "gl",
+      "fields": {
+        "name": "newgroup",
+        "parent_path": "team",
+        "path": "aa/bb"
+      }
+    },
+    {
+      "name": "group parent four segments",
+      "action": "create_group",
+      "subject": "gl",
+      "fields": {
+        "name": "newgroup",
+        "parent_path": "aa/bb/cc/dd",
+        "path": "newgroup"
+      }
+    },
+    {
+      "name": "group parent upper",
+      "action": "create_group",
+      "subject": "gl",
+      "fields": {
+        "name": "newgroup",
+        "parent_path": "Team",
+        "path": "newgroup"
+      }
+    },
+    {
+      "name": "group subject upper",
+      "action": "create_group",
+      "subject": "GL",
+      "fields": {
+        "name": "newgroup",
+        "parent_path": "team",
+        "path": "newgroup"
+      }
+    },
+    {
+      "name": "provider kind github",
+      "action": "set_provider",
+      "subject": "gl",
+      "fields": {
+        "base_url": "http://100.64.0.10:18082",
+        "kind": "github",
+        "ssh_url": "ssh://git@100.64.0.10",
+        "token_ref": "gitlab-main"
+      }
+    },
+    {
+      "name": "base_url with path",
+      "action": "set_provider",
+      "subject": "gl",
+      "fields": {
+        "base_url": "http://gitlab.example/x",
+        "kind": "gitlab",
+        "ssh_url": "ssh://git@100.64.0.10",
+        "token_ref": "gitlab-main"
+      }
+    },
+    {
+      "name": "base_url trailing slash",
+      "action": "set_provider",
+      "subject": "gl",
+      "fields": {
+        "base_url": "http://gitlab.example/",
+        "kind": "gitlab",
+        "ssh_url": "ssh://git@100.64.0.10",
+        "token_ref": "gitlab-main"
+      }
+    },
+    {
+      "name": "base_url ftp",
+      "action": "set_provider",
+      "subject": "gl",
+      "fields": {
+        "base_url": "ftp://gitlab.example",
+        "kind": "gitlab",
+        "ssh_url": "ssh://git@100.64.0.10",
+        "token_ref": "gitlab-main"
+      }
+    },
+    {
+      "name": "base_url userinfo",
+      "action": "set_provider",
+      "subject": "gl",
+      "fields": {
+        "base_url": "http://u:p@gitlab.example",
+        "kind": "gitlab",
+        "ssh_url": "ssh://git@100.64.0.10",
+        "token_ref": "gitlab-main"
+      }
+    },
+    {
+      "name": "base_url upper scheme",
+      "action": "set_provider",
+      "subject": "gl",
+      "fields": {
+        "base_url": "HTTP://gitlab.example",
+        "kind": "gitlab",
+        "ssh_url": "ssh://git@100.64.0.10",
+        "token_ref": "gitlab-main"
+      }
+    },
+    {
+      "name": "base_url empty",
+      "action": "set_provider",
+      "subject": "gl",
+      "fields": {
+        "base_url": "",
+        "kind": "gitlab",
+        "ssh_url": "ssh://git@100.64.0.10",
+        "token_ref": "gitlab-main"
+      }
+    },
+    {
+      "name": "ssh_url other user",
+      "action": "set_provider",
+      "subject": "gl",
+      "fields": {
+        "base_url": "http://100.64.0.10:18082",
+        "kind": "gitlab",
+        "ssh_url": "ssh://root@gitlab.example",
+        "token_ref": "gitlab-main"
+      }
+    },
+    {
+      "name": "ssh_url with path",
+      "action": "set_provider",
+      "subject": "gl",
+      "fields": {
+        "base_url": "http://100.64.0.10:18082",
+        "kind": "gitlab",
+        "ssh_url": "ssh://git@gitlab.example/x",
+        "token_ref": "gitlab-main"
+      }
+    },
+    {
+      "name": "token_ref upper",
+      "action": "set_provider",
+      "subject": "gl",
+      "fields": {
+        "base_url": "http://100.64.0.10:18082",
+        "kind": "gitlab",
+        "ssh_url": "ssh://git@100.64.0.10",
+        "token_ref": "Gitlab"
+      }
+    },
+    {
+      "name": "token_ref empty",
+      "action": "set_provider",
+      "subject": "gl",
+      "fields": {
+        "base_url": "http://100.64.0.10:18082",
+        "kind": "gitlab",
+        "ssh_url": "ssh://git@100.64.0.10",
+        "token_ref": ""
+      }
+    },
+    {
+      "name": "set_provider extra field",
+      "action": "set_provider",
+      "subject": "gl",
+      "fields": {
+        "base_url": "http://100.64.0.10:18082",
+        "kind": "gitlab",
+        "ssh_url": "ssh://git@100.64.0.10",
+        "token_ref": "gitlab-main",
+        "value": "x"
+      }
+    },
+    {
+      "name": "set_provider missing field",
+      "action": "set_provider",
+      "subject": "gl",
+      "fields": {
+        "base_url": "http://100.64.0.10:18082",
+        "kind": "gitlab",
+        "token_ref": "gitlab-main"
+      }
+    },
+    {
+      "name": "delete_provider with a field",
+      "action": "delete_provider",
+      "subject": "gl",
+      "fields": {
+        "kind": "gitlab"
+      }
+    }
+  ],
+  "ssh_urls": [
+    {
+      "value": "ssh://git@gitlab.example",
+      "ok": true
+    },
+    {
+      "value": "ssh://git@100.64.0.10",
+      "ok": true
+    },
+    {
+      "value": "ssh://git@git.example.com:2222",
+      "ok": true
+    },
+    {
+      "value": "ssh://git@[2001:db8::1]",
+      "ok": true
+    },
+    {
+      "value": "ssh://root@gitlab.example",
+      "ok": false
+    },
+    {
+      "value": "ssh://gitlab.example",
+      "ok": false
+    },
+    {
+      "value": "ssh://git@gitlab.example/x",
+      "ok": false
+    },
+    {
+      "value": "ssh://git@gitlab.example/",
+      "ok": false
+    },
+    {
+      "value": "ssh://git@",
+      "ok": false
+    },
+    {
+      "value": "http://git@gitlab.example",
+      "ok": false
+    },
+    {
+      "value": "SSH://git@gitlab.example",
+      "ok": false
+    },
+    {
+      "value": "ssh://git@Gitlab.example",
+      "ok": false
+    },
+    {
+      "value": "ssh://git:x@gitlab.example",
+      "ok": false
+    },
+    {
+      "value": "git@gitlab.example:team/x.git",
+      "ok": false
+    },
+    {
+      "value": "ssh://git@gitlab.example:0",
+      "ok": false
+    },
+    {
+      "value": "ssh://git@gitlab.example:22",
+      "ok": true
+    },
+    {
+      "value": "",
+      "ok": false
+    }
+  ]
+}

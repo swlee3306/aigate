@@ -1,0 +1,1052 @@
+// providers.js: GitLab providers (#/providers) and the machinery of the other
+// W3c signed changes (a new group, a new project). Every change is SIGNED:
+//
+//   form -> POST .../propose (stores nothing) -> confirmation screen ->
+//   passkey signature -> POST .../apply -> result
+//
+// The confirmation screen shows what will change in the browser's own words
+// (the fields THIS page sent) next to the server's sentences, and offers the
+// signature only when the server's proposal says the same thing: the echoed
+// fields equal the ones sent, the server's `change` equals the SHA-256 the
+// browser computes itself over the canonical JSON of those fields (the same
+// bytes as Go's registrymsg), the message to sign carries that change, and
+// for a new project the deploy key line hashes to the signed
+// deploy_key_sha256 and its fingerprint (computed here from the key blob, as
+// ssh-keygen -l does) is the one the server shows. Otherwise there is a fixed
+// warning and no sign button.
+//
+// There is NO secret input on these screens: a provider points at a token by
+// NAME (token_ref) chosen from the token list of the token screen.
+//
+// Every string from the server is a text node (el()); the server's error words
+// are never shown, only fixed sentences chosen by code. Nothing is stored in
+// the browser, and this file never navigates or reads the clock.
+
+import { el, inline, clear, findHostile } from '../render.js';
+import { registerView } from '../router.js';
+import { replaceContent } from '../shell.js';
+import {
+  signRegistryChange, checkRegistryMessage, sha256Hex, sha256HexBytes, hexToBytes, activeSigners, rememberedPasskey, supported, waText,
+} from '../webauthn.js';
+
+// --- constants shared with the server (TestConstantsAgreeWithWeb compares them) ---
+
+export const PROVIDER_ID_RE = /^[a-z][a-z0-9-]{0,39}$/;
+export const TOKEN_REF_RE = /^[a-z][a-z0-9-]{0,39}$/;
+export const NAME_RE = /^[a-z][a-z0-9-]{1,39}$/;
+export const HASH_RE = /^[0-9a-f]{64}$/;
+export const DEPLOY_KEY_RE = /^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(?:256|384|521)|sk-ssh-ed25519@openssh\.com) [A-Za-z0-9+/]{16,1000}={0,2}(?: [!-~]{1,100})?$/;
+export const NAME_MAX = 40;
+export const MAX_GROUP_DEPTH = 4;
+export const MAX_DESCRIPTION_RUNES = 200;
+export const URL_MAX = 200;
+export const TEMPLATES = ['basic', 'go'];
+export const PUBLISH_MODES = ['write', 'read'];
+export const PARTIAL_STEPS = ['project', 'first_commit', 'default_branch', 'protect', 'deploy_key', 'register'];
+// The only string fields that may be "" (registrymsg's emptyOK).
+export const EMPTY_OK = ['create_group.parent_path', 'create_project.description'];
+export const ACTION_SET_PROVIDER = 'set_provider';
+export const ACTION_DELETE_PROVIDER = 'delete_provider';
+export const ACTION_CREATE_GROUP = 'create_group';
+export const ACTION_CREATE_PROJECT = 'create_project';
+
+// Timeouts (ms). The server may take about 25 s for a provider or group write and
+// about 90 s for a create (GitLab calls plus the automatic clone); a clone alone
+// is limited to 120 s there. The browser must outwait all of them: if it gave up
+// first, a call that succeeded would look like a failure. A timeout is never a
+// "no": it is "unknown" and nothing is sent again.
+export const PROPOSE_TIMEOUT_MS = 25000;
+export const PROVIDER_TIMEOUT_MS = 30000;
+export const CREATE_APPLY_TIMEOUT_MS = 130000;
+export const CLONE_TIMEOUT_MS = 130000;
+
+const MAX_PREVIEW_LINES = 14;
+const MAX_PREVIEW_CHARS = 600;
+const MAX_KEY_LINE = 1300;
+const MAX_ROWS = 200;
+const KEY_PREFIX_CHARS = 48;
+
+// The server's AI sentences (internal/orch/api createPreview), as in projects.js.
+const AI_ON_MARK = '전송될 수 있게 허용합니다';
+const AI_OFF_MARK = 'AI 서비스로 전송되지 않습니다';
+
+const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+const isObj = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
+const SCHEMA = {
+  [ACTION_SET_PROVIDER]: { kind: 's', base_url: 's', ssh_url: 's', token_ref: 's' },
+  [ACTION_DELETE_PROVIDER]: {},
+  [ACTION_CREATE_GROUP]: { name: 's', path: 's', parent_path: 's' },
+  [ACTION_CREATE_PROJECT]: { provider: 's', group_path: 's', template: 's', description: 's', ai_context: 'b', publish: 's', deploy_key_sha256: 's' },
+};
+
+// --- shape validators (ports of internal/registrymsg/names.go) ----------------
+// The server is the authority. These only keep a bad value from costing a
+// proposal; where this page is stricter than the server (IPv6 address
+// literals are not offered) a proposal is simply not made.
+
+export const validName = (s) => typeof s === 'string' && NAME_RE.test(s);
+
+export function validGroupPath(s) {
+  if (typeof s !== 'string') return false;
+  const segs = s.split('/');
+  return segs.length >= 1 && segs.length <= MAX_GROUP_DEPTH && segs.every(validName);
+}
+
+// A project path as the registry holds it: 2 to 5 names (a group path and the project name).
+export function validProjectPath(s) {
+  if (typeof s !== 'string') return false;
+  const segs = s.split('/');
+  return segs.length >= 2 && segs.length <= MAX_GROUP_DEPTH + 1 && segs.every(validName);
+}
+
+const BAD_DESC_CHAR = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Co}\p{Cs}�]/u;
+
+// validDescription: "" or at most 200 CODE POINTS (not UTF-16 units) without
+// control, format (bidi, zero-width), line/paragraph separator or private-use characters.
+export function validDescription(s) {
+  if (typeof s !== 'string') return false;
+  if ([...s].length > MAX_DESCRIPTION_RUNES) return false;
+  return !BAD_DESC_CHAR.test(s);
+}
+
+const HOST_LABEL_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+const IPV4_RE = /^(0|[1-9][0-9]{0,2})(\.(0|[1-9][0-9]{0,2})){3}$/;
+
+function validPort(p) {
+  if (p === '' || p.length > 5 || p[0] === '0' || !/^[0-9]+$/.test(p)) return false;
+  const n = Number(p);
+  return n >= 1 && n <= 65535;
+}
+
+function validHostname(h) {
+  if (h === '' || h.length > 253) return false;
+  const labels = h.split('.');
+  if (!labels.every((l) => HOST_LABEL_RE.test(l))) return false;
+  // a name whose last label is all digits can only be a canonical dotted quad
+  if (/^[0-9]+$/.test(labels[labels.length - 1])) {
+    return IPV4_RE.test(h) && h.split('.').every((x) => Number(x) <= 255);
+  }
+  return true;
+}
+
+function validAuthority(a) {
+  if (a === '' || a.startsWith('[')) return false;
+  let host = a;
+  const i = a.indexOf(':');
+  if (i >= 0) {
+    host = a.slice(0, i);
+    if (!validPort(a.slice(i + 1))) return false;
+  }
+  return validHostname(host);
+}
+
+export function validBaseUrl(s) {
+  if (typeof s !== 'string' || s.length > URL_MAX) return false;
+  if (s.startsWith('http://')) return validAuthority(s.slice(7));
+  if (s.startsWith('https://')) return validAuthority(s.slice(8));
+  return false;
+}
+
+export function validSshUrl(s) {
+  if (typeof s !== 'string' || s.length > URL_MAX || !s.startsWith('ssh://git@')) return false;
+  return validAuthority(s.slice(10));
+}
+
+// --- canonical change (the same bytes as Go's registrymsg.CanonicalChange) ----
+
+export class ChangeError extends Error {
+  constructor(why) {
+    super(why);
+    this.name = 'ChangeError';
+  }
+}
+
+// A string whose canonical JSON could differ between Go and JSON.stringify:
+// control characters, DEL, U+2028/9 and lone surrogates.
+function checkString(s) {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x20 || c === 0x7f || c === 0x2028 || c === 0x2029) throw new ChangeError('control character');
+    if (c >= 0xd800 && c <= 0xdbff) {
+      const d = s.charCodeAt(i + 1);
+      if (!(d >= 0xdc00 && d <= 0xdfff)) throw new ChangeError('lone surrogate');
+      i++;
+    } else if (c >= 0xdc00 && c <= 0xdfff) {
+      throw new ChangeError('lone surrogate');
+    }
+  }
+}
+
+function checkField(action, name, v) {
+  const ok = (cond) => { if (!cond) throw new ChangeError('bad ' + name); };
+  switch (action + '.' + name) {
+    case ACTION_SET_PROVIDER + '.kind': return ok(v === 'gitlab');
+    case ACTION_SET_PROVIDER + '.base_url': return ok(validBaseUrl(v));
+    case ACTION_SET_PROVIDER + '.ssh_url': return ok(validSshUrl(v));
+    case ACTION_SET_PROVIDER + '.token_ref': return ok(TOKEN_REF_RE.test(v));
+    case ACTION_CREATE_GROUP + '.name': case ACTION_CREATE_GROUP + '.path': return ok(validName(v));
+    case ACTION_CREATE_GROUP + '.parent_path': return ok(v === '' || (validGroupPath(v) && v.split('/').length < MAX_GROUP_DEPTH));
+    case ACTION_CREATE_PROJECT + '.provider': return ok(PROVIDER_ID_RE.test(v));
+    case ACTION_CREATE_PROJECT + '.group_path': return ok(validGroupPath(v));
+    case ACTION_CREATE_PROJECT + '.template': return ok(TEMPLATES.includes(v));
+    case ACTION_CREATE_PROJECT + '.description': return ok(validDescription(v));
+    case ACTION_CREATE_PROJECT + '.publish': return ok(PUBLISH_MODES.includes(v));
+    case ACTION_CREATE_PROJECT + '.deploy_key_sha256': return ok(HASH_RE.test(v));
+    default: return ok(false);
+  }
+}
+
+// canonicalChange returns {"action":..,"fields":{..sorted..},"subject":..}: no
+// whitespace, no HTML escaping, only strings and booleans. It refuses
+// whatever registrymsg refuses.
+export function canonicalChange(action, subject, fields) {
+  if (typeof action !== 'string' || !has(SCHEMA, action)) throw new ChangeError('unknown action');
+  const spec = SCHEMA[action];
+  const subjectOk = action === ACTION_CREATE_PROJECT ? validName(subject) : typeof subject === 'string' && PROVIDER_ID_RE.test(subject);
+  if (!subjectOk) throw new ChangeError('bad subject');
+  if (fields === null || typeof fields !== 'object' || Array.isArray(fields)) throw new ChangeError('bad fields');
+  const proto = Object.getPrototypeOf(fields);
+  if (proto !== Object.prototype && proto !== null) throw new ChangeError('bad fields');
+  const names = Object.keys(fields);
+  if (names.length !== Object.keys(spec).length) throw new ChangeError('fields do not match the action');
+  for (const name of names) {
+    if (!has(spec, name)) throw new ChangeError('unknown field');
+    const v = fields[name];
+    if (spec[name] === 'b') {
+      if (typeof v !== 'boolean') throw new ChangeError('wrong type');
+      continue;
+    }
+    if (typeof v !== 'string' || (v === '' && !EMPTY_OK.includes(action + '.' + name))) throw new ChangeError('wrong type');
+    checkString(v);
+    checkField(action, name, v);
+  }
+  names.sort();
+  const body = names.map((n) => JSON.stringify(n) + ':' + JSON.stringify(fields[n])).join(',');
+  return '{"action":' + JSON.stringify(action) + ',"fields":{' + body + '},"subject":' + JSON.stringify(subject) + '}';
+}
+
+// computeChange is the `change` hash of a change: lowercase hex SHA-256 of
+// canonicalChange. Async because WebCrypto is.
+export async function computeChange(action, subject, fields) {
+  return sha256Hex(canonicalChange(action, subject, fields));
+}
+
+// --- the deploy key: the signed hash and the fingerprint shown -----------------
+
+// deployKeyHash is what the server signs for the key: lowercase hex SHA-256 of
+// the UTF-8 text of the one-line public key, exactly as the server hashes it.
+export const deployKeyHash = (line) => sha256Hex(line);
+
+// sshFingerprint is `ssh-keygen -l` form: "SHA256:" and the unpadded base64 of
+// the SHA-256 of the key blob (the decoded second field of the line). null when
+// the line has no strictly valid blob.
+export async function sshFingerprint(line) {
+  if (typeof line !== 'string') return null;
+  const parts = line.split(' ');
+  if (parts.length < 2 || !/^[A-Za-z0-9+/]{16,1000}={0,2}$/.test(parts[1])) return null;
+  let bin;
+  try {
+    bin = atob(parts[1]);
+  } catch {
+    return null;
+  }
+  if (btoa(bin) !== parts[1]) return null; // no stray bits: the blob re-encodes to the same text
+  const blob = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) blob[i] = bin.charCodeAt(i);
+  const digest = hexToBytes(await sha256HexBytes(blob));
+  let s = '';
+  for (const b of digest) s += String.fromCharCode(b);
+  return 'SHA256:' + btoa(s).replace(/=+$/, '');
+}
+
+// --- fixed texts -------------------------------------------------------------
+
+// ERROR_TEXT: one fixed sentence per code the W3c endpoints can answer
+// (w3c-error-codes.json is generated from the server's source). The server's
+// own words are never shown.
+export const ERROR_TEXT = {
+  bad_request: '요청 형식이 올바르지 않아 거부되었습니다. 변경은 적용되지 않았습니다.',
+  not_signed: '서명이 없는 요청이라 거부되었습니다. 변경은 적용되지 않았습니다.',
+  bad_signature: '서명이 올바르지 않아 거부되었습니다. 변경은 적용되지 않았습니다.',
+  unknown_signer: '등록되지 않은 서명자의 서명이라 거부되었습니다. 변경은 적용되지 않았습니다.',
+  stale_signature: '서명이 만료되었습니다(5분 안에만 쓸 수 있습니다). 변경은 적용되지 않았습니다. 처음부터 다시 진행하세요.',
+  signers_unavailable: '서버의 서명자 목록을 쓸 수 없어 처리하지 못했습니다. 변경은 적용되지 않았습니다. 관리자에게 알려 주세요.',
+  request_reused: '이미 사용된 요청이라 거부되었습니다. 변경은 다시 적용되지 않았습니다. 목록을 확인하고 필요하면 새로 시작하세요.',
+  change_mismatch: '서명한 내용과 서버가 받은 내용이 달라 거부되었습니다. 변경은 적용되지 않았습니다.',
+  path_not_allowed: '이 프로젝트 폴더는 허용된 저장소 폴더 바로 아래에 만들 수 없습니다. 관리자가 저장소 폴더 설정을 확인해야 합니다. 변경은 적용되지 않았습니다.',
+  project_exists: '같은 ID 또는 같은 경로의 프로젝트가 이미 등록되어 있습니다. 변경은 적용되지 않았습니다.',
+  project_unknown: '등록되지 않은 프로젝트입니다. 목록을 새로 읽어 확인하세요.',
+  project_rate_limited: '요청이 너무 잦아 한도에 걸렸습니다(시간당 횟수 제한). 잠시 후 다시 시도하세요.',
+  broker_rate_limited: '서버 전체의 시간당 생성 한도를 넘었습니다. 잠시 후 다시 시도하세요.',
+  registry_unavailable: '프로젝트 등록부를 쓸 수 없어 처리하지 못했습니다. 관리자에게 알려 주세요.',
+  tokens_unavailable: '토큰 저장소를 쓸 수 없어 처리하지 못했습니다. 관리자에게 알려 주세요.',
+  broker_unavailable: '등록부 서비스에 연결하지 못했습니다. 변경은 적용되지 않았습니다. 잠시 후 다시 시도하세요.',
+  broker_error: '등록부 서비스가 예상하지 못한 응답을 했습니다. 변경이 적용되었는지 목록에서 확인하세요.',
+  provider_unknown: '등록되지 않은 제공자입니다. 변경은 적용되지 않았습니다. 목록을 새로 읽어 확인하세요.',
+  provider_exists: '같은 id의 제공자가 이미 있습니다. 변경은 적용되지 않았습니다.',
+  provider_in_use: '이 제공자를 쓰는 프로젝트가 있어 삭제하거나 GitLab 주소·ssh 주소를 바꿀 수 없습니다. 변경은 적용되지 않았습니다.',
+  bad_url: '서버가 이 GitLab 주소를 허용하지 않았습니다(접속 대상이 허용 범위 밖이거나 주소가 맞지 않습니다). 변경은 적용되지 않았습니다.',
+  token_ref_unknown: '제공자가 쓸 gitlab 종류 토큰이 없거나 쓸 수 없습니다. 토큰 화면에서 확인하세요. 변경은 적용되지 않았습니다.',
+  provider_unreachable: 'GitLab에 연결하지 못했거나 응답이 없었습니다. 잠시 후 다시 시도하세요. 프로젝트를 만드는 중이었다면 목록의 알림도 확인하세요.',
+  gitlab_refused: 'GitLab이 요청을 받아들이지 않았습니다. 토큰 권한과 GitLab 설정을 확인하세요. 프로젝트를 만드는 중이었다면 목록의 알림도 확인하세요.',
+  group_unknown: 'GitLab에 그런 그룹이 없습니다. 그룹 목록을 다시 읽어 고르세요. 변경은 적용되지 않았습니다.',
+  group_exists: '같은 경로의 그룹이 이미 있습니다. 변경은 적용되지 않았습니다.',
+  project_name_taken: '같은 이름의 프로젝트가 이미 등록되어 있거나 GitLab에 있습니다. 기존 프로젝트는 가져오지 않습니다. 변경은 적용되지 않았습니다.',
+  template_unknown: '알 수 없는 템플릿입니다. 변경은 적용되지 않았습니다.',
+  deploy_key_mismatch: '서명한 배포 키와 지금 서버의 배포 키가 다릅니다. 처음부터 다시 시작해 새로 서명하세요. 변경은 적용되지 않았습니다.',
+  deploy_key_unavailable: '서버의 배포 키 공개 키 파일(.pub)을 읽을 수 없습니다. 관리자가 확인해야 합니다. 변경은 적용되지 않았습니다.',
+  policy_class_missing: '서버 정책에 registered 클래스가 없어 새 프로젝트를 만들 수 없습니다. 관리자가 정책에 한 번 추가해야 합니다. 변경은 적용되지 않았습니다.',
+  create_partial: 'GitLab에 일부만 만들어졌습니다. 이 도구는 삭제하지 않습니다. GitLab에서 직접 정리한 뒤 다시 만드세요.',
+  outcome_unknown: '변경이 적용되었는지 알 수 없습니다. 자동으로 다시 시도하지 않았습니다. 목록을 다시 읽어 확인하고, 프로젝트라면 GitLab과 알림도 확인한 뒤 필요하면 다시 변경하세요.',
+  not_clonable: '이 프로젝트는 제공자 연결이 없어 복제할 주소를 만들 수 없습니다.',
+  host_not_pinned: '이 GitLab 서버의 호스트 키가 서버에 고정되어 있지 않아(known_hosts) 복제하지 않았습니다. 관리자가 확인해야 합니다.',
+  already_cloned: '이 프로젝트 폴더가 이미 있어 복제하지 않았습니다.',
+  clone_in_progress: '이 프로젝트를 이미 복제하는 중입니다. 잠시 뒤 목록을 새로 읽어 확인하세요.',
+  clone_timeout: '복제 시간이 초과되었습니다. 만들다 만 폴더는 지웠습니다. 다시 복제할 수 있습니다.',
+  clone_failed: '복제에 실패했습니다. 만들다 만 폴더는 지웠습니다. 배포 키 권한과 GitLab 연결을 확인한 뒤 다시 복제하세요.',
+  clone_unavailable: '서버에 복제 설정(배포 키와 known_hosts)이 없어 복제할 수 없습니다. 관리자가 확인해야 합니다.',
+  git_missing: '서버에서 git 실행 파일을 찾지 못해 복제할 수 없습니다. 관리자가 확인해야 합니다.',
+  ssh_missing: '서버에서 ssh 실행 파일을 찾지 못해 복제할 수 없습니다. 관리자가 확인해야 합니다.',
+};
+
+const STATUS_TEXT = {
+  403: '이 변경을 할 권한이 없습니다. 변경은 적용되지 않았습니다.',
+  404: '찾을 수 없습니다. 변경은 적용되지 않았습니다.',
+  429: ERROR_TEXT.project_rate_limited,
+};
+
+// failureText: the fixed sentence for an ApiError. Unknown codes fall back to
+// the HTTP status, never to the server's message.
+export function failureText(err) {
+  const code = err && typeof err.code === 'string' ? err.code : '';
+  if (has(ERROR_TEXT, code)) return ERROR_TEXT[code];
+  const st = err && typeof err.status === 'number' ? err.status : 0;
+  if (has(STATUS_TEXT, st)) return STATUS_TEXT[st];
+  if (st >= 500) return '서버에서 오류가 발생했습니다. 변경이 적용되었는지 목록에서 확인하세요.';
+  return '요청을 처리하지 못했습니다. 변경은 적용되지 않았습니다.';
+}
+
+// isUnknown: the call may or may not have changed something (timeout, network,
+// the server's outcome_unknown). Never retried, never signed again.
+export const isUnknown = (err) => !!err && (err.status === 0 || err.code === 'outcome_unknown');
+
+// CLONE_TEXT: what a clone result or a failed clone call says, by code.
+export const CLONE_TEXT = {
+  host_not_pinned: ERROR_TEXT.host_not_pinned,
+  clone_failed: ERROR_TEXT.clone_failed,
+  clone_timeout: ERROR_TEXT.clone_timeout,
+  clone_unavailable: ERROR_TEXT.clone_unavailable,
+  not_clonable: ERROR_TEXT.not_clonable,
+  path_not_allowed: '이 프로젝트 폴더는 허용된 저장소 폴더 바로 아래에 있지 않아 복제하지 않았습니다. 관리자가 확인해야 합니다.',
+  clone_in_progress: ERROR_TEXT.clone_in_progress,
+  registry_unavailable: ERROR_TEXT.registry_unavailable,
+  broker_unavailable: ERROR_TEXT.broker_unavailable,
+  git_missing: ERROR_TEXT.git_missing,
+  ssh_missing: ERROR_TEXT.ssh_missing,
+  already_cloned: ERROR_TEXT.already_cloned,
+  unknown: '복제 결과를 알 수 없습니다. 자동으로 다시 시도하지 않았습니다. 목록을 다시 읽어 복제 여부를 확인하세요.',
+  other: '복제하지 못했습니다. 잠시 후 다시 복제하거나 관리자에게 알려 주세요.',
+};
+
+export function cloneText(code) {
+  return typeof code === 'string' && has(CLONE_TEXT, code) && code !== 'unknown' ? CLONE_TEXT[code] : CLONE_TEXT.other;
+}
+
+const TEXT = {
+  mismatch: '서버가 보낸 변경 내용이 화면의 내용과 맞지 않아 서명할 수 없습니다. 아무것도 서명하거나 보내지 않았습니다. 처음부터 다시 하세요. 계속 같으면 관리자에게 알려 주세요.',
+  noPasskeySession: '패스키로 로그인한 세션에서만 웹 서명을 할 수 있습니다.',
+  noSigner: '로그인한 서명자의 활성 패스키를 찾지 못했습니다.',
+  signersFailed: '패스키 목록을 불러오지 못했습니다. 잠시 후 다시 시도하세요.',
+  connect: '서버에 연결하지 못했습니다. 아무것도 서명하거나 보내지 않았습니다.',
+  aiOn: 'AI 전송 허용: 예. 이 프로젝트의 파일 내용이 외부 AI 서비스(OpenAI)로 전송될 수 있습니다.',
+  waiting: '패스키 확인을 기다리는 중…',
+  sending: '서버로 변경을 보내는 중…',
+};
+
+// --- step list of a project creation (fixed words, never the server's) ---------
+
+const STEP_ORDER = ['group', 'project', 'first_commit', 'protect', 'deploy_key', 'register', 'clone'];
+const STEP_LABEL = {
+  group: '그룹 확인', project: '프로젝트 만들기', first_commit: '첫 커밋과 기본 브랜치', protect: 'main 브랜치 보호',
+  deploy_key: '배포 키 등록', register: '이 서버에 등록', clone: '이 서버에 복제',
+};
+const STATUS_LABEL = { done: '완료', failed: '실패', skipped: '실행 안 됨' };
+// A broker step name to the row it belongs to (the default-branch check follows the first commit).
+const STEP_ROW = { project: 'project', first_commit: 'first_commit', default_branch: 'first_commit', protect: 'protect', deploy_key: 'deploy_key', register: 'register' };
+
+// stepStates: {row: 'done'|'failed'|'skipped'} for the seven rows.
+// kind 'ok' (all done, the clone as given) or 'partial' (stopped at `step`).
+export function stepStates(kind, step, cloneOk) {
+  const out = {};
+  if (kind === 'ok') {
+    for (const k of STEP_ORDER) out[k] = 'done';
+    out.clone = cloneOk ? 'done' : 'failed';
+    return out;
+  }
+  const at = STEP_ORDER.indexOf(STEP_ROW[step]);
+  for (let i = 0; i < STEP_ORDER.length; i++) {
+    out[STEP_ORDER[i]] = i < at || (i === 0 && at >= 1) ? 'done' : i === at ? 'failed' : 'skipped';
+  }
+  return out;
+}
+
+// stepLabel: the fixed words of the row a broker step belongs to.
+export function stepLabel(step) {
+  return has(STEP_ROW, step) ? STEP_LABEL[STEP_ROW[step]] : '알 수 없는 단계';
+}
+
+export function stepList(states) {
+  return el('ol', { class: 'steps', 'aria-label': '만들기 단계' }, STEP_ORDER.map((k) => el('li', { 'data-step': k, 'data-status': states[k] }, [
+    el('b', {}, STEP_LABEL[k]), ' — ', STATUS_LABEL[states[k]],
+  ])));
+}
+
+// partialInfo: what to show of a create_partial refusal. Every member of the
+// server's `detail` is checked; if anything is off the page shows what it sent
+// itself (the group path and the name) and says it cannot tell the step.
+export function partialInfo(err, sent) {
+  const fallback = { provider: sent.fields.provider, project: sent.fields.group_path + '/' + sent.subject, projectId: null, step: null, recorded: null, valid: false };
+  const d = err && err.detail;
+  if (!isObj(d)) return fallback;
+  const idOk = d.project_id === null || (Number.isSafeInteger(d.project_id) && d.project_id > 0);
+  if (typeof d.provider !== 'string' || !PROVIDER_ID_RE.test(d.provider) || typeof d.project !== 'string' || !validProjectPath(d.project) ||
+      !idOk || typeof d.step !== 'string' || !PARTIAL_STEPS.includes(d.step) || typeof d.orphan_recorded !== 'boolean') {
+    return fallback;
+  }
+  return { provider: d.provider, project: d.project, projectId: d.project_id, step: d.step, recorded: d.orphan_recorded, valid: true };
+}
+
+export const ORPHAN_NOTICE = 'GitLab에서 직접 지우세요. 이 도구는 삭제하지 않습니다. 같은 이름으로 다시 만들려면 먼저 GitLab에서 그 프로젝트를 정리해야 합니다.';
+
+// orphanBlock shows one half-made project: the path and id as plain text.
+export function orphanBlock(info) {
+  return el('div', { class: 'trunc', role: 'note', 'data-orphan': 'block' }, [
+    el('p', {}, [
+      '이 프로젝트가 GitLab에 만들어졌을 수 있습니다(일부만): ',
+      el('span', { class: 'mono', 'data-orphan': 'project' }, info.project),
+    ]),
+    el('p', {}, [
+      '프로젝트 ID: ',
+      el('span', { class: 'mono', 'data-orphan': 'project_id' }, info.projectId === null ? '알 수 없음(GitLab이 확인해 주지 않았습니다)' : String(info.projectId)),
+    ]),
+    el('p', {}, ORPHAN_NOTICE),
+  ]);
+}
+
+// --- analysis of a proposal --------------------------------------------------
+
+function mentions(sent, full, key) {
+  const f = full;
+  switch (sent.action) {
+    case ACTION_SET_PROVIDER: return [sent.subject, f.base_url, f.ssh_url, f.token_ref];
+    case ACTION_DELETE_PROVIDER: return [sent.subject];
+    case ACTION_CREATE_GROUP: return [sent.subject, f.name, f.path, f.parent_path === '' ? '(최상위)' : f.parent_path];
+    default: return [f.provider, f.group_path, sent.subject, f.template, f.description === '' ? '(없음)' : f.description, key ? key.fingerprint : ''];
+  }
+}
+
+// analyze checks the server's proposal against what the browser asked for.
+// It returns {problems, full, key}: problems empty = the proposal says what the
+// screen says. `full` are the exact fields to send with the apply (for a new
+// project they carry the deploy key hash the BROWSER computed), `key` the
+// deploy key as verified. `sent` is {action, subject, fields}: the page's own values.
+async function analyze(sent, resp) {
+  const problems = [];
+  if (!isObj(resp)) return { problems: ['shape'] };
+  let full = sent.fields;
+  let key = null;
+  if (sent.action === ACTION_CREATE_PROJECT) {
+    const dk = resp.deploy_key;
+    if (!isObj(dk) || typeof dk.public_key !== 'string' || dk.public_key.length > MAX_KEY_LINE || !DEPLOY_KEY_RE.test(dk.public_key) ||
+        findHostile(dk.public_key) !== null || typeof dk.fingerprint !== 'string') {
+      return { problems: ['deploy_key'] };
+    }
+    const hash = await deployKeyHash(dk.public_key);
+    const fp = await sshFingerprint(dk.public_key);
+    if (fp === null || fp !== dk.fingerprint) problems.push('fingerprint');
+    full = { ...sent.fields, deploy_key_sha256: hash };
+    key = { line: dk.public_key, fingerprint: fp, hash };
+  }
+  let canon;
+  let change;
+  try {
+    canon = canonicalChange(sent.action, sent.subject, full);
+    change = await computeChange(sent.action, sent.subject, full);
+  } catch {
+    return { problems: ['own_fields'] };
+  }
+  // the server echoes what was asked (and, for a project, the hash of the key it shows), nothing else
+  let echoed = '';
+  try {
+    echoed = canonicalChange(resp.action, resp.subject, resp.fields);
+  } catch {
+    problems.push('echo');
+  }
+  if (echoed !== canon) problems.push('echo');
+  // its hash is the browser's hash of the fields on screen
+  if (resp.change !== change) problems.push('change');
+  // the message to sign is canonical and says the same
+  let msg = null;
+  try {
+    msg = checkRegistryMessage(resp.message);
+  } catch {
+    problems.push('message');
+  }
+  if (msg) {
+    if (msg.action !== sent.action || msg.subject !== sent.subject || msg.change !== change) problems.push('message');
+    if (resp.request !== msg.request || resp.issued !== msg.issued) problems.push('message');
+  }
+  // sentences: a bounded list of plain text that mentions every value the screen shows
+  const pv = resp.preview;
+  if (!Array.isArray(pv) || pv.length === 0 || pv.length > MAX_PREVIEW_LINES ||
+      pv.some((x) => typeof x !== 'string' || x === '' || x.length > MAX_PREVIEW_CHARS || findHostile(x) !== null)) {
+    problems.push('preview');
+  } else {
+    if (!mentions(sent, full, key).every((needle) => needle !== '' && pv.some((x) => x.includes(needle)))) problems.push('preview_values');
+    if (sent.action === ACTION_CREATE_PROJECT) {
+      const on = pv.filter((x) => x.includes(AI_ON_MARK)).length;
+      const off = pv.filter((x) => x.includes(AI_OFF_MARK)).length;
+      if (full.ai_context ? !(on === 1 && off === 0) : !(off === 1 && on === 0)) problems.push('preview_ai');
+      const w = pv.filter((x) => x.includes('쓰기:')).length;
+      const r = pv.filter((x) => x.includes('읽기:')).length;
+      if (full.publish === 'write' ? !(w === 1 && r === 0) : !(r === 1 && w === 0)) problems.push('preview_publish');
+    }
+  }
+  return { problems, full, key };
+}
+
+// --- the signed-change flow -----------------------------------------------------
+
+// resolveSigner: the passkey of the logged-in principal (this tab's login, or
+// GET /auth/signers once per page load).
+async function resolveSigner(ctx) {
+  const s = ctx.session;
+  if (!s || s.kind !== 'session' || typeof s.principal !== 'string') return { error: TEXT.noPasskeySession };
+  const rem = rememberedPasskey();
+  if (rem && rem.signer === s.principal) return { id: rem.signer, credentialId: rem.credentialId, rpId: rem.rpId };
+  const list = await activeSigners({ get: ctx.get });
+  const found = list.find((x) => x.id === s.principal);
+  if (!found) return { error: TEXT.noSigner };
+  return { id: found.id, credentialId: found.credential_id };
+}
+
+const proposePath = (action) => (action === ACTION_CREATE_PROJECT ? '/api/v1/projects/create/propose' : '/api/v1/providers/propose');
+const applyPath = (action) => (action === ACTION_CREATE_PROJECT ? '/api/v1/projects/create/apply' : '/api/v1/providers/apply');
+
+// makeFlow runs ONE signed change at a time for a view: propose -> check ->
+// passkey -> apply. The view paints from `flow` (phase, sent, resp, problems,
+// signer, note, result) and is told by cfg.onChange() after every step, and by
+// cfg.onResult(result) once the apply has ended (the view then re-reads its lists).
+//   phase: idle | proposing | confirm | sending | done
+//   result: {ok: true, data} | {ok: false, err, unknown}
+// A proposal is spent when the signature is made: whatever the answer, it is
+// never signed or sent again.
+export function makeFlow(ctx, cfg) {
+  const f = {
+    phase: 'idle', sent: null, resp: null, full: null, key: null, problems: [], signer: null, signerNote: null, note: null, result: null, busy: false,
+  };
+  let propSeq = 0;
+  let signerP = null;
+  const gone = () => !!(ctx.signal && ctx.signal.aborted);
+  const changed = () => { if (!gone()) cfg.onChange(); };
+
+  f.reset = () => {
+    propSeq++; // an answer still in flight is for an abandoned change
+    Object.assign(f, { phase: 'idle', sent: null, resp: null, full: null, key: null, problems: [], signer: null, signerNote: null, note: null, result: null, busy: false });
+  };
+
+  async function resolveSignerOnce(sent) {
+    if (!supported()) {
+      f.signerNote = waText('unsupported');
+    } else {
+      try {
+        if (!signerP) signerP = resolveSigner(ctx);
+        const s = await signerP;
+        if (s.error) {
+          signerP = null;
+          f.signerNote = s.error;
+        } else {
+          f.signer = s;
+          f.signerNote = '서명에 쓸 패스키: ' + inline(s.id, 64);
+        }
+      } catch {
+        signerP = null;
+        f.signerNote = TEXT.signersFailed;
+      }
+    }
+    if (gone() || f.sent !== sent || f.phase !== 'confirm') return;
+    changed();
+  }
+
+  // propose: false when a proposal is already out (a double click); the view
+  // shows f.note (a fixed text) when the phase is back to idle.
+  f.propose = async (sent) => {
+    if (f.busy) return;
+    f.busy = true;
+    f.note = null;
+    const my = ++propSeq;
+    f.phase = 'proposing';
+    changed();
+    let resp;
+    try {
+      resp = await ctx.post(proposePath(sent.action), sent, { noRetry429: true, timeoutMs: PROPOSE_TIMEOUT_MS });
+    } catch (err) {
+      if (gone() || my !== propSeq) return;
+      f.busy = false;
+      f.phase = 'idle';
+      f.note = { error: true, text: err && err.status === 0 ? TEXT.connect : failureText(err) };
+      changed();
+      return;
+    }
+    if (gone() || my !== propSeq) return;
+    const a = await analyze(sent, resp);
+    if (gone() || my !== propSeq) return;
+    f.problems = a.problems;
+    f.full = a.full || null;
+    f.key = a.key || null;
+    f.sent = sent;
+    f.resp = resp;
+    f.phase = 'confirm';
+    f.busy = false;
+    f.signer = null;
+    f.signerNote = null;
+    changed();
+    if (f.problems.length === 0) await resolveSignerOnce(sent);
+  };
+
+  f.canSign = () => f.phase === 'confirm' && !f.busy && f.problems.length === 0 && !!f.signer && !!f.resp && supported();
+
+  f.sign = async () => {
+    if (!f.canSign()) return; // also a double click: busy is set below, before any await
+    const cur = { sent: f.sent, resp: f.resp, full: f.full };
+    f.busy = true;
+    f.note = { error: false, text: TEXT.waiting };
+    changed();
+    let signature;
+    try {
+      signature = await signRegistryChange(cur.resp.message, f.signer);
+    } catch (err) {
+      if (gone() || f.resp !== cur.resp) return;
+      f.busy = false;
+      f.note = { error: true, text: err && err.name === 'WebAuthnError' ? waText(err.code) : waText('authenticator_failed') };
+      changed();
+      return;
+    }
+    // The user left while the passkey prompt was open: drop the signature, send nothing.
+    if (gone() || f.resp !== cur.resp) return;
+    const body = {
+      action: cur.sent.action, subject: cur.sent.subject, fields: cur.full,
+      change: cur.resp.change, request: cur.resp.request, issued: cur.resp.issued, signature,
+    };
+    // From here the proposal is spent.
+    f.phase = 'sending';
+    f.note = null;
+    f.result = null;
+    changed();
+    const timeoutMs = cur.sent.action === ACTION_CREATE_PROJECT ? CREATE_APPLY_TIMEOUT_MS : PROVIDER_TIMEOUT_MS;
+    let data;
+    try {
+      data = await ctx.post(applyPath(cur.sent.action), body, { noRetry429: true, timeoutMs });
+    } catch (err) {
+      if (gone()) return;
+      f.busy = false;
+      f.phase = 'done';
+      f.result = { ok: false, err, unknown: isUnknown(err) };
+      changed();
+      await cfg.onResult(f.result, cur.sent);
+      return;
+    }
+    if (gone()) return;
+    f.busy = false;
+    f.phase = 'done';
+    f.result = { ok: true, data };
+    changed();
+    await cfg.onResult(f.result, cur.sent);
+  };
+  return f;
+}
+
+// --- shared rendering --------------------------------------------------------
+
+export const li = (k, v, attrs) => el('li', attrs || {}, [el('b', {}, k), ': ', el('span', { class: 'mono' }, v)]);
+
+export function noteNode(note) {
+  return note ? el('p', { class: note.error ? ['note', 'err'] : ['note', 'ok'], role: note.error ? 'alert' : 'status' }, note.text) : null;
+}
+
+// confirmPanel draws the confirmation screen of a flow in the `confirm` phase.
+// opts: {title, lead, facts: [li...], extra: [nodes], warn: node|null, onSign, onCancel}
+export function confirmPanel(flow, opts) {
+  let controls;
+  if (flow.problems.length > 0) {
+    controls = el('div', { class: 'trunc', role: 'alert', 'data-warn': 'mismatch' }, TEXT.mismatch);
+  } else {
+    controls = el('div', { class: 'confirm' }, [
+      flow.signerNote ? el('p', { class: 'note' }, flow.signerNote) : null,
+      flow.signer && supported()
+        ? el('button', { type: 'button', class: ['btn', 'primary'], 'data-focus-key': 'sign', disabled: flow.busy, on: { click: opts.onSign } }, '패스키로 서명하고 적용')
+        : null,
+    ]);
+  }
+  const msgText = flow.problems.length === 0 ? flow.resp.message : '';
+  return el('div', { class: ['panel', 'canvas'] }, [
+    el('h1', { id: 'h-confirm' }, opts.title),
+    el('p', { class: 'lead' }, opts.lead),
+    opts.warn || null,
+    el('ul', { class: 'pfacts', 'aria-label': '바뀌는 내용' }, opts.facts),
+    ...(opts.extra || []),
+    flow.problems.length === 0
+      ? el('section', { class: 'sec', 'aria-labelledby': 'h-says' }, [
+        el('h2', { id: 'h-says' }, '서버의 설명'),
+        el('ul', {}, flow.resp.preview.map((x) => el('li', { 'data-preview': 'item' }, x))),
+      ])
+      : null,
+    msgText
+      ? el('section', { class: 'sec', 'aria-labelledby': 'h-msg' }, [
+        el('h2', { id: 'h-msg' }, '서명할 메시지 (서버가 만든 원문)'),
+        el('pre', { class: 'msg', role: 'region', tabindex: '0', 'aria-label': '서명할 메시지' }, msgText),
+        el('p', { class: 'note' }, '이 화면은 위 내용으로 변경의 해시를 직접 다시 계산해 서버가 보낸 값과 같을 때만 서명 단추를 보여 줍니다. 5분 안에 서명해야 합니다.'),
+      ])
+      : null,
+    controls,
+    noteNode(flow.note),
+    el('p', {}, [el('button', { type: 'button', class: 'btn', 'data-focus-key': 'cancel', on: { click: opts.onCancel } }, '취소')]),
+  ]);
+}
+
+export { TEXT as FLOW_TEXT };
+
+export const EDIT_WARNING = '제공자를 바꾸면 이 제공자를 쓰는 프로젝트의 만들기·복제·게시가 모두 바뀐 설정으로 이어집니다. 토큰을 바꾸면 새 토큰의 권한으로 GitLab에 접근합니다. ' +
+  '이 제공자를 쓰는 프로젝트가 있으면 GitLab 주소와 ssh 주소는 바꿀 수 없습니다(서버가 거부합니다). 서명하면 바로 적용됩니다.';
+
+// --- the providers screen ----------------------------------------------------
+
+const ok = (b) => (b ? '예' : '아니오');
+
+function providerRows(r) {
+  return r && Array.isArray(r.providers) ? r.providers.filter((p) => isObj(p)).slice(0, MAX_ROWS) : [];
+}
+
+// A provider this page may act on: every value has the shape the server enforces.
+const actionable = (p) => typeof p.id === 'string' && PROVIDER_ID_RE.test(p.id) && validBaseUrl(p.base_url) && validSshUrl(p.ssh_url) &&
+  typeof p.token_ref === 'string' && TOKEN_REF_RE.test(p.token_ref);
+
+// usableGitlabTokens: the only tokens a provider may point at.
+export function usableGitlabTokens(list) {
+  if (!isObj(list) || !Array.isArray(list.tokens)) return [];
+  return list.tokens.filter((t) => isObj(t) && t.kind === 'gitlab' && t.usable === true && typeof t.ref === 'string' && TOKEN_REF_RE.test(t.ref)).slice(0, MAX_ROWS);
+}
+
+export function providersView(ctx) {
+  ctx.setCrumb('제공자');
+  const st = {
+    step: 'loading', // loading | list | form | confirm | result
+    list: null,
+    listFailed: null,
+    tokens: null, // the token list as read, or null (the token columns say so)
+    note: null,
+    form: null,
+    edit: null, // the provider row an edit started from
+    view: null,
+    result: null,
+  };
+  let listSeq = 0;
+  const gone = () => !!(ctx.signal && ctx.signal.aborted);
+  const flow = makeFlow(ctx, {
+    onChange: () => {
+      if (st.step === 'confirm' && (flow.phase === 'sending' || flow.phase === 'done')) st.step = 'result';
+      if (st.step === 'confirm' || st.step === 'result' || st.step === 'form') paint();
+    },
+    onResult,
+  });
+
+  function paint() {
+    replaceContent(ctx.root, render());
+  }
+
+  async function loadAll() {
+    const my = ++listSeq;
+    const [pr, tk] = await Promise.allSettled([ctx.get('/api/v1/providers'), ctx.get('/api/v1/settings/tokens')]);
+    if (gone() || my !== listSeq) return;
+    if (pr.status === 'fulfilled') {
+      st.list = providerRows(pr.value);
+      st.listFailed = null;
+    } else {
+      st.listFailed = pr.reason;
+    }
+    st.tokens = tk.status === 'fulfilled' && isObj(tk.value) && Array.isArray(tk.value.tokens) ? tk.value : null;
+    if (st.step === 'loading' || st.step === 'list') {
+      st.step = 'list';
+      paint();
+    }
+  }
+
+  async function onResult(result) {
+    // Whatever the answer, the list is read again: a refusal may mean it changed meanwhile, an unknown outcome certainly does.
+    await loadAll();
+  }
+
+  function toList() {
+    flow.reset();
+    st.step = 'list';
+    st.note = null;
+    st.form = null;
+    st.edit = null;
+    st.view = null;
+    paint();
+  }
+
+  async function backToList() {
+    toList();
+    st.step = 'loading';
+    paint();
+    await loadAll();
+  }
+
+  // ---- form ----
+  function tokenInfo(ref) {
+    if (st.tokens === null) return null;
+    return st.tokens.tokens.find((t) => isObj(t) && t.ref === ref && t.kind === 'gitlab') || false;
+  }
+
+  function openForm(row) {
+    const f = {};
+    const toks = usableGitlabTokens(st.tokens);
+    f.id = el('input', { type: 'text', id: 'pv-id', class: 'mono', autocomplete: 'off', spellcheck: 'false', maxlength: '40', readonly: !!row, 'data-focus-key': 'id' });
+    f.id.value = row ? row.id : '';
+    f.base = el('input', { type: 'text', id: 'pv-base', class: 'mono', autocomplete: 'off', spellcheck: 'false', maxlength: String(URL_MAX), 'data-focus-key': 'base' });
+    f.base.value = row ? row.base_url : '';
+    f.ssh = el('input', { type: 'text', id: 'pv-ssh', class: 'mono', autocomplete: 'off', spellcheck: 'false', maxlength: String(URL_MAX), 'data-focus-key': 'ssh' });
+    f.ssh.value = row ? row.ssh_url : '';
+    f.token = el('select', { id: 'pv-token', 'data-focus-key': 'token' }, toks.map((t) => el('option', { value: t.ref },
+      t.ref + (typeof t.expires === 'string' && t.expires !== '' ? ' (만료 ' + inline(t.expires, 12) + ')' : ''))));
+    f.token.value = row && toks.some((t) => t.ref === row.token_ref) ? row.token_ref : (toks[0] ? toks[0].ref : '');
+    f.noTokens = toks.length === 0;
+    f.problem = el('p', { class: ['note', 'err'], role: 'alert', 'data-problem': 'form' });
+    f.problem.hidden = true;
+    st.form = f;
+    st.edit = row || null;
+    st.step = 'form';
+    st.note = null;
+    paint();
+  }
+
+  function formProblem(text) {
+    const f = st.form;
+    clear(f.problem);
+    if (text) f.problem.append(text);
+    f.problem.hidden = !text;
+  }
+
+  function submitForm() {
+    const f = st.form;
+    if (!f || flow.busy) return;
+    const id = f.id.value.trim();
+    const base = f.base.value.trim();
+    const ssh = f.ssh.value.trim();
+    const tokenRef = f.token.value;
+    if (!PROVIDER_ID_RE.test(id)) return formProblem('제공자 id는 소문자로 시작하고 소문자·숫자·하이픈만 써서 40자 이내로 적으세요.');
+    if (!st.edit && st.list && st.list.some((p) => p.id === id)) return formProblem('같은 id의 제공자가 이미 있습니다. 목록의 "수정"을 쓰세요.');
+    if (!validBaseUrl(base)) {
+      return formProblem('GitLab 주소는 http:// 또는 https://로 시작하는 주소여야 합니다(호스트와 선택적 포트만, 경로·계정·쿼리 없음). 예: http://gitlab.example:18082');
+    }
+    if (!validSshUrl(ssh)) return formProblem('ssh 주소는 ssh://git@호스트 또는 ssh://git@호스트:포트 형태여야 합니다(경로 없음).');
+    if (!usableGitlabTokens(st.tokens).some((t) => t.ref === tokenRef)) {
+      return formProblem('토큰을 목록에서 고르세요. 쓸 수 있는 gitlab 종류 토큰만 나옵니다. 없으면 토큰 화면에서 먼저 등록하세요.');
+    }
+    if (st.edit) {
+      if (st.edit.in_use === true && (base !== st.edit.base_url || ssh !== st.edit.ssh_url)) {
+        return formProblem('이 제공자를 쓰는 프로젝트가 있어(사용 중) GitLab 주소와 ssh 주소는 바꿀 수 없습니다. 토큰만 바꿀 수 있습니다.');
+      }
+      if (base === st.edit.base_url && ssh === st.edit.ssh_url && tokenRef === st.edit.token_ref) return formProblem('바뀐 값이 없습니다.');
+    }
+    formProblem('');
+    start({ action: ACTION_SET_PROVIDER, subject: id, fields: { kind: 'gitlab', base_url: base, ssh_url: ssh, token_ref: tokenRef } }, st.edit ? { old: st.edit } : null);
+  }
+
+  async function start(sent, view) {
+    if (flow.busy) return;
+    st.view = view;
+    await flow.propose(sent);
+    if (flow.phase === 'idle' && flow.note) {
+      // refused before anything was signed: said where the person is
+      if (st.step === 'form') formProblem(flow.note.text);
+      else st.note = flow.note;
+      flow.note = null;
+      paint();
+      return;
+    }
+    if (flow.phase === 'confirm') {
+      st.step = 'confirm';
+      paint();
+    }
+  }
+
+  function startDelete(row) {
+    if (flow.busy || !actionable(row) || row.in_use === true) return;
+    start({ action: ACTION_DELETE_PROVIDER, subject: row.id, fields: {} }, { row });
+  }
+
+  // ---- rendering ----
+  function render() {
+    switch (st.step) {
+      case 'form':
+        return renderForm();
+      case 'confirm':
+        return renderConfirm();
+      case 'result':
+        return renderResult();
+      case 'list':
+        return renderList();
+      default:
+        return el('div', { class: ['panel', 'canvas'] }, [el('p', { class: 'lead' }, '불러오는 중…')]);
+    }
+  }
+
+  function providerRow(p) {
+    const can = actionable(p);
+    const inUse = p.in_use === true;
+    const t = tokenInfo(p.token_ref);
+    const last4 = t ? inline(t.last4, 8) : t === null ? '-' : '목록에 없음';
+    const expires = t ? (typeof t.expires === 'string' && t.expires !== '' ? inline(t.expires, 12) : '없음') : '-';
+    let actions;
+    if (can) {
+      actions = [
+        el('button', { type: 'button', class: 'btn', 'data-focus-key': 'edit-' + p.id, on: { click: () => openForm(p) } }, ['수정', el('span', { class: 'sr' }, ' (' + inline(p.id, 64) + ')')]),
+        ' ',
+        el('button', {
+          type: 'button', class: 'btn', 'data-focus-key': 'del-' + p.id, disabled: inUse, on: { click: () => startDelete(p) },
+        }, ['삭제', el('span', { class: 'sr' }, ' (' + inline(p.id, 64) + ')')]),
+        inUse ? el('div', { class: 'note' }, '사용 중이라 삭제할 수 없습니다') : null,
+      ];
+    } else {
+      actions = el('span', { class: 'note' }, '-');
+    }
+    return el('tr', {}, [
+      el('td', { class: 'mono', 'data-label': 'ID' }, inline(p.id, 64)),
+      el('td', { class: 'mono', 'data-label': 'GitLab 주소' }, inline(p.base_url, 200)),
+      el('td', { class: 'mono', 'data-label': 'ssh 주소' }, inline(p.ssh_url, 200)),
+      el('td', { 'data-label': '토큰' }, [
+        el('div', { class: 'mono' }, inline(p.token_ref, 64)),
+        el('small', { class: 'note' }, '끝 4자 ' + last4 + ' · 만료 ' + expires),
+      ]),
+      el('td', { 'data-label': '사용 중' }, ok(inUse)),
+      el('td', {}, actions),
+    ]);
+  }
+
+  function renderList() {
+    if (st.list === null) {
+      return el('div', { class: ['panel', 'canvas'] }, [
+        el('h1', { 'data-focus-key': 'err' }, '불러오지 못했습니다'),
+        el('p', { class: 'lead', role: 'alert' }, failureText(st.listFailed)),
+        el('p', {}, [el('button', { type: 'button', class: 'btn', 'data-focus-key': 'reload', on: { click: () => loadAll() } }, '다시 시도')]),
+      ]);
+    }
+    const rows = st.list.map(providerRow);
+    return el('div', { class: ['panel', 'canvas'] }, [
+      el('h1', { id: 'h-providers' }, '제공자'),
+      el('p', { class: 'lead' }, st.list.length === 0 ? '등록된 제공자가 없습니다.'
+        : '등록된 GitLab 제공자 ' + st.list.length + '개. 제공자를 추가하거나 바꾸려면 패스키 서명이 필요합니다. 이 화면에는 토큰 값을 넣는 곳이 없습니다(토큰은 이름으로 고릅니다).'),
+      el('div', { class: 'row' }, [
+        el('button', { type: 'button', class: ['btn', 'primary'], 'data-focus-key': 'add', disabled: flow.busy, on: { click: () => openForm(null) } }, '제공자 추가'),
+        ' ',
+        el('button', { type: 'button', class: 'btn', 'data-focus-key': 'reload', disabled: flow.busy, on: { click: () => { st.note = null; loadAll(); } } }, '목록 새로고침'),
+      ]),
+      noteNode(st.note),
+      st.list.length > 0
+        ? el('div', { class: 'card' }, [el('div', { class: 'tscroll' }, [el('table', { class: 'ptable' }, [
+          el('caption', { class: 'sr' }, '등록된 제공자'),
+          el('thead', {}, [el('tr', {}, ['ID', 'GitLab 주소', 'ssh 주소', '토큰', '사용 중', '변경'].map((h) => el('th', { scope: 'col' }, h)))]),
+          el('tbody', {}, rows),
+        ])])])
+        : null,
+      el('p', { class: 'note' }, '도달 여부(연결이 되는지)는 이 화면에서 확인하지 않습니다. 토큰은 토큰 화면에서 등록합니다.'),
+      el('p', {}, [el('a', { href: '#/tokens' }, '토큰 화면')]),
+    ]);
+  }
+
+  function renderForm() {
+    const f = st.form;
+    const field = (labelText, id, control, hint) => el('div', { class: 'field' }, [el('label', { for: id }, labelText), control, hint ? el('span', { class: 'hint' }, hint) : null]);
+    return el('div', { class: ['panel', 'canvas'] }, [
+      el('h1', { id: 'h-providers' }, st.edit ? '제공자 수정' : '제공자 추가'),
+      el('p', { class: 'lead' }, '사내 GitLab 서버를 제공자로 등록합니다. 다음 화면에서 바뀔 내용을 모두 확인한 뒤 패스키로 서명합니다.'),
+      st.edit ? el('div', { class: 'trunc', role: 'note', 'data-warn': 'edit' }, EDIT_WARNING) : null,
+      el('div', { class: 'form' }, [
+        field('제공자 id', 'pv-id', f.id, st.edit ? '이미 있는 제공자의 id는 바꿀 수 없습니다.' : '소문자·숫자·하이픈, 40자 이내'),
+        field('GitLab 주소', 'pv-base', f.base, 'http(s)://호스트[:포트] — 경로·계정·쿼리 없음. 서버가 루프백·링크 로컬 주소를 거부합니다.'),
+        field('ssh 주소', 'pv-ssh', f.ssh, 'ssh://git@호스트[:포트] — 복제와 게시에 쓰입니다.'),
+        field('사용할 토큰(이름)', 'pv-token', f.token, f.noTokens ? '쓸 수 있는 gitlab 종류 토큰이 없습니다. 토큰 화면에서 먼저 등록하세요.' : 'GitLab에 그룹·프로젝트를 만들 권한이 있는 관리자 토큰. 이름만 고릅니다.'),
+        f.problem,
+        noteNode(st.note),
+        el('div', { class: 'row' }, [
+          el('button', { type: 'button', class: ['btn', 'primary'], 'data-focus-key': 'confirm', disabled: flow.busy, on: { click: submitForm } }, '변경 내용 확인'),
+          ' ',
+          el('button', { type: 'button', class: 'btn', 'data-focus-key': 'cancel', on: { click: toList } }, '취소'),
+        ]),
+      ]),
+    ]);
+  }
+
+  function renderConfirm() {
+    const s = flow.sent;
+    let factsList;
+    if (s.action === ACTION_SET_PROVIDER) {
+      const old = st.view && st.view.old;
+      const change = (k, oldV, newV) => (old && oldV !== newV ? oldV + ' → ' + newV : newV);
+      factsList = [
+        li('제공자 id', s.subject, { 'data-field': 'id' }),
+        li('GitLab 주소', change('base_url', old && old.base_url, s.fields.base_url), { 'data-field': 'base_url' }),
+        li('ssh 주소', change('ssh_url', old && old.ssh_url, s.fields.ssh_url), { 'data-field': 'ssh_url' }),
+        li('사용할 토큰', change('token_ref', old && old.token_ref, s.fields.token_ref), { 'data-field': 'token_ref' }),
+      ];
+    } else {
+      const row = (st.view && st.view.row) || {};
+      factsList = [
+        li('삭제할 제공자 id', s.subject, { 'data-field': 'id' }),
+        li('GitLab 주소', inline(row.base_url, 200), { 'data-field': 'base_url' }),
+        li('ssh 주소', inline(row.ssh_url, 200), { 'data-field': 'ssh_url' }),
+      ];
+    }
+    return confirmPanel(flow, {
+      title: '변경 내용 확인',
+      lead: '아래 내용이 전부입니다. 서명하면 바로 적용됩니다.',
+      facts: factsList,
+      warn: s.action === ACTION_SET_PROVIDER && st.edit ? el('div', { class: 'trunc', role: 'note', 'data-warn': 'edit' }, EDIT_WARNING) : null,
+      onSign: () => flow.sign(),
+      onCancel: toList,
+    });
+  }
+
+  function renderResult() {
+    const r = flow.result;
+    const s = flow.sent;
+    let title;
+    let body;
+    let kind;
+    if (r === null) {
+      title = '적용하는 중';
+      body = TEXT.sending;
+      kind = 'pending';
+    } else if (r.ok) {
+      title = '완료';
+      body = s.action === ACTION_DELETE_PROVIDER ? '제공자를 삭제했습니다.' : '제공자를 저장했습니다.';
+      kind = 'ok';
+    } else {
+      title = '변경하지 못했습니다';
+      body = r.unknown ? ERROR_TEXT.outcome_unknown : failureText(r.err);
+      kind = 'error';
+    }
+    return el('div', { class: ['panel', 'canvas'] }, [
+      el('h1', { id: 'h-providers' }, title),
+      el('p', { class: kind === 'error' ? ['note', 'err'] : ['note', 'ok'], role: kind === 'error' ? 'alert' : 'status', 'data-result': kind }, body),
+      kind === 'pending' ? null : el('p', {}, [el('button', { type: 'button', class: ['btn', 'primary'], 'data-focus-key': 'back', on: { click: backToList } }, '목록으로')]),
+    ]);
+  }
+
+  ctx.root.append(el('p', { class: 'lead' }, '불러오는 중…'));
+  return loadAll();
+}
+
+registerView('providers', providersView);

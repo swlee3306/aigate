@@ -23,6 +23,12 @@ import { expiryBanner } from '../expiry.js';
 import {
   signRegistryChange, checkRegistryMessage, sha256Hex, activeSigners, rememberedPasskey, supported, waText,
 } from '../webauthn.js';
+import {
+  PROVIDER_ID_RE, TEMPLATES, PUBLISH_MODES, MAX_GROUP_DEPTH, PARTIAL_STEPS, ACTION_CREATE_GROUP, ACTION_CREATE_PROJECT,
+  validName, validGroupPath, validDescription, validProjectPath, validBaseUrl, makeFlow, confirmPanel, li as factItem, stepStates, stepList, stepLabel,
+  partialInfo, orphanBlock, ORPHAN_NOTICE, ERROR_TEXT as W3C_ERROR_TEXT, failureText as w3cFailureText, isUnknown, cloneText, CLONE_TEXT,
+  CLONE_TIMEOUT_MS, PROVIDER_TIMEOUT_MS, FLOW_TEXT,
+} from './providers.js';
 
 // --- constants shared with the server (TestConstantsAgreeWithWeb compares them) ---
 
@@ -47,6 +53,11 @@ export const AI_OFF_MARK = 'AI 서비스로 전송되지 않습니다';
 const MAX_PREVIEW_LINES = 12;
 const MAX_PREVIEW_CHARS = 600;
 const MAX_KINDS = 64;
+const MAX_GROUPS = 500;
+const NAME_MAX_CHARS = 40;
+const KEY_PREFIX_CHARS = 48;
+const TEMPLATE_TEXT = { basic: 'basic — README, .gitignore, .aigate.yml', go: 'go — Go 모듈, main.go, 시험, .aigate.yml' };
+const PUBLISH_TEXT = { write: '쓰기 — 이 서버가 브랜치를 올릴 수 있음', read: '읽기 — 읽기 전용' };
 
 const utf8Len = (s) => new TextEncoder().encode(s).length;
 
@@ -255,6 +266,23 @@ async function analyze(sent, resp) {
 
 // --- the view ----------------------------------------------------------------
 
+const MAX_ORPHANS = 50;
+const ORPHAN_AT_RE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/;
+
+// validOrphan: a half-made project row of the registry list, every member checked
+// (they are shown as text, never as markup, and never become an attribute).
+function validOrphan(o) {
+  return isObj(o) && typeof o.provider === 'string' && PROVIDER_ID_RE.test(o.provider) && validProjectPath(o.project) &&
+    (o.project_id === null || (Number.isSafeInteger(o.project_id) && o.project_id > 0)) && PARTIAL_STEPS.includes(o.step) &&
+    typeof o.at === 'string' && ORPHAN_AT_RE.test(o.at);
+}
+
+// validCloneResult: the `clone` member of a create answer.
+function validCloneResult(c) {
+  if (!isObj(c) || typeof c.status !== 'string' || typeof c.code !== 'string' || !/^[a-z_]{1,40}$/.test(c.code)) return { status: 'failed', code: 'other' };
+  return { status: c.status, code: c.code };
+}
+
 export function projectsView(ctx) {
   ctx.setCrumb('프로젝트');
   const st = {
@@ -273,7 +301,11 @@ export function projectsView(ctx) {
     signerNote: null,
     busy: false,
     result: null, // {error, text}
+    orphans: [], // half-made GitLab projects the server remembers (shape-checked rows only)
   };
+  // W3c: a new group or project (providers.js holds the signed-change flow).
+  const cp = { providers: [], f: null, g: null, groups: null, truncated: false, groupsErr: null, groupsSeq: 0, which: 'create', clone: null, cloneBusy: false, pendingGroup: null };
+  const flow = makeFlow(ctx, { onChange: onFlowChange, onResult: onFlowResult });
   let signerP = null;
   let expiry = null; // {rows, warn}: the tokens that are due, for the banner on top of the list
   let listSeq = 0; // list loads: a newer load or an apply makes older answers stale
@@ -291,6 +323,7 @@ export function projectsView(ctx) {
       const r = await ctx.get('/api/v1/projects/registry');
       if (gone() || my !== listSeq) return;
       st.list = r && Array.isArray(r.projects) ? r.projects.filter(isObj) : [];
+      st.orphans = r && Array.isArray(r.orphans) ? r.orphans.filter(validOrphan).slice(0, MAX_ORPHANS) : [];
       st.listFailed = null;
     } catch (err) {
       if (gone() || my !== listSeq) return;
@@ -325,6 +358,12 @@ export function projectsView(ctx) {
 
   function toList() {
     propSeq++; // a proposal still in flight is for an abandoned change
+    flow.reset();
+    cp.f = null;
+    cp.g = null;
+    cp.groups = null;
+    cp.groupsSeq++;
+    cp.clone = null;
     st.step = 'list';
     st.note = null;
     st.sent = null;
@@ -522,9 +561,429 @@ export function projectsView(ctx) {
     await loadList();
   }
 
+  // ---- W3c: new project and new group ----
+  function onFlowChange() {
+    if (st.step === 'x_confirm' && (flow.phase === 'sending' || flow.phase === 'done')) st.step = 'x_result';
+    if (st.step === 'x_confirm' || st.step === 'x_result' || st.step === 'cp_form' || st.step === 'cg_form') paint();
+  }
+
+  // After a signed change ended, whatever the answer.
+  async function onFlowResult(result, sent) {
+    if (sent.action === ACTION_CREATE_GROUP) {
+      const g = result.ok && isObj(result.data) ? result.data.group : null;
+      const made = isObj(g) && validGroupPath(g.path) ? g.path : (sent.fields.parent_path === '' ? '' : sent.fields.parent_path + '/') + sent.fields.path;
+      await loadGroups(sent.subject, result.ok ? made : null);
+      if (result.ok && st.step === 'x_result') {
+        flow.reset();
+        st.step = 'cp_form';
+        st.note = { error: false, text: '그룹을 만들었습니다.' };
+        paint();
+      }
+      return;
+    }
+    // a project: the lists are read again (an unknown outcome certainly changed what they say, a half-made project adds an alert)
+    cp.clone = null;
+    if (result.ok) {
+      const c = validCloneResult(isObj(result.data) ? result.data.clone : null);
+      const done = c.status === 'cloned' || c.status === 'already_cloned';
+      cp.clone = { state: done ? 'ok' : 'failed', code: c.code, already: c.status === 'already_cloned' };
+    }
+    const reads = [loadList()];
+    if (!result.ok && result.unknown) reads.push(reloadProviders());
+    await Promise.all(reads);
+    if (!gone() && st.step === 'x_result') paint();
+  }
+
+  async function reloadProviders() {
+    try {
+      const r = await ctx.get('/api/v1/providers');
+      if (!gone() && r && Array.isArray(r.providers)) cp.providers = r.providers.filter((p) => isObj(p) && PROVIDER_ID_RE.test(p.id) && validBaseUrl(p.base_url)).slice(0, 50);
+    } catch {
+      // the next screen reads them again
+    }
+  }
+
+  async function startCreate() {
+    if (st.busy || flow.busy) return;
+    st.busy = true;
+    st.note = null;
+    paint();
+    let r;
+    try {
+      r = await ctx.get('/api/v1/providers');
+    } catch (err) {
+      if (gone()) return;
+      st.busy = false;
+      st.note = { error: true, text: w3cFailureText(err) };
+      paint();
+      return;
+    }
+    if (gone()) return;
+    st.busy = false;
+    const provs = r && Array.isArray(r.providers) ? r.providers.filter((p) => isObj(p) && PROVIDER_ID_RE.test(p.id) && validBaseUrl(p.base_url)).slice(0, 50) : [];
+    if (provs.length === 0) {
+      st.note = { error: false, text: '등록된 GitLab 제공자가 없습니다. 먼저 제공자를 추가하세요.', link: '#/providers' };
+      paint();
+      return;
+    }
+    cp.providers = provs;
+    cp.f = buildCreateForm();
+    st.step = 'cp_form';
+    paint();
+    loadGroups(provs[0].id, null);
+  }
+
+  function buildCreateForm() {
+    const f = {};
+    f.provider = el('select', { id: 'cp-provider', 'data-focus-key': 'provider', on: { change: () => { loadGroups(f.provider.value, null); } } },
+      cp.providers.map((p) => el('option', { value: p.id }, inline(p.id, 64) + ' — ' + inline(p.base_url, 80))));
+    f.provider.value = cp.providers[0].id;
+    f.group = el('select', { id: 'cp-group', 'data-focus-key': 'group' }, [el('option', { value: '' }, '그룹을 불러오는 중…')]);
+    f.group.value = '';
+    f.newGroup = el('button', { type: 'button', class: 'btn', 'data-focus-key': 'newgroup', on: { click: openGroupForm } }, '새 그룹 만들기');
+    f.name = el('input', { type: 'text', id: 'cp-name', class: 'mono', autocomplete: 'off', spellcheck: 'false', maxlength: String(NAME_MAX_CHARS), 'data-focus-key': 'name' });
+    f.desc = el('input', { type: 'text', id: 'cp-desc', autocomplete: 'off', 'data-focus-key': 'desc' });
+    f.template = el('select', { id: 'cp-template', 'data-focus-key': 'template' }, TEMPLATES.map((t) => el('option', { value: t }, TEMPLATE_TEXT[t])));
+    f.template.value = TEMPLATES[0];
+    f.ai = el('input', { type: 'checkbox', id: 'cp-ai', 'data-focus-key': 'ai' });
+    f.ai.checked = false; // default: the repository's contents are NOT sent to an AI service
+    f.publish = el('select', { id: 'cp-publish', 'data-focus-key': 'publish' }, PUBLISH_MODES.map((m) => el('option', { value: m }, PUBLISH_TEXT[m])));
+    f.publish.value = PUBLISH_MODES[0];
+    f.problem = el('p', { class: ['note', 'err'], role: 'alert', 'data-problem': 'form' });
+    f.problem.hidden = true;
+    return f;
+  }
+
+  const setProblem = (f, text) => {
+    clear(f.problem);
+    if (text) f.problem.append(text);
+    f.problem.hidden = !text;
+  };
+
+  // loadGroups reads the groups of a provider from GitLab (a call that costs a
+  // slot of the hourly limit and is never waited out or repeated on its own).
+  async function loadGroups(provId, select) {
+    if (typeof provId !== 'string' || !PROVIDER_ID_RE.test(provId)) return;
+    const my = ++cp.groupsSeq;
+    cp.groups = null;
+    cp.groupsErr = null;
+    cp.truncated = false;
+    fillGroupSelect(null);
+    let r;
+    try {
+      r = await ctx.get('/api/v1/providers/' + provId + '/groups', { noRetry429: true, timeoutMs: PROVIDER_TIMEOUT_MS });
+    } catch (err) {
+      if (gone() || my !== cp.groupsSeq) return;
+      cp.groupsErr = err && err.status === 0 ? FLOW_TEXT.connect : w3cFailureText(err);
+      fillGroupSelect(null);
+      return;
+    }
+    if (gone() || my !== cp.groupsSeq) return;
+    cp.groups = r && Array.isArray(r.groups) ? r.groups.filter((g) => isObj(g) && validGroupPath(g.path)).slice(0, MAX_GROUPS) : [];
+    cp.truncated = !!r && r.truncated === true;
+    fillGroupSelect(select);
+  }
+
+  // fillGroupSelect rebuilds the group choices in place (the control survives repaints).
+  function fillGroupSelect(select) {
+    const f = cp.f;
+    if (!f) return;
+    clear(f.group);
+    const first = cp.groups === null ? (cp.groupsErr ? '그룹 목록을 읽지 못했습니다' : '그룹을 불러오는 중…') : cp.groups.length === 0 ? '고를 그룹이 없습니다' : '그룹을 고르세요';
+    f.group.appendChild(el('option', { value: '' }, first));
+    for (const g of cp.groups || []) f.group.appendChild(el('option', { value: g.path }, g.path));
+    f.group.value = select && (cp.groups || []).some((g) => g.path === select) ? select : '';
+    f.newGroup.disabled = cp.groups === null;
+    if (st.step === 'cp_form') paint();
+  }
+
+  function submitCreate() {
+    const f = cp.f;
+    if (!f || flow.busy) return;
+    const provider = f.provider.value;
+    const group = f.group.value;
+    const name = typeof f.name.value === 'string' ? f.name.value.trim() : '';
+    const desc = typeof f.desc.value === 'string' ? f.desc.value : '';
+    if (!validName(name)) return setProblem(f, '프로젝트 이름은 소문자로 시작하고 소문자·숫자·하이픈만 써서 2자 이상 40자 이내로 적으세요. (GitLab 프로젝트 이름, 프로젝트 ID, 폴더 이름으로 함께 쓰입니다.)');
+    if (!PROVIDER_ID_RE.test(provider) || !cp.providers.some((p) => p.id === provider)) return setProblem(f, '제공자를 목록에서 고르세요.');
+    if (cp.groups === null || group === '' || !cp.groups.some((g) => g.path === group)) return setProblem(f, '그룹을 목록에서 고르세요. 그룹이 없으면 "새 그룹 만들기"를 쓰세요.');
+    if (!validDescription(desc)) return setProblem(f, '설명은 200자(글자 수) 이내여야 하고 줄바꿈·제어 문자·보이지 않는 문자·방향 전환 문자를 쓸 수 없습니다.');
+    if (!TEMPLATES.includes(f.template.value) || !PUBLISH_MODES.includes(f.publish.value)) return setProblem(f, '템플릿과 게시 권한을 목록에서 고르세요.');
+    setProblem(f, '');
+    startFlow({
+      action: ACTION_CREATE_PROJECT, subject: name,
+      fields: { provider, group_path: group, template: f.template.value, description: desc, ai_context: f.ai.checked === true, publish: f.publish.value },
+    }, 'create');
+  }
+
+  function openGroupForm() {
+    if (!cp.f || cp.groups === null) return;
+    const g = {};
+    g.parent = el('select', { id: 'cg-parent', 'data-focus-key': 'parent' }, [
+      el('option', { value: '' }, '(최상위)'),
+      ...cp.groups.filter((x) => x.path.split('/').length < MAX_GROUP_DEPTH).map((x) => el('option', { value: x.path }, x.path)),
+    ]);
+    g.parent.value = '';
+    g.pathAuto = true;
+    g.name = el('input', {
+      type: 'text', id: 'cg-name', class: 'mono', autocomplete: 'off', spellcheck: 'false', maxlength: String(NAME_MAX_CHARS), 'data-focus-key': 'gname',
+      on: { input: () => { if (g.pathAuto) g.path.value = g.name.value; } },
+    });
+    g.path = el('input', {
+      type: 'text', id: 'cg-path', class: 'mono', autocomplete: 'off', spellcheck: 'false', maxlength: String(NAME_MAX_CHARS), 'data-focus-key': 'gpath',
+      on: { input: () => { g.pathAuto = false; } },
+    });
+    g.problem = el('p', { class: ['note', 'err'], role: 'alert', 'data-problem': 'group' });
+    g.problem.hidden = true;
+    cp.g = g;
+    st.step = 'cg_form';
+    st.note = null;
+    paint();
+  }
+
+  function submitGroup() {
+    const g = cp.g;
+    if (!g || flow.busy) return;
+    const name = g.name.value.trim();
+    const path = g.path.value.trim();
+    const parent = g.parent.value;
+    if (!validName(name)) return setProblem(g, '그룹 이름은 소문자로 시작하고 소문자·숫자·하이픈만 써서 2자 이상 40자 이내로 적으세요.');
+    if (!validName(path)) return setProblem(g, '그룹 경로는 한 마디(슬래시 없이)이고 이름과 같은 규칙입니다: 소문자로 시작, 소문자·숫자·하이픈, 2~40자.');
+    if (parent !== '' && !(validGroupPath(parent) && parent.split('/').length < MAX_GROUP_DEPTH && (cp.groups || []).some((x) => x.path === parent))) {
+      return setProblem(g, '상위 그룹을 목록에서 고르세요(그룹은 4단계까지만 만들 수 있습니다).');
+    }
+    setProblem(g, '');
+    startFlow({ action: ACTION_CREATE_GROUP, subject: cp.f.provider.value, fields: { name, path, parent_path: parent } }, 'group');
+  }
+
+  async function startFlow(sent, which) {
+    if (flow.busy) return;
+    cp.which = which;
+    await flow.propose(sent);
+    if (flow.phase === 'idle' && flow.note) {
+      const note = flow.note;
+      flow.note = null;
+      const f = which === 'group' ? cp.g : cp.f;
+      if (f) setProblem(f, note.text);
+      paint();
+      return;
+    }
+    if (flow.phase === 'confirm') {
+      st.step = 'x_confirm';
+      paint();
+    }
+  }
+
+  function backFromFlow() {
+    flow.reset();
+    st.step = cp.which === 'group' ? 'cg_form' : 'cp_form';
+    paint();
+  }
+
+  // The clone of a registered project that has no folder yet. No signature: it
+  // only clones what the registry already says. A timeout is "unknown", never retried.
+  async function retryClone(id, where) {
+    if (cp.cloneBusy || !SUBJECT_RE.test(id)) return;
+    cp.cloneBusy = true;
+    if (where === 'result') cp.clone = { state: 'busy' };
+    paint();
+    let outcome; // {ok} | {code} | {unknown}
+    try {
+      await ctx.post('/api/v1/projects/' + id + '/clone', {}, { noRetry429: true, timeoutMs: CLONE_TIMEOUT_MS });
+      outcome = { ok: true };
+    } catch (err) {
+      outcome = isUnknown(err) ? { unknown: true } : { code: err && typeof err.code === 'string' ? err.code : '', status: err && err.status };
+    }
+    if (gone()) return;
+    cp.cloneBusy = false;
+    let text;
+    if (outcome.ok) text = '이 서버에 복제했습니다.';
+    else if (outcome.unknown) text = CLONE_TEXT.unknown;
+    else text = Object.prototype.hasOwnProperty.call(CLONE_TEXT, outcome.code) ? CLONE_TEXT[outcome.code] : (Object.prototype.hasOwnProperty.call(W3C_ERROR_TEXT, outcome.code) ? W3C_ERROR_TEXT[outcome.code] : cloneText(outcome.code));
+    if (where === 'result') {
+      cp.clone = outcome.ok ? { state: 'ok', code: 'ok', text }
+        : outcome.code === 'already_cloned' ? { state: 'ok', code: outcome.code, already: true, text }
+          : { state: 'failed', code: outcome.code || 'other', text, unknown: !!outcome.unknown };
+    } else {
+      st.note = { error: !outcome.ok, text: outcome.ok ? '복제했습니다: ' + id : text };
+    }
+    paint();
+    // A success, an existing folder and an unknown outcome all change what the list says.
+    if (outcome.ok || outcome.unknown || outcome.code === 'already_cloned') await loadList();
+  }
+
+  function cloneCell(p, idOk) {
+    if (typeof p.provider !== 'string') return '-';
+    if (p.cloned === true) return el('span', { class: ['chip', 'c-done'] }, '복제됨');
+    return el('span', {}, [
+      el('span', { class: ['chip', 'c-idle'] }, '복제 안 됨'),
+      idOk ? [' ', el('button', {
+        type: 'button', class: 'btn', 'data-focus-key': 'clone-' + p.id, disabled: cp.cloneBusy, on: { click: () => retryClone(p.id, 'list') },
+      }, ['다시 복제', el('span', { class: 'sr' }, ' (' + inline(p.id, 64) + ')')])] : null,
+    ]);
+  }
+
+  function orphansBlock() {
+    if (st.orphans.length === 0) return null;
+    return el('div', { class: 'trunc', role: 'note', 'data-orphans': 'list' }, [
+      el('p', {}, 'GitLab에 일부만 만들어진 프로젝트 ' + st.orphans.length + '개가 있을 수 있습니다(만들기가 중간에 멈췄습니다).'),
+      el('ul', {}, st.orphans.map((o) => el('li', {}, [
+        el('span', { class: 'mono' }, o.project),
+        ' (프로젝트 ID ' + (o.project_id === null ? '알 수 없음' : String(o.project_id)) + ', 멈춘 단계: ' + stepLabel(o.step) + ', ' + o.at + ')',
+      ]))),
+      el('p', {}, ORPHAN_NOTICE),
+    ]);
+  }
+
+  function renderCreateForm() {
+    const f = cp.f;
+    const field = (labelText, id, control, hint) => el('div', { class: 'field' }, [el('label', { for: id }, labelText), control, hint ? el('span', { class: 'hint' }, hint) : null]);
+    return el('div', { class: ['panel', 'canvas'] }, [
+      el('h1', { id: 'h-projects' }, '새 프로젝트 만들기'),
+      el('p', { class: 'lead' }, 'GitLab에 빈 프로젝트를 만들고(첫 커밋, main 보호, 배포 키 포함) 이 서버에 복제해 등록합니다. 다음 화면에서 바뀔 내용을 모두 확인한 뒤 패스키로 서명합니다.'),
+      el('div', { class: 'form' }, [
+        field('제공자', 'cp-provider', f.provider),
+        field('그룹', 'cp-group', f.group, cp.groupsErr ? cp.groupsErr : cp.truncated ? '그룹이 많아 일부만 보입니다. 찾는 그룹이 없으면 GitLab에서 확인하세요.' : 'GitLab에 실제로 물어 받은 그룹입니다(프로젝트를 만들 권한이 있는 것만).'),
+        el('div', { class: ['row', 'rowgap'] }, [f.newGroup]),
+        field('프로젝트 이름', 'cp-name', f.name, '소문자·숫자·하이픈, 2~40자. GitLab 프로젝트 이름·프로젝트 ID·폴더 이름이 모두 이것입니다. GitLab이 예약한 이름은 GitLab이 거부할 수 있습니다.'),
+        field('설명(선택)', 'cp-desc', f.desc, '200자 이내.'),
+        field('템플릿', 'cp-template', f.template, '코드에 고정된 파일들이 첫 커밋으로 들어갑니다.'),
+        el('div', { class: 'field' }, [
+          el('div', { class: 'row' }, [f.ai, ' ', el('label', { for: 'cp-ai' }, 'AI 전송 허용 (기본: 꺼짐)')]),
+          el('span', { class: 'hint' }, '켜면 AI 계획 기능이 이 프로젝트 파일의 일부 내용을 외부 AI 서비스(OpenAI)로 보낼 수 있습니다.'),
+        ]),
+        field('게시 권한', 'cp-publish', f.publish, '쓰기: 이 서버가 브랜치를 올릴 수 있는 배포 키로 등록합니다. 읽기: 읽기 전용 키로 등록합니다.'),
+        f.problem,
+        noteNode(),
+        el('div', { class: 'row' }, [
+          el('button', { type: 'button', class: ['btn', 'primary'], 'data-focus-key': 'confirm', disabled: flow.busy, on: { click: submitCreate } }, '변경 내용 확인'),
+          ' ',
+          el('button', { type: 'button', class: 'btn', 'data-focus-key': 'cancel', on: { click: toList } }, '취소'),
+        ]),
+      ]),
+    ]);
+  }
+
+  function renderGroupForm() {
+    const g = cp.g;
+    const field = (labelText, id, control, hint) => el('div', { class: 'field' }, [el('label', { for: id }, labelText), control, hint ? el('span', { class: 'hint' }, hint) : null]);
+    return el('div', { class: ['panel', 'canvas'] }, [
+      el('h1', { id: 'h-projects' }, '새 그룹 만들기'),
+      el('p', { class: 'lead' }, 'GitLab에 비공개 그룹을 만듭니다. 별도의 패스키 서명이 필요하며, 이 도구는 그룹을 삭제하지 않습니다.'),
+      el('div', { class: 'form' }, [
+        field('상위 그룹', 'cg-parent', g.parent, '"(최상위)"를 고르면 최상위 그룹이 됩니다. 그룹은 4단계까지입니다.'),
+        field('그룹 이름', 'cg-name', g.name, '소문자·숫자·하이픈, 2~40자'),
+        field('그룹 경로', 'cg-path', g.path, '주소에 쓰이는 한 마디. 기본은 이름과 같습니다.'),
+        g.problem,
+        el('div', { class: 'row' }, [
+          el('button', { type: 'button', class: ['btn', 'primary'], 'data-focus-key': 'confirm', disabled: flow.busy, on: { click: submitGroup } }, '변경 내용 확인'),
+          ' ',
+          el('button', { type: 'button', class: 'btn', 'data-focus-key': 'cancel', on: { click: () => { cp.which = 'create'; st.step = 'cp_form'; paint(); } } }, '취소'),
+        ]),
+      ]),
+    ]);
+  }
+
+  function renderXConfirm() {
+    const s = flow.sent;
+    if (s.action === ACTION_CREATE_GROUP) {
+      return confirmPanel(flow, {
+        title: '변경 내용 확인',
+        lead: '아래 내용이 전부입니다. 서명하면 GitLab에 그룹이 바로 만들어집니다.',
+        facts: [
+          factItem('제공자', s.subject, { 'data-field': 'provider' }),
+          factItem('그룹 이름', s.fields.name, { 'data-field': 'name' }),
+          factItem('그룹 경로', s.fields.path, { 'data-field': 'path' }),
+          factItem('상위 그룹', s.fields.parent_path === '' ? '(최상위)' : s.fields.parent_path, { 'data-field': 'parent_path' }),
+        ],
+        onSign: () => flow.sign(),
+        onCancel: backFromFlow,
+      });
+    }
+    const f = flow.full || s.fields; // a refused proposal shows only what this page itself sent
+    const key = flow.key;
+    const yn = (b) => (b ? '예' : '아니오');
+    const factsList = [
+      factItem('제공자', s.fields.provider, { 'data-field': 'provider' }),
+      factItem('그룹 경로', s.fields.group_path, { 'data-field': 'group_path' }),
+      factItem('프로젝트 이름', s.subject, { 'data-field': 'name' }),
+      factItem('템플릿', f.template, { 'data-field': 'template' }),
+      factItem('설명', f.description === '' ? '(없음)' : f.description, { 'data-field': 'description' }),
+      factItem('AI 전송 허용', yn(f.ai_context), { 'data-field': 'ai_context' }),
+      factItem('게시 권한', f.publish === 'write' ? '쓰기 — 이 서버가 브랜치를 올릴 수 있는 배포 키' : '읽기 — 읽기 전용 배포 키', { 'data-field': 'publish' }),
+    ];
+    if (key) {
+      factsList.push(
+        factItem('배포 키 지문(ssh-keygen -l 형식)', key.fingerprint, { 'data-field': 'fingerprint' }),
+        factItem('공개 키(.pub) 앞부분', key.line.slice(0, KEY_PREFIX_CHARS) + '…', { 'data-field': 'key_prefix' }),
+        factItem('서명에 묶이는 키 해시(앞 16자)', key.hash.slice(0, 16) + '…', { 'data-field': 'key_hash' }),
+      );
+    }
+    return confirmPanel(flow, {
+      title: '변경 내용 확인',
+      lead: '아래 내용이 전부입니다. 서명하면 GitLab에 프로젝트가 바로 만들어지고, 이 도구는 만든 것을 삭제하지 못합니다.',
+      facts: factsList,
+      extra: [f.ai_context ? el('div', { class: 'trunc', 'data-emph': 'ai-on', role: 'note' }, '[중요] AI 전송 허용: 예. 이 프로젝트의 파일 내용이 외부 AI 서비스(OpenAI)로 전송될 수 있습니다.') : null],
+      onSign: () => flow.sign(),
+      onCancel: backFromFlow,
+    });
+  }
+
+  function renderXResult() {
+    const r = flow.result;
+    const s = flow.sent;
+    if (s.action === ACTION_CREATE_GROUP) {
+      const kind = r === null ? 'pending' : r.ok ? 'ok' : 'error';
+      const body = r === null ? '서버로 변경을 보내는 중…' : r.ok ? '그룹을 만들었습니다. 그룹 목록을 다시 읽는 중…'
+        : r.unknown ? W3C_ERROR_TEXT.outcome_unknown : w3cFailureText(r.err);
+      return el('div', { class: ['panel', 'canvas'] }, [
+        el('h1', { id: 'h-projects' }, r === null ? '만드는 중' : r.ok ? '완료' : '그룹을 만들지 못했습니다'),
+        el('p', { class: kind === 'error' ? ['note', 'err'] : ['note', 'ok'], role: kind === 'error' ? 'alert' : 'status', 'data-result': kind }, body),
+        kind === 'error' ? el('p', {}, [el('button', { type: 'button', class: ['btn', 'primary'], 'data-focus-key': 'back', on: { click: backFromFlow } }, '돌아가기')]) : null,
+      ]);
+    }
+    if (r === null) {
+      return el('div', { class: ['panel', 'canvas'] }, [
+        el('h1', { id: 'h-projects' }, '만드는 중'),
+        el('p', { class: ['note', 'ok'], role: 'status', 'data-result': 'pending' }, '서버가 GitLab에 프로젝트를 만들고 있습니다(최대 약 90초 걸릴 수 있습니다). 끝나면 단계가 나옵니다. 이 화면을 닫아도 서버의 작업은 멈추지 않습니다.'),
+      ]);
+    }
+    if (r.ok) {
+      const c = cp.clone || { state: 'ok', code: 'ok' };
+      const cloneDone = c.state === 'ok';
+      const cloneLine = cloneDone ? (c.already ? CLONE_TEXT.already_cloned : '이 서버에 복제했습니다.')
+        : c.state === 'busy' ? '복제하는 중입니다(최대 2분)…' : (c.text || cloneText(c.code));
+      return el('div', { class: ['panel', 'canvas'] }, [
+        el('h1', { id: 'h-projects' }, '완료'),
+        el('p', { class: ['note', 'ok'], role: 'status', 'data-result': 'ok' }, '프로젝트를 만들고 등록했습니다.'),
+        stepList(stepStates('ok', null, cloneDone)),
+        el('p', { class: cloneDone ? ['note', 'ok'] : c.state === 'busy' ? ['note'] : ['note', 'err'], role: 'status', 'data-clone': c.state }, cloneLine),
+        c.state === 'failed'
+          ? el('p', {}, [el('button', { type: 'button', class: 'btn', 'data-focus-key': 'reclone', disabled: cp.cloneBusy, on: { click: () => retryClone(s.subject, 'result') } }, '다시 복제'), ' ',
+            el('span', { class: 'note' }, '서명 없이 이미 등록된 내용대로 복제만 다시 합니다.')])
+          : null,
+        el('p', {}, [el('button', { type: 'button', class: ['btn', 'primary'], 'data-focus-key': 'back', on: { click: backToList } }, '목록으로')]),
+      ]);
+    }
+    // a failure
+    const partial = r.err && r.err.code === 'create_partial';
+    const info = partial ? partialInfo(r.err, s) : null;
+    return el('div', { class: ['panel', 'canvas'] }, [
+      el('h1', { id: 'h-projects' }, '프로젝트를 만들지 못했습니다'),
+      el('p', { class: ['note', 'err'], role: 'alert', 'data-result': 'error' }, r.unknown ? W3C_ERROR_TEXT.outcome_unknown : w3cFailureText(r.err)),
+      partial && info.step !== null ? stepList(stepStates('partial', info.step, false)) : null,
+      partial ? orphanBlock(info) : null,
+      partial && info.step === null ? el('p', { class: 'note' }, '어느 단계에서 멈췄는지 알 수 없습니다. GitLab에서 위 경로를 확인하세요.') : null,
+      r.unknown ? el('p', { class: 'note' }, 'GitLab에 같은 이름의 프로젝트가 생겼는지, 목록의 알림에 올라왔는지 확인하세요. 같은 이름으로 다시 만들려면 먼저 그것을 확인하세요.') : null,
+      el('p', {}, [el('button', { type: 'button', class: ['btn', 'primary'], 'data-focus-key': 'back', on: { click: backToList } }, '목록으로')]),
+    ]);
+  }
+
   // ---- rendering ----
   function noteNode() {
-    return st.note ? el('p', { class: st.note.error ? ['note', 'err'] : ['note', 'ok'], role: st.note.error ? 'alert' : 'status' }, st.note.text) : null;
+    return st.note ? el('p', { class: st.note.error ? ['note', 'err'] : ['note', 'ok'], role: st.note.error ? 'alert' : 'status' }, [
+      st.note.text, st.note.link ? [' ', el('a', { href: st.note.link }, '제공자 화면')] : null,
+    ]) : null;
   }
 
   function render() {
@@ -537,6 +996,14 @@ export function projectsView(ctx) {
         return renderConfirm();
       case 'result':
         return renderResult();
+      case 'cp_form':
+        return renderCreateForm();
+      case 'cg_form':
+        return renderGroupForm();
+      case 'x_confirm':
+        return renderXConfirm();
+      case 'x_result':
+        return renderXResult();
       case 'list':
         return renderList();
       default:
@@ -552,7 +1019,7 @@ export function projectsView(ctx) {
         el('caption', { class: 'sr' }, '등록된 프로젝트'),
         el('thead', {}, [el('tr', {}, [
           el('th', { scope: 'col' }, 'ID'), el('th', { scope: 'col' }, '경로'), el('th', { scope: 'col' }, '종류'),
-          el('th', { scope: 'col' }, 'AI 전송 허용'), el('th', { scope: 'col' }, 'GitLab 연결'),
+          el('th', { scope: 'col' }, 'AI 전송 허용'), el('th', { scope: 'col' }, 'GitLab 연결'), el('th', { scope: 'col' }, '복제'),
           el('th', { scope: 'col' }, '자동 병합'), el('th', { scope: 'col' }, '변경'),
         ])]),
         el('tbody', {}, rows),
@@ -566,9 +1033,12 @@ export function projectsView(ctx) {
       el('div', { class: 'row' }, [
         el('button', { type: 'button', class: ['btn', 'primary'], 'data-focus-key': 'add', on: { click: startRegister } }, '프로젝트 추가'),
         ' ',
+        el('button', { type: 'button', class: ['btn', 'primary'], 'data-focus-key': 'create', disabled: st.busy || flow.busy, on: { click: startCreate } }, '새 프로젝트 만들기'),
+        ' ',
         el('button', { type: 'button', class: 'btn', 'data-focus-key': 'reload', disabled: st.busy, on: { click: reload } }, '목록 새로고침'),
       ]),
       noteNode(),
+      orphansBlock(),
       st.list.length > 0 ? el('div', { class: 'card' }, [table]) : null,
       el('p', { class: 'note' }, 'GitLab 연결과 자동 병합은 지금은 읽기 전용입니다.'),
     ]);
@@ -600,6 +1070,7 @@ export function projectsView(ctx) {
       el('td', { class: 'mono', 'data-label': '종류' }, inline(p.kind, 64)),
       el('td', { 'data-label': 'AI 전송 허용' }, el('span', { class: ['chip', ai ? 'c-wait' : 'c-idle'] }, ai ? '예' : '아니오')),
       el('td', { 'data-label': 'GitLab 연결' }, gl),
+      el('td', { 'data-label': '복제' }, cloneCell(p, idOk)),
       el('td', { 'data-label': '자동 병합' }, isObj(p.auto_merge) && p.auto_merge.enabled === true ? '켜짐' : '꺼짐'),
       el('td', {}, toggle),
     ]);

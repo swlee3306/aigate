@@ -1,6 +1,10 @@
 package web_test
 
 import (
+	"bytes"
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
 	stdjson "encoding/json"
 	"net/http"
 	"os"
@@ -10,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 
 	"aigate/internal/approval/signing"
 	"aigate/internal/orch/api"
@@ -218,17 +224,12 @@ func TestDevServer(t *testing.T) {
 	projects := []map[string]any{
 		{"id": "docs", "path": "/home/orch/repos/docs", "kind": "docs", "ai_context": false, "gitlab": map[string]any{"project": "team/docs", "project_id": nil}, "auto_merge": map[string]any{"enabled": false}},
 		{"id": "calc", "path": "/home/orch/repos/calc", "kind": "code", "ai_context": true, "gitlab": nil, "auto_merge": map[string]any{"enabled": false}},
+		{"id": "billing", "path": "/home/orch/repos/billing", "kind": "registered", "ai_context": false, "provider": "gl", "gitlab": map[string]any{"project": "team/billing", "project_id": 77}, "auto_merge": map[string]any{"enabled": false}, "cloned": false},
 	}
 	projPropose, projApply := "ok", "ok"
 	projStatus := map[string]int{"not_signed": 400, "bad_signature": 403, "unknown_signer": 403, "stale_signature": 403, "signers_unavailable": 503,
 		"request_reused": 409, "change_mismatch": 400, "project_exists": 409, "project_unknown": 404, "path_not_allowed": 400,
 		"registry_unavailable": 503, "not_supported": 400, "outcome_unknown": 504, "project_rate_limited": 429}
-	mux.HandleFunc("/api/v1/projects/registry", func(w http.ResponseWriter, r *http.Request) {
-		projMu.Lock()
-		defer projMu.Unlock()
-		b, _ := stdjson.Marshal(map[string]any{"projects": projects, "providers": []any{}, "auto_merge_global": map[string]any{"enabled": false, "max_per_day": 5}})
-		serve(w, b)
-	})
 	mux.HandleFunc("/api/v1/projects/candidates", func(w http.ResponseWriter, r *http.Request) {
 		if os.Getenv("ORCH_WEB_LONGPATH") != "" { // a 300-character candidate path, for the 390px check
 			long := "/home/orch/repos/" + strings.Repeat("abcdefghij", 28) + "x"
@@ -471,6 +472,249 @@ func TestDevServer(t *testing.T) {
 		b, _ := stdjson.Marshal(row)
 		serve(w, b)
 	})
+	// W3c: providers, groups and project creation. State in memory. No signature
+	// is verified and nothing real is called: this is a look at the screens. The
+	// deploy key is a real ed25519 key from a fixed seed, so its fingerprint and
+	// line hash are the ones the browser recomputes. Select what the next call
+	// does with /dev-set-w3c?create=ok|partial|clone_failed|unknown|taken&clone=ok|fail|unknown.
+	var w3cMu sync.Mutex
+	type devProvider struct{ ID, BaseURL, SSHURL, TokenRef string }
+	devProviders := []devProvider{
+		{"gl", "http://100.64.0.10:18082", "ssh://git@100.64.0.10", "gitlab-main"},
+		{"gl-spare", "https://git.example.com", "ssh://git@git.example.com:2222", "gitlab-docs"},
+	}
+	devGroups := []map[string]string{{"path": "team", "name": "team"}, {"path": "team/sub", "name": "sub"}, {"path": "docs-group", "name": "docs-group"}}
+	devOrphans := []map[string]any{}
+	createMode, cloneMode := "ok", "ok"
+	devPub, devFP, devKeyHash := func() (string, string, string) {
+		priv := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, 32))
+		pk, err := ssh.NewPublicKey(priv.Public())
+		if err != nil {
+			t.Fatal(err)
+		}
+		line := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pk))) + " orchd@deploy"
+		sum := sha256.Sum256([]byte(line))
+		return line, ssh.FingerprintSHA256(pk), hex.EncodeToString(sum[:])
+	}()
+	provUsed := func(id string) bool {
+		for _, p := range projects {
+			if p["provider"] == id {
+				return true
+			}
+		}
+		return false
+	}
+	provViews := func(withUse bool) []map[string]any {
+		out := []map[string]any{}
+		for _, p := range devProviders {
+			m := map[string]any{"id": p.ID, "kind": "gitlab", "base_url": p.BaseURL, "ssh_url": p.SSHURL, "token_ref": p.TokenRef}
+			if withUse {
+				m["in_use"] = provUsed(p.ID)
+			}
+			out = append(out, m)
+		}
+		return out
+	}
+	// the registry: projects (+ created ones), providers, orphans
+	mux.HandleFunc("/api/v1/projects/registry", func(w http.ResponseWriter, r *http.Request) {
+		projMu.Lock()
+		w3cMu.Lock()
+		defer projMu.Unlock()
+		defer w3cMu.Unlock()
+		b, _ := stdjson.Marshal(map[string]any{"projects": projects, "providers": provViews(true), "orphans": devOrphans, "auto_merge_global": map[string]any{"enabled": false, "max_per_day": 5}})
+		serve(w, b)
+	})
+	mux.HandleFunc("/api/v1/providers", func(w http.ResponseWriter, r *http.Request) {
+		projMu.Lock()
+		w3cMu.Lock()
+		defer projMu.Unlock()
+		defer w3cMu.Unlock()
+		b, _ := stdjson.Marshal(map[string]any{"providers": provViews(true)})
+		serve(w, b)
+	})
+	mux.HandleFunc("GET /api/v1/providers/{id}/groups", func(w http.ResponseWriter, r *http.Request) {
+		w3cMu.Lock()
+		defer w3cMu.Unlock()
+		b, _ := stdjson.Marshal(map[string]any{"groups": devGroups, "truncated": false})
+		serve(w, b)
+	})
+	devErr := func(w http.ResponseWriter, status int, code string) {
+		w.WriteHeader(status)
+		json(w, `{"error":{"code":"`+code+`","message":"dev <img src=x onerror=alert(1)> SERVER-WORDS"}}`)
+	}
+	type w3cBody struct {
+		Action  string         `json:"action"`
+		Subject string         `json:"subject"`
+		Fields  map[string]any `json:"fields"`
+	}
+	str := func(m map[string]any, k string) string { s, _ := m[k].(string); return s }
+	devPropose := func(w http.ResponseWriter, r *http.Request) {
+		var in w3cBody
+		_ = stdjson.NewDecoder(r.Body).Decode(&in)
+		fields := in.Fields
+		var extra map[string]any
+		if in.Action == "create_project" {
+			fields = map[string]any{}
+			for k, v := range in.Fields {
+				fields[k] = v
+			}
+			fields["deploy_key_sha256"] = devKeyHash
+			extra = map[string]any{"deploy_key": map[string]string{"public_key": devPub, "fingerprint": devFP}}
+		}
+		change, err := registrymsg.ChangeHash(in.Action, in.Subject, fields)
+		if err != nil {
+			devErr(w, 400, "bad_request")
+			return
+		}
+		issued := time.Now().UTC().Truncate(time.Second)
+		msg := signing.RegistryMessage{Action: in.Action, Subject: in.Subject, Change: change, Request: registrymsg.NewRequestID(), Issued: issued}
+		stamp := "서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다"
+		var pv []string
+		switch in.Action {
+		case "set_provider":
+			pv = []string{"제공자 '" + in.Subject + "'를 저장합니다(종류: gitlab). 같은 id가 있으면 이 값으로 바뀝니다", "GitLab 주소: " + str(fields, "base_url"), "ssh 주소: " + str(fields, "ssh_url"),
+				"사용할 토큰 이름: " + str(fields, "token_ref") + " (토큰 값은 이 화면에 나오지 않습니다)", "[중요] 이 토큰의 권한으로 위 주소의 GitLab에 그룹과 프로젝트를 만듭니다",
+				"이 제공자를 쓰는 프로젝트가 있으면 주소는 바꿀 수 없습니다", stamp}
+		case "delete_provider":
+			pv = []string{"제공자 '" + in.Subject + "'를 삭제합니다", "이 제공자를 쓰는 프로젝트가 있으면 삭제되지 않습니다", "GitLab의 그룹과 프로젝트는 지워지지 않습니다", stamp}
+		case "create_group":
+			parent := str(fields, "parent_path")
+			if parent == "" {
+				parent = "(최상위)"
+			}
+			pv = []string{"제공자 '" + in.Subject + "'의 GitLab에 새 그룹을 만듭니다", "그룹 이름: " + str(fields, "name"), "그룹 경로: " + str(fields, "path"), "상위 그룹: " + parent,
+				"비공개 그룹으로 만들어집니다. 이 도구는 그룹을 삭제하지 않습니다", stamp}
+		default:
+			ai := "이 프로젝트의 파일 내용은 AI 서비스로 전송되지 않습니다(전송 허용 꺼짐)"
+			if v, _ := fields["ai_context"].(bool); v {
+				ai = "[중요] 이 프로젝트의 파일 내용이 외부 AI 서비스(OpenAI)로 전송될 수 있게 허용합니다. AI 계획 기능을 쓰면 요구사항과 저장소의 일부 파일 내용이 서비스 밖으로 나갑니다"
+			}
+			pub := "쓰기: 이 서버가 브랜치를 올릴 수 있는 배포 키로 등록합니다"
+			if str(fields, "publish") == "read" {
+				pub = "읽기: 배포 키는 읽기 전용으로 등록합니다(이 서버는 브랜치를 올리지 못합니다)"
+			}
+			desc := str(fields, "description")
+			if desc == "" {
+				desc = "(없음)"
+			}
+			pv = []string{"GitLab 제공자 '" + str(fields, "provider") + "'의 그룹 '" + str(fields, "group_path") + "'에 새 프로젝트 '" + in.Subject + "'를 만듭니다",
+				"템플릿: " + str(fields, "template") + " (코드에 고정된 파일들이 첫 커밋으로 들어갑니다)", "설명: " + desc, ai, "게시 권한 — " + pub,
+				"배포 키 지문(SHA-256): " + devFP + " (이 서버의 배포 키 공개 키 파일 기준)", "등록 후 정책 종류(kind)는 registered 입니다",
+				"GitLab 프로젝트는 비공개로 만들어지고, 만든 뒤 이 도구는 삭제하지 않습니다", "만든 뒤 이 서버에 자동으로 한 번 복제합니다", stamp}
+		}
+		out := map[string]any{"action": in.Action, "subject": in.Subject, "fields": fields, "message": msg.Text(), "change": change,
+			"request": msg.Request, "issued": issued.Format("2006-01-02T15:04:05Z"), "preview": pv}
+		for k, v := range extra {
+			out[k] = v
+		}
+		b, _ := stdjson.Marshal(out)
+		serve(w, b)
+	}
+	mux.HandleFunc("POST /api/v1/providers/propose", devPropose)
+	mux.HandleFunc("POST /api/v1/projects/create/propose", devPropose)
+	mux.HandleFunc("POST /api/v1/providers/apply", func(w http.ResponseWriter, r *http.Request) {
+		var in w3cBody
+		_ = stdjson.NewDecoder(r.Body).Decode(&in)
+		projMu.Lock()
+		w3cMu.Lock()
+		defer projMu.Unlock()
+		defer w3cMu.Unlock()
+		switch in.Action {
+		case "set_provider":
+			p := devProvider{in.Subject, str(in.Fields, "base_url"), str(in.Fields, "ssh_url"), str(in.Fields, "token_ref")}
+			for i := range devProviders {
+				if devProviders[i].ID == p.ID {
+					devProviders[i] = p
+					b, _ := stdjson.Marshal(map[string]any{"provider": map[string]any{"id": p.ID, "kind": "gitlab", "base_url": p.BaseURL, "ssh_url": p.SSHURL, "token_ref": p.TokenRef}})
+					serve(w, b)
+					return
+				}
+			}
+			devProviders = append(devProviders, p)
+			b, _ := stdjson.Marshal(map[string]any{"provider": map[string]any{"id": p.ID, "kind": "gitlab", "base_url": p.BaseURL, "ssh_url": p.SSHURL, "token_ref": p.TokenRef}})
+			serve(w, b)
+		case "delete_provider":
+			if provUsed(in.Subject) {
+				devErr(w, 409, "provider_in_use")
+				return
+			}
+			for i := range devProviders {
+				if devProviders[i].ID == in.Subject {
+					devProviders = append(devProviders[:i], devProviders[i+1:]...)
+					break
+				}
+			}
+			json(w, `{"id":"`+in.Subject+`","deleted":true}`)
+		default: // create_group
+			path := str(in.Fields, "path")
+			if p := str(in.Fields, "parent_path"); p != "" {
+				path = p + "/" + path
+			}
+			devGroups = append(devGroups, map[string]string{"path": path, "name": str(in.Fields, "name")})
+			b, _ := stdjson.Marshal(map[string]any{"provider": in.Subject, "group": map[string]string{"path": path, "name": str(in.Fields, "name")}})
+			serve(w, b)
+		}
+	})
+	mux.HandleFunc("POST /api/v1/projects/create/apply", func(w http.ResponseWriter, r *http.Request) {
+		var in w3cBody
+		_ = stdjson.NewDecoder(r.Body).Decode(&in)
+		time.Sleep(700 * time.Millisecond) // long enough to see the waiting screen
+		projMu.Lock()
+		w3cMu.Lock()
+		defer projMu.Unlock()
+		defer w3cMu.Unlock()
+		group := str(in.Fields, "group_path")
+		switch createMode {
+		case "taken":
+			devErr(w, 409, "project_name_taken")
+			return
+		case "unknown":
+			devErr(w, 504, "outcome_unknown")
+			return
+		case "partial":
+			devOrphans = append(devOrphans, map[string]any{"provider": str(in.Fields, "provider"), "project": group + "/" + in.Subject, "project_id": 4242, "step": "deploy_key", "at": time.Now().UTC().Format("2006-01-02T15:04:05Z")})
+			w.WriteHeader(502)
+			b, _ := stdjson.Marshal(map[string]any{"error": map[string]any{"code": "create_partial", "message": "dev <img src=x onerror=alert(1)> SERVER-WORDS", "detail": map[string]any{
+				"provider": str(in.Fields, "provider"), "project": group + "/" + in.Subject, "project_id": 4242, "step": "deploy_key", "orphan_recorded": true, "orphan_dropped": false}}})
+			serve(w, b)
+			return
+		}
+		cloned := createMode != "clone_failed"
+		p := map[string]any{"id": in.Subject, "path": "/home/orch/repos/" + in.Subject, "kind": "registered", "ai_context": in.Fields["ai_context"], "provider": in.Fields["provider"],
+			"gitlab": map[string]any{"project": group + "/" + in.Subject, "project_id": 100 + len(projects)}, "auto_merge": map[string]any{"enabled": false}, "cloned": cloned}
+		projects = append(projects, p)
+		clone := map[string]any{"status": "cloned", "code": "ok"}
+		if !cloned {
+			clone = map[string]any{"status": "failed", "code": "host_not_pinned"}
+		}
+		b, _ := stdjson.Marshal(map[string]any{"project": p, "clone": clone})
+		serve(w, b)
+	})
+	mux.HandleFunc("POST /api/v1/projects/{id}/clone", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		time.Sleep(500 * time.Millisecond)
+		projMu.Lock()
+		w3cMu.Lock()
+		defer projMu.Unlock()
+		defer w3cMu.Unlock()
+		switch cloneMode {
+		case "fail":
+			devErr(w, 502, "clone_failed")
+			return
+		case "unknown":
+			devErr(w, 504, "outcome_unknown")
+			return
+		}
+		for _, p := range projects {
+			if p["id"] == id {
+				p["cloned"] = true
+				b, _ := stdjson.Marshal(map[string]any{"project": p, "clone": map[string]any{"status": "cloned", "code": "ok"}})
+				serve(w, b)
+				return
+			}
+		}
+		devErr(w, 404, "project_unknown")
+	})
 	console := web.Handler()
 	srv := &http.Server{Addr: "127.0.0.1:" + port, ReadHeaderTimeout: 5 * time.Second,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -497,6 +741,18 @@ func TestDevServer(t *testing.T) {
 					tokApply = v
 				}
 				tokMu.Unlock()
+				_, _ = w.Write([]byte("ok"))
+				return
+			}
+			if r.URL.Path == "/dev-set-w3c" {
+				w3cMu.Lock()
+				if v := r.URL.Query().Get("create"); v != "" {
+					createMode = v
+				}
+				if v := r.URL.Query().Get("clone"); v != "" {
+					cloneMode = v
+				}
+				w3cMu.Unlock()
 				_, _ = w.Write([]byte("ok"))
 				return
 			}

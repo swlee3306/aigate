@@ -122,6 +122,9 @@ function toError(res, data) {
   // `reason` is the fixed sentence of a not_retryable refusal (server-built);
   // views show it only as sanitized text.
   if (e && typeof e.reason === 'string' && e.reason) err.reason = e.reason.slice(0, 500);
+  // `detail` of a create_partial refusal (where the half-made project is): a plain
+  // object handed to the view, which checks every member itself before showing it.
+  if (code === 'create_partial' && e.detail && typeof e.detail === 'object' && !Array.isArray(e.detail)) err.detail = e.detail;
   return err;
 }
 

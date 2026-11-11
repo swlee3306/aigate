@@ -256,3 +256,14 @@ pre.block-pre { font-family: var(--mono); font-size: 13px; background: var(--bg)
 @media (forced-colors: active) { .form .ovlbox input.ovlin { color: transparent; forced-color-adjust: none; caret-color: CanvasText; } .ovlbox .ovlmask { color: CanvasText; forced-color-adjust: none; } }
 .form .ovlbox input.ovlin::selection { color: transparent; background: var(--accent-bg); }
 .ovlbox .ovlmask { position: absolute; left: 13px; right: 13px; top: 0; bottom: 0; display: flex; align-items: center; overflow: hidden; white-space: pre; pointer-events: none; font-family: var(--mono); font-size: 13px; letter-spacing: 0; color: var(--text); }
+
+/* W3c: creation steps, half-made project notice, wrapping of long values */
+.steps { list-style: none; padding: 0; margin: 10px 0 14px; display: grid; gap: 4px; }
+.rowgap { margin-bottom: 14px; }
+.steps li { padding: 6px 12px; border: 1px solid var(--line); border-radius: 8px; overflow-wrap: anywhere; min-width: 0; }
+.steps li[data-status="failed"] { background: var(--amber-bg); border-color: var(--amber-line); color: var(--amber); }
+.steps li[data-status="skipped"] { color: var(--muted); }
+.trunc p { margin: 0 0 6px; overflow-wrap: anywhere; min-width: 0; } .trunc p:last-child { margin-bottom: 0; }
+.trunc ul { margin: 0 0 6px; padding-left: 20px; } .trunc li { overflow-wrap: anywhere; min-width: 0; }
+.form select { max-width: 100%; }
+li[data-preview] { overflow-wrap: anywhere; min-width: 0; }
