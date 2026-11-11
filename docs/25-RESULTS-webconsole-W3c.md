@@ -18,10 +18,10 @@
 실행: 2026-11-11, macOS(Apple Silicon), Go 1.27.1, Node v26.5.0. 세는 방식은 W3a·W3b와 같다: 최상위 시험 함수와 하위 시험을 따로 센다(`go test -json` 결과 줄에서 집계).
 
 - `go vet ./...`, `GOOS=darwin go vet ./cmd/... ./internal/...`, `GOOS=linux go vet ./cmd/... ./internal/...`: 통과. `gofmt -l .`: 출력 없음.
-- `go test ./... -count=1 -race`: **종료 코드 0**, 표준 오류 출력 없음. 최상위 시험 함수 1473개 중 **1471 통과, 0 실패, 2 건너뜀**(하위 시험 935개 모두 통과). 이 숫자는 최종 검토 수정 라운드까지 넣은 최종 코드에서 한 번에 돌린 것이다. 건너뜀 2개는 W1~W3b와 같다: `internal/orch/web` `TestDevServer`(수동 개발 서버), `internal/pathfold` `TestCollectionsPerformance`(-race 빌드에서만 건너뛰는 시간 검사).
-- `node --test "internal/orch/web/test/*.test.js"`: **230개 전부 통과**(W3b 194개 + C5 35개 + 최종 검토 1개).
+- `go test ./... -count=1 -race`: **종료 코드 0**, 표준 오류 출력 없음. 최상위 시험 함수 1475개 중 **1473 통과, 0 실패, 2 건너뜀**(하위 시험 935개 모두 통과). 이 숫자는 최종 검토 수정 라운드까지 넣은 최종 코드에서 한 번에 돌린 것이다. 건너뜀 2개는 W1~W3b와 같다: `internal/orch/web` `TestDevServer`(수동 개발 서버), `internal/pathfold` `TestCollectionsPerformance`(-race 빌드에서만 건너뛰는 시간 검사).
+- `node --test "internal/orch/web/test/*.test.js"`: **231개 전부 통과**(W3b 194개 + C5 35개 + 최종·재검토 2개).
 - **게이트:** `go test -run TestConstantsAgreeWithWeb -v ./internal/orch/api` → `--- PASS: TestConstantsAgreeWithWeb`, 하위 `tokens`·`providers` 모두 PASS, **`SKIP` 없음**.
-- W3b(23번 문서) 대비 최상위 통과 1297 → 1471(+174), 하위 시험 833 → 935(+102). C6가 더한 것은 최상위 24개(broker 14, orchd api 9, clone 1)와 최종 검토 수정의 4개(`TestCreateMRRefusesProviderLinkedProject`, `TestCreateRefusesExistingFolderBeforeSignatureOrBroker`, `TestDefaultCloneTimeoutFitsTheRetryPath`, node `TestCreateAlreadyClonedNeedsChecking`).
+- W3b(23번 문서) 대비 최상위 통과 1297 → 1473(+176), 하위 시험 833 → 935(+102). C6가 더한 것은 최상위 24개(broker 14, orchd api 9, clone 1)와 최종·재검토 수정의 7개(`TestEmptyTemplateDisablesTemplates`, `TestStatusMRProjectsSkipsProviderLinked`, node `TestRetryCloneAlreadyClonedNeedsChecking` 포함; `TestCreateMRRefusesProviderLinkedProject`, `TestCreateRefusesExistingFolderBeforeSignatureOrBroker`, `TestDefaultCloneTimeoutFitsTheRetryPath`, node `TestCreateAlreadyClonedNeedsChecking`).
 
 | 패키지 | 통과 | 실패 | 건너뜀 | 하위 시험 |
 |---|---|---|---|---|
@@ -33,7 +33,7 @@
 | `internal/adapter` | 13 | 0 | 0 | 0 |
 | `internal/approval` | 33 | 0 | 0 | 80 |
 | `internal/approval/signing` | 67 | 0 | 0 | 76 |
-| `internal/broker` | 279 | 0 | 0 | 231 |
+| `internal/broker` | 280 | 0 | 0 | 231 |
 | `internal/config` | 8 | 0 | 0 | 0 |
 | `internal/gate` | 60 | 0 | 0 | 63 |
 | `internal/gitx` | 45 | 0 | 0 | 3 |
@@ -41,7 +41,7 @@
 | `internal/orch/api` | 329 | 0 | 0 | 33 |
 | `internal/orch/approvals` | 6 | 0 | 0 | 0 |
 | `internal/orch/broker` | 10 | 0 | 0 | 0 |
-| `internal/orch/clone` | 25 | 0 | 0 | 0 |
+| `internal/orch/clone` | 26 | 0 | 0 | 0 |
 | `internal/orch/knownhosts` | 4 | 0 | 0 | 0 |
 | `internal/orch/machine` | 34 | 0 | 0 | 14 |
 | `internal/orch/policy` | 9 | 0 | 0 | 25 |
@@ -163,7 +163,7 @@ C1~C5가 각자 적은 표를 모았다. **이 표의 모든 "예상"은 코드�
 | W3c-14 | **배포 키 합류 조건:** 키는 이미 `example-group/sample-collector`에 등록되어 있고, GitLab은 토큰의 사용자가 그 프로젝트에 접근할 수 있을 때만 기존 키에 붙인다(재사용 자체는 지원). 안 되면 허용 목록 밖의 호출(키를 프로젝트에 켜기)이 필요 → 컷오버 결정 | 접근이 없으면 첫 프로젝트부터 `create_partial`(단계 `deploy_key`) |
 | W3c-16 | **(최종 검토)** 새 프로젝트 폴더 이름이 이미 있으면 서명·GitLab 호출 전에 `path_exists`(409)로 거부(orchd, 모든 허용 루트, 링크 포함 아무 종류). 자동 복제가 `already_cloned`면 화면은 "확인 필요" | 폴더를 사람이 치워야 함 |
 | W3c-17 | **(최종 검토)** broker `create_mr`은 제공자 연결이 있는 프로젝트를 `repo_not_mapped`로 거부(W3d 전까지) | W3c 프로젝트의 MR 없음 |
-| W3c-18 | **(최종 검토)** 복제에 `--template=`(빈 값) 추가, 복제 제한 120초 → 100초 | 느린 큰 저장소는 100초에 시간 초과(다시 복제 가능) |
+| W3c-18 | **(최종 검토)** 복제에 `--template=`(빈 값) 추가, 복제 제한 120초 → 100초(서버 쓰기 제한 120초 안에 맞추려고) | 느린 큰 저장소는 100초에 시간 초과(다시 복제 가능) |
 | W3c-15 | **`known_hosts` 고정은 정확한 항목만**(평문·`[host]:port`·해시). 와일드카드·`@cert-authority` 줄만 있으면 `host_not_pinned` | 파일을 고쳐야 함 |
 
 ## 6. 실서버에서 확인하지 못한 것
@@ -180,7 +180,7 @@ C1~C5가 각자 적은 표를 모았다. **이 표의 모든 "예상"은 코드�
 - **GitLab의 기본 브랜치 보호 설정**(인스턴스와 대상 그룹이 "완전 보호" 또는 "보호 안 함"이어야 함: 더 약하면 GitLab이 `main`에 약한 규칙을 자동으로 만들고 이 도구는 고치지 못해 **모든 생성이 `create_partial`(`protect`)**로 끝난다). 런북 사전 점검 (k).
 - **배포 키 합류 조건:** `id_gitlab_deploy`는 이미 `example-group/sample-collector`에 등록되어 있다. 재사용 자체는 GitLab 문서상 지원되지만 **토큰의 사용자가 그 원래 프로젝트에 접근할 수 있어야** 기존 키에 붙는다. 아니면 **첫 프로젝트부터** `create_partial`(`deploy_key`). (앞선 "두 번째 프로젝트부터"라는 가정을 바로잡는다.)
 - **같은 이름의 폴더가 이미 있을 때:** 최종 검토 뒤 orchd가 `/home/orch/repos/<이름>`이 무엇이든 있으면(심볼릭 링크 포함) 서명·GitLab 호출 전에 `path_exists`(409)로 거부한다(시험함). 그래도 생성 직후 자동 복제가 `already_cloned`로 끝나면(그 사이 폴더가 생김) 화면은 성공이 아니라 "확인 필요"로 보인다. 실서버에서 이 경로가 어떻게 보이는지는 미확인.
-- **복제 재시도와 130초 쓰기 제한:** 재시도 엔드포인트의 복제는 100초로 제한된다(최종 검토 전 120초는 130초 제한에 너무 가까웠다). 실제 앞단 제한시간은 미확인.
+- **복제 재시도와 쓰기 제한:** 브라우저는 130초를 기다리지만 서버 `http.Server`의 `WriteTimeout`은 120초(`daemon.go`)다. 재시도 엔드포인트의 복제는 100초로 제한되어(최종 검토 전 120초는 응답을 쓰는 시한과 같아 로컬 작업을 더할 여유가 없었다) 100초 복제와 그 앞뒤의 로컬 작업이 120초 안에 들어간다. 실제 앞단 제한시간은 미확인.
 - **옛 `create_mr`와의 상호작용(닫힘):** 최종 검토 뒤 broker는 제공자 연결이 있는 프로젝트(W3c 등록)를 `create_mr`에서 `repo_not_mapped`로 거부한다(시험함). W3d 전까지 W3c 프로젝트의 MR은 없다. `broker.json`의 옛 `gitlab` 절과 orchd의 `--gitlab-*` 플래그는 W2b 프로젝트용으로 남아 있고 사전 점검 (m)이 플래그 부재를 확인한다.
 - **웹 응답 대기 130초와 앞단(역방향 프록시·tailnet)의 제한시간**이 실제로 맞는지.
 - **리눅스에서의 파일·프로세스 동작**(`renameat2 RENAME_NOREPLACE`, 프로세스 그룹 종료, `O_NOFOLLOW`)은 macOS에서만 실행했고 리눅스는 `GOOS=linux go vet`으로 컴파일만 확인했다.
