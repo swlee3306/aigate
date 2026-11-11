@@ -834,7 +834,7 @@ export function projectsView(ctx) {
     else text = Object.prototype.hasOwnProperty.call(CLONE_TEXT, outcome.code) ? CLONE_TEXT[outcome.code] : (Object.prototype.hasOwnProperty.call(W3C_ERROR_TEXT, outcome.code) ? W3C_ERROR_TEXT[outcome.code] : cloneText(outcome.code));
     if (where === 'result') {
       cp.clone = outcome.ok ? { state: 'ok', code: 'ok', text }
-        : outcome.code === 'already_cloned' ? { state: 'ok', code: outcome.code, already: true, text }
+        : outcome.code === 'already_cloned' ? { state: 'check', code: outcome.code, text }
           : { state: 'failed', code: outcome.code || 'other', text, unknown: !!outcome.unknown };
     } else {
       st.note = { error: !outcome.ok, text: outcome.ok ? '복제했습니다: ' + id : text };

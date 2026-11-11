@@ -1337,3 +1337,24 @@ test('TestCreateAlreadyClonedNeedsChecking', async () => {
   assert.ok(P.ERROR_TEXT.path_exists.includes('변경은 적용되지 않았습니다'));
   assert.ok(CODES.includes('path_exists'));
 });
+
+// Re-review 1: the retry path maps already_cloned exactly like the automatic path.
+test('TestRetryCloneAlreadyClonedNeedsChecking', async () => {
+  const c = await mountProjects({
+    'POST /api/v1/projects/create/apply': () => CREATE_CLONE_FAILED,
+    'POST /api/v1/projects/app-one/clone': () => { throw apiError(409, 'already_cloned', SECRET); },
+  });
+  await toCreateConfirm(c, { ...GOOD_CREATE, name: 'app-one' });
+  await waitSignable(c);
+  click(signBtn(c));
+  await until(() => byLabel(c.root, '다시 복제').length === 1, 'retry button');
+  click(byLabel(c.root, '다시 복제')[0]);
+  await until(() => byData(c.root, 'clone', 'check').length === 1, 'check state');
+  const t = text(c.root);
+  assert.ok(t.includes(P.CLONE_TEXT.check));
+  assert.ok(!t.includes('이 서버에 복제했습니다'), 'not a success line');
+  assert.equal(byLabel(c.root, '다시 복제').length, 0, 'no retry button');
+  const note = byData(c.root, 'clone', 'check')[0];
+  assert.ok(!(note.className || '').toString().split(' ').includes('ok'), 'no success styling');
+  assert.ok(byData(c.root, 'step', 'clone').every((e) => !/done|ok/.test(e.getAttribute('data-state') || '')), 'the clone step is not ticked');
+});

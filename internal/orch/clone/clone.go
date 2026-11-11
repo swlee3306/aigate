@@ -37,8 +37,10 @@ import (
 	"aigate/internal/registrymsg"
 )
 
-// DefaultTimeout is the clone time limit (D5 said 120 s; 100 s keeps the retry
-// endpoint inside the web's 130 s write timeout).
+// DefaultTimeout is the clone time limit (D5 said 120 s). The retry endpoint's
+// response is written by an http.Server with a 120 s WriteTimeout (daemon.go),
+// so 100 s plus the local work around the clone has to fit inside that; the
+// browser itself waits 130 s.
 const DefaultTimeout = 100 * time.Second
 
 // Fixed errors. None carries git output, a path or a host.
@@ -82,6 +84,8 @@ type seams struct {
 	extraConfig   []string
 	extraEnv      []string
 	dropHooksPath bool
+	// dropTemplate leaves out --template= (a control that shows the option matters).
+	dropTemplate bool
 }
 
 var (
@@ -204,7 +208,11 @@ func clone(ctx context.Context, o Options, sm *seams) error {
 			args = append(args, "-c", kv)
 		}
 	}
-	args = append(args, "clone", "--no-recurse-submodules", "--no-local", "--template=", "--", remote, staging)
+	args = append(args, "clone", "--no-recurse-submodules", "--no-local")
+	if sm == nil || !sm.dropTemplate {
+		args = append(args, "--template=")
+	}
+	args = append(args, "--", remote, staging)
 
 	timeout := o.Timeout
 	if timeout <= 0 {

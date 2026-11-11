@@ -386,7 +386,7 @@ func (s *RegistryStore) GitLabPaths() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, p := range s.reg.Projects {
-		if p.GitLab != nil {
+		if p.GitLab != nil && p.Provider == nil { // same rule as GitLabProject
 			out = append(out, p.Path)
 		}
 	}
