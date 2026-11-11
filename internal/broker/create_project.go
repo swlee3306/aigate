@@ -114,14 +114,28 @@ func (s *Server) createProjectHandler(ctx context.Context, raw json.RawMessage) 
 	if !decodeStrict(raw, &a, createProjectKeys) || a.AIContext == nil {
 		return fail("bad_request")
 	}
+	// The store is checked BEFORE the signature: a refusal here burns no ID.
+	if s.Registry.Err() != nil {
+		return fail("registry_unavailable")
+	}
 	fields := map[string]any{"provider": a.Provider, "group_path": a.GroupPath, "template": a.Template,
 		"description": a.Description, "ai_context": *a.AIContext, "publish": a.Publish, "deploy_key_sha256": a.DeployKeySHA256}
-	shape := func() *OpError { // no ID burnt
+	shape := func() *OpError { // everything decidable from the request alone: no ID burnt
+		if !registrymsg.ValidName(a.ID) {
+			return fail1("bad_request")
+		}
 		if a.Template != "basic" && a.Template != "go" {
 			return fail1("template_unknown")
 		}
 		if !deployKeyRE.MatchString(a.DeployKey) {
 			return fail1("bad_request")
+		}
+		sum := sha256.Sum256([]byte(a.DeployKey))
+		if subtle.ConstantTimeCompare([]byte(hex.EncodeToString(sum[:])), []byte(a.DeployKeySHA256)) != 1 {
+			return fail1("deploy_key_mismatch")
+		}
+		if _, ok := s.projectPath(a.ID); !ok {
+			return fail1("path_not_allowed")
 		}
 		return nil
 	}
@@ -129,17 +143,7 @@ func (s *Server) createProjectHandler(ctx context.Context, raw json.RawMessage) 
 		return nil, oe
 	}
 	// From here on the request ID is consumed.
-	sum := sha256.Sum256([]byte(a.DeployKey))
-	if subtle.ConstantTimeCompare([]byte(hex.EncodeToString(sum[:])), []byte(a.DeployKeySHA256)) != 1 {
-		return fail("deploy_key_mismatch")
-	}
-	if s.State.CreateProject != nil && !s.State.CreateProject.Allow() {
-		return fail("rate_limited")
-	}
-	projPath, ok := s.projectPath(a.ID)
-	if !ok {
-		return fail("path_not_allowed")
-	}
+	projPath, _ := s.projectPath(a.ID)
 	if !s.lockName(a.ID) {
 		return fail("project_name_taken")
 	}
@@ -153,11 +157,16 @@ func (s *Server) createProjectHandler(ctx context.Context, raw json.RawMessage) 
 	if files == nil {
 		return fail("template_unknown")
 	}
+	// The provider as it is NOW; the GitLab calls and the final registry write
+	// must both see exactly this entry.
+	prov, ok := s.Registry.ProviderByID(a.Provider)
+	if !ok {
+		return fail("provider_unknown")
+	}
 	api, oe := s.apiFor(a.Provider)
 	if oe != nil {
 		return nil, oe
 	}
-	prov, _ := s.Registry.ProviderByID(a.Provider)
 
 	// (2) the group; its id is the only namespace id ever used
 	grp, err := api.Group(ctx, a.GroupPath)
@@ -174,11 +183,23 @@ func (s *Server) createProjectHandler(ctx context.Context, raw json.RawMessage) 
 	} else if !errors.Is(err, ErrNotFound) {
 		return nil, apiFail(err)
 	}
+	// The quota is spent only now, right before the first GitLab write.
+	if s.State.CreateProject != nil && !s.State.CreateProject.Allow() {
+		return fail("rate_limited")
+	}
+	return s.createWritePhase(ctx, a, api, prov, grp, full, projPath, files)
+}
 
-	// (4)-(8): every error from here on is of unknown outcome
-	partial := func(step string, id *int64) (any, *OpError) {
-		d := PartialDetail{Provider: a.Provider, Project: full, ProjectID: id, Step: step}
-		dropped, oerr := s.Registry.AddOrphan(Orphan{Provider: a.Provider, Project: full, ProjectID: id, Step: step,
+// createWritePhase is steps 4-9. Every error, and any panic, from here on is
+// of unknown outcome: an orphan record with the CURRENT step is written and
+// create_partial is answered. Nothing is retried or deleted.
+func (s *Server) createWritePhase(ctx context.Context, a createProjectArgs, api *GitLabAPI, prov Provider, grp Group,
+	full, projPath string, files []File) (res any, oe *OpError) {
+	step := stepProject
+	var pid *int64
+	partial := func() (any, *OpError) {
+		d := PartialDetail{Provider: a.Provider, Project: full, ProjectID: pid, Step: step}
+		dropped, oerr := s.Registry.AddOrphan(Orphan{Provider: a.Provider, Project: full, ProjectID: pid, Step: step,
 			At: s.now().UTC().Format(orphanTimeLayout)})
 		d.OrphanRecorded = oerr == nil
 		d.OrphanDropped = dropped
@@ -188,36 +209,65 @@ func (s *Server) createProjectHandler(ctx context.Context, raw json.RawMessage) 
 		s.logf("create_project: partial result at step=%s", step)
 		return nil, &OpError{Code: "create_partial", Data: d}
 	}
+	defer func() {
+		if r := recover(); r != nil {
+			s.logf("create_project: panic at step=%s type=%T", step, r) // never the value
+			res, oe = partial()
+		}
+	}()
+
 	info, err := api.CreateProject(ctx, a.GroupPath, grp.ID, a.ID, a.Description)
 	if err != nil {
-		return partial(stepProject, nil)
+		return partial()
 	}
 	id := info.ID
+	pid = &id
+	step = stepFirstCommit
 	if err := api.CommitFiles(ctx, id, files); err != nil {
-		return partial(stepFirstCommit, &id)
+		return partial()
 	}
 	// (f) the first commit made main the default branch, or we do not register
+	step = stepDefaultBranch
 	if pi, err := api.Project(ctx, full); err != nil || pi.ID != id || pi.DefaultBranch != apiBranch {
-		return partial(stepDefaultBranch, &id)
+		return partial()
 	}
+	step = stepProtect
 	if err := api.EnsureProtectedMain(ctx, id); err != nil {
-		return partial(stepProtect, &id)
+		return partial()
 	}
+	step = stepDeployKey
 	if err := api.AddDeployKey(ctx, id, "orchd "+a.ID, a.DeployKey, a.Publish == "write"); err != nil {
-		return partial(stepDeployKey, &id)
+		return partial()
 	}
 	// (g) the registry entry comes LAST; a failure here leaves an orphan record
+	step = stepRegister
 	provID := a.Provider
 	entry := Project{ID: a.ID, Path: projPath, Kind: "registered", AIContext: *a.AIContext, Provider: &provID,
 		GitLab: &GitLabLink{Project: full, ProjectID: &id}}
-	if err := s.Registry.Update(func(r *Registry) error {
+	err = s.Registry.Update(func(r *Registry) error {
 		if registryHasProject(r, a.ID, projPath) {
 			return opCodeErr("project_name_taken")
 		}
+		// the provider the GitLab calls used must still be the stored one
+		if i := findProvider(r, a.Provider); i < 0 || r.Providers[i] != prov {
+			return opCodeErr("provider_unknown")
+		}
 		r.Projects = append(r.Projects, entry)
 		return nil
-	}); err != nil {
-		return partial(stepRegister, &id)
+	})
+	if err != nil {
+		// A write that failed only on the directory fsync keeps the state: if
+		// the entry is there, the project IS registered.
+		snap := s.Registry.Snapshot()
+		for _, p := range snap.Projects {
+			if p.ID == a.ID && p.Path == projPath && p.GitLab != nil && p.GitLab.ProjectID != nil && *p.GitLab.ProjectID == id {
+				s.logf("create_project: the registry file was written but its directory fsync failed")
+				err = nil
+			}
+		}
+		if err != nil {
+			return partial()
+		}
 	}
 	return map[string]any{
 		"project":     entry,

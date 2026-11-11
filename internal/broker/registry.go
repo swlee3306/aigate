@@ -323,6 +323,14 @@ func (s *RegistryStore) Update(fn func(*Registry) error) error {
 	}
 	prev := s.reg
 	s.reg = next
+	// A panic inside the write (only test hooks can cause one) must not leave
+	// the memory ahead of the file: roll back, then let the panic go on.
+	defer func() {
+		if p := recover(); p != nil {
+			s.reg = prev
+			panic(p)
+		}
+	}()
 	renamed, err := writeAtomic(s.path, data, s.opts.failAt, false)
 	if err != nil {
 		// If the rename already happened (only the directory fsync failed) the

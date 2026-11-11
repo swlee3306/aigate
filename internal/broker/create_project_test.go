@@ -1,7 +1,6 @@
 package broker
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"go/parser"
@@ -493,15 +492,28 @@ func TestCanaryTokenNeverInAnyOutput(t *testing.T) {
 		rp := c.wire("providers", nil)
 		check(name+" providers", jsonOf(t, rp))
 	}
-	// panic path: a handler that panics with the token in the panic value
+	// panic path on the REAL code path: the registry write of step register panics
+	// with the token as its value; the reply is create_partial and nothing leaks
 	c := newC3(t)
-	c.s.Handlers["create_project"] = func(_ context.Context, _ json.RawMessage) (any, *OpError) { panic(c3Canary) }
+	n := 0
+	c.s.Registry.opts.failAt = func(stage string) error {
+		if stage == "temp-written" {
+			if n++; n == 1 {
+				panic(c3Canary)
+			}
+		}
+		return nil
+	}
 	r := c.wire("create_project", c.projectArgs(c3Name, nil))
-	if r.Code != "internal_error" {
+	if r.Code != "create_partial" {
 		t.Fatalf("panic reply: %+v", r)
+	}
+	if o := c.orphans(); len(o) != 1 || o[0].Step != "register" {
+		t.Fatalf("no orphan after the panic: %+v", o)
 	}
 	check("panic reply", jsonOf(t, r))
 	check("panic log", c.logs.String())
+	check("panic registry", string(c.regFile()))
 	if len(leaks) != 0 {
 		t.Fatalf("canary leaked: %v", leaks)
 	}

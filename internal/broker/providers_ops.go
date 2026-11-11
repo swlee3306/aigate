@@ -135,6 +135,13 @@ func (s *Server) setProviderHandler(ctx context.Context, raw json.RawMessage) (a
 	if !decodeStrict(raw, &a, setProviderKeys) {
 		return fail("bad_request")
 	}
+	// Stores usable BEFORE the signature: a refusal here burns no ID.
+	if s.Registry.Err() != nil {
+		return fail("registry_unavailable")
+	}
+	if s.Tokens.Err() != nil {
+		return fail("tokens_unavailable")
+	}
 	p := Provider{ID: a.ID, Kind: a.Kind, BaseURL: a.BaseURL, SSHURL: a.SSHURL, TokenRef: a.TokenRef}
 	fields := map[string]any{"kind": a.Kind, "base_url": a.BaseURL, "ssh_url": a.SSHURL, "token_ref": a.TokenRef}
 	shape := func() *OpError { // address rules before the signature: no ID burnt
@@ -281,9 +288,6 @@ func (s *Server) createGroupHandler(ctx context.Context, raw json.RawMessage) (a
 	if oe := s.verifySigned(registrymsg.ActionCreateGroup, a.ID, fields, a.Change, a.Request, a.Issued, a.Signature); oe != nil {
 		return nil, oe
 	}
-	if s.State.CreateGroup != nil && !s.State.CreateGroup.Allow() {
-		return fail("rate_limited")
-	}
 	api, oe := s.apiFor(a.ID)
 	if oe != nil {
 		return nil, oe
@@ -302,6 +306,10 @@ func (s *Server) createGroupHandler(ctx context.Context, raw json.RawMessage) (a
 		return fail("group_exists")
 	} else if !errors.Is(err, ErrNotFound) {
 		return nil, apiFail(err)
+	}
+	// The quota is spent only now, right before the write.
+	if s.State.CreateGroup != nil && !s.State.CreateGroup.Allow() {
+		return fail("rate_limited")
 	}
 	g, err := api.CreateGroup(ctx, a.Name, a.Path, a.ParentPath)
 	if err != nil {
