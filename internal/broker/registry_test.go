@@ -49,7 +49,7 @@ func TestRegistryFreshStartMigratesLegacyConfig(t *testing.T) {
 	l := legacyFor("/srv")
 	st := mustOpen(t, dir, l)
 	reg := st.Snapshot()
-	if reg.Version != 3 || len(reg.Providers) != 0 || reg.AutoMergeGlobal.Enabled || reg.AutoMergeGlobal.MaxPerDay != 5 {
+	if reg.Version != 4 || len(reg.Providers) != 0 || reg.AutoMergeGlobal.Enabled || reg.AutoMergeGlobal.MaxPerDay != 5 {
 		t.Fatalf("shape %+v", reg)
 	}
 	got := st.AIContextPaths()
@@ -142,8 +142,8 @@ func TestRegistryBrokenIsFailClosedNotMigrated(t *testing.T) {
 	}{
 		"broken json":      {content: `{"version":1,`, mode: 0o600},
 		"empty file":       {content: ``, mode: 0o600},
-		"unknown key":      {content: strings.Replace(good, `"version":3`, `"version":3,"extra":true`, 1), mode: 0o600},
-		"version mismatch": {content: strings.Replace(good, `"version":3`, `"version":4`, 1), mode: 0o600},
+		"unknown key":      {content: strings.Replace(good, `"version":4`, `"version":4,"extra":true`, 1), mode: 0o600},
+		"version mismatch": {content: strings.Replace(good, `"version":4`, `"version":5`, 1), mode: 0o600},
 		"trailing data":    {content: good + `{}`, mode: 0o600},
 		"duplicate id":     {content: `{"version":1,"providers":[],"projects":[{"id":"a","path":"/x/a","kind":"k"},{"id":"a","path":"/x/b","kind":"k"}],"auto_merge_global":{"enabled":false,"max_per_day":5}}`, mode: 0o600},
 		"auto merge on":    {content: `{"version":1,"providers":[],"projects":[{"id":"a","path":"/x/a","kind":"k","auto_merge":{"enabled":true}}],"auto_merge_global":{"enabled":false,"max_per_day":5}}`, mode: 0o600},
@@ -218,7 +218,7 @@ func TestRegistryAtomicWriteSurvivesCrash(t *testing.T) {
 	before := readFile(t, path)
 	snap := st.Snapshot()
 	add := func(r *Registry) error {
-		r.Projects = append(r.Projects, Project{ID: "new", Path: "/srv/new", Kind: "k", AIContext: true})
+		r.Projects = append(r.Projects, Project{Origin: OriginUnknown, ID: "new", Path: "/srv/new", Kind: "k", AIContext: true})
 		return nil
 	}
 	for _, stage := range []string{"temp-written", "synced"} {
@@ -271,7 +271,7 @@ func TestRegistryUpdateErrorKeepsStateAndFile(t *testing.T) {
 }
 
 func TestRegistryRejectsInvalidProjects(t *testing.T) {
-	base := Project{ID: "ok", Path: "/srv/ok", Kind: "k"}
+	base := Project{Origin: OriginUnknown, ID: "ok", Path: "/srv/ok", Kind: "k"}
 	gl := func(p string) *RemoteLink { return &RemoteLink{Path: p} }
 	id := int64(1)
 	cases := map[string]Project{
@@ -327,7 +327,7 @@ func TestRegistryRejectsInvalidProjects(t *testing.T) {
 	t.Run("valid project with gitlab", func(t *testing.T) {
 		st := mustOpen(t, stateDirFor(t), LegacySource{})
 		if err := st.Update(func(r *Registry) error {
-			r.Projects = append(r.Projects, Project{ID: "good-1", Path: "/srv/good", Kind: "registered", AIContext: true, Remote: gl("grp/sub/proj")})
+			r.Projects = append(r.Projects, Project{Origin: OriginUnknown, ID: "good-1", Path: "/srv/good", Kind: "registered", AIContext: true, Remote: gl("grp/sub/proj")})
 			return nil
 		}); err != nil {
 			t.Fatal(err)
@@ -367,7 +367,7 @@ func TestRegistryConcurrentUpdates(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			p := Project{ID: "p" + strings.Repeat("a", i), Path: "/srv/p" + strings.Repeat("a", i), Kind: "k"}
+			p := Project{Origin: OriginUnknown, ID: "p" + strings.Repeat("a", i), Path: "/srv/p" + strings.Repeat("a", i), Kind: "k"}
 			if err := st.Update(func(r *Registry) error { r.Projects = append(r.Projects, p); return nil }); err != nil {
 				t.Error(err)
 			}
@@ -496,7 +496,7 @@ func TestStatusContextReposFromRegistry(t *testing.T) {
 	}
 	s.Registry.Update(func(g *Registry) error {
 		g.Projects[0].AIContext = false
-		g.Projects = append(g.Projects, Project{ID: "added", Path: "/srv/added", Kind: "k", AIContext: true})
+		g.Projects = append(g.Projects, Project{Origin: OriginUnknown, ID: "added", Path: "/srv/added", Kind: "k", AIContext: true})
 		return nil
 	})
 	if c, m := read(); len(c) != 1 || c[0] != "/srv/added" || len(m) != 1 || m[0] != repo {
@@ -562,7 +562,7 @@ func TestRegistryMigrationDoesNotClobberLateFile(t *testing.T) {
 	legacy := LegacySource{ContextRepos: []string{"/srv/wide-open"}}
 	good := mustMarshalRegistry(func() Registry {
 		r := emptyRegistry()
-		r.Projects = []Project{{ID: "late", Path: "/srv/late", Kind: "k"}}
+		r.Projects = []Project{{Origin: OriginUnknown, ID: "late", Path: "/srv/late", Kind: "k"}}
 		return r
 	}())
 	cases := map[string]struct {
@@ -673,7 +673,7 @@ func TestReadStateFileFailureBranches(t *testing.T) {
 func TestRegistryCaps(t *testing.T) {
 	mk := func(i int, pathLen int) Project {
 		n := strings.Repeat("a", pathLen-4) + string(rune('a'+i%26)) + string(rune('a'+i/26%26)) + string(rune('a'+i/676))
-		return Project{ID: "p" + strings.Repeat("x", 0) + string(rune('a'+i%26)) + string(rune('a'+i/26%26)) + string(rune('a'+i/676)), Path: "/" + n, Kind: "k"}
+		return Project{Origin: OriginUnknown, ID: "p" + strings.Repeat("x", 0) + string(rune('a'+i%26)) + string(rune('a'+i/26%26)) + string(rune('a'+i/676)), Path: "/" + n, Kind: "k"}
 	}
 	t.Run("500 ok 501 refused", func(t *testing.T) {
 		st := mustOpen(t, stateDirFor(t), LegacySource{})
@@ -730,7 +730,7 @@ func TestWriteAtomicDirSyncFailureKeepsMemoryEqualToDisk(t *testing.T) {
 		return nil
 	}
 	err := st.Update(func(r *Registry) error {
-		r.Projects = append(r.Projects, Project{ID: "a", Path: "/srv/a", Kind: "k"})
+		r.Projects = append(r.Projects, Project{Origin: OriginUnknown, ID: "a", Path: "/srv/a", Kind: "k"})
 		return nil
 	})
 	if err == nil {
@@ -748,7 +748,7 @@ func TestWriteAtomicDirSyncFailureKeepsMemoryEqualToDisk(t *testing.T) {
 		return nil
 	}
 	st.Update(func(r *Registry) error {
-		r.Projects = append(r.Projects, Project{ID: "b", Path: "/srv/b", Kind: "k"})
+		r.Projects = append(r.Projects, Project{Origin: OriginUnknown, ID: "b", Path: "/srv/b", Kind: "k"})
 		return nil
 	})
 	if len(st.Snapshot().Projects) != 1 {

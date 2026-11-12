@@ -198,7 +198,7 @@ func TestCreateProjectNameTaken(t *testing.T) {
 	c3 := newC3(t)
 	prov := "gl"
 	if err := c3.s.Registry.Update(func(r *Registry) error {
-		r.Projects = append(r.Projects, Project{ID: "legacy-x", Path: filepath.Join(c3.root, c3Name), Kind: "default", Provider: &prov})
+		r.Projects = append(r.Projects, Project{Origin: OriginUnknown, ID: "legacy-x", Path: filepath.Join(c3.root, c3Name), Kind: "default", Provider: &prov})
 		return nil
 	}); err != nil {
 		t.Fatal(err)

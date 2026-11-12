@@ -27,6 +27,12 @@ const (
 	RegistryActionCreateProject   = "create_project"
 	RegistryActionLinkProject     = "link_project"
 	RegistryActionAttachRemote    = "attach_remote"
+
+	// W3f: signed deletion actions.
+	RegistryActionRemoveProject    = "remove_project"
+	RegistryActionDeleteRemoteRepo = "delete_remote_repo"
+	RegistryActionRemoveDeployKey  = "remove_deploy_key"
+	RegistryActionClearOrphan      = "clear_orphan"
 )
 
 const registryMagic = "aigate-registry-v1"
@@ -43,7 +49,7 @@ var (
 
 // RegistryMessage is the content signed to change the project registry.
 type RegistryMessage struct {
-	Action  string // register_project, set_flag, set_token, delete_token, set_provider, delete_provider, create_group, create_project, link_project or attach_remote
+	Action  string // register_project, set_flag, set_token, delete_token, set_provider, delete_provider, create_group, create_project, link_project, attach_remote, remove_project, delete_remote_repo, remove_deploy_key or clear_orphan
 	Subject string // project id, token ref, provider id or new project name, by action
 	Change  string // 64 lowercase hex: SHA-256 of the canonical change JSON
 	Request string // 32 lowercase hex: one-time request id
@@ -58,13 +64,15 @@ func (m RegistryMessage) Validate() error {
 		subjectRE = registrySubjectRE
 	case RegistryActionSetToken, RegistryActionDeleteToken:
 		subjectRE = registryTokenRefRE
-	case RegistryActionSetProvider, RegistryActionDeleteProvider, RegistryActionCreateGroup:
+	case RegistryActionSetProvider, RegistryActionDeleteProvider, RegistryActionCreateGroup, RegistryActionClearOrphan:
+		// clear_orphan names a provider id (the orphan record's provider).
 		subjectRE = registryProviderIDRE
 	case RegistryActionCreateProject, RegistryActionLinkProject:
 		// link_project names a NEW local project (name rule, 2..40).
 		subjectRE = registryProjectNameRE
-	case RegistryActionAttachRemote:
-		// attach_remote names an EXISTING project id (the old project id rule).
+	case RegistryActionAttachRemote, RegistryActionRemoveProject, RegistryActionDeleteRemoteRepo, RegistryActionRemoveDeployKey:
+		// attach_remote and the W3f project actions name an EXISTING project id
+		// (the old project id rule).
 		subjectRE = registrySubjectRE
 	}
 	switch {

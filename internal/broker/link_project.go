@@ -331,7 +331,7 @@ func (s *Server) linkOrAttach(ctx context.Context, r remoteReq) (res any, oe *Op
 		}
 		if !r.attach {
 			entry = Project{ID: r.id, Path: projPath, Kind: "registered", AIContext: *r.aiContext, Provider: &provID,
-				Remote: &RemoteLink{Path: remote, ID: &id}}
+				Remote: &RemoteLink{Path: remote, ID: &id}, Origin: OriginLinked}
 			reg.Projects = append(reg.Projects, entry)
 			return nil
 		}

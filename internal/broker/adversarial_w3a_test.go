@@ -648,10 +648,10 @@ func TestStatusAndProjectsNeverContainSecrets(t *testing.T) {
 		for k := range p {
 			keys = append(keys, k)
 		}
-		if len(keys) != 7 {
+		if len(keys) != 8 {
 			t.Fatalf("project keys %v", keys)
 		}
-		for _, k := range []string{"id", "path", "kind", "ai_context", "provider", "remote", "auto_merge"} {
+		for _, k := range []string{"id", "path", "kind", "ai_context", "provider", "remote", "auto_merge", "origin"} {
 			if _, ok := p[k]; !ok {
 				t.Fatalf("project lacks %s: %v", k, keys)
 			}

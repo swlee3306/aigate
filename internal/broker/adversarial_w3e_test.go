@@ -1333,7 +1333,7 @@ func TestRegistryV3BrokenFailsClosedAndDoesNotWidenAIContext(t *testing.T) {
 		"remote id no provider":   `{"version":3,"providers":[],"projects":[` + proj("/x/a", true, `null`, `{"path":"o/r","id":5}`) + `],"orphans":[],` + v3Tail + `}`,
 		"remote bad path":         `{"version":3,"providers":[` + ghp + `],"projects":[` + proj("/x/a", true, `"gh"`, `{"path":"o/r.git","id":5}`) + `],"orphans":[],` + v3Tail + `}`,
 		"remote traversal":        `{"version":3,"providers":[` + ghp + `],"projects":[` + proj("/x/a", true, `"gh"`, `{"path":"o/../r","id":5}`) + `],"orphans":[],` + v3Tail + `}`,
-		"version 4":               `{"version":4,"providers":[],"projects":[],"orphans":[],` + v3Tail + `}`,
+		"version 5":               `{"version":5,"providers":[],"projects":[],"orphans":[],` + v3Tail + `}`,
 		"trailing data":           `{"version":3,"providers":[],"projects":[],"orphans":[],` + v3Tail + `}{"x":1}`,
 	}
 	oa := newFakeHTTP(t, okHandler(goodPlan, 10, 10))
@@ -1447,8 +1447,8 @@ func TestRegistryV2MigrationKeepsContentWritesBackupOnceAndOldVersionsStillRefus
 	if err != nil || fi.Mode().Perm() != 0o600 {
 		t.Fatalf("backup mode: %v %v", fi, err)
 	}
-	if string(readFile(t, p)) != v3Want {
-		t.Fatal("migrated content differs from the expected v3")
+	if string(readFile(t, p)) != v4Want {
+		t.Fatal("migrated content differs from the expected v4")
 	}
 	// later writes and restarts neither rewrite nor remove the backup
 	if err := st.Update(func(r *Registry) error { r.AutoMergeGlobal.MaxPerDay = 3; return nil }); err != nil {
@@ -1472,17 +1472,17 @@ func TestRegistryV2MigrationKeepsContentWritesBackupOnceAndOldVersionsStillRefus
 	} else if got := readFile(t, p2+".v2.bak"); string(got) != "older backup" {
 		t.Fatal("an existing backup was overwritten")
 	}
-	// a v3 file is not migrated again and no backup appears for it
+	// a v4 file is not migrated again and no backup appears for it
 	dir3 := stateDirFor(t)
-	p3 := writeRegFile(t, dir3, v3Want, 0o600)
+	p3 := writeRegFile(t, dir3, v4Want, 0o600)
 	mustOpen(t, dir3, LegacySource{})
-	if _, err := os.Stat(p3 + ".v2.bak"); !os.IsNotExist(err) || string(readFile(t, p3)) != v3Want {
-		t.Fatalf("a v3 file was touched (%v)", err)
+	if _, err := os.Stat(p3 + ".v2.bak"); !os.IsNotExist(err) || string(readFile(t, p3)) != v4Want {
+		t.Fatalf("a v4 file was touched (%v)", err)
 	}
-	// the v3 content under the old version numbers is broken for this loader too (no silent downgrade)
-	for _, v := range []string{"2", "1"} {
+	// the v4 content under the old version numbers is broken for this loader too (no silent downgrade)
+	for _, v := range []string{"3", "2", "1"} {
 		d := stateDirFor(t)
-		writeRegFile(t, d, strings.Replace(v3Want, `"version":3`, `"version":`+v, 1), 0o600)
+		writeRegFile(t, d, strings.Replace(v4Want, `"version":4`, `"version":`+v, 1), 0o600)
 		if s, err := OpenRegistry(d, LegacySource{}, regOpts()); err == nil && s.Err() == nil {
 			t.Errorf("v3 shape under version %s was accepted", v)
 		}

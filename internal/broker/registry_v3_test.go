@@ -39,7 +39,7 @@ func TestRegistryV2MigratesToV3Atomically(t *testing.T) {
 		p := writeRegFile(t, dir, v2Sample, 0o600)
 		st := mustOpen(t, dir, LegacySource{ContextRepos: []string{"/srv/ignored"}})
 		reg := st.Snapshot()
-		if reg.Version != 3 || len(reg.Providers) != 1 || len(reg.Projects) != 4 || len(reg.Orphans) != 2 || reg.AutoMergeGlobal.MaxPerDay != 9 {
+		if reg.Version != 4 || len(reg.Providers) != 1 || len(reg.Projects) != 4 || len(reg.Orphans) != 2 || reg.AutoMergeGlobal.MaxPerDay != 9 {
 			t.Fatalf("shape %+v", reg)
 		}
 		a := reg.Projects[0]
@@ -57,8 +57,8 @@ func TestRegistryV2MigratesToV3Atomically(t *testing.T) {
 			t.Fatalf("mode %v %v", fi, err)
 		}
 		data := readFile(t, p)
-		if string(data) != v3Want {
-			t.Fatalf("file differs from the expected v3:\n%s\n%s", data, v3Want)
+		if string(data) != v4Want {
+			t.Fatalf("file differs from the expected v4:\n%s\n%s", data, v4Want)
 		}
 		if left := tempLeftovers(t, dir); len(left) != 0 {
 			t.Fatalf("temp files left: %v", left)
@@ -108,7 +108,7 @@ func TestRegistryV2MigratesToV3Atomically(t *testing.T) {
 			}
 			if stage == "dir-synced" { // the rename already happened: v3 on disk, retry is a plain open
 				after := readFile(t, p)
-				if string(after) != v3Want {
+				if string(after) != v4Want {
 					t.Fatalf("dir-synced: %s", after)
 				}
 				mustOpen(t, dir, LegacySource{})
@@ -123,7 +123,7 @@ func TestRegistryV2MigratesToV3Atomically(t *testing.T) {
 			if left := tempLeftovers(t, dir); len(left) != 0 {
 				t.Fatalf("%s: temp files left: %v", stage, left)
 			}
-			if st := mustOpen(t, dir, LegacySource{}); st.Snapshot().Version != 3 || string(readFile(t, p)) != v3Want {
+			if st := mustOpen(t, dir, LegacySource{}); st.Snapshot().Version != 4 || string(readFile(t, p)) != v4Want {
 				t.Fatalf("%s: retry did not migrate", stage)
 			}
 		}
@@ -151,7 +151,7 @@ func TestRegistryV2MigratesToV3Atomically(t *testing.T) {
 		dir := stateDirFor(t)
 		p := writeRegFile(t, dir, v1Sample, 0o600)
 		st := mustOpen(t, dir, LegacySource{})
-		if st.Snapshot().Version != 3 || !strings.Contains(string(readFile(t, p)), `"version":3`) || strings.Contains(string(readFile(t, p)), `"gitlab"`) {
+		if st.Snapshot().Version != 4 || !strings.Contains(string(readFile(t, p)), `"version":4`) || strings.Contains(string(readFile(t, p)), `"gitlab"`) {
 			t.Fatalf("%s", readFile(t, p))
 		}
 	})
@@ -226,11 +226,11 @@ func TestRegistryV2MigratesToV3Atomically(t *testing.T) {
 // nothing: rolling the binary back needs the pre-migration registry backup.
 // This pins the constants and replays the W3c strict loader on a real v3 file.
 func TestOldBrokerRefusesV3(t *testing.T) {
-	if registryVersion != 3 || registryVersionV2 != 2 || registryVersionV1 != 1 {
-		t.Fatalf("version constants moved: current=%d v2=%d v1=%d", registryVersion, registryVersionV2, registryVersionV1)
+	if registryVersion != 4 || registryVersionV3 != 3 || registryVersionV2 != 2 || registryVersionV1 != 1 {
+		t.Fatalf("version constants moved: current=%d v3=%d v2=%d v1=%d", registryVersion, registryVersionV3, registryVersionV2, registryVersionV1)
 	}
-	if emptyRegistry().Version != 3 {
-		t.Fatal("fresh registry is not v3")
+	if emptyRegistry().Version != 4 {
+		t.Fatal("fresh registry is not v4")
 	}
 	// W3c loader, copied: strict decode into the v2 shape, then version == 2.
 	type w3cProject struct {
@@ -267,7 +267,7 @@ func TestOldBrokerRefusesV3(t *testing.T) {
 	// with a project that carries the new link key the strict decoder refuses even a forced version 2
 	if err := st.Update(func(r *Registry) error {
 		r.Providers = []Provider{testProvider("gl")}
-		r.Projects = append(r.Projects, Project{ID: "linked", Path: "/srv/linked", Kind: "registered", Provider: strp("gl"), Remote: &RemoteLink{Path: "team/linked"}})
+		r.Projects = append(r.Projects, Project{Origin: OriginUnknown, ID: "linked", Path: "/srv/linked", Kind: "registered", Provider: strp("gl"), Remote: &RemoteLink{Path: "team/linked"}})
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -275,7 +275,7 @@ func TestOldBrokerRefusesV3(t *testing.T) {
 	data = readFile(t, filepath.Join(dir, RegistryFileName))
 	var f map[string]any
 	json.Unmarshal(data, &f)
-	if f["version"] != float64(3) {
+	if f["version"] != float64(4) {
 		t.Fatalf("file version %v", f["version"])
 	}
 	f["version"] = 2
@@ -286,7 +286,7 @@ func TestOldBrokerRefusesV3(t *testing.T) {
 	// and a v3 file that no project uses the key in still carries version 3
 	var empty map[string]any
 	json.Unmarshal(mustMarshalRegistry(emptyRegistry()), &empty)
-	if empty["version"] != float64(3) {
+	if empty["version"] != float64(4) {
 		t.Fatal("empty registry version")
 	}
 }
@@ -301,8 +301,8 @@ func TestRegistryV3Rules(t *testing.T) {
 		err := st.Update(func(r *Registry) error {
 			r.Providers = []Provider{testProvider("gl"), ghp}
 			r.Projects = []Project{
-				{ID: "hello", Path: "/srv/hello", Kind: "registered", Provider: strp("gh"), Remote: &RemoteLink{Path: "Octo-Cat/Hello_World.v2", ID: &id}},
-				{ID: "noid", Path: "/srv/noid", Kind: "registered", Provider: strp("gh"), Remote: &RemoteLink{Path: "octo/noid"}},
+				{Origin: OriginUnknown, ID: "hello", Path: "/srv/hello", Kind: "registered", Provider: strp("gh"), Remote: &RemoteLink{Path: "Octo-Cat/Hello_World.v2", ID: &id}},
+				{Origin: OriginUnknown, ID: "noid", Path: "/srv/noid", Kind: "registered", Provider: strp("gh"), Remote: &RemoteLink{Path: "octo/noid"}},
 			}
 			r.AddOrphan(Orphan{Provider: "gh", Project: "Octo-Cat/half-made", Step: "protect", At: "2026-11-12T00:00:00Z"}) // GitHub owner keeps case
 			return nil
@@ -332,27 +332,27 @@ func TestRegistryV3Rules(t *testing.T) {
 	})
 	bad := map[string]func(*Registry){
 		"remote id without provider": func(r *Registry) {
-			r.Projects = []Project{{ID: "a", Path: "/srv/a", Kind: "k", Remote: &RemoteLink{Path: "o/r", ID: &id}}}
+			r.Projects = []Project{{Origin: OriginUnknown, ID: "a", Path: "/srv/a", Kind: "k", Remote: &RemoteLink{Path: "o/r", ID: &id}}}
 		},
 		"remote id zero": func(r *Registry) {
 			r.Providers = []Provider{ghp}
-			r.Projects = []Project{{ID: "a", Path: "/srv/a", Kind: "k", Provider: strp("gh"), Remote: &RemoteLink{Path: "o/r", ID: &zero}}}
+			r.Projects = []Project{{Origin: OriginUnknown, ID: "a", Path: "/srv/a", Kind: "k", Provider: strp("gh"), Remote: &RemoteLink{Path: "o/r", ID: &zero}}}
 		},
 		"remote dotdot": func(r *Registry) {
 			r.Providers = []Provider{ghp}
-			r.Projects = []Project{{ID: "a", Path: "/srv/a", Kind: "k", Provider: strp("gh"), Remote: &RemoteLink{Path: "o/../r"}}}
+			r.Projects = []Project{{Origin: OriginUnknown, ID: "a", Path: "/srv/a", Kind: "k", Provider: strp("gh"), Remote: &RemoteLink{Path: "o/../r"}}}
 		},
 		"remote percent": func(r *Registry) {
 			r.Providers = []Provider{ghp}
-			r.Projects = []Project{{ID: "a", Path: "/srv/a", Kind: "k", Provider: strp("gh"), Remote: &RemoteLink{Path: "o/r%2f"}}}
+			r.Projects = []Project{{Origin: OriginUnknown, ID: "a", Path: "/srv/a", Kind: "k", Provider: strp("gh"), Remote: &RemoteLink{Path: "o/r%2f"}}}
 		},
 		"remote one segment": func(r *Registry) {
 			r.Providers = []Provider{ghp}
-			r.Projects = []Project{{ID: "a", Path: "/srv/a", Kind: "k", Provider: strp("gh"), Remote: &RemoteLink{Path: "solo"}}}
+			r.Projects = []Project{{Origin: OriginUnknown, ID: "a", Path: "/srv/a", Kind: "k", Provider: strp("gh"), Remote: &RemoteLink{Path: "solo"}}}
 		},
 		"remote empty": func(r *Registry) {
 			r.Providers = []Provider{ghp}
-			r.Projects = []Project{{ID: "a", Path: "/srv/a", Kind: "k", Provider: strp("gh"), Remote: &RemoteLink{}}}
+			r.Projects = []Project{{Origin: OriginUnknown, ID: "a", Path: "/srv/a", Kind: "k", Provider: strp("gh"), Remote: &RemoteLink{}}}
 		},
 		"orphan bad project": func(r *Registry) {
 			r.Orphans = []Orphan{{Provider: "gh", Project: "o/../x", Step: "protect", At: "2026-11-12T00:00:00Z"}}
@@ -401,7 +401,7 @@ func TestRegistryRemotePathRulesForProviderLinkedProjects(t *testing.T) {
 		st := mustOpen(t, stateDirFor(t), LegacySource{})
 		return st.Update(func(r *Registry) error {
 			r.Providers = []Provider{ghp}
-			r.Projects = []Project{{ID: "a", Path: "/srv/a", Kind: "k", Provider: prov, Remote: &RemoteLink{Path: path}}}
+			r.Projects = []Project{{Origin: OriginUnknown, ID: "a", Path: "/srv/a", Kind: "k", Provider: prov, Remote: &RemoteLink{Path: path}}}
 			return nil
 		})
 	}
@@ -436,7 +436,7 @@ func TestV2ToV3WritesBackupOnceNeverOverwritten(t *testing.T) {
 	if fi, _ := os.Stat(bak); fi.Mode().Perm() != 0o600 {
 		t.Fatalf("backup mode %v", fi.Mode())
 	}
-	if string(readFile(t, p)) != v3Want {
+	if string(readFile(t, p)) != v4Want {
 		t.Fatal("registry not migrated")
 	}
 	// later writes and starts never touch the backup

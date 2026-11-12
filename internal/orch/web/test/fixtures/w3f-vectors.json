@@ -1,0 +1,627 @@
+{
+  "confirm_names": [
+    {
+      "value": "Hello-World",
+      "ok": true
+    },
+    {
+      "value": "my_repo",
+      "ok": true
+    },
+    {
+      "value": "Repo.js",
+      "ok": true
+    },
+    {
+      "value": "a",
+      "ok": true
+    },
+    {
+      "value": "x.gitx",
+      "ok": true
+    },
+    {
+      "value": "UPPER",
+      "ok": true
+    },
+    {
+      "value": "",
+      "ok": false
+    },
+    {
+      "value": ".",
+      "ok": false
+    },
+    {
+      "value": "..",
+      "ok": false
+    },
+    {
+      "value": "a/b",
+      "ok": false
+    },
+    {
+      "value": "x.git",
+      "ok": false
+    },
+    {
+      "value": "x.GIT",
+      "ok": false
+    },
+    {
+      "value": "a b",
+      "ok": false
+    },
+    {
+      "value": "é",
+      "ok": false
+    },
+    {
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ok": true
+    },
+    {
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ok": false
+    }
+  ],
+  "good": [
+    {
+      "name": "remove_project local",
+      "action": "remove_project",
+      "subject": "my-app",
+      "fields": {
+        "legacy_ack": false,
+        "scope": "local"
+      },
+      "canonical": "{\"action\":\"remove_project\",\"fields\":{\"legacy_ack\":false,\"scope\":\"local\"},\"subject\":\"my-app\"}",
+      "change": "a8d174a4a0d48b1dbe1e5d8caa39c7c2a30d6b38ddbc86cae417dd6944c0edd5"
+    },
+    {
+      "name": "remove_project legacy acknowledged",
+      "action": "remove_project",
+      "subject": "toy",
+      "fields": {
+        "legacy_ack": true,
+        "scope": "local"
+      },
+      "canonical": "{\"action\":\"remove_project\",\"fields\":{\"legacy_ack\":true,\"scope\":\"local\"},\"subject\":\"toy\"}",
+      "change": "22e2db8f899dde9536c1610013d593a29b306864987c98f4ca1004485a385181"
+    },
+    {
+      "name": "delete_remote_repo also local",
+      "action": "delete_remote_repo",
+      "subject": "my-app",
+      "fields": {
+        "also_local": true,
+        "confirm_name": "Hello-World",
+        "remote_id": "123456789",
+        "remote_path": "octo/Hello-World"
+      },
+      "canonical": "{\"action\":\"delete_remote_repo\",\"fields\":{\"also_local\":true,\"confirm_name\":\"Hello-World\",\"remote_id\":\"123456789\",\"remote_path\":\"octo/Hello-World\"},\"subject\":\"my-app\"}",
+      "change": "3382752c5e7b992f3eae02675590619cd523d3bbde45e7d488da1d84b335eb6b"
+    },
+    {
+      "name": "delete_remote_repo remote only",
+      "action": "delete_remote_repo",
+      "subject": "my-app",
+      "fields": {
+        "also_local": false,
+        "confirm_name": "Hello-World",
+        "remote_id": "123456789",
+        "remote_path": "octo/Hello-World"
+      },
+      "canonical": "{\"action\":\"delete_remote_repo\",\"fields\":{\"also_local\":false,\"confirm_name\":\"Hello-World\",\"remote_id\":\"123456789\",\"remote_path\":\"octo/Hello-World\"},\"subject\":\"my-app\"}",
+      "change": "e4eb8d96b99d4ebebcb3f9ce911ee4fe9bc35b2abb98138d4d926305a58de9c1"
+    },
+    {
+      "name": "delete_remote_repo gitlab nested",
+      "action": "delete_remote_repo",
+      "subject": "my-app",
+      "fields": {
+        "also_local": true,
+        "confirm_name": "app-one",
+        "remote_id": "21",
+        "remote_path": "team/sub/app-one"
+      },
+      "canonical": "{\"action\":\"delete_remote_repo\",\"fields\":{\"also_local\":true,\"confirm_name\":\"app-one\",\"remote_id\":\"21\",\"remote_path\":\"team/sub/app-one\"},\"subject\":\"my-app\"}",
+      "change": "7264f8b033b416ed1dd4ff1b94e8b5aab5c8f3bb35c36062e41f1e7e062be497"
+    },
+    {
+      "name": "delete_remote_repo max id",
+      "action": "delete_remote_repo",
+      "subject": "my-app",
+      "fields": {
+        "also_local": true,
+        "confirm_name": "Hello-World",
+        "remote_id": "999999999999999",
+        "remote_path": "octo/Hello-World"
+      },
+      "canonical": "{\"action\":\"delete_remote_repo\",\"fields\":{\"also_local\":true,\"confirm_name\":\"Hello-World\",\"remote_id\":\"999999999999999\",\"remote_path\":\"octo/Hello-World\"},\"subject\":\"my-app\"}",
+      "change": "08d98a22d5d5466333d7fb0164cd93175890f36ee573d00accc496d663b464d9"
+    },
+    {
+      "name": "remove_deploy_key",
+      "action": "remove_deploy_key",
+      "subject": "my-app",
+      "fields": {
+        "remote_path": "octo/Hello-World"
+      },
+      "canonical": "{\"action\":\"remove_deploy_key\",\"fields\":{\"remote_path\":\"octo/Hello-World\"},\"subject\":\"my-app\"}",
+      "change": "de9b35b36b708c5df5297fa06c149309c87629cd9ed545581854739e7d3d6b4f"
+    },
+    {
+      "name": "clear_orphan gitlab",
+      "action": "clear_orphan",
+      "subject": "gl",
+      "fields": {
+        "project": "team/sub/half-made"
+      },
+      "canonical": "{\"action\":\"clear_orphan\",\"fields\":{\"project\":\"team/sub/half-made\"},\"subject\":\"gl\"}",
+      "change": "098949c0e9aa781c89215afe28790ed4248ef27400389e7a940d6b6e499f7db8"
+    },
+    {
+      "name": "clear_orphan github case kept",
+      "action": "clear_orphan",
+      "subject": "gh",
+      "fields": {
+        "project": "Octo-Cat/half-made"
+      },
+      "canonical": "{\"action\":\"clear_orphan\",\"fields\":{\"project\":\"Octo-Cat/half-made\"},\"subject\":\"gh\"}",
+      "change": "339847611f0c832d9b10b7bd23c0d84871fcb3c9d466e3873612041e2b82636e"
+    }
+  ],
+  "messages": [
+    {
+      "name": "remove_project local",
+      "action": "remove_project",
+      "subject": "my-app",
+      "change": "a8d174a4a0d48b1dbe1e5d8caa39c7c2a30d6b38ddbc86cae417dd6944c0edd5",
+      "request": "00112233445566778899aabbccddeeff",
+      "issued": "2026-11-12T10:04:05Z",
+      "text": "aigate-registry-v1\naction: remove_project\nsubject: my-app\nchange: a8d174a4a0d48b1dbe1e5d8caa39c7c2a30d6b38ddbc86cae417dd6944c0edd5\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-12T10:04:05Z\n",
+      "digest": "d2cb9eb637937422f3d2098a30510d03f8da457e0016bb6076d98a0e85122c33"
+    },
+    {
+      "name": "remove_project legacy acknowledged",
+      "action": "remove_project",
+      "subject": "toy",
+      "change": "22e2db8f899dde9536c1610013d593a29b306864987c98f4ca1004485a385181",
+      "request": "00112233445566778899aabbccddeeff",
+      "issued": "2026-11-12T10:04:05Z",
+      "text": "aigate-registry-v1\naction: remove_project\nsubject: toy\nchange: 22e2db8f899dde9536c1610013d593a29b306864987c98f4ca1004485a385181\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-12T10:04:05Z\n",
+      "digest": "d6eafa0520f25c94d34facb1999b96bf05ba2684d0c22b1611e96276c787794a"
+    },
+    {
+      "name": "delete_remote_repo also local",
+      "action": "delete_remote_repo",
+      "subject": "my-app",
+      "change": "3382752c5e7b992f3eae02675590619cd523d3bbde45e7d488da1d84b335eb6b",
+      "request": "00112233445566778899aabbccddeeff",
+      "issued": "2026-11-12T10:04:05Z",
+      "text": "aigate-registry-v1\naction: delete_remote_repo\nsubject: my-app\nchange: 3382752c5e7b992f3eae02675590619cd523d3bbde45e7d488da1d84b335eb6b\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-12T10:04:05Z\n",
+      "digest": "58add12d6cceb0c69a4b215fa61468c6acbc43d0cc69505649152338cbec1afe"
+    },
+    {
+      "name": "delete_remote_repo remote only",
+      "action": "delete_remote_repo",
+      "subject": "my-app",
+      "change": "e4eb8d96b99d4ebebcb3f9ce911ee4fe9bc35b2abb98138d4d926305a58de9c1",
+      "request": "00112233445566778899aabbccddeeff",
+      "issued": "2026-11-12T10:04:05Z",
+      "text": "aigate-registry-v1\naction: delete_remote_repo\nsubject: my-app\nchange: e4eb8d96b99d4ebebcb3f9ce911ee4fe9bc35b2abb98138d4d926305a58de9c1\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-12T10:04:05Z\n",
+      "digest": "3dfe41c572457de0106222f9a5528dcd0e55db0f37d8584cf7bd99fd0ff4326a"
+    },
+    {
+      "name": "delete_remote_repo gitlab nested",
+      "action": "delete_remote_repo",
+      "subject": "my-app",
+      "change": "7264f8b033b416ed1dd4ff1b94e8b5aab5c8f3bb35c36062e41f1e7e062be497",
+      "request": "00112233445566778899aabbccddeeff",
+      "issued": "2026-11-12T10:04:05Z",
+      "text": "aigate-registry-v1\naction: delete_remote_repo\nsubject: my-app\nchange: 7264f8b033b416ed1dd4ff1b94e8b5aab5c8f3bb35c36062e41f1e7e062be497\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-12T10:04:05Z\n",
+      "digest": "409f66ca9c9aca0926c0991e364d41656b01b426504cf182f1ccab8d73768c35"
+    },
+    {
+      "name": "delete_remote_repo max id",
+      "action": "delete_remote_repo",
+      "subject": "my-app",
+      "change": "08d98a22d5d5466333d7fb0164cd93175890f36ee573d00accc496d663b464d9",
+      "request": "00112233445566778899aabbccddeeff",
+      "issued": "2026-11-12T10:04:05Z",
+      "text": "aigate-registry-v1\naction: delete_remote_repo\nsubject: my-app\nchange: 08d98a22d5d5466333d7fb0164cd93175890f36ee573d00accc496d663b464d9\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-12T10:04:05Z\n",
+      "digest": "6f7b4355a228f115a2edcf9a42057cd2131375e521ffb71d09114b36145fe7bc"
+    },
+    {
+      "name": "remove_deploy_key",
+      "action": "remove_deploy_key",
+      "subject": "my-app",
+      "change": "de9b35b36b708c5df5297fa06c149309c87629cd9ed545581854739e7d3d6b4f",
+      "request": "00112233445566778899aabbccddeeff",
+      "issued": "2026-11-12T10:04:05Z",
+      "text": "aigate-registry-v1\naction: remove_deploy_key\nsubject: my-app\nchange: de9b35b36b708c5df5297fa06c149309c87629cd9ed545581854739e7d3d6b4f\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-12T10:04:05Z\n",
+      "digest": "19779aa06a8f04592a3dd5e2b28fec1495bc68981194a9e287838c96a23ae3f0"
+    },
+    {
+      "name": "clear_orphan gitlab",
+      "action": "clear_orphan",
+      "subject": "gl",
+      "change": "098949c0e9aa781c89215afe28790ed4248ef27400389e7a940d6b6e499f7db8",
+      "request": "00112233445566778899aabbccddeeff",
+      "issued": "2026-11-12T10:04:05Z",
+      "text": "aigate-registry-v1\naction: clear_orphan\nsubject: gl\nchange: 098949c0e9aa781c89215afe28790ed4248ef27400389e7a940d6b6e499f7db8\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-12T10:04:05Z\n",
+      "digest": "58062d8069d25f48888a3b7072c0054b1ddec2e89b05dcbc2d564230a93b8bcd"
+    },
+    {
+      "name": "clear_orphan github case kept",
+      "action": "clear_orphan",
+      "subject": "gh",
+      "change": "339847611f0c832d9b10b7bd23c0d84871fcb3c9d466e3873612041e2b82636e",
+      "request": "00112233445566778899aabbccddeeff",
+      "issued": "2026-11-12T10:04:05Z",
+      "text": "aigate-registry-v1\naction: clear_orphan\nsubject: gh\nchange: 339847611f0c832d9b10b7bd23c0d84871fcb3c9d466e3873612041e2b82636e\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-12T10:04:05Z\n",
+      "digest": "9a39bf7a2d86556fa40a1691bf23b9a9cdc3ac2b1eff44e5770a3b4cd8a99ab5"
+    }
+  ],
+  "orphan_projects": [
+    {
+      "value": "team/half",
+      "ok": true
+    },
+    {
+      "value": "Octo-Cat/half-made",
+      "ok": true
+    },
+    {
+      "value": "a/b/c/d/e",
+      "ok": true
+    },
+    {
+      "value": "grp/sub/proj",
+      "ok": true
+    },
+    {
+      "value": "solo",
+      "ok": false
+    },
+    {
+      "value": "o/../x",
+      "ok": false
+    },
+    {
+      "value": "o/r%2f",
+      "ok": false
+    },
+    {
+      "value": "o/r.git",
+      "ok": false
+    },
+    {
+      "value": "a/b/c/d/e/f",
+      "ok": false
+    },
+    {
+      "value": "o/r s",
+      "ok": false
+    },
+    {
+      "value": "/a/b",
+      "ok": false
+    },
+    {
+      "value": "a/b/",
+      "ok": false
+    }
+  ],
+  "refused": [
+    {
+      "name": "remove_project scope remote",
+      "action": "remove_project",
+      "subject": "my-app",
+      "fields": {
+        "legacy_ack": false,
+        "scope": "remote"
+      }
+    },
+    {
+      "name": "remove_project scope upper",
+      "action": "remove_project",
+      "subject": "my-app",
+      "fields": {
+        "legacy_ack": false,
+        "scope": "Local"
+      }
+    },
+    {
+      "name": "remove_project legacy_ack string",
+      "action": "remove_project",
+      "subject": "my-app",
+      "fields": {
+        "legacy_ack": "true",
+        "scope": "local"
+      }
+    },
+    {
+      "name": "remove_project without legacy_ack",
+      "action": "remove_project",
+      "subject": "my-app",
+      "fields": {
+        "scope": "local"
+      }
+    },
+    {
+      "name": "remove_project extra field",
+      "action": "remove_project",
+      "subject": "my-app",
+      "fields": {
+        "also_local": true,
+        "legacy_ack": false,
+        "scope": "local"
+      }
+    },
+    {
+      "name": "remove_project subject upper",
+      "action": "remove_project",
+      "subject": "My-App",
+      "fields": {
+        "legacy_ack": false,
+        "scope": "local"
+      }
+    },
+    {
+      "name": "remove_project subject empty",
+      "action": "remove_project",
+      "subject": "",
+      "fields": {
+        "legacy_ack": false,
+        "scope": "local"
+      }
+    },
+    {
+      "name": "delete_remote_repo id zero",
+      "action": "delete_remote_repo",
+      "subject": "my-app",
+      "fields": {
+        "also_local": true,
+        "confirm_name": "Hello-World",
+        "remote_id": "0",
+        "remote_path": "octo/Hello-World"
+      }
+    },
+    {
+      "name": "delete_remote_repo id leading zero",
+      "action": "delete_remote_repo",
+      "subject": "my-app",
+      "fields": {
+        "also_local": true,
+        "confirm_name": "Hello-World",
+        "remote_id": "012",
+        "remote_path": "octo/Hello-World"
+      }
+    },
+    {
+      "name": "delete_remote_repo id sixteen digits",
+      "action": "delete_remote_repo",
+      "subject": "my-app",
+      "fields": {
+        "also_local": true,
+        "confirm_name": "Hello-World",
+        "remote_id": "1234567890123456",
+        "remote_path": "octo/Hello-World"
+      }
+    },
+    {
+      "name": "delete_remote_repo id signed",
+      "action": "delete_remote_repo",
+      "subject": "my-app",
+      "fields": {
+        "also_local": true,
+        "confirm_name": "Hello-World",
+        "remote_id": "-5",
+        "remote_path": "octo/Hello-World"
+      }
+    },
+    {
+      "name": "delete_remote_repo id number",
+      "action": "delete_remote_repo",
+      "subject": "my-app",
+      "fields": {
+        "also_local": true,
+        "confirm_name": "Hello-World",
+        "remote_id": true,
+        "remote_path": "octo/Hello-World"
+      }
+    },
+    {
+      "name": "delete_remote_repo confirm_name empty",
+      "action": "delete_remote_repo",
+      "subject": "my-app",
+      "fields": {
+        "also_local": true,
+        "confirm_name": "",
+        "remote_id": "123456789",
+        "remote_path": "octo/Hello-World"
+      }
+    },
+    {
+      "name": "delete_remote_repo confirm_name slash",
+      "action": "delete_remote_repo",
+      "subject": "my-app",
+      "fields": {
+        "also_local": true,
+        "confirm_name": "octo/Hello-World",
+        "remote_id": "123456789",
+        "remote_path": "octo/Hello-World"
+      }
+    },
+    {
+      "name": "delete_remote_repo confirm_name dot git",
+      "action": "delete_remote_repo",
+      "subject": "my-app",
+      "fields": {
+        "also_local": true,
+        "confirm_name": "repo.git",
+        "remote_id": "123456789",
+        "remote_path": "octo/Hello-World"
+      }
+    },
+    {
+      "name": "delete_remote_repo confirm_name unicode",
+      "action": "delete_remote_repo",
+      "subject": "my-app",
+      "fields": {
+        "also_local": true,
+        "confirm_name": "저장소",
+        "remote_id": "123456789",
+        "remote_path": "octo/Hello-World"
+      }
+    },
+    {
+      "name": "delete_remote_repo remote_path one segment",
+      "action": "delete_remote_repo",
+      "subject": "my-app",
+      "fields": {
+        "also_local": true,
+        "confirm_name": "Hello-World",
+        "remote_id": "123456789",
+        "remote_path": "solo"
+      }
+    },
+    {
+      "name": "delete_remote_repo also_local string",
+      "action": "delete_remote_repo",
+      "subject": "my-app",
+      "fields": {
+        "also_local": "yes",
+        "confirm_name": "Hello-World",
+        "remote_id": "123456789",
+        "remote_path": "octo/Hello-World"
+      }
+    },
+    {
+      "name": "delete_remote_repo without also_local",
+      "action": "delete_remote_repo",
+      "subject": "my-app",
+      "fields": {
+        "confirm_name": "Hello-World",
+        "remote_id": "123456789",
+        "remote_path": "octo/Hello-World"
+      }
+    },
+    {
+      "name": "remove_deploy_key remote_path dotdot",
+      "action": "remove_deploy_key",
+      "subject": "my-app",
+      "fields": {
+        "remote_path": "a/../b"
+      }
+    },
+    {
+      "name": "remove_deploy_key with remote_id",
+      "action": "remove_deploy_key",
+      "subject": "my-app",
+      "fields": {
+        "remote_id": "5",
+        "remote_path": "octo/Hello-World"
+      }
+    },
+    {
+      "name": "clear_orphan project dotdot",
+      "action": "clear_orphan",
+      "subject": "gl",
+      "fields": {
+        "project": "o/../x"
+      }
+    },
+    {
+      "name": "clear_orphan project one segment",
+      "action": "clear_orphan",
+      "subject": "gl",
+      "fields": {
+        "project": "solo"
+      }
+    },
+    {
+      "name": "clear_orphan project percent",
+      "action": "clear_orphan",
+      "subject": "gl",
+      "fields": {
+        "project": "o/r%2f"
+      }
+    },
+    {
+      "name": "clear_orphan subject is a project id with underscore",
+      "action": "clear_orphan",
+      "subject": "a_b",
+      "fields": {
+        "project": "team/sub/half-made"
+      }
+    }
+  ],
+  "remote_ids": [
+    {
+      "value": "1",
+      "ok": true
+    },
+    {
+      "value": "42",
+      "ok": true
+    },
+    {
+      "value": "123456789012345",
+      "ok": true
+    },
+    {
+      "value": "1234567890123456",
+      "ok": false
+    },
+    {
+      "value": "0",
+      "ok": false
+    },
+    {
+      "value": "00",
+      "ok": false
+    },
+    {
+      "value": "01",
+      "ok": false
+    },
+    {
+      "value": "-1",
+      "ok": false
+    },
+    {
+      "value": "+1",
+      "ok": false
+    },
+    {
+      "value": "1.0",
+      "ok": false
+    },
+    {
+      "value": "1e3",
+      "ok": false
+    },
+    {
+      "value": " 1",
+      "ok": false
+    },
+    {
+      "value": "1 ",
+      "ok": false
+    },
+    {
+      "value": "",
+      "ok": false
+    },
+    {
+      "value": "abc",
+      "ok": false
+    },
+    {
+      "value": "１２",
+      "ok": false
+    }
+  ]
+}

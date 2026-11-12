@@ -390,6 +390,10 @@ type ProjectView struct {
 	Provider  *string          `json:"provider"`
 	GitLab    *projectGitLab   `json:"gitlab"`
 	AutoMerge projectAutoMerge `json:"auto_merge"`
+	// Origin is how the project came to be: created, linked, unknown or legacy
+	// (registry v4). Additive: the console may ignore it. projectView always
+	// sets it; omitempty only keeps hand-built fixtures that do not care stable.
+	Origin string `json:"origin,omitempty"`
 	// Cloned is what orchd sees on the file system right now (a directory,
 	// not a symlink, with a .git entry): the registry does not know it.
 	Cloned bool `json:"cloned"`
@@ -400,7 +404,15 @@ func projectView(p broker.Project) (ProjectView, bool) {
 	if !registrymsg.ValidSubject(p.ID) || !registrymsg.ValidKind(p.Kind) || p.Path == "" || !safePath(p.Path) || hostileText(p.Path) {
 		return ProjectView{}, false
 	}
-	v := ProjectView{ID: p.ID, Path: p.Path, Kind: p.Kind, AIContext: p.AIContext, AutoMerge: projectAutoMerge{Enabled: p.AutoMerge.Enabled}}
+	origin := p.Origin
+	switch origin {
+	case "":
+		origin = "unknown" // a broker from before registry v4 does not say
+	case "created", "linked", "unknown", "legacy":
+	default:
+		return ProjectView{}, false
+	}
+	v := ProjectView{ID: p.ID, Path: p.Path, Kind: p.Kind, AIContext: p.AIContext, AutoMerge: projectAutoMerge{Enabled: p.AutoMerge.Enabled}, Origin: origin}
 	if p.Provider != nil {
 		if !registrymsg.ValidProviderID(*p.Provider) {
 			return ProjectView{}, false

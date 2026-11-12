@@ -50,6 +50,9 @@ type Project struct {
 	Provider  *string     `json:"provider"`
 	Remote    *RemoteLink `json:"remote"`
 	AutoMerge AutoMerge   `json:"auto_merge"`
+	// Origin (registry v4): created, linked, unknown or legacy. A broker that
+	// does not send it is read as unknown.
+	Origin string `json:"origin"`
 }
 
 // AutoMergeGlobal is the registry-wide switch.

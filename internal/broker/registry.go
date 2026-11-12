@@ -25,29 +25,34 @@ import (
 //
 // Fail closed: only a truly missing file starts a fresh registry (and migrates
 // the legacy broker.json entries once). A file that is broken, unknown-keyed,
-// of a version other than 1, 2 or 3, not owned by the broker account or not
+// of a version other than 1, 2, 3 or 4, not owned by the broker account or not
 // 0600 is never treated as "absent": the broker keeps running but every read
 // and write that depends on the registry answers registry_unavailable.
 //
-// Versions. The file is version 3 (W3e: provider kinds gitlab and github,
-// per-project remote:{path,id}, orphan records). A valid version 1 (W3a/W3b)
-// or version 2 (W3c, gitlab:{project,project_id} links) file is migrated to 3
-// when it is opened: same content and meaning, rewritten atomically as 0600
-// (temp file, fsync, rename), after a byte-exact backup registry.json.v<N>.bak
-// that is never overwritten; if either write fails the old file is untouched
-// and the open is a start failure. A W3c broker accepts only version 2 and
-// refuses unknown keys, so it treats a version 3 file as broken (fail closed):
-// rolling the broker back means restoring the registry from that backup.
+// Versions. The file is version 4 (W3f: every project carries its origin,
+// created|linked|unknown|legacy, and may carry remote_deleted_at). Version 3
+// (W3e) added provider kinds gitlab and github, per-project remote:{path,id}
+// and orphan records. A valid version 1 (W3a/W3b), version 2 (W3c,
+// gitlab:{project,project_id} links) or version 3 file is migrated to 4 when it
+// is opened: same content and meaning (only the origin is new), rewritten
+// atomically as 0600 (temp file, fsync, rename), after a byte-exact backup
+// registry.json.v<N>.bak that is never overwritten; if either write fails the
+// old file is untouched and the open is a start failure. A W3e broker accepts
+// only version 3 and refuses unknown keys, so it treats a version 4 file as
+// broken (fail closed): rolling the broker back means restoring the registry
+// from that backup.
 
 const (
 	// RegistryFileName and UsedRequestsFileName live in the state directory.
 	RegistryFileName     = "registry.json"
 	UsedRequestsFileName = "used-requests.json"
 
-	// registryVersion is what this code writes. registryVersionV2 and V1 are the
-	// older versions it still reads (and migrates). TestOldBrokerRefusesV3 and
-	// TestOldBrokerVersionRefusesV2 pin them.
-	registryVersion = 3
+	// registryVersion is what this code writes. registryVersionV3, V2 and V1 are
+	// the older versions it still reads (and migrates). TestOldBrokerRefusesV4,
+	// TestOldBrokerRefusesV3 and TestOldBrokerVersionRefusesV2 pin them.
+	registryVersion = 4
+	// registryVersionV3 is the W3e file shape: projects have no origin.
+	registryVersionV3 = 3
 	// registryVersionV2 is the W3c file shape: project links are
 	// gitlab:{project,project_id}; read once and migrated to version 3.
 	registryVersionV2 = 2
@@ -77,7 +82,7 @@ const orphanTimeLayout = "2006-01-02T15:04:05Z"
 // broker.json (the old config knows no classes).
 const legacyKind = "legacy"
 
-// Registry is the D1 shape (version 3).
+// Registry is the D1 shape (version 4).
 type Registry struct {
 	Version         int           `json:"version"`
 	Providers       []Provider    `json:"providers"`
@@ -115,11 +120,31 @@ type Orphan struct {
 	Origin string `json:"origin"`
 }
 
-// Orphan origins.
+// Orphan and project origins. A project's origin is how it came to be:
+// created (create_project made the repository), linked (link_project took an
+// existing one), unknown (registered before origins were recorded, or by
+// register_project: nothing proves who made the repository) or legacy (a
+// project that came from broker.json, kind legacy). Orphans only use created
+// and linked.
 const (
 	OriginCreated = "created"
 	OriginLinked  = "linked"
+	OriginUnknown = "unknown"
+	OriginLegacy  = "legacy"
 )
+
+func validProjectOrigin(o string) bool {
+	return o == OriginCreated || o == OriginLinked || o == OriginUnknown || o == OriginLegacy
+}
+
+// originForKind is the origin of a project that exists without a recorded one:
+// legacy for the legacy kind, unknown for everything else.
+func originForKind(kind string) string {
+	if kind == legacyKind {
+		return OriginLegacy
+	}
+	return OriginUnknown
+}
 
 // orphanDroppedLog is the fixed log line written when the oldest orphan record
 // is dropped to stay within maxOrphans (no values).
@@ -175,6 +200,11 @@ type Project struct {
 	Provider  *string     `json:"provider"`
 	Remote    *RemoteLink `json:"remote"`
 	AutoMerge AutoMerge   `json:"auto_merge"`
+	// Origin (version 4) is required. RemoteDeletedAt is set only when the tool
+	// deleted the project's remote repository: UTC "2006-01-02T15:04:05Z", only
+	// with Remote null and origin created.
+	Origin          string  `json:"origin"`
+	RemoteDeletedAt *string `json:"remote_deleted_at,omitempty"`
 }
 
 // RemoteLink is the project's remote repository: Path is group/…/name (GitLab)
@@ -505,6 +535,10 @@ func cloneRegistry(r Registry) Registry {
 			v := *p.Provider
 			p.Provider = &v
 		}
+		if p.RemoteDeletedAt != nil {
+			v := *p.RemoteDeletedAt
+			p.RemoteDeletedAt = &v
+		}
 		c.Projects[i] = p
 	}
 	return c
@@ -525,6 +559,26 @@ func mustMarshalRegistry(r Registry) []byte {
 		panic("registry marshal")
 	}
 	return append(b, '\n')
+}
+
+// registryV3 is the exact version 3 file shape (W3e): the current shape without
+// the project origin and remote_deleted_at.
+type registryV3 struct {
+	Version         int           `json:"version"`
+	Providers       []Provider    `json:"providers"`
+	Projects        []projectV3   `json:"projects"`
+	AutoMergeGlobal AutoMergeGlob `json:"auto_merge_global"`
+	Orphans         []Orphan      `json:"orphans"`
+}
+
+type projectV3 struct {
+	ID        string      `json:"id"`
+	Path      string      `json:"path"`
+	Kind      string      `json:"kind"`
+	AIContext bool        `json:"ai_context"`
+	Provider  *string     `json:"provider"`
+	Remote    *RemoteLink `json:"remote"`
+	AutoMerge AutoMerge   `json:"auto_merge"`
 }
 
 // registryV1 is the exact version 1 file shape (W3a/W3b): no orphans, empty
@@ -567,7 +621,7 @@ type projectV2 struct {
 }
 
 // topLevelVersion is the raw version token of a file parseRegistry accepted
-// ("1" or "2" when it is being migrated).
+// ("1", "2" or "3" when it is being migrated).
 func topLevelVersion(data []byte) string {
 	head, _ := topLevelKeys(data)
 	return string(head["version"])
@@ -578,7 +632,7 @@ func topLevelVersion(data []byte) string {
 // is never replaced, fsynced (file and directory). An existing backup is not an
 // error.
 func writeBackupOnce(path string, data []byte, version string) error {
-	if version != "1" && version != "2" {
+	if version != "1" && version != "2" && version != "3" {
 		return errors.New("unexpected version")
 	}
 	bak := path + ".v" + version + ".bak"
@@ -651,11 +705,12 @@ func topLevelKeys(data []byte) (map[string]json.RawMessage, bool) {
 	return out, true
 }
 
-// parseRegistry decodes and validates a registry file. Only versions 1, 2 and
-// 3 are known; all are decoded strictly (unknown keys, trailing data and wrong
-// types are refused). migrated reports that data was a valid version 1 or 2
-// file that was converted to the version 3 shape in memory (content and
-// meaning unchanged): the caller rewrites it.
+// parseRegistry decodes and validates a registry file. Only versions 1, 2, 3
+// and 4 are known; all are decoded strictly (unknown keys, trailing data and
+// wrong types are refused). migrated reports that data was a valid version 1, 2
+// or 3 file that was converted to the version 4 shape in memory (content and
+// meaning unchanged; each project gets the origin legacy when its kind is
+// legacy and unknown otherwise): the caller rewrites it.
 func parseRegistry(data []byte) (r Registry, migrated bool, err error) {
 	head, ok := topLevelKeys(data)
 	if !ok {
@@ -671,7 +726,7 @@ func parseRegistry(data []byte) (r Registry, migrated bool, err error) {
 		return terr == io.EOF
 	}
 	switch string(head["version"]) {
-	case "3":
+	case "4":
 		if !strict(&r) || r.Version != registryVersion {
 			return Registry{}, false, ErrRegistryBroken
 		}
@@ -684,6 +739,24 @@ func parseRegistry(data []byte) (r Registry, migrated bool, err error) {
 		if r.Orphans == nil {
 			r.Orphans = []Orphan{}
 		}
+	case "3":
+		var v3 registryV3
+		if !strict(&v3) || v3.Version != registryVersionV3 {
+			return Registry{}, false, ErrRegistryBroken
+		}
+		r = Registry{Version: registryVersion, Providers: v3.Providers, AutoMergeGlobal: v3.AutoMergeGlobal, Orphans: v3.Orphans}
+		r.Projects = []Project{}
+		for _, p := range v3.Projects {
+			r.Projects = append(r.Projects, Project{ID: p.ID, Path: p.Path, Kind: p.Kind, AIContext: p.AIContext, Provider: p.Provider,
+				Remote: p.Remote, AutoMerge: p.AutoMerge})
+		}
+		if r.Providers == nil {
+			r.Providers = []Provider{}
+		}
+		if r.Orphans == nil {
+			r.Orphans = []Orphan{}
+		}
+		migrated = true
 	case "2":
 		var v2 registryV2
 		if !strict(&v2) || v2.Version != registryVersionV2 {
@@ -723,6 +796,12 @@ func parseRegistry(data []byte) (r Registry, migrated bool, err error) {
 		migrated = true
 	default:
 		return Registry{}, false, ErrRegistryBroken
+	}
+	// projects of older files have no origin: legacy kind -> legacy, else unknown
+	if migrated {
+		for i := range r.Projects {
+			r.Projects[i].Origin = originForKind(r.Projects[i].Kind)
+		}
 	}
 	// orphan records of older files have no origin: they are "created" ones
 	for i := range r.Orphans {
@@ -783,6 +862,16 @@ func validateRegistry(r *Registry) error {
 		if len(p.Path) > maxPathBytes || !projectIDRE.MatchString(p.ID) || !projectKindRE.MatchString(p.Kind) || !cleanAbs(p.Path) {
 			return errRegProject
 		}
+		if !validProjectOrigin(p.Origin) || (p.Origin == OriginLegacy) != (p.Kind == legacyKind) {
+			return errRegProject
+		}
+		if p.RemoteDeletedAt != nil {
+			// only the tool's own remote delete writes it: origin created, no remote left
+			t, terr := time.Parse(orphanTimeLayout, *p.RemoteDeletedAt)
+			if terr != nil || t.Format(orphanTimeLayout) != *p.RemoteDeletedAt || p.Remote != nil || p.Origin != OriginCreated {
+				return errRegProject
+			}
+		}
 		if p.Provider != nil && !providers[*p.Provider] {
 			return errRegProvider // unknown provider id (this also keeps a referenced provider from being removed)
 		}
@@ -827,11 +916,8 @@ func validOrphan(o Orphan) bool {
 	}
 	// A GitLab project (group path + lowercase name, up to five segments) or a
 	// GitHub/GitLab remote path as link_project and the GitHub create flow
-	// write it (owner/repo, case kept).
-	i := strings.LastIndexByte(o.Project, '/')
-	gitlabShape := i >= 0 && registrymsg.ValidGroupPath(o.Project[:i]) && registrymsg.ValidName(o.Project[i+1:]) &&
-		strings.Count(o.Project, "/")+1 <= registrymsg.MaxGroupDepth+1
-	if !gitlabShape && !registrymsg.ValidRemotePath(o.Project) {
+	// write it (owner/repo, case kept). clear_orphan.project uses the same rule.
+	if !registrymsg.ValidOrphanProject(o.Project) {
 		return false
 	}
 	if o.ProjectID != nil && *o.ProjectID <= 0 {
@@ -859,7 +945,7 @@ func migrateLegacy(l LegacySource) (Registry, error) {
 		if !cleanAbs(path) {
 			return 0, ErrMigrationConflict
 		}
-		reg.Projects = append(reg.Projects, Project{ID: legacyID(path), Path: path, Kind: legacyKind})
+		reg.Projects = append(reg.Projects, Project{ID: legacyID(path), Path: path, Kind: legacyKind, Origin: OriginLegacy})
 		index[path] = len(reg.Projects) - 1
 		return index[path], nil
 	}

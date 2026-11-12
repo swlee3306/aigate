@@ -326,7 +326,7 @@ func (s *Server) createWritePhase(ctx context.Context, a createProjectArgs, rp R
 	step = stepRegister
 	provID := a.Provider
 	entry := Project{ID: a.ID, Path: projPath, Kind: "registered", AIContext: *a.AIContext, Provider: &provID,
-		Remote: &RemoteLink{Path: full, ID: &id}}
+		Remote: &RemoteLink{Path: full, ID: &id}, Origin: OriginCreated}
 	err = s.Registry.Update(func(r *Registry) error {
 		if registryHasProject(r, a.ID, projPath) {
 			return opCodeErr("project_name_taken")

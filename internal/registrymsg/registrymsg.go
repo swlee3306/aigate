@@ -36,6 +36,16 @@ const (
 	// attach a remote to an ALREADY registered project.
 	ActionLinkProject  = "link_project"
 	ActionAttachRemote = "attach_remote"
+
+	// W3f: signed deletion. remove_project clears the server-side clone, key
+	// folder and registry row (the remote repository stays); delete_remote_repo
+	// deletes a repository this tool created; remove_deploy_key detaches the
+	// tool's deploy key from a linked repository; clear_orphan drops one orphan
+	// record (no external call).
+	ActionRemoveProject    = "remove_project"
+	ActionDeleteRemoteRepo = "delete_remote_repo"
+	ActionRemoveDeployKey  = "remove_deploy_key"
+	ActionClearOrphan      = "clear_orphan"
 )
 
 var (
@@ -80,6 +90,12 @@ var schema = map[string]map[string]fieldKind{
 	ActionLinkProject: {"provider": kindString, "remote_path": kindString, "ai_context": kindBool, "publish": kindString,
 		"deploy_key_sha256": kindString},
 	ActionAttachRemote: {"provider": kindString, "remote_path": kindString, "publish": kindString, "deploy_key_sha256": kindString},
+	// W3f (F-D3). Subjects: the EXISTING project id for the first three,
+	// the provider id for clear_orphan.
+	ActionRemoveProject:    {"scope": kindString, "legacy_ack": kindBool},
+	ActionDeleteRemoteRepo: {"remote_path": kindString, "remote_id": kindString, "confirm_name": kindString, "also_local": kindBool},
+	ActionRemoveDeployKey:  {"remote_path": kindString},
+	ActionClearOrphan:      {"project": kindString},
 }
 
 // optionalFields lists, per action, fields a change MAY carry on top of its
@@ -102,7 +118,8 @@ var emptyOK = map[string]map[string]bool{
 
 func isNewAction(action string) bool {
 	switch action {
-	case ActionSetProvider, ActionDeleteProvider, ActionCreateGroup, ActionCreateProject, ActionLinkProject, ActionAttachRemote:
+	case ActionSetProvider, ActionDeleteProvider, ActionCreateGroup, ActionCreateProject, ActionLinkProject, ActionAttachRemote,
+		ActionRemoveProject, ActionDeleteRemoteRepo, ActionRemoveDeployKey, ActionClearOrphan:
 		return true
 	}
 	return false
@@ -115,7 +132,7 @@ func validSubject(action, subject string) bool {
 	switch action {
 	case ActionSetToken, ActionDeleteToken:
 		return tokenRefRE.MatchString(subject)
-	case ActionSetProvider, ActionDeleteProvider, ActionCreateGroup:
+	case ActionSetProvider, ActionDeleteProvider, ActionCreateGroup, ActionClearOrphan:
 		return providerIDRE.MatchString(subject)
 	case ActionCreateProject, ActionLinkProject:
 		return ValidName(subject)
@@ -155,8 +172,17 @@ func validateNewField(action, name, s string) error {
 		ok = hashRE.MatchString(s)
 	case ActionCreateProject + ".visibility":
 		ok = s == "public" || s == "private"
-	case ActionLinkProject + ".remote_path", ActionAttachRemote + ".remote_path":
+	case ActionLinkProject + ".remote_path", ActionAttachRemote + ".remote_path",
+		ActionDeleteRemoteRepo + ".remote_path", ActionRemoveDeployKey + ".remote_path":
 		ok = ValidRemotePath(s)
+	case ActionRemoveProject + ".scope":
+		ok = s == "local"
+	case ActionDeleteRemoteRepo + ".remote_id":
+		ok = ValidRemoteID(s)
+	case ActionDeleteRemoteRepo + ".confirm_name":
+		ok = ValidConfirmName(s)
+	case ActionClearOrphan + ".project":
+		ok = ValidOrphanProject(s)
 	}
 	if !ok {
 		return errors.New("registrymsg: bad " + name)

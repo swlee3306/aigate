@@ -394,3 +394,68 @@ func TestSigningAcceptsW3eActions(t *testing.T) {
 		t.Error("constants")
 	}
 }
+
+func TestSigningAcceptsW3fActions(t *testing.T) {
+	accepts := func(action, subject string) bool {
+		m := regMsg(testNow)
+		m.Action, m.Subject = action, subject
+		return m.Validate() == nil
+	}
+	// project actions: the project id rule; clear_orphan: the provider id rule
+	for _, a := range []string{RegistryActionRemoveProject, RegistryActionDeleteRemoteRepo, RegistryActionRemoveDeployKey, RegistryActionClearOrphan} {
+		if !accepts(a, "my-app") || !accepts(a, "a") || accepts(a, "A1") || accepts(a, "a/b") || accepts(a, "") || accepts(a, "a_b") {
+			t.Errorf("%s: subject rule", a)
+		}
+		m := regMsg(testNow)
+		m.Action, m.Subject = a, "my-app"
+		back, err := ParseRegistryMessage(m.Text())
+		if err != nil || back != m || !strings.Contains(m.Text(), "action: "+a+"\n") {
+			t.Fatalf("%s round trip: %v", a, err)
+		}
+	}
+	// the project-id rule and the provider-id rule are separate variables
+	saved := registrySubjectRE
+	registrySubjectRE = regexp.MustCompile(`^n-[a-z0-9-]{0,37}$`)
+	if accepts(RegistryActionRemoveProject, "ab-1") || !accepts(RegistryActionRemoveProject, "n-x") || !accepts(RegistryActionClearOrphan, "ab-1") {
+		t.Error("clear_orphan must not follow the project id rule")
+	}
+	registrySubjectRE = saved
+	savedP := registryProviderIDRE
+	registryProviderIDRE = regexp.MustCompile(`^p-[a-z0-9-]{0,37}$`)
+	if accepts(RegistryActionClearOrphan, "ab-1") || !accepts(RegistryActionClearOrphan, "p-x") || !accepts(RegistryActionRemoveProject, "ab-1") {
+		t.Error("remove_project must not follow the provider id rule")
+	}
+	registryProviderIDRE = savedP
+}
+
+// A signature made for one W3f action never verifies as another, even with the
+// same subject, change hash, request and time (the action is in the signed text).
+func TestW3fSignaturesDoNotCrossActions(t *testing.T) {
+	f := newSSHFixture(t, "alice")
+	a := newFakeAuthenticator(t)
+	reg := Registry{Signers: []Signer{f.signer, a.signer(t, "phone")}}
+	actions := []string{RegistryActionRegisterProject, RegistryActionSetFlag, RegistryActionLinkProject, RegistryActionAttachRemote,
+		RegistryActionRemoveProject, RegistryActionDeleteRemoteRepo, RegistryActionRemoveDeployKey, RegistryActionClearOrphan}
+	mk := func(action string) RegistryMessage {
+		m := regMsg(testNow)
+		m.Action, m.Subject = action, "my-app"
+		return m
+	}
+	for _, signed := range actions {
+		sm := mk(signed)
+		ssh := f.sign(t, NamespaceRegistry, sm.Text())
+		web := a.assertRegistry(t, "phone", sm)
+		for _, used := range actions {
+			um := mk(used)
+			errS, errW := VerifyRegistry(reg, um, ssh, fixedOpts), VerifyRegistry(reg, um, web, fixedOpts)
+			if signed == used {
+				if errS != nil || errW != nil {
+					t.Errorf("%s: own signature refused: %v %v", signed, errS, errW)
+				}
+				continue
+			}
+			wantErr(t, errS, ErrBadSignature)
+			wantErr(t, errW, ErrBadSignature)
+		}
+	}
+}

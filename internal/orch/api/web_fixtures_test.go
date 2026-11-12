@@ -676,7 +676,7 @@ func TestWebFixturesW3c(t *testing.T) {
 		Clone   map[string]json.RawMessage `json:"clone"`
 	}
 	json.Unmarshal(b, &real)
-	if ledgerKeys(anyMap(real.Project)) != "ai_context,auto_merge,cloned,gitlab,id,kind,path,provider" || ledgerKeys(anyMap(real.Clone)) != "code,status" {
+	if ledgerKeys(anyMap(real.Project)) != "ai_context,auto_merge,cloned,gitlab,id,kind,origin,path,provider" || ledgerKeys(anyMap(real.Clone)) != "code,status" {
 		t.Errorf("create apply member keys: %s", b)
 	}
 	// create_partial envelope keys (the first create left its folder: a second create of the name is refused before the broker, so clear it)

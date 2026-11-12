@@ -68,7 +68,7 @@ func TestProviderStoreRoundTrip(t *testing.T) {
 	}
 	// delete refused while a project references it
 	if err := st.Update(func(r *Registry) error {
-		r.Projects = append(r.Projects, Project{ID: "demo", Path: "/home/orch/repos/demo", Kind: "registered", Provider: strp("corp"),
+		r.Projects = append(r.Projects, Project{Origin: OriginUnknown, ID: "demo", Path: "/home/orch/repos/demo", Kind: "registered", Provider: strp("corp"),
 			Remote: &RemoteLink{Path: "team/demo"}})
 		return nil
 	}); err != nil {

@@ -166,7 +166,7 @@ func (s *Server) registerProjectHandler(_ context.Context, raw json.RawMessage) 
 				return opCodeErr("project_exists")
 			}
 		}
-		out = Project{ID: a.ID, Path: a.Path, Kind: a.Kind, AIContext: *a.AIContext}
+		out = Project{ID: a.ID, Path: a.Path, Kind: a.Kind, AIContext: *a.AIContext, Origin: originForKind(a.Kind)}
 		r.Projects = append(r.Projects, out)
 		return nil
 	})

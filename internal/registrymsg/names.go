@@ -81,6 +81,53 @@ func ValidRemotePath(s string) bool {
 	return true
 }
 
+// ValidRemoteID reports whether s is a repository id as a signed field: a
+// decimal string of 1 to 15 digits, greater than zero, no sign, no leading zero
+// (15 digits stay exact in a JavaScript number and in an int64).
+func ValidRemoteID(s string) bool {
+	if len(s) < 1 || len(s) > 15 || s[0] == '0' {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// ValidConfirmName reports whether s can be the typed confirmation name of a
+// remote repository: one remote-path segment (the repository's own name),
+// [A-Za-z0-9._-], 1 to MaxRemoteSegmentLen bytes, not "." or "..", not ending in
+// ".git" in any case. Case is kept: the broker compares it exactly with the last
+// segment of the signed remote_path.
+func ValidConfirmName(s string) bool {
+	if s == "" || len(s) > MaxRemoteSegmentLen || strings.Contains(s, "/") {
+		return false
+	}
+	// A path of owner/<name> is valid exactly when <name> is a valid segment.
+	return ValidRemotePath("x/" + s)
+}
+
+// RemoteLastSegment returns the last segment (the repository name) of a valid
+// remote path.
+func RemoteLastSegment(path string) (string, bool) {
+	if !ValidRemotePath(path) {
+		return "", false
+	}
+	return path[strings.LastIndexByte(path, '/')+1:], true
+}
+
+// ValidOrphanProject reports whether s is acceptable as the project of an
+// orphan record (and of clear_orphan.project): a GitLab project (lowercase
+// group path of at most MaxGroupDepth segments plus a lowercase name) or any
+// ValidRemotePath (GitHub owner/repo, case kept).
+func ValidOrphanProject(s string) bool {
+	i := strings.LastIndexByte(s, '/')
+	gitlabShape := i >= 0 && ValidGroupPath(s[:i]) && ValidName(s[i+1:]) && strings.Count(s, "/")+1 <= MaxGroupDepth+1
+	return gitlabShape || ValidRemotePath(s)
+}
+
 // The GitHub name patterns, shared with the broker's request allowlist so a
 // shape accepted here can never be refused there (or the other way round).
 const (

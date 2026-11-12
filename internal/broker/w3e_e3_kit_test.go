@@ -152,7 +152,7 @@ func (e *e3env) attachArgs(id, prov, remote string, mod func(f map[string]any)) 
 func (e *e3env) ownLocal(id string, ai bool, legacy *RemoteLink) {
 	e.t.Helper()
 	err := e.s.Registry.Update(func(r *Registry) error {
-		r.Projects = append(r.Projects, Project{ID: id, Path: e.root + "/" + id, Kind: "registered", AIContext: ai, Remote: legacy})
+		r.Projects = append(r.Projects, Project{Origin: OriginUnknown, ID: id, Path: e.root + "/" + id, Kind: "registered", AIContext: ai, Remote: legacy})
 		return nil
 	})
 	if err != nil {
@@ -165,7 +165,7 @@ func (e *e3env) ownLinked(id, provider, remote string) {
 	e.t.Helper()
 	pid := int64(5)
 	err := e.s.Registry.Update(func(r *Registry) error {
-		r.Projects = append(r.Projects, Project{ID: id, Path: e.root + "/" + id, Kind: "registered", Provider: &provider,
+		r.Projects = append(r.Projects, Project{Origin: OriginUnknown, ID: id, Path: e.root + "/" + id, Kind: "registered", Provider: &provider,
 			Remote: &RemoteLink{Path: remote, ID: &pid}})
 		return nil
 	})
