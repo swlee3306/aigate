@@ -318,16 +318,16 @@ func OpenRegistry(dir string, legacy LegacySource, o RegistryOptions) (*Registry
 				return st, ErrRegistryBroken
 			}
 			if migrated {
-				// v1/v2 -> v3: same content, atomic replace (never exclusive:
+				// v1/v2/v3 -> v4: same content, atomic replace (never exclusive:
 				// the old file is the one being replaced). First a byte-exact
 				// backup registry.json.v<N>.bak (0600, only if absent, never
-				// overwritten, fsynced): a W3c broker cannot read v3, so a
+				// overwritten, fsynced): a W3e broker cannot read v4, so a
 				// rollback restores it. Any error is a start failure. Per
 				// stage: before the rename (temp write, fsync) the old file is
 				// untouched; after the rename (only the directory fsync can
-				// still fail) the file is already v3 and the next start reads
-				// it as a normal v3 file. There is no lock between reading the
-				// old file and renaming v3: stop the old broker first.
+				// still fail) the file is already v4 and the next start reads
+				// it as a normal v4 file. There is no lock between reading the
+				// old file and renaming v4: stop the old broker first.
 				if berr := writeBackupOnce(st.path, data, string(topLevelVersion(data))); berr != nil {
 					return nil, errors.New("프로젝트 등록부의 백업을 저장할 수 없습니다")
 				}
