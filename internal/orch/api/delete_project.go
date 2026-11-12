@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"log"
 	"net/http"
@@ -75,6 +76,7 @@ var (
 	errKeyUnavailRemoval = apiErr(http.StatusConflict, "key_unavailable_for_removal", "이 프로젝트의 배포 키 공개 키를 서버에서 읽을 수 없어 이 도구로 뗄 수 없습니다. 제공자 화면(저장소 설정의 배포 키)에서 제목이 orchd로 시작하는 키를 직접 제거하세요. 변경 없음")
 	errNoRemote          = apiErr(http.StatusConflict, "no_remote", "이 프로젝트에는 연결된 원격 저장소가 없어 뗄 배포 키가 없습니다. 변경 없음")
 	errLocalUnsafe       = apiErr(http.StatusConflict, "local_unsafe", "서버의 복제본 폴더가 이 도구가 지울 수 있는 모양이 아닙니다(심볼릭 링크이거나, .git 폴더가 없거나, 허용된 저장소 루트 바로 아래의 프로젝트 이름 폴더가 아닙니다). 안전을 위해 아무것도 지우지 않았습니다. 서버 관리자가 확인해야 합니다. 변경 없음")
+	errRepoBeingRemoved  = apiErr(http.StatusConflict, "repo_being_removed", "이 프로젝트의 서버 폴더를 지우는 중이라 지금은 작업을 내거나 복제할 수 없습니다. 잠시 후 다시 시도하세요. 변경 없음")
 	errDeleteNeutralBad  = apiErr(http.StatusBadRequest, "bad_url", "제공자 주소가 허용되지 않습니다. 주소 모양과 접속 대상을 확인하세요. 변경 없음")
 	errDeleteGHRefused   = apiErr(http.StatusBadGateway, "github_refused", "제공자(GitHub)가 요청을 받아들이지 않았습니다. 토큰 권한과 제공자 설정을 확인하세요. 아무것도 지우지 않았습니다")
 	errDeleteGLRefused   = apiErr(http.StatusBadGateway, "gitlab_refused", "제공자(GitLab)가 요청을 받아들이지 않았습니다. 토큰 권한과 제공자 설정을 확인하세요. 아무것도 지우지 않았습니다")
@@ -85,9 +87,11 @@ var (
 	errKeyUnknownRes    = apiErr(http.StatusGatewayTimeout, "outcome_unknown", "배포 키가 제거되었는지 알 수 없습니다. 자동으로 다시 시도하지 않았습니다. 제공자 화면에서 이 서버의 배포 키(제목이 orchd로 시작)를 확인하세요")
 	errOrphanUnknownRes = apiErr(http.StatusGatewayTimeout, "outcome_unknown", "고아 기록이 지워졌는지 알 수 없습니다. 자동으로 다시 시도하지 않았습니다. 프로젝트 목록(알림 포함)을 다시 읽어 확인하세요")
 
-	// errDeletePartialLocal is the base of the "files only partly removed" answer
-	// (a copy gets the detail: the remaining items).
-	errDeletePartialLocal = apiErr(http.StatusBadGateway, "delete_partial_local", "서버의 파일 지우기가 일부만 끝났습니다(남은 항목과 이미 끝난 일은 함께 표시됩니다). 자동으로 다시 시도하지 않았습니다. 남은 폴더는 서버 관리자가 확인해 지워야 하며, 지우다 만 폴더(.deleting-)는 서버를 다시 시작하면 정리됩니다")
+	// The "files only partly removed" answers (a copy gets the detail: the state
+	// of each item). Kept: nothing of the remaining items was touched. Moved: a
+	// folder was moved aside and its deletion stopped (the restart sweep cleans it).
+	errDeletePartialKept  = apiErr(http.StatusBadGateway, "delete_partial_local", "서버의 파일 지우기가 일부만 끝났습니다. 남은 항목은 원래 자리에 그대로 있습니다(항목별 상태는 함께 표시됩니다). 자동으로 다시 시도하지 않았습니다. 서버 관리자가 확인해야 합니다")
+	errDeletePartialMoved = apiErr(http.StatusBadGateway, "delete_partial_local", "서버의 파일 지우기가 일부만 끝났습니다. 지우던 폴더는 프로젝트 이름에서 떼어 내 .deleting- 이름으로 옮겨졌고 아직 다 지워지지 않았습니다(항목별 상태는 함께 표시됩니다). 자동으로 다시 시도하지 않았습니다. 서버를 다시 시작하면 정리되며, 관리자가 직접 지울 수도 있습니다")
 )
 
 var deleteActions = []string{registrymsg.ActionRemoveProject, registrymsg.ActionDeleteRemoteRepo, registrymsg.ActionRemoveDeployKey, registrymsg.ActionClearOrphan}
@@ -172,6 +176,10 @@ func deleteBrokerError(action string, e *broker.OpError) *httpError {
 // projectBusy refuses when the orchd DB holds a task that is not in a final
 // state for the project's repository path (or a path below it).
 func (h *handler) projectBusy(ctx context.Context, path string) error {
+	// a clone running into the folder or a submit in flight counts as busy
+	if h.guard.inUse(path) {
+		return errProjectBusy
+	}
 	if h.st == nil {
 		return errBusyCheckFailed
 	}
@@ -199,9 +207,19 @@ type delInfo struct {
 // localPlan is the dry run of the local removal: the registry path must be the
 // project's own folder directly under a root, and the clone and key folder (if
 // they exist) must be removable by internal/orch/remove. Nothing is changed.
-func (h *handler) localPlan(id, path string) error {
+func (h *handler) localPlan(id, path string, rows []broker.Project) error {
 	if !h.directUnderRoot(path) || !safeProjectPath(path) || filepath.Base(path) != id {
 		return errLocalUnsafe
+	}
+	// No other registry row may share the folder, live below it, or contain it:
+	// removing this project's folder would take another project's files along.
+	for _, o := range rows {
+		if o.ID == id {
+			continue
+		}
+		if under(o.Path, path) || under(path, o.Path) {
+			return errLocalUnsafe
+		}
 	}
 	if _, err := remove.CheckClone(h.roots, path, id); err != nil {
 		return errLocalUnsafe
@@ -284,7 +302,7 @@ func (h *handler) deleteChecks(ctx context.Context, c registryChange) (*delInfo,
 		if err := h.projectBusy(ctx, p.Path); err != nil {
 			return nil, err
 		}
-		if err := h.localPlan(c.Subject, p.Path); err != nil {
+		if err := h.localPlan(c.Subject, p.Path, rv.Projects); err != nil {
 			return nil, err
 		}
 	case registrymsg.ActionDeleteRemoteRepo:
@@ -308,7 +326,7 @@ func (h *handler) deleteChecks(ctx context.Context, c registryChange) (*delInfo,
 			return nil, err
 		}
 		if also, _ := c.Fields["also_local"].(bool); also {
-			if err := h.localPlan(c.Subject, p.Path); err != nil {
+			if err := h.localPlan(c.Subject, p.Path, rv.Projects); err != nil {
 				return nil, err
 			}
 		}
@@ -488,47 +506,86 @@ func (h *handler) finishDelete(r *http.Request, c registryChange, res json.RawMe
 	return map[string]any{"provider": d.Provider, "project": d.Project, "cleared": true}, nil
 }
 
+// Item states of a local removal: removed and already_gone are success;
+// kept_in_place (nothing of the item was touched) and moved_aside (the folder
+// left its project name and its deletion stopped) are what remains.
+const (
+	itemKept  = "kept_in_place"
+	itemMoved = "moved_aside"
+)
+
+func itemState(err error) string {
+	if errors.Is(err, remove.ErrPartial) {
+		return itemMoved
+	}
+	return itemKept
+}
+
 // localPartial builds the "files only partly removed" error with its detail:
-// which items remain and what already happened elsewhere (ids and kinds only).
-func localPartial(remaining []string, registryRemoved, remoteDeleted bool, reason string) *httpError {
-	he := *errDeletePartialLocal
-	he.detail = map[string]any{"remaining": remaining, "registry_removed": registryRemoved, "remote_deleted": remoteDeleted, "reason": reason}
+// the state of each item, which remain, and what already happened elsewhere
+// (kinds and states only, never a path).
+func localPartial(clone, key string, registryRemoved, remoteDeleted bool, reason string) *httpError {
+	base := errDeletePartialKept
+	if clone == itemMoved || key == itemMoved {
+		base = errDeletePartialMoved
+	}
+	he := *base
+	remaining := []string{}
+	if clone == itemKept || clone == itemMoved {
+		remaining = append(remaining, "clone")
+	}
+	if key == itemKept || key == itemMoved {
+		remaining = append(remaining, "key")
+	}
+	he.detail = map[string]any{"remaining": remaining, "clone": clone, "key": key,
+		"registry_removed": registryRemoved, "remote_deleted": remoteDeleted, "reason": reason}
 	return &he
 }
 
 // removeLocal removes the clone and the key folder of project id. It runs only
 // from finishDelete, after the broker accepted a signed change that asks for it.
-// Busy again right before the rename: a task queued in the meantime keeps the
-// files (reported as partial: the registry side is already done).
+// The path guard is held from the final busy re-check until both items were
+// handled: no task can be submitted and no clone can run in between. The clone
+// and the key folder are attempted INDEPENDENTLY; a failure of one never skips
+// the other, and each item is reported on its own.
 func (h *handler) removeLocal(ctx context.Context, id, path string, registryRemoved, remoteDeleted bool) (map[string]string, error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), localBudget)
 	defer cancel()
+	if !h.guard.tryRemove(path) {
+		return nil, localPartial(itemKept, itemKept, registryRemoved, remoteDeleted, "in_progress")
+	}
+	defer h.guard.endRemove(path)
 	if err := h.projectBusy(ctx, path); err != nil {
 		reason := "project_busy"
 		if err == errBusyCheckFailed {
 			reason = "busy_check_failed"
 		}
-		return nil, localPartial([]string{"clone", "key"}, registryRemoved, remoteDeleted, reason)
+		return nil, localPartial(itemKept, itemKept, registryRemoved, remoteDeleted, reason)
 	}
 	h.localMu.Lock()
 	defer h.localMu.Unlock()
-	local := map[string]string{"clone": "skipped", "key": "skipped"}
+	local := map[string]string{}
+	failed := false
+	cloneState, keyState := "", ""
 	out, err := remove.Clone(h.roots, path, id)
 	if err != nil {
 		log.Printf("orchd: the local removal of a project did not complete (clone)")
-		return nil, localPartial([]string{"clone", "key"}, registryRemoved, remoteDeleted, "remove_failed")
+		cloneState, failed = itemState(err), true
+	} else {
+		cloneState = string(out)
 	}
-	local["clone"] = string(out)
 	if h.keys == nil {
-		local["key"] = "not_managed"
-		return local, nil
-	}
-	out, err = remove.KeyDir(h.keys.KeysDir(), id)
-	if err != nil {
+		keyState = "not_managed"
+	} else if out, err := remove.KeyDir(h.keys.KeysDir(), id); err != nil {
 		log.Printf("orchd: the local removal of a project did not complete (key)")
-		return nil, localPartial([]string{"key"}, registryRemoved, remoteDeleted, "remove_failed")
+		keyState, failed = itemState(err), true
+	} else {
+		keyState = string(out)
 	}
-	local["key"] = string(out)
+	if failed {
+		return nil, localPartial(cloneState, keyState, registryRemoved, remoteDeleted, "remove_failed")
+	}
+	local["clone"], local["key"] = cloneState, keyState
 	return local, nil
 }
 
@@ -602,7 +659,7 @@ func (h *handler) removalPreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body := map[string]any{
-		"id": id, "origin": view.Origin, "legacy": view.Origin == "legacy", "has_remote": p.Remote != nil,
+		"id": id, "origin": view.Origin, "legacy": view.Origin == "legacy", "has_remote": p.Remote != nil, "remote_key_may_remain": p.Remote != nil,
 		"remote_deleted_at": view.RemoteDeletedAt, "static_remote": h.staticRepos[filepath.Clean(p.Path)],
 		"busy": false, "busy_unknown": false,
 		"folder_exists": false, "is_git_repo": false, "local_removable": false, "key_dir_exists": false,
@@ -625,7 +682,7 @@ func (h *handler) removalPreview(w http.ResponseWriter, r *http.Request) {
 	}
 	if shapeOK {
 		have, cerr := remove.CheckClone(h.roots, p.Path, id)
-		body["local_removable"] = cerr == nil && h.localPlan(id, p.Path) == nil
+		body["local_removable"] = cerr == nil && h.localPlan(id, p.Path, rv.Projects) == nil
 		if fi, lerr := os.Lstat(p.Path); lerr == nil {
 			body["folder_exists"] = true
 			if gi, gerr := os.Lstat(filepath.Join(p.Path, ".git")); gerr == nil && gi.IsDir() && fi.IsDir() && fi.Mode()&os.ModeSymlink == 0 {

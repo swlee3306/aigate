@@ -6,7 +6,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"aigate/internal/orch/fsx"
 )
+
+func fsxRename(from, to string) error { return fsx.RenameNoReplace(from, to) }
 
 func realTemp(t *testing.T) string {
 	t.Helper()
@@ -381,5 +385,75 @@ func TestProductionCannotEnableRemoveSeams(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// A swapped-in entry whose rename-back fails is moved to a name the sweep
+// ignores and never stays a .deleting-* directory (the sweep would delete it).
+func TestSwapWithFailedRenameBackIsParkedUnderRefusedName(t *testing.T) {
+	root := realTemp(t)
+	mkClone(t, root, "swap")
+	s := &seams{
+		afterCheck: func() {
+			os.RemoveAll(filepath.Join(root, "swap"))
+			mkClone(t, root, "swap")
+			os.WriteFile(filepath.Join(root, "swap", "new.txt"), []byte("n"), 0o644)
+		},
+		undo: func(from, to string) error {
+			if filepath.Base(to) == "swap" {
+				return errors.New("rename back refused")
+			}
+			return fsxRename(from, to)
+		},
+	}
+	if _, err := removeClone([]string{root}, filepath.Join(root, "swap"), "swap", s); !errors.Is(err, ErrUnsafe) {
+		t.Fatalf("%v", err)
+	}
+	var refused, deleting int
+	for _, n := range names(t, root) {
+		if strings.HasPrefix(n, RefusedPrefix) {
+			refused++
+			if !exists(filepath.Join(root, n, "new.txt")) {
+				t.Error("the parked directory lost its content")
+			}
+		}
+		if strings.HasPrefix(n, StagePrefix) {
+			deleting++
+		}
+	}
+	if refused != 1 || deleting != 0 {
+		t.Fatalf("refused=%d deleting=%d: %v", refused, deleting, names(t, root))
+	}
+	// the sweep leaves the parked directory alone
+	if n := Sweep([]string{root}); n != 0 {
+		t.Fatalf("sweep removed %d", n)
+	}
+	if !IsOurName(RefusedPrefix + "0123456789abcdef") {
+		t.Fatal("refused name is not recognised as ours")
+	}
+}
+
+// The keys directory gets the same real-path rule as a repository root.
+func TestKeyDirParentChainMustNotBeASymlink(t *testing.T) {
+	real := realTemp(t)
+	os.Chmod(real, 0o700)
+	os.MkdirAll(filepath.Join(real, "keys", "app"), 0o700)
+	os.WriteFile(filepath.Join(real, "keys", "app", "id_ed25519"), []byte("k"), 0o600)
+	link := filepath.Join(realTemp(t), "ssh")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	keysViaLink := filepath.Join(link, "keys")
+	if _, err := KeyDir(keysViaLink, "app"); !errors.Is(err, ErrUnsafe) {
+		t.Fatalf("keys dir reached through a symlinked parent: %v", err)
+	}
+	if _, err := CheckKeyDir(keysViaLink, "app"); !errors.Is(err, ErrUnsafe) {
+		t.Fatalf("check: %v", err)
+	}
+	if !exists(filepath.Join(real, "keys", "app", "id_ed25519")) {
+		t.Fatal("removed through a symlinked parent")
+	}
+	if out, err := KeyDir(filepath.Join(real, "keys"), "app"); err != nil || out != Removed {
+		t.Fatalf("real path: %v %v", out, err)
 	}
 }

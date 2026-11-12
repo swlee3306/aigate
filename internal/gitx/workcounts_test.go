@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func gitCfg(t *testing.T, dir string, args ...string) {
@@ -114,5 +115,71 @@ func TestWorkCountsRunNothingFromRepoConfig(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("the clean filter of the repository ran")
+	}
+}
+
+// A filter driver defined in a SUBMODULE's own config (.git/modules/<name>/config)
+// must not run during the status of the superproject.
+func TestWorkCountsSubmoduleFilterDoesNotRun(t *testing.T) {
+	repo := workRepo(t)
+	base := t.TempDir()
+	subsrc := filepath.Join(base, "subsrc")
+	os.MkdirAll(subsrc, 0o755)
+	gitCfg(t, subsrc, "init", "-q", "-b", "main")
+	os.WriteFile(filepath.Join(subsrc, "a.txt"), []byte("a"), 0o644)
+	os.WriteFile(filepath.Join(subsrc, ".gitattributes"), []byte("*.txt filter=evil\n"), 0o644)
+	gitCfg(t, subsrc, "add", ".")
+	gitCfg(t, subsrc, "commit", "-q", "-m", "s")
+	gitCfg(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", subsrc, "sub")
+	gitCfg(t, repo, "commit", "-q", "-m", "add sub")
+	marker := filepath.Join(t.TempDir(), "ran")
+	script := filepath.Join(t.TempDir(), "hook.sh")
+	os.WriteFile(script, []byte("#!/bin/sh\ntouch "+marker+"\ncat\n"), 0o755)
+	gitCfg(t, repo, "config", "-f", filepath.Join(repo, ".git", "modules", "sub", "config"), "filter.evil.clean", script)
+	// same size, later mtime: git has to run the clean filter to know it changed
+	time.Sleep(1100 * time.Millisecond)
+	os.WriteFile(filepath.Join(repo, "sub", "a.txt"), []byte("b"), 0o644)
+	c := ReadWorkCounts(context.Background(), repo)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("a submodule's filter ran during the preview")
+	}
+	_ = c
+}
+
+// .git/commondir makes git read ANOTHER git directory's config: no status is
+// run for such a repository (changed count unknown), and the filter there does not run.
+func TestWorkCountsCommondirRedirectDoesNotRun(t *testing.T) {
+	a := workRepo(t)
+	marker := filepath.Join(t.TempDir(), "ran")
+	script := filepath.Join(t.TempDir(), "hook.sh")
+	os.WriteFile(script, []byte("#!/bin/sh\ntouch "+marker+"\ncat\n"), 0o755)
+	gitCfg(t, a, "config", "filter.evil.clean", script)
+	b, _ := filepath.EvalSymlinks(t.TempDir())
+	gitCfg(t, b, "init", "-q", "-b", "main")
+	os.WriteFile(filepath.Join(b, ".git", "commondir"), []byte(filepath.Join(a, ".git")+"\n"), 0o644)
+	os.WriteFile(filepath.Join(b, ".gitattributes"), []byte("*.txt filter=evil\n"), 0o644)
+	gitCfg(t, b, "read-tree", "HEAD")
+	os.WriteFile(filepath.Join(b, "tracked.txt"), []byte("dirty"), 0o644)
+	c := ReadWorkCounts(context.Background(), b)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("a filter of the redirected git directory ran")
+	}
+	if c.ChangedKnown {
+		t.Fatalf("a commondir redirect must make the changed count unknown: %+v", c)
+	}
+}
+
+// Git's own computed config (all scopes, includes resolved) with a filter or
+// include section also blocks status.
+func TestWorkCountsComputedConfigGuard(t *testing.T) {
+	repo := workRepo(t)
+	inc := filepath.Join(t.TempDir(), "inc.cfg")
+	os.WriteFile(inc, []byte("[filter \"evil\"]\n\tclean = true\n"), 0o644)
+	// an include written with odd spacing that a text scan could miss still shows up in git's own view
+	f, _ := os.OpenFile(filepath.Join(repo, ".git", "config"), os.O_APPEND|os.O_WRONLY, 0)
+	f.WriteString("[ include ]\n\tpath = " + inc + "\n")
+	f.Close()
+	if c := ReadWorkCounts(context.Background(), repo); c.ChangedKnown {
+		t.Fatalf("%+v", c)
 	}
 }

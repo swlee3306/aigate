@@ -56,6 +56,24 @@ func configRisky(repo string) bool {
 	return false
 }
 
+// redirected reports a clone whose .git directory points at another git
+// directory (a commondir file): git would read that one's config.
+func redirected(repo string) bool {
+	_, err := os.Lstat(filepath.Join(repo, ".git", "commondir"))
+	return !os.IsNotExist(err)
+}
+
+// computedConfigRisky asks git itself for the configuration it would use (all
+// scopes, includes resolved, in the same clean read environment): any filter or
+// include key, or a failure to ask, means no status is run.
+func computedConfigRisky(ctx context.Context, repo string) bool {
+	out, trunc, code, err := runReadCap(ctx, repo, 64<<10, "config", "-z", "--get-regexp", `^(filter|include|includeif)\.`)
+	if err == nil {
+		return len(out) > 0 || trunc
+	}
+	return code != 1 // 1: no such key (the normal case)
+}
+
 // ReadWorkCounts counts the work that exists only in the clone at repo, with
 // read-only git queries (hooks and fsmonitor off, no optional locks, discovery
 // stopped at repo). A count that could not be read stays unknown. A repository
@@ -70,10 +88,13 @@ func ReadWorkCounts(ctx context.Context, repo string) WorkCounts {
 			wc.Unpushed, wc.UnpushedKnown = n, true
 		}
 	}
-	if configRisky(repo) {
+	if configRisky(repo) || redirected(repo) || computedConfigRisky(ctx, repo) {
 		return wc
 	}
-	out, trunc, _, err = runReadCap(ctx, repo, 1<<20, "status", "--porcelain=v1", "-z", "--untracked-files=normal", "--no-renames")
+	// --ignore-submodules=all: a submodule's own git directory has its own
+	// config (filters), which status would otherwise run.
+	out, trunc, _, err = runReadCap(ctx, repo, 1<<20, "-c", "submodule.recurse=false", "status", "--porcelain=v1", "-z",
+		"--untracked-files=normal", "--no-renames", "--ignore-submodules=all")
 	if err == nil && !trunc {
 		wc.Changed = bytes.Count(out, []byte{0})
 		wc.ChangedKnown = true

@@ -52,7 +52,7 @@ func (h *handler) mountV1(mux *http.ServeMux) {
 	mux.HandleFunc("POST "+v1Prefix+"/projects/attach/apply", h.requireWrite(h.attachApply))
 	mux.HandleFunc("POST "+v1Prefix+"/projects/{id}/clone", h.requireWrite(h.projectClone))
 	// W3f deletion (delete_project.go): signed propose/apply pairs and a read-only preview.
-	mux.HandleFunc("GET "+v1Prefix+"/projects/{id}/removal-preview", h.removalPreview)
+	mux.HandleFunc("GET "+v1Prefix+"/projects/{id}/removal-preview", h.requireWrite(h.removalPreview))
 	mux.HandleFunc("POST "+v1Prefix+"/projects/remove/propose", h.requireWrite(h.removePropose))
 	mux.HandleFunc("POST "+v1Prefix+"/projects/remove/apply", h.requireWrite(h.removeApply))
 	mux.HandleFunc("POST "+v1Prefix+"/projects/delete-remote/propose", h.requireWrite(h.deleteRemotePropose))

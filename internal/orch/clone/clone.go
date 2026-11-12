@@ -323,7 +323,7 @@ func SweepStale(roots []string) int {
 // clone being made (.clone-*) or a project folder being deleted (.deleting-*).
 // Neither is ever a project or a clone.
 func IsStaging(name string) bool {
-	return strings.HasPrefix(name, tempPrefix) || strings.HasPrefix(name, remove.StagePrefix)
+	return strings.HasPrefix(name, tempPrefix) || remove.IsOurName(name)
 }
 
 // toolDirs are the only directories git and ssh are looked for in.

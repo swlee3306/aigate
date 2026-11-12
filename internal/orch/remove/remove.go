@@ -26,9 +26,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -39,6 +41,16 @@ import (
 // StagePrefix starts the name of a directory that is being deleted. It is not a
 // valid project id (ids start with a letter).
 const StagePrefix = ".deleting-"
+
+// RefusedPrefix starts the name an entry is parked under when it was swapped in
+// during a removal and could not be put back: the sweep never touches it.
+const RefusedPrefix = ".remove-refused-"
+
+// IsOurName reports whether a directory name is one orchd's removal makes
+// (never a project id).
+func IsOurName(name string) bool {
+	return strings.HasPrefix(name, StagePrefix) || strings.HasPrefix(name, RefusedPrefix)
+}
 
 // Outcome says what a call found or did.
 type Outcome string
@@ -74,6 +86,8 @@ type seams struct {
 	afterCheck func()
 	// removeAll replaces os.RemoveAll.
 	removeAll func(path string) error
+	// undo replaces the no-replace rename used to put a swapped-in entry back.
+	undo func(from, to string) error
 }
 
 var (
@@ -189,7 +203,8 @@ func CheckKeyDir(keysDir, id string) (exists bool, err error) {
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
-	if err != nil || !isRealDir(ki) || !ownedByUs(ki) {
+	// the whole path must be real (no symlink anywhere in its parent chain)
+	if err != nil || !isRealDir(ki) || !ownedByUs(ki) || !rootOK(keysDir) {
 		return false, ErrUnsafe
 	}
 	_, exists, err = checkDir(keysDir, filepath.Join(keysDir, id), false)
@@ -235,7 +250,21 @@ func removeIn(parent, path string, needGit bool, s *seams) (Outcome, error) {
 	// it is put back and nothing is deleted.
 	fi2, err := os.Lstat(stage)
 	if err != nil || !isRealDir(fi2) || !os.SameFile(fi, fi2) {
-		_ = fsx.RenameNoReplace(stage, path)
+		undo := fsx.RenameNoReplace
+		if s != nil && s.undo != nil {
+			undo = s.undo
+		}
+		if undo(stage, path) != nil {
+			// Not ours to delete and not possible to put back: park it where the
+			// startup sweep will not touch it.
+			var rb [8]byte
+			_, _ = rand.Read(rb[:])
+			if fsx.RenameNoReplace(stage, filepath.Join(parent, RefusedPrefix+hex.EncodeToString(rb[:]))) != nil {
+				log.Printf("orchd: an entry swapped in during a removal could not be moved back or parked")
+			} else {
+				log.Printf("orchd: an entry swapped in during a removal was parked under a %s name", RefusedPrefix)
+			}
+		}
 		return "", ErrUnsafe
 	}
 	del := os.RemoveAll

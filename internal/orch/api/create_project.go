@@ -338,6 +338,12 @@ func (h *handler) cloneProject(ctx context.Context, id string, timeout time.Dura
 		}
 		sshKey, cloneKind = k, "github"
 	}
+	// A clone and a removal of the same folder never overlap (a clone that
+	// finished after the removal would resurrect an unregistered folder).
+	if !h.guard.tryClone(entry.Path) {
+		return fail(errRepoBeingRemoved)
+	}
+	defer h.guard.endClone(entry.Path)
 	ran = true
 	err := h.cloneFn(ctx, clone.Options{Git: h.gitPath, SSH: h.sshPath, Remote: remote, Dest: entry.Path, Roots: h.roots,
 		SSHKey: sshKey, KnownHosts: h.knownHosts, Timeout: timeout, Kind: cloneKind})

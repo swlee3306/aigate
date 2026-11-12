@@ -718,12 +718,14 @@ func TestDeletePartialShowsStateAndRetry(t *testing.T) {
 	if c != 502 || v1Code(b) != "delete_partial_local" || d["remote_deleted"] != true || d["registry_removed"] != false {
 		t.Fatalf("%d %s", c, b)
 	}
+	// the clone and the key folder are attempted independently: the key folder
+	// (a different directory, still writable) is gone, only the clone remains
 	rem, _ := d["remaining"].([]any)
-	if fmt.Sprint(rem) != "[clone key]" {
-		t.Fatalf("remaining: %v", rem)
+	if fmt.Sprint(rem) != "[clone]" || d["clone"] != "kept_in_place" || d["key"] != "removed" {
+		t.Fatalf("remaining: %v detail %v", rem, d)
 	}
-	if !exists(filepath.Join(path, ".git")) || !exists(keyDir) {
-		t.Fatal("files vanished in a failed removal")
+	if !exists(filepath.Join(path, ".git")) || exists(keyDir) {
+		t.Fatal("clone must stay, key folder must be gone")
 	}
 	if len(e.wb.opsNamed("delete_remote_repo")) != 1 {
 		t.Fatal("the remote delete was retried")
@@ -1088,7 +1090,7 @@ func TestUnpushedWorkWarning(t *testing.T) {
 		}
 	}
 	sort.Strings(keys)
-	want := "busy,busy_unknown,changed_files,changed_known,folder_exists,has_remote,id,is_git_repo,key_dir_exists,legacy,local_removable,origin,remote_deleted_at,size_bytes,size_known,static_remote,unpushed_commits,unpushed_known"
+	want := "busy,busy_unknown,changed_files,changed_known,folder_exists,has_remote,id,is_git_repo,key_dir_exists,legacy,local_removable,origin,remote_deleted_at,remote_key_may_remain,size_bytes,size_known,static_remote,unpushed_commits,unpushed_known"
 	if strings.Join(keys, ",") != want {
 		t.Fatalf("preview keys:\n%s\nwant\n%s", strings.Join(keys, ","), want)
 	}
@@ -1190,7 +1192,7 @@ func TestLedgerNoSecrets(t *testing.T) {
 func TestRequireWriteAndCSRFDelete(t *testing.T) {
 	e := newDelEnv(t)
 	srv := e.httpServer(t)
-	tok, _ := e.newSession(t, "alice")
+	tok, csrf := e.newSession(t, "alice")
 	token := e.newToken(t, "mac-ssh")
 	e.addDel(t, delProject{id: "app-one", origin: "created", prov: "gh", remote: "Octo-Cat/app-one", remoteID: 123, noClone: true})
 	e.addDel(t, delProject{id: "app-two", origin: "linked", prov: "gh", remote: "Octo-Cat/app-two", remoteID: 124, withKey: true})
@@ -1241,6 +1243,13 @@ func TestRequireWriteAndCSRFDelete(t *testing.T) {
 	}
 	if code, _, _ := httpDo(t, srv, "GET", "/api/v1/projects/app-one/removal-preview", "", hdr{}); code != 401 {
 		t.Errorf("preview without credentials: %d", code)
+	}
+	// the preview executes git and reads the broker: write tier, a session needs its CSRF header
+	if code, _, b := httpDo(t, srv, "GET", "/api/v1/projects/app-one/removal-preview", "", hdr{"Cookie": cookie(tok)}); code != 403 {
+		t.Errorf("preview with a session and no csrf: %d %s", code, b)
+	}
+	if code, _, b := httpDo(t, srv, "GET", "/api/v1/projects/app-one/removal-preview", "", hdr{"Cookie": cookie(tok), CSRFHeader: csrf}); code != 200 {
+		t.Errorf("preview with a session and csrf: %d %s", code, b)
 	}
 	if code, _, b := httpDo(t, srv, "GET", "/api/v1/projects/app-one/removal-preview", "", hdr{"Authorization": "Bearer " + token}); code != 200 {
 		t.Errorf("preview with a token: %d %s", code, b)
@@ -1373,5 +1382,183 @@ func TestProjectViewCarriesRemoteDeletedAt(t *testing.T) {
 	e.addDel(t, delProject{id: "app-two", origin: "created", prov: "gh", deletedAt: "yesterday", noClone: true})
 	if c, b := e.sockJSON(t, "GET", "/api/v1/projects/registry", ""); c != 502 {
 		t.Fatalf("odd stamp: %d %s", c, b)
+	}
+}
+
+// ---- fix round 1 ----
+
+func TestRemoveLocalItemsAreIndependentAndStatesAreExact(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	e := newDelEnv(t)
+	// (a) the key folder cannot be removed, the clone can: clone gone, key kept_in_place
+	path := e.addDel(t, delProject{id: "app-one", origin: "created", prov: "gh", remote: "Octo-Cat/app-one", remoteID: 1, withKey: true})
+	q := e.mustPropose(t, "remove_project", "app-one", rmFields(false))
+	if err := os.Chmod(e.keysDir(), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(e.keysDir(), 0o700) })
+	c, b := e.applyDel(t, q)
+	d := detailOf(b)
+	if c != 502 || v1Code(b) != "delete_partial_local" || d["clone"] != "removed" || d["key"] != "kept_in_place" || fmt.Sprint(d["remaining"]) != "[key]" {
+		t.Fatalf("key failing: %d %s", c, b)
+	}
+	if exists(path) {
+		t.Fatal("a failing key removal skipped the clone")
+	}
+	if strings.Contains(string(b), ".deleting-") {
+		t.Fatal("nothing was moved aside, the restart hint must not be shown")
+	}
+	os.Chmod(e.keysDir(), 0o700)
+	// (b) the clone is moved aside but cannot be deleted: moved_aside, and the hint is shown; the key is still removed
+	path2 := e.addDel(t, delProject{id: "app-two", origin: "created", prov: "gh", remote: "Octo-Cat/app-two", remoteID: 2, withKey: true})
+	locked := filepath.Join(path2, "locked")
+	os.MkdirAll(locked, 0o755)
+	writeFile(t, filepath.Join(locked, "f"), "x")
+	os.Chmod(locked, 0o500)
+	t.Cleanup(func() {
+		filepath.Walk(e.root, func(p string, fi os.FileInfo, err error) error {
+			if err == nil && fi.IsDir() {
+				os.Chmod(p, 0o700)
+			}
+			return nil
+		})
+	})
+	q = e.mustPropose(t, "remove_project", "app-two", rmFields(false))
+	c, b = e.applyDel(t, q)
+	d = detailOf(b)
+	if c != 502 || d["clone"] != "moved_aside" || d["key"] != "removed" || fmt.Sprint(d["remaining"]) != "[clone]" || !strings.Contains(string(b), ".deleting-") {
+		t.Fatalf("moved aside: %d %s", c, b)
+	}
+	if exists(path2) {
+		t.Fatal("a half-deleted folder is still under the project name")
+	}
+}
+
+func TestPathGuardSerialisesSubmitCloneAndRemoval(t *testing.T) {
+	var g pathGuard
+	p := "/r/app"
+	if !g.enterSubmit(p+"/sub") || g.tryRemove(p) {
+		t.Fatal("a removal must not start while a submit for the path is in flight")
+	}
+	g.leaveSubmit(p + "/sub")
+	if !g.tryRemove(p) {
+		t.Fatal("removal refused with nothing in flight")
+	}
+	if g.enterSubmit(p) || g.enterSubmit(p+"/sub") || g.tryClone(p) {
+		t.Fatal("submit/clone allowed while the path is being removed")
+	}
+	if !g.enterSubmit("/r/app2") || !g.tryClone("/r/other") {
+		t.Fatal("an unrelated path was blocked")
+	}
+	g.endRemove(p)
+	if !g.tryClone(p) || g.tryRemove(p) {
+		t.Fatal("a removal must not start while a clone of the path runs")
+	}
+	g.endClone(p)
+	if !g.tryRemove(p) {
+		t.Fatal("removal refused after the clone ended")
+	}
+}
+
+func TestSubmitRacingARemovalIsRefused(t *testing.T) {
+	e := newDelEnv(t)
+	path := e.repo // a real git work tree under the root (submit checks that)
+	submit := func() (int, []byte) {
+		return e.sockJSON(t, "POST", "/api/v1/tasks", jsonBody(map[string]any{"repo": path, "base": "main", "prompt": "p", "class": "docs", "agent": "claude"}))
+	}
+	h := e.d.handler
+	if !h.guard.tryRemove(path) {
+		t.Fatal("guard")
+	}
+	before := e.taskCount(t)
+	if c, b := submit(); c != 409 || v1Code(b) != "repo_being_removed" || e.taskCount(t) != before {
+		t.Fatalf("submit during removal: %d %s", c, b)
+	}
+	h.guard.endRemove(path)
+	if c, b := submit(); c != 201 && c != 200 {
+		t.Fatalf("submit after removal ended: %d %s", c, b)
+	}
+}
+
+func TestCloneAndRemovalExcludeEachOther(t *testing.T) {
+	e := newDelEnv(t)
+	path := e.addDel(t, delProject{id: "app-one", origin: "created", prov: "gh", remote: "Octo-Cat/app-one", remoteID: 1, noClone: true, withKey: true})
+	h := e.d.handler
+	// a clone in progress: the removal is refused before any signature use...
+	if !h.guard.tryClone(path) {
+		t.Fatal("guard")
+	}
+	if c, b := e.proposeDel(t, "remove_project", "app-one", rmFields(false)); c != 409 || v1Code(b) != "project_busy" {
+		t.Fatalf("propose during clone: %d %s", c, b)
+	}
+	h.guard.endClone(path)
+	// ... a clone that starts during a removal is refused and starts nothing
+	q := e.mustPropose(t, "remove_project", "app-one", rmFields(false))
+	if !h.guard.tryRemove(path) {
+		t.Fatal("guard")
+	}
+	n := len(e.cloneCalls())
+	if c, b := e.sockJSON(t, "POST", "/api/v1/projects/app-one/clone", "{}"); c != 409 || v1Code(b) != "repo_being_removed" || len(e.cloneCalls()) != n {
+		t.Fatalf("clone during removal: %d %s", c, b)
+	}
+	h.guard.endRemove(path)
+	// a clone that slips in between the broker's answer and the local removal keeps the files
+	os.MkdirAll(filepath.Join(path, ".git"), 0o755)
+	e.setOverride(func(op string, a json.RawMessage) string {
+		if op == "remove_project" {
+			h.guard.tryClone(path)
+		}
+		return ""
+	})
+	c, b := e.applyDel(t, q)
+	d := detailOf(b)
+	if c != 502 || d["reason"] != "in_progress" || d["clone"] != "kept_in_place" || !exists(filepath.Join(path, ".git")) {
+		t.Fatalf("clone in the window: %d %s", c, b)
+	}
+	h.guard.endClone(path)
+}
+
+func TestLocalPlanRefusesOverlappingRegistryRows(t *testing.T) {
+	e := newDelEnv(t)
+	e.addDel(t, delProject{id: "outer", origin: "created", prov: "gh", remote: "Octo-Cat/outer", remoteID: 1})
+	// a second row whose path lies below the first one's folder
+	nested := map[string]any{"id": "inner", "path": filepath.Join(e.root, "outer", "inner"), "kind": "registered", "ai_context": false,
+		"provider": nil, "remote": nil, "auto_merge": map[string]any{"enabled": false}, "origin": "unknown"}
+	// a third row with the SAME path as a fourth
+	e.addDel(t, delProject{id: "twin-a", origin: "unknown"})
+	twin := map[string]any{"id": "twin-b", "path": filepath.Join(e.root, "twin-a"), "kind": "registered", "ai_context": false,
+		"provider": nil, "remote": nil, "auto_merge": map[string]any{"enabled": false}, "origin": "unknown"}
+	e.wb.mu.Lock()
+	e.wb.projects = append(e.wb.projects, nested, twin)
+	e.wb.mu.Unlock()
+	for _, id := range []string{"outer", "twin-a", "twin-b"} {
+		if c, b := e.proposeDel(t, "remove_project", id, rmFields(false)); c != 409 || v1Code(b) != "local_unsafe" {
+			t.Errorf("%s: %d %s", id, c, b)
+		}
+	}
+	c, b := e.sockJSON(t, "GET", "/api/v1/projects/outer/removal-preview", "")
+	var pv map[string]any
+	_ = json.Unmarshal(b, &pv)
+	if c != 200 || pv["local_removable"] != false {
+		t.Fatalf("preview of an overlapping row: %d %s", c, b)
+	}
+	if len(e.writes()) != 0 {
+		t.Fatal("reached the broker")
+	}
+}
+
+func TestPreviewFlagsRemoteKeyMayRemain(t *testing.T) {
+	e := newDelEnv(t)
+	e.addDel(t, delProject{id: "with-remote", origin: "linked", prov: "gh", remote: "Octo-Cat/with-remote", remoteID: 1})
+	e.addDel(t, delProject{id: "no-remote", origin: "unknown"})
+	for id, want := range map[string]bool{"with-remote": true, "no-remote": false} {
+		c, b := e.sockJSON(t, "GET", "/api/v1/projects/"+id+"/removal-preview", "")
+		var pv map[string]any
+		_ = json.Unmarshal(b, &pv)
+		if c != 200 || pv["remote_key_may_remain"] != want {
+			t.Errorf("%s: %d %s", id, c, b)
+		}
 	}
 }

@@ -272,6 +272,7 @@ type handler struct {
 	// W3f (delete_project.go): per-actor buckets of the four deletion actions and
 	// of the removal preview, and the lock that serialises local removals.
 	removeLimit, deleteRemoteLimit, removeKeyLimit, orphanLimit, previewRemovalLimit *actorLimiter
+	guard                                                                            pathGuard
 	localMu                                                                          sync.Mutex
 	staticRepos                                                                      map[string]bool
 }
@@ -465,6 +466,12 @@ func (h *handler) submit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	// A task must never be created on a path whose removal is under way (W3f).
+	if !h.guard.enterSubmit(t.Repo) {
+		writeErr(w, errRepoBeingRemoved)
+		return
+	}
+	defer h.guard.leaveSubmit(t.Repo)
 	if key == "" {
 		h.createAndRespond(w, r, t)
 		return
