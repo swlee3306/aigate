@@ -134,6 +134,34 @@ func registryHasProject(r *Registry, id, p string) bool {
 	return false
 }
 
+// createProviderRules are the kind/visibility/owner rules of create_project for
+// ONE provider entry, as a refusal code ("" = fine). They run in the shape stage
+// and again on the provider re-read after the name lock (a signed request must
+// never be carried out under a provider whose kind changed in between).
+func createProviderRules(a createProjectArgs, prov Provider) string {
+	switch prov.Kind {
+	case "gitlab":
+		if a.Visibility != nil {
+			return "visibility_not_allowed"
+		}
+		if !registrymsg.ValidGroupPath(a.GroupPath) { // the signed field is a superset: GitLab keeps the W3c rule
+			return "bad_request"
+		}
+	case "github":
+		switch {
+		case a.Visibility == nil:
+			return "visibility_required"
+		case *a.Visibility != "public" && *a.Visibility != "private":
+			return "bad_request"
+		case !validGHOwnerLogin(a.GroupPath): // an owner is ONE login (case kept), not a path
+			return "bad_request"
+		}
+	default:
+		return "not_supported_for_provider"
+	}
+	return ""
+}
+
 func (s *Server) createProjectHandler(ctx context.Context, raw json.RawMessage) (any, *OpError) {
 	var a createProjectArgs
 	if !decodeStrict(raw, &a, createProjectKeys) || a.AIContext == nil {
@@ -165,25 +193,8 @@ func (s *Server) createProjectHandler(ctx context.Context, raw json.RawMessage) 
 		// answered later, as before). All of this is decidable from the request
 		// and the registry alone, so no ID is burnt.
 		if prov, ok := s.Registry.ProviderByID(a.Provider); ok {
-			switch prov.Kind {
-			case "gitlab":
-				if a.Visibility != nil {
-					return fail1("visibility_not_allowed")
-				}
-				if !registrymsg.ValidGroupPath(a.GroupPath) { // the signed field is a superset: GitLab keeps the W3c rule
-					return fail1("bad_request")
-				}
-			case "github":
-				switch {
-				case a.Visibility == nil:
-					return fail1("visibility_required")
-				case *a.Visibility != "public" && *a.Visibility != "private":
-					return fail1("bad_request")
-				case !validGHOwnerLogin(a.GroupPath): // an owner is ONE login (case kept), not a path
-					return fail1("bad_request")
-				}
-			default:
-				return fail1("not_supported_for_provider")
+			if code := createProviderRules(a, prov); code != "" {
+				return fail1(code)
 			}
 		}
 		return nil
@@ -211,6 +222,10 @@ func (s *Server) createProjectHandler(ctx context.Context, raw json.RawMessage) 
 	prov, ok := s.Registry.ProviderByID(a.Provider)
 	if !ok {
 		return fail("provider_unknown")
+	}
+	// the kind may have changed since the shape stage: the rules apply to THIS entry
+	if code := createProviderRules(a, prov); code != "" {
+		return fail(code)
 	}
 	// ONE provider instance for the whole flow (the GitHub client honours the
 	// justCreated handle only for a repository it created itself).

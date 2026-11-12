@@ -105,6 +105,7 @@ export const GROUP_SETTLE_MS = 400;
 // compared whole like the AI lines: a proposal for a public repository must say so exactly once.
 export const PREVIEW_VIS_PUBLIC = '[중요] 공개 저장소로 만듭니다: 인터넷의 누구나 이 저장소의 코드를 읽을 수 있습니다';
 export const PREVIEW_VIS_PRIVATE = '비공개 저장소로 만듭니다: 초대받은 사람만 볼 수 있습니다';
+export const PREVIEW_ATTACH_PUSH_WARN = '[중요] 게시 권한이 쓰기입니다: 이 프로젝트의 로컬 저장소 기록(커밋 이력)이 이 원격으로 올라갈 수 있습니다. 원격이 공개 저장소라면 누구나 그 기록을 읽을 수 있습니다';
 export const PREVIEW_KEY_WARN = '[중요] 이미 있는 저장소의 설정에 이 서버의 배포 키가 등록됩니다. 이 도구는 저장소를 만들거나 지우거나 다른 설정을 바꾸지 않으며, 등록한 키도 지우지 않습니다';
 
 const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
@@ -730,6 +731,10 @@ async function analyze(sent, resp) {
     // a link or an attach adds this server's key to an existing repository: the server says so, once
     if (sent.action === ACTION_LINK_PROJECT || sent.action === ACTION_ATTACH_REMOTE) {
       if (count(PREVIEW_KEY_WARN) !== 1) problems.push('preview_key_warning');
+    }
+    // an attach with write permission says, exactly once, that local history may be pushed to the remote; never otherwise
+    if (sent.action === ACTION_ATTACH_REMOTE) {
+      if (count(PREVIEW_ATTACH_PUSH_WARN) !== (full.publish === 'write' ? 1 : 0)) problems.push('preview_attach_push');
     }
   }
   return { problems, full, key };

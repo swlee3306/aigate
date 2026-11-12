@@ -612,7 +612,11 @@ func TestDevServer(t *testing.T) {
 			}
 		case in.Action == "attach_remote":
 			pv = []string{"등록된 프로젝트 '" + in.Subject + "'에 제공자 '" + str(fields, "provider") + "'의 저장소 '" + str(fields, "remote_path") + "'를 연결합니다",
-				"연결한 뒤 이 프로젝트의 게시(push)와 복제는 이 원격을 씁니다. 프로젝트의 파일과 AI 전송 설정은 바뀌지 않습니다", "게시 권한 — " + pubLine, keyLine, keyWarn, stamp}
+				"연결한 뒤 이 프로젝트의 게시(push)와 복제는 이 원격을 씁니다. 프로젝트의 파일과 AI 전송 설정은 바뀌지 않습니다", "게시 권한 — " + pubLine}
+			if str(fields, "publish") != "read" {
+				pv = append(pv, "[중요] 게시 권한이 쓰기입니다: 이 프로젝트의 로컬 저장소 기록(커밋 이력)이 이 원격으로 올라갈 수 있습니다. 원격이 공개 저장소라면 누구나 그 기록을 읽을 수 있습니다")
+			}
+			pv = append(pv, keyLine, keyWarn, stamp)
 		case in.Action == "create_project" && ghCreate:
 			visLine := "비공개 저장소로 만듭니다: 초대받은 사람만 볼 수 있습니다"
 			if str(fields, "visibility") == "public" {

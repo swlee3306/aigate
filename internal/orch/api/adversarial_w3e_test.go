@@ -534,3 +534,54 @@ func TestRefusalsBeforeSignatureLeaveNoKeyNoWriteNoEventW3e(t *testing.T) {
 		t.Fatal("a key was promoted for a refused attach")
 	}
 }
+
+// ---------- final review M2 ----------
+
+// A reconcile pass reads the broker's registry ONCE however many keys are
+// retained (the pass used to cost one read, up to 20 s, per key).
+func TestReconcileReadsTheRegistryOncePerPassW3e(t *testing.T) {
+	e := ghEnv(t)
+	for _, name := range []string{"app-one", "app-two", "app-three"} {
+		p := e.propose(t, "create_project", name, ghCreateFields("private"))
+		e.wb.setReply(dropAll) // unknown outcome: the key is retained
+		e.apply(t, p)
+		e.wb.setReply(nil)
+	}
+	if n := len(e.d.handler.keys.RetainedKeys()); n != 3 {
+		t.Fatalf("retained %d, want 3", n)
+	}
+	e.wb.mu.Lock()
+	e.wb.calls = nil
+	e.wb.mu.Unlock()
+	e.d.handler.reconcileKeys()
+	if n := len(e.wb.opsNamed("projects")); n != 1 {
+		t.Fatalf("a reconcile pass read the registry %d times, want 1", n)
+	}
+	// nothing retained: no read at all
+	e2 := ghEnv(t)
+	e2.d.handler.reconcileKeys()
+	if len(e2.wb.allOps()) != 0 {
+		t.Fatal("a pass without retained keys called the broker")
+	}
+}
+
+// The orchd copy of the broker's deploy-key line rule behaves exactly like the
+// broker's: same vector file as TestDeployKeyLineRuleVectorsW3e.
+func TestBrokerDeployKeyRuleCopyMatchesVectorsW3e(t *testing.T) {
+	raw, err := os.ReadFile("../../broker/testdata/deploykey_vectors.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vs []struct {
+		Line string `json:"line"`
+		OK   bool   `json:"ok"`
+	}
+	if err := json.Unmarshal(raw, &vs); err != nil || len(vs) < 20 {
+		t.Fatalf("vectors: %v %d", err, len(vs))
+	}
+	for _, v := range vs {
+		if got := brokerDeployKeyRE.MatchString(v.Line); got != v.OK {
+			t.Errorf("orchd brokerDeployKeyRE(%q) = %v, want %v", v.Line, got, v.OK)
+		}
+	}
+}

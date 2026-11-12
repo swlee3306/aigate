@@ -763,6 +763,16 @@ func checkW3eConstants(t *testing.T) {
 			}
 		}
 	}
+	pushWarn := jsString("PREVIEW_ATTACH_PUSH_WARN")
+	attachW := registryChange{Action: "attach_remote", Subject: "hello", Fields: map[string]any{"provider": "gh", "remote_path": "octo/hello", "publish": "write", "deploy_key_sha256": hash64}}
+	for _, kind := range []string{"github", "gitlab"} {
+		if pushWarn != attachPushWarn || contains(remotePreview(attachW, kind, "SHA256:x"), pushWarn) != 1 || contains(remotePreview(attach, kind, "SHA256:x"), pushWarn) != 0 {
+			t.Errorf("PREVIEW_ATTACH_PUSH_WARN is not the server's line for attach/%s", kind)
+		}
+	}
+	if contains(remotePreview(link, "github", "SHA256:x"), pushWarn) != 0 {
+		t.Error("a link preview carries the attach push warning")
+	}
 	// Timeouts: link and attach outwait orchd like a create; their propose reads the broker (limit 15 s).
 	if got := jsInt("LINK_APPLY_TIMEOUT_MS"); got < 130_000 {
 		t.Errorf("LINK_APPLY_TIMEOUT_MS %d must be at least 130000", got)

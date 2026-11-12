@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"aigate/internal/registrymsg"
 )
@@ -1544,5 +1545,82 @@ func TestStatusAndProjectsNoSecretsAfterGitHubFlows(t *testing.T) {
 	}
 	if !strings.Contains(e.logs.String(), "op=projects ok") {
 		t.Fatal("the log scan saw no op lines")
+	}
+}
+
+// ---------- final review M1 ----------
+
+// The provider is re-read after the name lock and the kind rules apply to THAT
+// entry: a provider whose kind flips between the shape stage and the lock
+// (gitlab -> github: no visibility was signed; github -> gitlab: a visibility
+// was signed) is refused plainly, nothing is sent, no orphan, no nil
+// dereference, nothing registered.
+func TestProviderKindFlipBetweenShapeAndLockRefusedW3e(t *testing.T) {
+	for _, tc := range []struct {
+		name, prov, from, to, code string
+		args                       func(e *e3env) map[string]any
+	}{
+		{"gitlab to github", "gl", "gitlab", "github", "visibility_required", func(e *e3env) map[string]any { return e.projectArgs(c3Name, nil) }},
+		{"github to gitlab", "gh", "github", "gitlab", "visibility_not_allowed", func(e *e3env) map[string]any { return e.ghCreate(c3Name, "alice", "public", nil) }},
+	} {
+		e := newE3(t)
+		args := tc.args(e)
+		e.s.creatingMu.Lock() // the handler passes the shape stage, then waits for the name lock
+		type res struct{ oe *OpError }
+		done := make(chan res, 1)
+		go func() {
+			_, oe := e.do("create_project", args)
+			done <- res{oe}
+		}()
+		// wait until the signature has been consumed (the shape stage is behind us)
+		for i := 0; i < 500 && len(e.usedFile()) == 0; i++ {
+			time.Sleep(10 * time.Millisecond)
+		}
+		if err := e.s.Registry.Update(func(r *Registry) error {
+			i := findProvider(r, tc.prov)
+			if i < 0 || r.Providers[i].Kind != tc.from {
+				t.Errorf("%s: fixture", tc.name)
+				return nil
+			}
+			r.Providers[i].Kind = tc.to
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		e.s.creatingMu.Unlock()
+		r := <-done
+		if codeOf(r.oe) != tc.code {
+			t.Errorf("%s: %v", tc.name, codeOf(r.oe))
+		}
+		if _, ok := e.find(c3Name); ok || len(e.orphans()) != 0 {
+			t.Errorf("%s: registered or orphaned", tc.name)
+		}
+		e.noGHHits(tc.name)
+		e.noGLHits(tc.name)
+	}
+}
+
+// ---------- final review: the deploy-key line rule, shared vectors ----------
+
+// orchd cannot import the broker, so its copy of the deploy-key line rule
+// (internal/orch/api brokerDeployKeyRE) is pinned to the broker's by running the
+// SAME vector file (testdata/deploykey_vectors.json) through both; the orchd
+// test reads this file by relative path.
+func TestDeployKeyLineRuleVectorsW3e(t *testing.T) {
+	raw, err := os.ReadFile("testdata/deploykey_vectors.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vs []struct {
+		Line string `json:"line"`
+		OK   bool   `json:"ok"`
+	}
+	if err := json.Unmarshal(raw, &vs); err != nil || len(vs) < 20 {
+		t.Fatalf("vectors: %v %d", err, len(vs))
+	}
+	for _, v := range vs {
+		if got := deployKeyRE.MatchString(v.Line); got != v.OK {
+			t.Errorf("broker deployKeyRE(%q) = %v, want %v", v.Line, got, v.OK)
+		}
 	}
 }

@@ -196,11 +196,18 @@ func (h *handler) reconcileKeys() {
 	if h.keys == nil {
 		return
 	}
-	for _, r := range h.keys.RetainedKeys() {
-		registered, known := h.projectRegistered(r.ID, r.Provider)
+	retained := h.keys.RetainedKeys()
+	if len(retained) == 0 {
+		return
+	}
+	// ONE registry read per pass (not one per key), 20 s at most.
+	rv, known := h.readProjectsOnce()
+	if !known {
+		return // registry unreadable: try again next time
+	}
+	for _, r := range retained {
+		registered := registeredIn(rv, r.ID, r.Provider)
 		switch {
-		case !known:
-			return // registry unreadable: try again next time
 		case registered:
 			if err := h.keys.Promote(r.SHA, r.ID); err != nil {
 				log.Printf("orchd: a retained deploy key could not be moved into place (%v)", err)
@@ -211,24 +218,36 @@ func (h *handler) reconcileKeys() {
 	}
 }
 
-// projectRegistered asks the registry whether project id is provider-linked to
-// prov now. known is false when the registry could not be read.
-func (h *handler) projectRegistered(id, prov string) (registered, known bool) {
+// readProjectsOnce reads the broker's registry view with a 20 s cap; known is
+// false when it could not be read.
+func (h *handler) readProjectsOnce() (*broker.RegistryView, bool) {
 	if h.broker == nil || h.broker.Socket == "" {
-		return false, false
+		return nil, false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	rv, oerr := h.broker.Projects(ctx)
-	if oerr != nil {
-		return false, false
+	if oerr != nil || rv == nil {
+		return nil, false
 	}
+	return rv, true
+}
+
+// registeredIn: project id is provider-linked to prov with a remote in this view.
+// NOTE (narrow race, accepted): the registry does not carry the key's hash, so
+// "registered" means "this id is linked to this provider", not "with THIS key".
+// A retained key whose id was registered by a DIFFERENT, later apply would be
+// promoted under that id; that needs a second apply for the same id to succeed
+// while the first was of unknown outcome, which the broker's per-id/remote locks
+// and the request-ID burn make a narrow window, and the staged key is still the
+// one whose deploy-key line was sent for that id.
+func registeredIn(rv *broker.RegistryView, id, prov string) bool {
 	for _, p := range rv.Projects {
 		if p.ID == id {
-			return p.Provider != nil && *p.Provider == prov && p.Remote != nil, true
+			return p.Provider != nil && *p.Provider == prov && p.Remote != nil
 		}
 	}
-	return false, true
+	return false
 }
 
 // stageKey is the propose step for a GitHub flow: it makes a NEW key pair in
@@ -415,6 +434,10 @@ func (h *handler) remoteChecks(ctx context.Context, c registryChange) (string, e
 	return prov.Kind, nil
 }
 
+// attachPushWarn is shown, exactly once, on an attach with write permission: the
+// local history of an existing project may be pushed to a remote that may be public.
+const attachPushWarn = "[중요] 게시 권한이 쓰기입니다: 이 프로젝트의 로컬 저장소 기록(커밋 이력)이 이 원격으로 올라갈 수 있습니다. 원격이 공개 저장소라면 누구나 그 기록을 읽을 수 있습니다"
+
 func remotePreview(c registryChange, kind, fp string) []string {
 	const aiOn = "[중요] 이 프로젝트의 파일 내용이 외부 AI 서비스(OpenAI)로 전송될 수 있게 허용합니다. AI 계획 기능을 쓰면 요구사항과 저장소의 일부 파일 내용이 서비스 밖으로 나갑니다"
 	const aiOff = "이 프로젝트의 파일 내용은 AI 서비스로 전송되지 않습니다(전송 허용 꺼짐)"
@@ -429,14 +452,15 @@ func remotePreview(c registryChange, kind, fp string) []string {
 	}
 	keyWarn := "[중요] 이미 있는 저장소의 설정에 이 서버의 배포 키가 등록됩니다. 이 도구는 저장소를 만들거나 지우거나 다른 설정을 바꾸지 않으며, 등록한 키도 지우지 않습니다"
 	if c.Action == registrymsg.ActionAttachRemote {
-		return []string{
+		out := []string{
 			"등록된 프로젝트 '" + c.Subject + "'에 제공자 '" + str("provider") + "'의 저장소 '" + str("remote_path") + "'를 연결합니다",
 			"연결한 뒤 이 프로젝트의 게시(push)와 복제는 이 원격을 씁니다. 프로젝트의 파일과 AI 전송 설정은 바뀌지 않습니다",
 			"게시 권한 — " + pub,
-			keyLine,
-			keyWarn,
-			w3cStamp,
 		}
+		if str("publish") == "write" {
+			out = append(out, attachPushWarn)
+		}
+		return append(out, keyLine, keyWarn, w3cStamp)
 	}
 	ai := aiOff
 	if v, _ := c.Fields["ai_context"].(bool); v {
@@ -567,4 +591,14 @@ func (h *handler) finishRemote(r *http.Request, c registryChange, res json.RawMe
 		v.Cloned = h.isCloned(v.Path)
 	}
 	return map[string]any{"project": v, "clone": cr}, nil
+}
+
+// projectRegistered asks the registry whether project id is provider-linked to
+// prov now. known is false when the registry could not be read.
+func (h *handler) projectRegistered(id, prov string) (registered, known bool) {
+	rv, ok := h.readProjectsOnce()
+	if !ok {
+		return false, false
+	}
+	return registeredIn(rv, id, prov), true
 }

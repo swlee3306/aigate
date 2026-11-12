@@ -94,6 +94,7 @@ const AI_ON = '[중요] 이 프로젝트의 파일 내용이 외부 AI 서비스
 const AI_OFF = '이 프로젝트의 파일 내용은 AI 서비스로 전송되지 않습니다(전송 허용 꺼짐)';
 const VIS_PUBLIC = '[중요] 공개 저장소로 만듭니다: 인터넷의 누구나 이 저장소의 코드를 읽을 수 있습니다';
 const VIS_PRIVATE = '비공개 저장소로 만듭니다: 초대받은 사람만 볼 수 있습니다';
+const ATTACH_PUSH_WARN = P.PREVIEW_ATTACH_PUSH_WARN;
 const KEY_WARN = '[중요] 이미 있는 저장소의 설정에 이 서버의 배포 키가 등록됩니다. 이 도구는 저장소를 만들거나 지우거나 다른 설정을 바꾸지 않으며, 등록한 키도 지우지 않습니다';
 const kindOfProvider = (id) => (id === 'gh' ? 'github' : 'gitlab');
 function previewFor(action, subject, f, fingerprint) {
@@ -117,7 +118,7 @@ function previewFor(action, subject, f, fingerprint) {
     : '배포 키 지문(SHA-256): ' + fingerprint + ' (이 서버의 공용 배포 키 공개 키 파일 기준)';
   if (action === 'attach_remote') {
     return ["등록된 프로젝트 '" + subject + "'에 제공자 '" + f.provider + "'의 저장소 '" + f.remote_path + "'를 연결합니다",
-      '연결한 뒤 이 프로젝트의 게시(push)와 복제는 이 원격을 씁니다. 프로젝트의 파일과 AI 전송 설정은 바뀌지 않습니다', '게시 권한 — ' + pub, keyLine, KEY_WARN, STAMP];
+      '연결한 뒤 이 프로젝트의 게시(push)와 복제는 이 원격을 씁니다. 프로젝트의 파일과 AI 전송 설정은 바뀌지 않습니다', '게시 권한 — ' + pub, ...(f.publish === 'write' ? [ATTACH_PUSH_WARN] : []), keyLine, KEY_WARN, STAMP];
   }
   if (action === 'link_project') {
     return ["제공자 '" + f.provider + "'에 이미 있는 저장소 '" + f.remote_path + "'를 새 프로젝트 '" + subject + "'로 가져옵니다", f.ai_context ? AI_ON : AI_OFF, '게시 권한 — ' + pub, keyLine, KEY_WARN,
@@ -1369,4 +1370,39 @@ test('TestAdversarialOrphanWithUnknownOriginNeverDroppedNorCalledCreatedW3e', as
     assert.ok(text(li).includes('출처 불명'), name + ': says unknown');
     assert.ok(!/직접 지우세요/.test(text(li)), name + ': never tells the person to delete');
   }
+});
+
+test('TestAttachWriteWarnsThatLocalHistoryMayBePushedW3e', async () => {
+  const WARN = '[중요] 게시 권한이 쓰기입니다: 이 프로젝트의 로컬 저장소 기록(커밋 이력)이 이 원격으로 올라갈 수 있습니다. 원격이 공개 저장소라면 누구나 그 기록을 읽을 수 있습니다';
+  assert.equal(P.PREVIEW_ATTACH_PUSH_WARN, WARN);
+  const mount = async (publish, over) => {
+    const c = await mountProjects(over);
+    await toAttachConfirm(c, 'plain-app', { provider: 'gh', remote: 'octo/Plain-App', publish });
+    return c;
+  };
+  // write: the warning is on the screen (the server's own preview carries it exactly once) and signable
+  const w = await mount('write');
+  await waitSignable(w);
+  assert.equal(text(w.root).split(WARN).length - 1, 1, 'shown once');
+  // read: no warning, signable
+  const r = await mount('read');
+  await waitSignable(r);
+  assert.ok(!text(r.root).includes(WARN));
+  // write but the server leaves the warning out, or says it twice, or says it for a read: no signature
+  const drop = async (b) => { const q = await proposeFor(b); return { ...q, preview: q.preview.filter((x) => x !== WARN) }; };
+  const twice = async (b) => { const q = await proposeFor(b); return { ...q, preview: [...q.preview, WARN] }; };
+  for (const [name, fn] of Object.entries({ drop, twice })) {
+    const c = await mount('write', { 'POST /api/v1/projects/attach/propose': fn });
+    assert.equal(byData(c.root, 'warn', 'mismatch').length, 1, name);
+    assert.equal(byLabel(c.root, '패스키로 서명').length, 0, name);
+  }
+  const forRead = async (b) => { const q = await proposeFor(b); return { ...q, preview: [q.preview[0], q.preview[1], q.preview[2], WARN, ...q.preview.slice(3)] }; };
+  const c3 = await mount('read', { 'POST /api/v1/projects/attach/propose': forRead });
+  assert.equal(byData(c3.root, 'warn', 'mismatch').length, 1, 'warning for a read');
+  assert.equal(byLabel(c3.root, '패스키로 서명').length, 0);
+  // a link never carries it
+  const l = await mountProjects();
+  await toLinkConfirm(l, { provider: 'gh', remote: 'octo/Hello-World', publish: 'write' });
+  await waitSignable(l);
+  assert.ok(!text(l.root).includes(WARN));
 });
