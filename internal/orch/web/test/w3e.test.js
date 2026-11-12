@@ -1301,3 +1301,72 @@ test('TestWordingFixesW3e', async () => {
   await openProviderForm(none);
   assert.match(text(byId(none.root, 'pv-token').parentNode), /먼저 등록/);
 });
+
+// ---- E6 adversarial additions (names say the property) ----------------------------------
+
+test('TestAdversarialApplySendsOnlyWhatWasConfirmedW3e', async () => {
+  const cases = {
+    create: { path: 'create', go: async () => { const c = await mountProjects(); await toCreateConfirm(c, 'gh', { ...GH_CREATE, name: 'hello-gh', visibility: 'public' }); return c; } },
+    link: { path: 'link', go: async () => { const c = await mountProjects(); await toLinkConfirm(c, { provider: 'gh', remote: 'octo/Hello-World', ai: false, publish: 'read' }); return c; } },
+    attach: { path: 'attach', go: async () => { const c = await mountProjects(); await toAttachConfirm(c, 'plain-app', { provider: 'gh', remote: 'octo/Plain-App', publish: 'write' }); return c; } },
+  };
+  for (const [kind, c] of Object.entries(cases)) {
+    const ctx = await c.go();
+    await waitSignable(ctx);
+    const prop = await proposeFor(bodyOf(ctx, '/api/v1/projects/' + c.path + '/propose'));
+    click(signBtn(ctx));
+    await until(() => posts(ctx, '/api/v1/projects/' + c.path + '/apply').length === 1, kind + ' apply');
+    const sent = posts(ctx, '/api/v1/projects/' + c.path + '/apply')[0].body;
+    assert.deepEqual(Object.keys(sent).sort(), ['action', 'change', 'fields', 'issued', 'request', 'signature', 'subject'], kind + ': no key beyond the signed ones');
+    assert.deepEqual(sent.fields, prop.fields, kind + ': the fields on the wire are the ones that were confirmed');
+    assert.equal(sent.fields.deploy_key_sha256, KEY.line_sha256, kind);
+    assert.equal(sent.change, await P.computeChange(sent.action, sent.subject, sent.fields), kind + ': the change is the browser\'s own');
+    assert.ok(!JSON.stringify(sent).includes('PRIVATE'), kind);
+    if (kind === 'create') assert.equal(sent.fields.visibility, 'public');
+  }
+});
+
+test('TestAdversarialServerCannotAddOrDropFieldsW3e', async () => {
+  // a GitLab proposal that carries visibility, an owner the user did not choose, or no publish: refused, nothing signable
+  const mutations = {
+    'visibility added to a gitlab proposal': (f) => ({ ...f, visibility: 'public' }),
+    'extra field added': (f) => ({ ...f, owner: 'victim' }),
+    'publish dropped': (f) => { const g = { ...f }; delete g.publish; return g; },
+    'group switched': (f) => ({ ...f, group_path: 'other/group' }),
+  };
+  for (const [name, mut] of Object.entries(mutations)) {
+    const ctx = await mountProjects({ 'POST /api/v1/projects/create/propose': async (b) => retarget(b, mut) });
+    await toCreateConfirm(ctx, 'gl', GL_CREATE);
+    // either the mismatch warning or the form's own refusal; never a sign button
+    const refused = byData(ctx.root, 'warn', 'mismatch').length === 1 || byData(ctx.root, 'problem', 'form').some((e) => text(e) !== '');
+    assert.ok(refused, name + ': refused visibly');
+    assert.equal(byLabel(ctx.root, '패스키로 서명').length, 0, name);
+    assert.equal(auth.gets.length, 0, name);
+    assert.equal(posts(ctx, '/api/v1/projects/create/apply').length, 0, name);
+  }
+  // github: a dropped or switched visibility, a switched owner
+  for (const [name, mut] of Object.entries({
+    'visibility dropped': (f) => { const g = { ...f }; delete g.visibility; return g; },
+    'visibility private for a public choice': (f) => ({ ...f, visibility: 'private' }),
+    'visibility internal': (f) => ({ ...f, visibility: 'internal' }),
+    'owner switched': (f) => ({ ...f, group_path: 'acme-org' }),
+  })) {
+    const ctx = await mountProjects({ 'POST /api/v1/projects/create/propose': async (b) => retarget(b, mut) });
+    await toCreateConfirm(ctx, 'gh', { ...GH_CREATE, visibility: 'public' });
+    const refused = byData(ctx.root, 'warn', 'mismatch').length === 1 || byData(ctx.root, 'problem', 'form').some((e) => text(e) !== '');
+    assert.ok(refused, name + ': refused visibly');
+    assert.equal(byLabel(ctx.root, '패스키로 서명').length, 0, name);
+    assert.equal(auth.gets.length, 0, name);
+  }
+});
+
+test('TestAdversarialOrphanWithUnknownOriginNeverDroppedNorCalledCreatedW3e', async () => {
+  const base = { provider: 'gh', project: 'octo/odd', project_id: null, step: 'protect', at: '2026-11-12T12:00:00Z' };
+  for (const [name, origin] of Object.entries({ null: null, empty: '', number: 7, markup: '<b>created</b>', upper: 'CREATED', object: { a: 1 } })) {
+    const ctx = await mountProjects({ '/api/v1/projects/registry': { ...REG_E, orphans: [{ ...base, origin }] } });
+    const li = findAll(byData(ctx.root, 'orphans', 'list')[0], (e) => e.tagName === 'LI' && text(e).includes('octo/odd'))[0];
+    assert.ok(li, name + ': kept');
+    assert.ok(text(li).includes('출처 불명'), name + ': says unknown');
+    assert.ok(!/직접 지우세요/.test(text(li)), name + ': never tells the person to delete');
+  }
+});
