@@ -130,6 +130,19 @@ type GroupView struct {
 
 // ---- broker error mapping ----
 
+// provableRefusal is the closed set of broker codes that mean "refused before
+// anything was written" (the shape-stage and provider refusals of the broker
+// contract). Only these let orchd delete a staged key that was forwarded; any
+// other failure of a forwarded request (request_reused included) leaves it.
+var provableRefusal = map[string]bool{
+	"not_signed": true, "bad_signature": true, "unknown_signer": true, "stale_signature": true, "signers_unavailable": true,
+	"change_mismatch": true, "bad_request": true, "too_large": true, "path_not_allowed": true, "provider_unknown": true,
+	"deploy_key_mismatch": true, "visibility_required": true, "visibility_not_allowed": true, "not_supported_for_provider": true,
+	"project_exists": true, "project_unknown": true, "already_linked": true, "project_name_taken": true, "group_unknown": true,
+	"repo_not_found": true, "template_unknown": true, "token_ref_unknown": true, "tokens_unavailable": true,
+	"github_refused": true, "gitlab_refused": true, "provider_rate_limited": true, "rate_limited": true,
+}
+
 // w3cBrokerError maps a broker failure to orchd's fixed refusal (GitLab
 // wording where the sentence names the provider). See w3cBrokerErrorKind.
 func w3cBrokerError(action string, e *broker.OpError, write bool) *httpError {
@@ -221,10 +234,19 @@ func w3cBrokerErrorBase(action, kind string, e *broker.OpError, write bool) *htt
 // valid ones (public values only: no token, no provider text).
 func partialError(d *broker.PartialDetail) *httpError { return partialErrorWith(errCreatePartial, d) }
 
+// detailOrigin is the origin an origin-less broker detail means: a create made
+// the repository, a link or attach only joined an existing one.
+func detailOrigin(base *httpError) string {
+	if base == errLinkPartial {
+		return broker.OriginLinked
+	}
+	return broker.OriginCreated
+}
+
 // partialErrorWith is partialError with the sentence of a given provider wording.
 func partialErrorWith(base *httpError, d *broker.PartialDetail) *httpError {
 	he := *base
-	if m := partialDetail(d); m != nil {
+	if m := partialDetail(d, detailOrigin(base)); m != nil {
 		he.detail = m
 	}
 	return &he
@@ -235,19 +257,19 @@ func partialErrorWith(base *httpError, d *broker.PartialDetail) *httpError {
 // EXISTING repository) with the same public orphan facts.
 func linkPartialError(d *broker.PartialDetail) *httpError {
 	he := *errLinkPartial
-	if m := partialDetail(d); m != nil {
+	if m := partialDetail(d, detailOrigin(errLinkPartial)); m != nil {
 		he.detail = m
 	}
 	return &he
 }
 
-func partialDetail(d *broker.PartialDetail) map[string]any {
+func partialDetail(d *broker.PartialDetail, defaultOrigin string) map[string]any {
 	if d == nil {
 		return nil
 	}
 	origin := d.Origin
-	if origin == "" {
-		origin = broker.OriginCreated
+	if origin == "" || !d.OriginGiven {
+		origin = defaultOrigin
 	}
 	return map[string]any{"provider": d.Provider, "project": d.Project, "project_id": d.ProjectID, "step": d.Step,
 		"orphan_recorded": d.Recorded, "orphan_dropped": d.Dropped, "origin": origin}
@@ -489,11 +511,21 @@ func (h *handler) proposeCore(w http.ResponseWriter, r *http.Request, allowed []
 		writeErr(w, errProjRateLimited)
 		return
 	}
+	stagedHash := ""
+	// a key staged for this proposal is deleted when the proposal then fails
+	discard := func() {
+		if stagedHash != "" && h.keys != nil {
+			h.keys.Discard(stagedHash)
+		}
+	}
 	if stage != nil {
 		more, err := stage(&c)
 		if err != nil {
 			writeErr(w, err)
 			return
+		}
+		if len(more) > 0 {
+			stagedHash, _ = c.Fields["deploy_key_sha256"].(string)
 		}
 		if extra == nil {
 			extra = map[string]any{}
@@ -504,6 +536,7 @@ func (h *handler) proposeCore(w http.ResponseWriter, r *http.Request, allowed []
 	}
 	change, err := c.hash()
 	if err != nil {
+		discard()
 		writeErr(w, errProjBadBody)
 		return
 	}
@@ -511,6 +544,7 @@ func (h *handler) proposeCore(w http.ResponseWriter, r *http.Request, allowed []
 		Request: registrymsg.NewRequestID(), Issued: h.clock().UTC().Truncate(time.Second)}
 	text := msg.Text()
 	if text == "" {
+		discard()
 		writeErr(w, errProjBadBody)
 		return
 	}
@@ -573,6 +607,31 @@ func (h *handler) applyCore(w http.ResponseWriter, r *http.Request, allowed []st
 	settle func(c registryChange, o keyOutcome)) {
 	started := h.clock()
 	wall := time.Now()
+	// settle is told once. A panic anywhere below leaves the staged key as
+	// safe as the point it happened at allows: before the request left, the
+	// key is kept for the same signed change; after it, the outcome is unknown.
+	var cur *registryChange
+	sent, settled := false, false
+	sf := func(c registryChange, o keyOutcome) {
+		if settle == nil || settled {
+			return
+		}
+		settled = true
+		settle(c, o)
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Printf("orchd: an apply request panicked (the key, if any, is kept)")
+			if cur != nil {
+				if sent {
+					sf(*cur, keyUnknown)
+				} else {
+					sf(*cur, keyKept)
+				}
+			}
+			writeErr(w, errProjUnknownResult)
+		}
+	}()
 	raw, err := readProjectsBody(w, r)
 	if err != nil {
 		writeErr(w, err)
@@ -598,6 +657,7 @@ func (h *handler) applyCore(w http.ResponseWriter, r *http.Request, allowed []st
 		writeErr(w, err)
 		return
 	}
+	cur = &c
 	claimed, ok1 := rawString(top["change"])
 	request, ok2 := rawString(top["request"])
 	issuedText, ok3 := rawString(top["issued"])
@@ -646,15 +706,14 @@ func (h *handler) applyCore(w http.ResponseWriter, r *http.Request, allowed []st
 	actor := store.ActorFrom(r.Context())
 	limiter := h.w3cLimiter(c.Action)
 	if !limiter.take(actor, started) {
-		if settle != nil {
-			settle(c, keyKept)
-		}
+		sf(c, keyKept)
 		writeErr(w, errProjRateLimited)
 		return
 	}
 	// The write goes on even if the browser goes away: closing the socket
 	// early would leave a change that may have happened unrecorded. The
 	// client's own time limit bounds it. One attempt, never retried.
+	sent = true
 	res, oerr := h.broker.Do(context.WithoutCancel(r.Context()), c.Action, args)
 	if oerr != nil {
 		// Only a failure that provably cost nothing gives the slot back (same
@@ -666,17 +725,19 @@ func (h *handler) applyCore(w http.ResponseWriter, r *http.Request, allowed []st
 		}
 		he := w3cBrokerErrorKind(c.Action, fieldKind(c), oerr, true)
 		changed := he.v1Code == "outcome_unknown" || he.v1Code == broker.CodeCreatePartial || he.v1Code == broker.CodeLinkPartial
-		if settle != nil {
-			switch {
-			case provablyNothing:
-				settle(c, keyKept)
-			case he.v1Code == broker.CodeCreatePartial || he.v1Code == broker.CodeLinkPartial:
-				settle(c, keyPartial)
-			case he.v1Code == "outcome_unknown":
-				settle(c, keyUnknown)
-			default:
-				settle(c, keyRefused)
-			}
+		switch {
+		case provablyNothing:
+			sf(c, keyKept)
+		case he.v1Code == broker.CodeCreatePartial || he.v1Code == broker.CodeLinkPartial:
+			sf(c, keyPartial)
+		case he.v1Code == "outcome_unknown":
+			sf(c, keyUnknown)
+		case provableRefusal[oerr.Code]:
+			sf(c, keyRefused)
+		default:
+			// anything else (request_reused, internal_error, an unregistered code):
+			// the request was forwarded, so the key may be in use over there
+			sf(c, keyUnknown)
 		}
 		if changed {
 			h.registryChanged()
@@ -702,9 +763,7 @@ func (h *handler) applyCore(w http.ResponseWriter, r *http.Request, allowed []st
 		if he != nil {
 			code = he.v1Code
 		}
-		if settle != nil {
-			settle(c, keyUnknown) // the broker said ok but the result was not what was asked for
-		}
+		sf(c, keyUnknown) // the broker said ok but the result was not what was asked for
 		h.recordW3c(actor, c.Action, c.Subject, false, code)
 		writeErr(w, err)
 		return

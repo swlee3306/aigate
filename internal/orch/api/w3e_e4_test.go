@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log"
 	"os"
@@ -297,7 +298,7 @@ func TestExistingKeyDirBlocksAGitHubCreate(t *testing.T) {
 	// the folder appearing between propose and apply
 	p := e.propose(t, "create_project", "app-two", ghCreateFields("private"))
 	os.MkdirAll(filepath.Join(e.keysDir(), "app-two"), 0o700)
-	if c, b := e.apply(t, p); c != 503 || v1Code(b) != "key_staging_failed" {
+	if c, b := e.apply(t, p); c != 409 || v1Code(b) != "project_exists" { // a second apply for an id whose key is already in place
 		t.Fatalf("%d %s", c, b)
 	}
 	if len(e.wb.allOps()) != 0 {
@@ -702,10 +703,15 @@ func TestAttachStaticRemoteWins(t *testing.T) {
 	if len(e.wb.writeCalls()) != 0 {
 		t.Fatal("write after static_remote_wins")
 	}
-	// link has no such rule (a NEW project's path is under the repo root; path collision is path_exists)
+	// link is refused too when the NEW project's folder is a static entry (fix round 1), and only then
 	e.d.handler.staticRepos[filepath.Join(e.root, "app-one")] = true
-	if c, b := e.proposeRaw(t, "link_project", "app-one", ghLinkFields()); c != 200 {
+	if c, b := e.proposeRaw(t, "link_project", "app-one", ghLinkFields()); c != 409 || v1Code(b) != "static_remote_wins" {
 		t.Fatalf("link: %d %s", c, b)
+	}
+	lf := ghLinkFields()
+	lf["remote_path"] = "Octo-Cat/other-one"
+	if c, b := e.proposeRaw(t, "link_project", "other-one", lf); c != 200 {
+		t.Fatalf("link of a non-static id: %d %s", c, b)
 	}
 }
 
@@ -753,7 +759,7 @@ func TestApplyMapsNewCodes(t *testing.T) {
 			if c != w.status || v1Code(b) != w.wire || strings.Contains(string(b), "RAW-BROKER-TEXT") || strings.Contains(string(b), "secret") {
 				t.Errorf("%s / %s: %d %s", code, flow, c, b)
 			}
-			if strings.HasPrefix(flow, "create-github") || strings.HasPrefix(flow, "link") || strings.HasPrefix(flow, "attach") {
+			if provableRefusal[code] && (strings.HasPrefix(flow, "create-github") || strings.HasPrefix(flow, "link") || strings.HasPrefix(flow, "attach")) {
 				// a known refusal deletes the staged key and leaves no promoted one
 				if e.stagedCount() != 0 {
 					t.Errorf("%s / %s: staged key kept after a known refusal", code, flow)
@@ -892,7 +898,7 @@ func TestKeyDispositionPerOutcome(t *testing.T) {
 				return "DROP"
 			}
 			return ""
-		}, nil, 0, false, 504},
+		}, nil, 1, false, 504}, // retained: an unknown outcome never deletes the key
 		{"unknown, registry unreadable", func(op string, a json.RawMessage) string { return "DROP" }, nil, 1, false, 504},
 	} {
 		e := ghEnv(t)
@@ -1212,5 +1218,275 @@ func TestDoubleApplyOfOneStagedKeyIsRefused(t *testing.T) {
 	}
 	if e.stagedCount() != 1 {
 		t.Fatal("the refused second apply removed the key")
+	}
+}
+
+// ---- fix round 1 ----
+
+func dropAll(op string, a json.RawMessage) string { return "DROP" }
+
+// Once a staged key was forwarded, only a provable refusal may delete it.
+func TestForwardedKeyIsNeverLostOnUnknownOutcomes(t *testing.T) {
+	for _, code := range []string{"request_reused", "internal_error", "some_future_code", "registry_unavailable"} {
+		e := ghEnv(t)
+		p := e.propose(t, "create_project", "app-one", ghCreateFields("private"))
+		e.wb.setReply(func(op string, a json.RawMessage) string {
+			if op == "create_project" {
+				return `{"ok":false,"code":"` + code + `"}`
+			}
+			return ""
+		})
+		e.apply(t, p)
+		if e.stagedCount() != 1 {
+			t.Errorf("%s: the forwarded key was deleted", code)
+		}
+	}
+	// provable refusals delete it (the explicit set)
+	for code := range provableRefusal {
+		if code == "tokens_unavailable" || code == "rate_limited" {
+			continue
+		}
+		e := ghEnv(t)
+		p := e.propose(t, "create_project", "app-one", ghCreateFields("private"))
+		e.wb.setReply(func(op string, a json.RawMessage) string {
+			if op == "create_project" {
+				return `{"ok":false,"code":"` + code + `"}`
+			}
+			return ""
+		})
+		e.apply(t, p)
+		if e.stagedCount() != 0 {
+			t.Errorf("%s: a provably refused key was kept", code)
+		}
+	}
+	if provableRefusal["request_reused"] || provableRefusal["internal_error"] || provableRefusal["timeout"] {
+		t.Fatal("an uncertain code is in the refusal set")
+	}
+
+	// timeout + unreadable registry + the identical apply retried (request_reused)
+	e := ghEnv(t)
+	now := time.Now()
+	e.d.handler.keys.Now = func() time.Time { return now }
+	p := e.propose(t, "create_project", "app-one", ghCreateFields("private"))
+	e.wb.setReply(dropAll)
+	if c, b := e.apply(t, p); c != 504 {
+		t.Fatalf("%d %s", c, b)
+	}
+	if e.stagedCount() != 1 {
+		t.Fatal("the key was deleted after an unknown outcome")
+	}
+	now = now.Add(3 * keys.StagingTTL) // retained keys do not expire
+	e.wb.setReply(func(op string, a json.RawMessage) string {
+		if op == "create_project" {
+			return `{"ok":false,"code":"request_reused"}`
+		}
+		return "DROP" // the registry stays unreadable
+	})
+	if c, b := e.apply(t, p); c != 409 || v1Code(b) != "request_reused" {
+		t.Fatalf("retry: %d %s", c, b)
+	}
+	if e.stagedCount() != 1 {
+		t.Fatal("the key was lost by the retried apply")
+	}
+	// the registry becomes readable and shows the project: the next github propose reconciles
+	e.wb.setReply(nil)
+	e.addProject("app-one", "gh", "Octo-Cat/app-one")
+	e.propose(t, "create_project", "app-two", ghCreateFields("private"))
+	if _, err := os.Lstat(e.promoted("app-one")); err != nil {
+		t.Fatalf("the retained key was not promoted by the reconcile: %v", err)
+	}
+	// a retained key whose project never appeared is discarded once it is older than the TTL
+	e2 := ghEnv(t)
+	n2 := time.Now()
+	e2.d.handler.keys.Now = func() time.Time { return n2 }
+	p2 := e2.propose(t, "create_project", "app-one", ghCreateFields("private"))
+	e2.wb.setReply(func(op string, a json.RawMessage) string {
+		if op == "create_project" {
+			return "DROP"
+		}
+		return ""
+	})
+	e2.apply(t, p2) // unknown, registry readable, project absent: retained
+	if e2.stagedCount() != 1 {
+		t.Fatal("not retained")
+	}
+	e2.propose(t, "create_project", "app-two", ghCreateFields("private")) // reconcile: too young, kept
+	if e2.stagedCount() != 2 {
+		t.Fatalf("a young retained key was discarded: %d", e2.stagedCount())
+	}
+	n2 = n2.Add(keys.StagingTTL + time.Minute)
+	e2.propose(t, "create_project", "app-three", ghCreateFields("private"))
+	if e2.stagedCount() != 1 { // app-one's key gone; app-two's expired too; app-three's is new
+		t.Fatalf("staged after reconcile: %d", e2.stagedCount())
+	}
+}
+
+func TestPanicDuringApplyLeavesTheKeySafe(t *testing.T) {
+	// before the request left: the key is kept and the same change can be applied again
+	e := ghEnv(t)
+	p := e.propose(t, "create_project", "app-one", ghCreateFields("private"))
+	lim := e.d.handler.createLimit
+	e.d.handler.createLimit = nil // a nil limiter panics after the key is held, before the broker
+	c, b := e.apply(t, p)
+	if c != 504 || v1Code(b) != "outcome_unknown" || len(e.wb.writeCalls()) != 0 {
+		t.Fatalf("%d %s", c, b)
+	}
+	if e.stagedCount() != 1 {
+		t.Fatal("the key was lost by a panic before the send")
+	}
+	e.d.handler.createLimit = lim
+	if c, b := e.apply(t, p); c != 200 {
+		t.Fatalf("the hold was not released: %d %s", c, b)
+	}
+	// after the request left (the clone panics): the project is registered, its key is in place
+	e2 := ghEnv(t)
+	e2.d.handler.cloneFn = func(_ context.Context, o clone.Options) error { panic("boom") }
+	p2 := e2.propose(t, "create_project", "app-one", ghCreateFields("private"))
+	if c, b := e2.apply(t, p2); c != 504 {
+		t.Fatalf("%d %s", c, b)
+	}
+	if _, err := os.Lstat(e2.promoted("app-one")); err != nil {
+		t.Fatalf("key not in place after a panic in the clone: %v", err)
+	}
+	// panic after the send but before finish: the key is retained, never deleted
+	e3 := ghEnv(t)
+	p3 := e3.propose(t, "create_project", "app-one", ghCreateFields("private"))
+	e3.d.handler.onRegistryChange = func() { panic("boom") } // runs right after the broker answered ok
+	if c, b := e3.apply(t, p3); c != 504 {
+		t.Fatalf("%d %s", c, b)
+	}
+	if e3.stagedCount() != 1 && !fileExists(e3.promoted("app-one")) {
+		t.Fatal("the key was lost by a panic after the send")
+	}
+}
+
+func fileExists(p string) bool { _, err := os.Lstat(p); return err == nil }
+
+func TestOriginlessPartialDetailDefaultsByAction(t *testing.T) {
+	detail := `{"provider":"gh","project":"Octo-Cat/app-one","project_id":5,"step":"deploy_key","orphan_recorded":true,"orphan_dropped":false}`
+	for _, tc := range []struct{ action, code, origin string }{
+		{"create_project", "create_partial", "created"},
+		{"link_project", "link_partial", "linked"},
+		{"attach_remote", "link_partial", "linked"},
+	} {
+		e := ghEnv(t)
+		e.addProject("att-one", "", "")
+		var p w3cProposal
+		switch tc.action {
+		case "create_project":
+			p = e.propose(t, tc.action, "app-one", ghCreateFields("private"))
+		case "link_project":
+			p = e.propose(t, tc.action, "app-one", ghLinkFields())
+		default:
+			p = e.propose(t, tc.action, "att-one", map[string]any{"provider": "gh", "remote_path": "Octo-Cat/att-one", "publish": "write"})
+		}
+		e.wb.setReply(func(op string, a json.RawMessage) string {
+			if op == tc.action {
+				return `{"ok":false,"code":"` + tc.code + `","detail":` + detail + `}`
+			}
+			return ""
+		})
+		c, b := e.apply(t, p)
+		var er struct {
+			Error struct {
+				Code   string
+				Detail map[string]any
+			}
+		}
+		if c != 502 || json.Unmarshal(b, &er) != nil || er.Error.Code != tc.code || er.Error.Detail["origin"] != tc.origin {
+			t.Errorf("%s: %d %s", tc.action, c, b)
+		}
+	}
+}
+
+func TestStaticRemoteWinsForLinkAndCreate(t *testing.T) {
+	e := ghEnv(t)
+	e.d.handler.staticRepos = map[string]bool{filepath.Join(e.root, "app-one"): true}
+	for name, f := range map[string]func() (int, []byte){
+		"link":          func() (int, []byte) { return e.proposeRaw(t, "link_project", "app-one", ghLinkFields()) },
+		"github create": func() (int, []byte) { return e.proposeRaw(t, "create_project", "app-one", ghCreateFields("private")) },
+		"gitlab create": func() (int, []byte) {
+			_, fl := e.fieldsFor("create_project")
+			return e.proposeRaw(t, "create_project", "app-one", fl)
+		},
+	} {
+		c, b := f()
+		if c != 409 || v1Code(b) != "static_remote_wins" || strings.Contains(string(b), `"change"`) {
+			t.Errorf("%s: %d %s", name, c, b)
+		}
+	}
+	if e.stagedCount() != 0 || len(e.wb.writeCalls()) != 0 {
+		t.Fatal("a refused proposal staged a key or wrote")
+	}
+	// the entry appearing between propose and apply
+	e2 := ghEnv(t)
+	cp := e2.propose(t, "create_project", "app-one", ghCreateFields("private"))
+	lp := e2.propose(t, "link_project", "app-two", map[string]any{"provider": "gh", "remote_path": "Octo-Cat/app-two", "ai_context": false, "publish": "read"})
+	e2.d.handler.staticRepos = map[string]bool{filepath.Join(e2.root, "app-one"): true, filepath.Join(e2.root, "app-two"): true}
+	for _, p := range []w3cProposal{cp, lp} {
+		if c, b := e2.apply(t, p); c != 409 || v1Code(b) != "static_remote_wins" {
+			t.Errorf("%s apply: %d %s", p.Action, c, b)
+		}
+	}
+	if len(e2.wb.writeCalls()) != 0 {
+		t.Fatal("write")
+	}
+}
+
+func TestProposeFailureAfterStageDiscardsTheKey(t *testing.T) {
+	e := ghEnv(t)
+	e.d.handler.now = func() time.Time { return time.Time{} } // an issue time the signing message refuses
+	c, b := e.proposeRaw(t, "create_project", "app-one", ghCreateFields("private"))
+	if c == 200 {
+		t.Skipf("the zero time is accepted here: %s", b)
+	}
+	if e.stagedCount() != 0 {
+		t.Fatalf("a failed proposal left %d staged keys", e.stagedCount())
+	}
+}
+
+// Actions posted to the wrong propose/apply endpoint are refused before any
+// broker call (restores the coverage of the deleted E1 test).
+func TestEndpointsRefuseOtherActions(t *testing.T) {
+	e := ghEnv(t)
+	e.addProject("att-one", "", "")
+	fields := map[string]map[string]any{
+		"set_provider":    {"kind": "gitlab", "base_url": "http://gitlab.example:18082", "ssh_url": "ssh://git@gitlab.example", "token_ref": "gl-admin"},
+		"delete_provider": {},
+		"create_group":    {"name": "newgroup", "path": "newgroup", "parent_path": ""},
+		"create_project":  ghCreateFields("private"),
+		"link_project":    ghLinkFields(),
+		"attach_remote":   {"provider": "gh", "remote_path": "Octo-Cat/att-one", "publish": "write"},
+	}
+	own := map[string]string{"set_provider": "providers", "delete_provider": "providers", "create_group": "providers", "create_project": "create", "link_project": "link", "attach_remote": "attach"}
+	endpoints := map[string][2]string{
+		"providers": {"/api/v1/providers/propose", "/api/v1/providers/apply"},
+		"create":    {"/api/v1/projects/create/propose", "/api/v1/projects/create/apply"},
+		"link":      {"/api/v1/projects/link/propose", "/api/v1/projects/link/apply"},
+		"attach":    {"/api/v1/projects/attach/propose", "/api/v1/projects/attach/apply"},
+		"registry":  {"/api/v1/projects/propose", "/api/v1/projects/apply"},
+	}
+	subj := map[string]string{"set_provider": "gh", "delete_provider": "gh", "create_group": "gh", "create_project": "app-one", "link_project": "app-one", "attach_remote": "att-one"}
+	for action, f := range fields {
+		for ep, paths := range endpoints {
+			if own[action] == ep {
+				continue
+			}
+			body := jsonBody(map[string]any{"action": action, "subject": subj[action], "fields": f})
+			if c, b := e.sockJSON(t, "POST", paths[0], body); c != 400 {
+				t.Errorf("%s posted to %s propose: %d %s", action, ep, c, b)
+			}
+			ap := jsonBody(map[string]any{"action": action, "subject": subj[action], "fields": f, "change": strings.Repeat("a", 64),
+				"request": strings.Repeat("b", 32), "issued": "2026-11-12T04:59:37Z", "signature": webauthnSig})
+			if c, b := e.sockJSON(t, "POST", paths[1], ap); c != 400 {
+				t.Errorf("%s posted to %s apply: %d %s", action, ep, c, b)
+			}
+		}
+	}
+	if ops := e.wb.allOps(); len(ops) != 0 {
+		t.Fatalf("the broker was called: %v", ops)
+	}
+	if e.stagedCount() != 0 {
+		t.Fatal("a key was staged")
 	}
 }

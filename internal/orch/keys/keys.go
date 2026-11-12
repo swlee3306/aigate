@@ -51,6 +51,13 @@ const (
 	StagingTTL = 15 * time.Minute
 	// MaxStaged bounds the staged keys that exist at once.
 	MaxStaged = 64
+	// HoldTTL bounds how long an apply may hold a staged key: a hold older than
+	// this (a hung or crashed apply) no longer protects the entry, so held
+	// entries cannot fill MaxStaged for good.
+	HoldTTL = 10 * time.Minute
+	// MaxRetained bounds the keys kept past their expiry because the outcome of
+	// the apply that used them is unknown.
+	MaxRetained = 16
 
 	stagingDirName = "keys-staging"
 	keysDirName    = "keys"
@@ -91,11 +98,20 @@ func Hash(line string) string {
 }
 
 type entry struct {
-	dir  string
-	info os.FileInfo
-	at   time.Time
-	held bool // an apply is using it: sweeps leave it alone
+	dir    string
+	info   os.FileInfo
+	at     time.Time
+	held   bool // an apply is using it: sweeps leave it alone (until HoldTTL)
+	heldAt time.Time
+	// retained: the key went to the broker and the outcome is unknown, so the
+	// registry may hold a project that needs it. It does not expire; Reconcile
+	// (promote if registered, else discard after StagingTTL) decides later.
+	retained bool
+	id, prov string
 }
+
+// isHeld reports a live hold (not older than HoldTTL).
+func (e *entry) isHeld(now time.Time) bool { return e.held && now.Sub(e.heldAt) < HoldTTL }
 
 // Store is the key area under Root (the directory that holds orchd's ssh
 // files, e.g. /home/orch/orchd/ssh). Its staging index lives in memory: a
@@ -282,23 +298,25 @@ func ReadPublic(path string) (Key, error) {
 // answers ErrNotFound; a public file that is no longer the signed key answers
 // ErrMismatch.
 func (s *Store) Staged(sha string) (Key, error) {
+	s.SweepExpired()
+	now := s.now()
 	s.mu.Lock()
 	e := s.staged[sha]
 	if e == nil {
 		s.mu.Unlock()
 		return Key{}, ErrNotFound
 	}
-	if e.held {
+	if e.isHeld(now) {
 		s.mu.Unlock()
 		return Key{}, ErrHeld
 	}
-	if s.now().Sub(e.at) >= StagingTTL {
+	if !e.retained && now.Sub(e.at) >= StagingTTL {
 		delete(s.staged, sha)
 		s.mu.Unlock()
 		removeOwn(e)
 		return Key{}, ErrExpired
 	}
-	e.held = true
+	e.held, e.heldAt = true, now
 	dir, info := e.dir, e.info
 	s.mu.Unlock()
 
@@ -357,6 +375,9 @@ func (s *Store) Promote(sha, id string) error {
 	if err := ensureDir(s.KeysDir()); err != nil {
 		return err
 	}
+	if fi, err := os.Lstat(e.dir); err != nil || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 || !os.SameFile(fi, e.info) {
+		return ErrNotFound // not the directory this store made
+	}
 	if err := fsx.RenameNoReplace(e.dir, filepath.Join(s.KeysDir(), id)); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return ErrExists
@@ -371,6 +392,7 @@ func (s *Store) Promote(sha, id string) error {
 
 // Exists reports whether keys/<id> is taken (as anything).
 func (s *Store) Exists(id string) bool {
+	s.SweepExpired()
 	if !registrymsg.ValidSubject(id) {
 		return true // never a name this store would use: treat as taken
 	}
@@ -385,7 +407,7 @@ func (s *Store) SweepExpired() int {
 	var dead []*entry
 	s.mu.Lock()
 	for sha, e := range s.staged {
-		if !e.held && now.Sub(e.at) >= StagingTTL {
+		if !e.isHeld(now) && !e.retained && now.Sub(e.at) >= StagingTTL {
 			dead = append(dead, e)
 			delete(s.staged, sha)
 		}
@@ -395,6 +417,52 @@ func (s *Store) SweepExpired() int {
 		removeOwn(e)
 	}
 	return len(dead)
+}
+
+// Retain marks a staged key as kept past its expiry (the outcome of the apply
+// that sent it is unknown) and releases its hold. false when MaxRetained keys
+// are kept already: the caller then leaves it to expire.
+func (s *Store) Retain(sha, id, prov string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.staged[sha]
+	if e == nil {
+		return false
+	}
+	if !e.retained {
+		n := 0
+		for _, o := range s.staged {
+			if o.retained {
+				n++
+			}
+		}
+		if n >= MaxRetained {
+			e.held = false
+			return false
+		}
+	}
+	e.retained, e.held, e.id, e.prov = true, false, id, prov
+	return true
+}
+
+// Retained describes a retained key for Reconcile.
+type Retained struct {
+	SHA, ID, Provider string
+	Age               time.Duration
+}
+
+// RetainedKeys lists the retained keys that no apply holds.
+func (s *Store) RetainedKeys() []Retained {
+	now := s.now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []Retained
+	for sha, e := range s.staged {
+		if e.retained && !e.isHeld(now) {
+			out = append(out, Retained{SHA: sha, ID: e.id, Provider: e.prov, Age: now.Sub(e.at)})
+		}
+	}
+	return out
 }
 
 // SweepAll removes every staging directory (orchd start: nothing staged
@@ -420,7 +488,8 @@ func (s *Store) SweepAll() int {
 		}
 		p := filepath.Join(dir, de.Name())
 		fi, err := os.Lstat(p)
-		if err != nil || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 || !ownedByUs(fi) {
+		di, derr := de.Info()
+		if err != nil || derr != nil || !os.SameFile(fi, di) || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 || !ownedByUs(fi) {
 			continue
 		}
 		if os.RemoveAll(p) == nil {

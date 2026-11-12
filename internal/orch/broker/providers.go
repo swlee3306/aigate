@@ -83,6 +83,9 @@ type PartialDetail struct {
 	Dropped   bool
 	// Origin: OriginCreated or OriginLinked ("created" when an older broker sent none).
 	Origin string
+	// OriginGiven: the broker's detail carried `origin` (else Origin is the
+	// older-broker default "created" and the caller decides by action).
+	OriginGiven bool
 }
 
 // ValidGitLabProjectPath reports whether s is a GitLab project path as the
@@ -160,6 +163,7 @@ func parsePartialDetail(raw json.RawMessage) *PartialDetail {
 			return nil
 		}
 		d.Origin = o
+		d.OriginGiven = true
 	}
 	idRaw, ok := vals["project_id"]
 	if !ok {

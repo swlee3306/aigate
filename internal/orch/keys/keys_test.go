@@ -192,7 +192,7 @@ func TestStagedChecksHashExpiryAndTampering(t *testing.T) {
 	}
 	s.Release(k3.SHA256)
 	now = now.Add(2 * time.Second)
-	if _, err := s.Staged(k3.SHA256); err != ErrExpired {
+	if _, err := s.Staged(k3.SHA256); err != ErrExpired && err != ErrNotFound { // swept by the sweep inside Staged
 		t.Fatalf("after expiry: %v", err)
 	}
 	if _, err := s.Staged(k3.SHA256); err != ErrNotFound {
@@ -207,10 +207,11 @@ func TestStagingKeyExpiresAndSweepsOnlyOwn(t *testing.T) {
 	old, _ := s.Stage()
 	oldDir := stagedDirs(t, s)[0]
 	held, _ := s.Stage()
-	if _, err := s.Staged(held.SHA256); err != nil { // held by an apply
+	now = now.Add(StagingTTL - time.Minute)
+	if _, err := s.Staged(held.SHA256); err != nil { // held by an apply (just before it expires)
 		t.Fatal(err)
 	}
-	now = now.Add(StagingTTL + time.Minute)
+	now = now.Add(2 * time.Minute)
 	fresh, _ := s.Stage() // lazy sweep runs here
 	if _, err := os.Lstat(oldDir); !os.IsNotExist(err) {
 		t.Fatalf("the expired staging dir is still there: %v", err)
@@ -472,5 +473,76 @@ func TestStagedKeyIsHeldByOneApplyAtATime(t *testing.T) {
 	s.Release(k.SHA256)
 	if _, err := s.Staged(k.SHA256); err != nil {
 		t.Fatalf("after release: %v", err)
+	}
+}
+
+// A hold is bounded: a hung apply cannot keep an entry (and a MaxStaged slot) forever.
+func TestHoldIsBoundedAndRetainedKeysSurviveExpiry(t *testing.T) {
+	s := newStore(t)
+	now := time.Now()
+	s.Now = func() time.Time { return now }
+	k, _ := s.Stage()
+	if _, err := s.Staged(k.SHA256); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(HoldTTL - time.Second)
+	if _, err := s.Staged(k.SHA256); err != ErrHeld {
+		t.Fatalf("%v", err)
+	}
+	now = now.Add(2 * time.Second) // hold older than HoldTTL, entry older than StagingTTL? no: 10 min < 15 min
+	if _, err := s.Staged(k.SHA256); err != nil {
+		t.Fatalf("a stale hold must not block: %v", err)
+	}
+	// retained: survives expiry and sweeps, can be applied again, listed for reconcile
+	if !s.Retain(k.SHA256, "app-one", "gh") {
+		t.Fatal("retain")
+	}
+	now = now.Add(3 * StagingTTL)
+	if n := s.SweepExpired(); n != 0 {
+		t.Fatalf("a retained key was swept: %d", n)
+	}
+	rk := s.RetainedKeys()
+	if len(rk) != 1 || rk[0].ID != "app-one" || rk[0].Provider != "gh" || rk[0].Age < 3*StagingTTL {
+		t.Fatalf("%+v", rk)
+	}
+	if _, err := s.Staged(k.SHA256); err != nil {
+		t.Fatalf("a retained key must stay applicable: %v", err)
+	}
+	s.Release(k.SHA256)
+	if err := s.Promote(k.SHA256, "app-one"); err != nil {
+		t.Fatalf("retained key not promotable: %v", err)
+	}
+	// the cap
+	for i := 0; i < MaxRetained+1; i++ {
+		kk, _ := s.Stage()
+		s.Staged(kk.SHA256)
+		ok := s.Retain(kk.SHA256, "app-x", "gh")
+		if ok != (i < MaxRetained) {
+			t.Fatalf("retain %d: %v", i, ok)
+		}
+	}
+	// expiry is enforced inside Staged and Exists, not only by Stage
+	s2 := newStore(t)
+	n2 := time.Now()
+	s2.Now = func() time.Time { return n2 }
+	k2, _ := s2.Stage()
+	dir := stagedDirs(t, s2)[0]
+	n2 = n2.Add(StagingTTL + time.Second)
+	s2.Exists("app-one")
+	if _, err := os.Lstat(dir); !os.IsNotExist(err) {
+		t.Fatal("Exists did not sweep the expired key")
+	}
+	if _, err := s2.Staged(k2.SHA256); err != ErrNotFound {
+		t.Fatalf("%v", err)
+	}
+	// Promote refuses a directory that is not the one this store made
+	s3 := newStore(t)
+	k3, _ := s3.Stage()
+	s3.Staged(k3.SHA256)
+	d3 := stagedDirs(t, s3)[0]
+	os.Rename(d3, d3+".moved")
+	os.Mkdir(d3, 0o700)
+	if err := s3.Promote(k3.SHA256, "app-one"); err != ErrNotFound {
+		t.Fatalf("promoted a swapped directory: %v", err)
 	}
 }

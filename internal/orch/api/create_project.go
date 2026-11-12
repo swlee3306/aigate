@@ -166,6 +166,9 @@ func (h *handler) createPropose(w http.ResponseWriter, r *http.Request) {
 		if !h.hasPolicyClass(registeredClass) {
 			return nil, errPolicyClassMissing
 		}
+		if h.staticPathTaken(c.Subject) {
+			return nil, errStaticRemoteWins
+		}
 		_, gh = c.Fields["visibility"]
 		if gh {
 			if h.keys == nil || h.keys.Exists(c.Subject) {
@@ -200,6 +203,9 @@ func (h *handler) createApply(w http.ResponseWriter, r *http.Request) {
 		}
 		if !h.hasPolicyClass(registeredClass) {
 			return errPolicyClassMissing
+		}
+		if h.staticPathTaken(c.Subject) {
+			return errStaticRemoteWins
 		}
 		_, gh := c.Fields["visibility"]
 		plan.prov, _ = c.Fields["provider"].(string)

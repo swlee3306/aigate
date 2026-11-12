@@ -165,16 +165,48 @@ func (p *keyPlan) settle(c registryChange, o keyOutcome) {
 	case keyRefused:
 		p.h.keys.Discard(p.sha)
 		p.staged = false
-	case keyPartial, keyUnknown:
-		registered, known := p.h.projectRegistered(p.id, p.prov)
-		switch {
-		case known && registered:
+	case keyPartial:
+		// the registry is written last, so a partial was not registered unless the
+		// registry says so
+		if registered, known := p.h.projectRegistered(p.id, p.prov); known && registered {
 			_ = p.promote()
-		case known || o == keyPartial:
+		} else {
 			p.h.keys.Discard(p.sha)
 			p.staged = false
-		default:
-			p.h.keys.Release(p.sha) // unknown outcome, registry unreadable: let it expire
+		}
+	case keyUnknown:
+		// The request was forwarded and its outcome is unknown: the key is NEVER
+		// deleted here. Registered -> moved into place. Otherwise (not registered
+		// yet, or the registry cannot be read) it is retained past its expiry and
+		// reconciled later (reconcileKeys: promote if registered, discard once it
+		// is older than the staging TTL and the registry shows no project).
+		if registered, known := p.h.projectRegistered(p.id, p.prov); known && registered {
+			_ = p.promote()
+		} else if !p.h.keys.Retain(p.sha, p.id, p.prov) {
+			p.h.keys.Release(p.sha)
+		}
+	}
+}
+
+// reconcileKeys settles the retained keys (outcome unknown) against the
+// registry: registered -> promoted; not registered and older than the staging
+// TTL -> discarded; registry unreadable -> kept. It runs lazily before a new key
+// is staged. (A restart forgets them: see the operator recovery procedure.)
+func (h *handler) reconcileKeys() {
+	if h.keys == nil {
+		return
+	}
+	for _, r := range h.keys.RetainedKeys() {
+		registered, known := h.projectRegistered(r.ID, r.Provider)
+		switch {
+		case !known:
+			return // registry unreadable: try again next time
+		case registered:
+			if err := h.keys.Promote(r.SHA, r.ID); err != nil {
+				log.Printf("orchd: a retained deploy key could not be moved into place (%v)", err)
+			}
+		case r.Age >= keys.StagingTTL:
+			h.keys.Discard(r.SHA)
 		}
 	}
 }
@@ -206,6 +238,7 @@ func (h *handler) stageKey(c *registryChange) (map[string]any, error) {
 	if h.keys == nil {
 		return nil, errKeyStagingFailed
 	}
+	h.reconcileKeys()
 	k, err := h.keys.Stage()
 	if err != nil {
 		log.Printf("orchd: staging a deploy key failed: %v", err)
@@ -246,8 +279,13 @@ func (h *handler) sharedKeyExtra(c *registryChange) (string, map[string]any, err
 func (h *handler) applyKey(c registryChange, args map[string]any, github bool, plan *keyPlan) error {
 	want, _ := c.Fields["deploy_key_sha256"].(string)
 	if github {
-		if h.keys == nil || h.keys.Exists(c.Subject) {
+		if h.keys == nil {
 			return errKeyStagingFailed
+		}
+		if h.keys.Exists(c.Subject) {
+			// a key directory of this project exists: the project was registered by
+			// an earlier apply (a second apply of the same change lands here)
+			return errProjExists
 		}
 		k, err := h.keys.Staged(want)
 		switch {
@@ -272,6 +310,19 @@ func (h *handler) applyKey(c registryChange, args map[string]any, github bool, p
 	}
 	args["deploy_key"] = line
 	return nil
+}
+
+// staticPathTaken reports whether the folder a NEW project of this id would get
+// under an allowed repository root is named by a static --git-remote-for entry:
+// the static remote would win over the registry for it, so creating or linking
+// a project there is refused before anything is signed.
+func (h *handler) staticPathTaken(id string) bool {
+	for _, r := range h.roots {
+		if h.staticRepos[filepath.Clean(filepath.Join(r, id))] {
+			return true
+		}
+	}
+	return false
 }
 
 // ---- registry facts for link and attach ----
@@ -304,6 +355,9 @@ func (h *handler) remoteChecks(ctx context.Context, c registryChange) (string, e
 	if link {
 		if h.folderTaken(c.Subject) {
 			return "", errPathExists
+		}
+		if h.staticPathTaken(c.Subject) {
+			return "", errStaticRemoteWins
 		}
 		if !h.hasPolicyClass(registeredClass) {
 			return "", errPolicyClassMissing
