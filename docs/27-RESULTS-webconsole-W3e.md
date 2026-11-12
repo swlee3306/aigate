@@ -18,10 +18,10 @@
 실행: 2026-11-12, macOS(Apple Silicon), Go 1.27.1, Node v26.5.0. 세는 방식은 W3a~W3c와 같다: 최상위 시험 함수와 하위 시험을 따로 센다(`go test -json` 결과 줄에서 집계).
 
 - `go vet ./...`, `GOOS=darwin go vet ./cmd/... ./internal/...`, `GOOS=linux go vet ./cmd/... ./internal/...`: 통과. `gofmt -l .`: 출력 없음.
-- `go test ./... -count=1 -race`: **종료 코드 0**. 최상위 시험 함수 1650개 중 **1648 통과, 0 실패, 2 건너뜀**(하위 시험 982개 모두 통과). 건너뜀 2개는 W1~W3c와 같다: `internal/orch/web` `TestDevServer`(수동 개발 서버), `internal/pathfold` `TestCollisionsPerformance`(-race 빌드에서만 건너뛰는 시간 검사). **솔직히:** 이 숫자의 바로 앞 전체 실행에서는 `internal/broker`의 **W2 시험 하나**(`TestBrokerForeignUidAndOversizeFlood`, "pipelined requests made 0 upstream calls")가 한 번 실패했다(변이 시험이 막 끝난 직후라 부하가 있던 시점). 그 시험만 `-race -count=15`로 15번 모두 통과했고 `internal/broker` 패키지를 `-race`로 다시 돌려 통과했으며, 이 변경은 그 시험이나 해당 코드를 건드리지 않았다. 부하 아래에서 나오는 시간 의존 시험으로 보지만 원인을 가려내지는 못했다. 위 숫자는 그 뒤 처음부터 다시 돈 전체 실행의 것이다.
-- `node --test "internal/orch/web/test/*.test.js"`: **256개 전부 통과**(E5 253개 + E6 3개).
+- `go test ./... -count=1 -race`: **종료 코드 0**. 최상위 시험 함수 1654개 중 **1652 통과, 0 실패, 2 건너뜀**(하위 시험 982개 모두 통과). 건너뜀 2개는 W1~W3c와 같다: `internal/orch/web` `TestDevServer`(수동 개발 서버), `internal/pathfold` `TestCollisionsPerformance`(-race 빌드에서만 건너뛰는 시간 검사). **솔직히:** (E6 첫 라운드의) 전체 실행 중 한 번은 `internal/broker`의 **W2 시험 하나**(`TestBrokerForeignUidAndOversizeFlood`, "pipelined requests made 0 upstream calls")가 한 번 실패했다(변이 시험이 막 끝난 직후라 부하가 있던 시점). 그 시험만 `-race -count=15`로 15번 모두 통과했고 `internal/broker` 패키지를 `-race`로 다시 돌려 통과했으며, 이 변경은 그 시험이나 해당 코드를 건드리지 않았다. 부하 아래에서 나오는 시간 의존 시험으로 보지만 원인을 가려내지는 못했다. 그 뒤 처음부터 다시 돈 전체 실행은 깨끗했고, 최종 검토 수정 라운드의 전체 실행(위 숫자)도 첫 실행에서 깨끗했다.
+- `node --test "internal/orch/web/test/*.test.js"`: **257개 전부 통과**(E5 253개 + E6 3개 + 최종 검토 1개).
 - **게이트:** `go test -run TestConstantsAgreeWithWeb -v ./internal/orch/api` → `--- PASS: TestConstantsAgreeWithWeb`, 하위 `tokens`·`providers`·`w3e` 모두 PASS, **`SKIP` 없음**.
-- W3c(25번 문서) 대비 최상위 통과 1473 → 1648(+175), 하위 시험 935 → 982(+47), node 231 → 256(+25). E6가 더한 것은 적대 시험 30개(Go 27, node 3).
+- W3c(25번 문서) 대비 최상위 통과 1473 → 1652(+179), 하위 시험 935 → 982(+47), node 231 → 257(+26). E6가 더한 것은 적대 시험 30개(Go 27, node 3)와 최종 검토의 시험 5개(Go 4, node 1).
 
 | 패키지 | 통과 | 실패 | 건너뜀 | 하위 시험 |
 |---|---|---|---|---|
@@ -33,12 +33,12 @@
 | `internal/adapter` | 13 | 0 | 0 | 0 |
 | `internal/approval` | 33 | 0 | 0 | 80 |
 | `internal/approval/signing` | 68 | 0 | 0 | 76 |
-| `internal/broker` | 376 | 0 | 0 | 275 |
+| `internal/broker` | 378 | 0 | 0 | 275 |
 | `internal/config` | 8 | 0 | 0 | 0 |
 | `internal/gate` | 60 | 0 | 0 | 63 |
 | `internal/gitx` | 45 | 0 | 0 | 3 |
 | `internal/ledger` | 17 | 0 | 0 | 0 |
-| `internal/orch/api` | 369 | 0 | 0 | 34 |
+| `internal/orch/api` | 371 | 0 | 0 | 34 |
 | `internal/orch/approvals` | 6 | 0 | 0 | 0 |
 | `internal/orch/broker` | 11 | 0 | 0 | 0 |
 | `internal/orch/clone` | 36 | 0 | 0 | 0 |
@@ -98,9 +98,16 @@ broker `internal/broker/adversarial_w3e_test.go`(16개), orchd `internal/orch/ap
 | `TestPublishNeverLeavesRegistryRemoteAndPerProjectKeyW3e` (publish) | 해석 못 한 제공자 연결 프로젝트는 기본 원격으로 밀지 않음, 해석기 답이 안전한 ssh 원격이 아니면 git 실행 0, 환경의 ssh 설정은 자식에 안 감, 개인 키가 느슨해지거나 링크로 바뀌면 거부 |
 | node `TestAdversarialApplySendsOnlyWhatWasConfirmedW3e` | create·link·attach 적용 본문의 키는 서명 필드뿐이고 `fields`가 확인한 것과 같으며 키 해시·`change`는 브라우저 것 |
 | node `TestAdversarialServerCannotAddOrDropFieldsW3e` | 서버가 GitLab 제안에 `visibility`·여분 필드를 더하거나 `publish`를 빼거나 그룹·소유자·visibility를 바꾸면 서명 단추가 없고 서명·적용 0. **알림:** 거부는 "불일치 경고"이거나 폼의 문제 문구다(`internal` 같은 열거 밖 값은 `change` 계산 자체가 거부해 경고 없이 문제 문구로 끝남). 시험은 둘 중 하나가 보일 것과 서명 단추·서명·적용 없음을 확인한다 |
+| `TestProviderKindFlipBetweenShapeAndLockRefusedW3e` (broker, 최종 검토) | 모양 단계와 이름 잠금 사이에 제공자 종류가 gitlab→github(visibility 없음) 또는 github→gitlab(visibility 있음)으로 바뀌면 `visibility_required`/`visibility_not_allowed`로 거부, 제공자 요청 0, 고아·등록 없음 |
+| `TestDeployKeyLineRuleVectorsW3e` (broker) + `TestBrokerDeployKeyRuleCopyMatchesVectorsW3e` (api, 최종 검토) | 같은 벡터 파일(`internal/broker/testdata/deploykey_vectors.json`, 26개)을 broker의 `deployKeyRE`와 orchd의 사본 `brokerDeployKeyRE`에 돌려 동작이 같음을 고정 |
+| `TestReconcileReadsTheRegistryOncePerPassW3e` (api, 최종 검토) | 보관 키가 셋이어도 조정 한 번이 등록부를 한 번만 읽음(보관 키가 없으면 읽지 않음) |
+| node `TestAttachWriteWarnsThatLocalHistoryMayBePushedW3e` (최종 검토) | 게시 권한 쓰기인 attach의 확인 화면에 굵은 경고 한 줄(로컬 이력이 원격으로 올라갈 수 있고 공개 저장소면 누구나 읽음)이 정확히 한 번, 읽기·link에는 없음. 서버가 빼거나 두 번 말하거나 읽기에 붙이면 서명 단추 없음 |
 | node `TestAdversarialOrphanWithUnknownOriginNeverDroppedNorCalledCreatedW3e` | 출처가 null·빈 값·숫자·마크업·대문자·객체인 고아는 목록에 남고 "출처 불명"이며 "직접 지우세요"라고 하지 않음 |
 
 **시험을 새로 쓰는 중 발견한 것.** **제품 코드의 결함은 발견하지 못했다.** 적대 시험은 첫 실행에서 시험 작성 실수(허용 본문 키 `description`, 등록부 중복 id, `Sprint`가 만든 공백이 든 id, 실제 인터넷 주소로 연결할 뻔한 재바인딩 사례)와 사실 확인 두 가지 외에 실패한 것이 없다: ① `SweepAll`은 **우리 사용자의 진짜 폴더이면서 스테이징 이름 모양인 것**(권한이 느슨한 것 포함)을 시작 때 지운다(설계대로, 링크·파일·다른 이름은 건드리지 않음). ② 웹은 열거 밖 `visibility`나 필드 수가 다른 `fields`를 불일치 경고가 아니라 폼 문제 문구로 거부한다(서명 단추 없음). 한 관찰: 재바인딩 시험에 공개 IP(`140.82.112.6`)와 루프백을 섞은 답을 넣으면 공개 주소로 **실제 연결**을 시도할 수 있어 그 사례를 뺐다(시험은 네트워크에 나가면 안 된다).
+
+### 최종 검토 수정 라운드
+코드: ① broker `create_project`는 이름 잠금 뒤 다시 읽은 제공자에 종류·visibility·소유자 규칙(`createProviderRules`)을 다시 적용한다(모양 단계와 같은 함수). ② orchd `reconcileKeys`는 한 번의 조정에서 등록부를 **한 번**만 읽는다(키마다 읽던 것을 고침, 20초 상한 유지). **좁은 경합(받아들임):** 등록부는 키의 해시를 담지 않으므로 "등록됨"은 "그 id가 그 제공자에 연결됨"이다. 알 수 없는 결과였던 첫 적용과 같은 id의 다른 적용이 둘 다 등록되어야 어긋나는데, broker의 id·원격 잠금과 요청 ID 소모가 그 창을 좁힌다. ③ attach의 게시 권한이 쓰기이면 서버 미리보기와 브라우저의 정확한 한 줄 검사에 경고가 더해졌다(`PREVIEW_ATTACH_PUSH_WARN`, Go와 웹 상수 일치 시험). **바뀐 기존 시험·파일(이유):** `internal/orch/api/web_fixtures_w3c_test.go`(새 상수의 고정 단언 추가: 기존 단언은 그대로), `internal/orch/web/dev_test.go`(개발용 고정 서버의 attach 미리보기가 쓰기일 때 새 줄을 냄: 실제 서버와 같게), `internal/orch/web/test/w3e.test.js`의 `previewFor` 도우미(서버의 미리보기를 복제한 것: attach+쓰기에서 새 줄), 고정 파일 `w3e-vectors.json`(재생성: attach 쓰기 미리보기가 한 줄 늘어남). 그 밖의 기존 시험은 바꾸지 않았다.
 
 ## 3. 변이 시험 (시험이 실제로 잡는지)
 
@@ -146,8 +153,8 @@ E1~E5가 각자 적은 표를 모았다. **이 표의 모든 "예상"은 코드�
 | `/var/lib/orch-broker/registry.json` | `orch-broker` 0600(폴더 0700) | broker만 | **버전 2 → 3 마이그레이션(첫 시작에서 원자적 쓰기)**, GitHub 제공자·프로젝트·고아(`origin`) 추가(임시 파일 → rename) | `ReadWritePaths`. **W3c broker는 버전 3을 깨짐으로 봄 → 롤백은 등록부 복원** |
 | `/var/lib/orch-broker/registry.json.v2.bak` | `orch-broker` 0600 | broker가 한 번 씀 | 마이그레이션 직전의 v2 원본(임시 파일 + `link`로 덮어쓰기 불가, 파일·폴더 fsync). 쓰기 실패는 시작 실패(v2 파일은 그대로) | `ReadWritePaths` 안. 롤백의 보조 사본(root 백업이 우선) |
 | `/var/lib/orch-broker/{tokens.json, secrets/<이름>}` | 0600 / 0400(폴더 0700) | broker | **호출마다 읽기만**: GitHub 호출 때 `github` 종류 토큰. 값은 `Authorization: Bearer` 헤더로만 나감 | 변경 없음 |
-| 제공자 주소 `https://api.github.com`(공개 IP) | — | **broker**(uid `orch-broker`) | HTTPS 호출 9종, 연결 시점 주소 재검사(공개 주소 허용), 리다이렉트 안 따름, 연결 10초·전체 15초·본문 1 MiB | **nft는 현재 GitLab만 허용: 사용자 결정, 방화벽은 바꾸지 않음** |
-| `github.com:22` | — | **orchd**(`orch`)의 `ssh` 자식 | 복제·게시 | **nft: 사용자 결정**. 호스트 키는 `known_hosts_gitlab`에 사용자가 검증해 넣어야 함 |
+| 제공자 주소 `https://api.github.com`(공개 IP) | — | **broker**(uid `orch-broker`) | HTTPS 호출 9종, 연결 시점 주소 재검사(공개 주소 허용), 리다이렉트 안 따름, 연결 10초·전체 15초·본문 1 MiB | **`infra/nftables/orchestrator.nft:36`이 공인 주소로의 80·443을 이미 허용하므로(`tcp dport { 80, 443 } ip daddr != @private4 accept`) 실서버에서도 이미 열려 있을 가능성이 높다: 방화벽 결정 불필요, 확인만(런북 15.0 (e))** |
+| `github.com:22` (또는 선택 B: `ssh.github.com:443`) | — | **orchd**(`orch`)의 `ssh` 자식 | 복제·게시 | **22는 닫혀 있음: 사용자 결정**(A: 22를 여는 규칙, B: 새 규칙 없이 `ssh_url = ssh://git@ssh.github.com:443`, known_hosts 줄은 `[ssh.github.com]:443 …`). 호스트 키는 `known_hosts_gitlab`에 사용자가 검증해 넣어야 함 |
 | `/home/orch/orchd/ssh/` | **`orch:orch`**, 진짜 폴더(심볼릭 링크 아님), orch가 쓸 수 있어야 함 | orchd | `keys/`·`keys-staging/`가 이 아래 만들어짐 | **`ReadWritePaths=/home/orch/orchd` 안**. 실서버에서 `mkdir`·모드가 되는지 **미확인** |
 | `/home/orch/orchd/ssh/keys/` | `orch:orch` 0700 | orchd | 승격된 저장소별 키의 부모. 승격 때 처음 만들어짐 | 같음 |
 | `/home/orch/orchd/ssh/keys/<프로젝트 id>/` | `orch:orch` 0700 | orchd(만들기·옮기기), **`ssh` 자식**(개인 키 읽기) | 저장소 하나의 키 쌍. **이름 바꾸기(`RENAME_NOREPLACE`)로 승격**: 이미 있는 폴더·링크는 덮어쓰지 않음 | 같음 |
@@ -161,7 +168,7 @@ E1~E5가 각자 적은 표를 모았다. **이 표의 모든 "예상"은 코드�
 | `/root/backup-w3e` | root 0700 | 사람(root) | 롤백용 바이너리·`registry.json`(v2)·정책·`known_hosts` 사본 | — |
 | 웹 정적 파일 | orchd 바이너리에 내장 | orchd | 갱신된 `views/*.js`(경로·모드 변경 없음) | — |
 
-새 유닛·새 플래그·새 설정 키·새 포트·DB 스키마 변경(v8 그대로)은 없다. **방화벽 규칙은 사용자 결정이고 이 도구는 nft를 바꾸지 않는다.** broker·orchd 사이의 `projects` 응답 필드 이름이 바뀌므로(`gitlab` → `remote`) 둘의 버전 차이 구간은 위험하다(런북 ⚠ 3: 옛 orchd + 새 broker는 W3c 제공자 연결 프로젝트를 기본 원격으로 게시할 수 있다). **실서버에서만 알 수 있는 것은 6장.**
+새 유닛·새 플래그·새 설정 키·새 포트·DB 스키마 변경(v8 그대로)은 없다. **ssh 경로(22를 열지, 443 ssh를 쓸지)는 사용자 결정이고 이 도구는 nft를 바꾸지 않는다.** broker·orchd 사이의 `projects` 응답 필드 이름이 바뀌므로(`gitlab` → `remote`) 둘의 버전 차이 구간은 위험하다(런북 ⚠ 3: 옛 orchd + 새 broker는 W3c 제공자 연결 프로젝트를 기본 원격으로 게시할 수 있다). **실서버에서만 알 수 있는 것은 6장.**
 
 ## 5. 설계서와 달라진 곳 (결정)
 
@@ -175,7 +182,7 @@ E1~E5가 각자 적은 표를 모았다. **이 표의 모든 "예상"은 코드�
 | W3e-6 | **보호 `PUT` 본문**(문서에서 필수 4개 nullable + `enforce_admins:true`, 강제 푸시·삭제 금지)과 **응답도 같은 `strong()` 판정**. 실서버 확인은 컷오버뿐 | 가정이 틀리면 모든 GitHub 생성이 `protect`에서 끝남 |
 | W3e-7 | **첫 파일은 `branch` 없이**(빈 저장소) 올리고 기본 브랜치를 읽어 `main`이 아니면 `create_partial`(`default_branch`). 나머지 파일은 `branch: main` | 빈 저장소에서 콘텐츠 API가 안 되면 모든 생성이 `first_commit`에서 끝남 |
 | W3e-8 | **저장소 만들기 호출이 4xx로 거부되면 고아 기록을 남기지 않는다**(만들어진 것이 없음). 2xx이지만 요청과 다르거나(`private` 불일치), 5xx·3xx·전송 오류는 불확실 → 고아 | — |
-| W3e-9 | **`link_project`·`attach_remote`는 프로젝트 id가 원격 저장소 이름과 같아야 한다**(`remote_name_mismatch`, 서명 전): W3c의 복제·해석기 이름 규칙 때문에 그렇지 않으면 복제도 게시도 안 되는 프로젝트가 등록됨 | `my_repo`·`Repo.js` 같은 저장소는 연결 불가(받아들인 한계). 풀려면 등록부에 id 필드가 필요 |
+| W3e-9 | **`link_project`·`attach_remote`는 프로젝트 id가 원격 저장소 이름과 같아야 한다**(`remote_name_mismatch`, 서명 전; GitHub는 대소문자 무시, id는 소문자): W3c의 복제·해석기 이름 규칙 때문에 그렇지 않으면 복제도 게시도 안 되는 프로젝트가 등록됨 | **이름을 소문자로 바꾼 것이 id 규칙에 맞으면 연결 가능**(`MyRepo` → `myrepo`). `_`·`.`가 있는 이름(`my_repo`, `Repo.js`)과 id 규칙 밖의 이름은 연결 불가(받아들인 한계). 풀려면 등록부에 id 필드가 필요 |
 | W3e-10 | **link·attach 한도는 둘이 합쳐 시간당 10**(계획은 각각 10). GitHub 쓰기는 생성 한도(시간당 5)에 합산 | — |
 | W3e-11 | **고아 기록에 `origin`(`created`/`linked`)을 더함**과 별도 코드 `link_partial`(문장: "이미 있던 저장소: 지우지 마세요, 배포 키만 제거"). 출처를 모르면 웹은 "출처 불명" | 옛 기록은 `created`로 읽힘 |
 | W3e-12 | **orchd가 create propose에서 종류를 `visibility` 유무로 추정**(제안이 broker를 부르지 않는 W3c 규약 유지, 최종 권한은 broker의 모양 단계). **link·attach 제안·적용은 broker `projects` 읽기를 한 번 한다**: broker가 꺼져 있으면 `broker_unavailable` | link·attach는 broker 없이 제안되지 않음 |
@@ -194,7 +201,7 @@ E1~E5가 각자 적은 표를 모았다. **이 표의 모든 "예상"은 코드�
 - **실제 GitHub에서:** ① 빈 저장소에 콘텐츠 API로 첫 파일이 **`branch` 없이** 올라가 `main`이 기본 브랜치가 되는지(문서는 빈 저장소에 대해 침묵), 계정의 기본 브랜치 이름이 다르면 `default_branch` 단계로 끝남. ② 보호 `PUT`의 **본문 수용과 응답**, 보호가 없는 브랜치의 `GET`이 404인지, **무료 요금제 비공개 저장소의 보호가 403으로 거부되는지**(가정), `GET`이 `allow_deletions.enabled`를 주는지. ③ **배포 키 `POST`**의 성공 응답(201 가정), **같은 공개 키 중복 시 응답**(422 가정, 어떤 4xx든 거부로 매핑), `read_only` 응답 echo. ④ **토큰 범위:** 클래식 `repo`·`public_repo`가 생성·콘텐츠·보호·배포 키를 덮는지, **세분화 토큰의 권한 이름과 개인 계정에 새 저장소를 만들 수 있는지**(문서 페이지가 명시하지 않음). ⑤ 한도 응답(403 + `x-ratelimit-remaining: 0`, 헤더 없는 이차 한도는 `github_refused`로 분류됨). ⑥ `POST /user/repos` 응답의 `private`·`full_name` 모양, 이름이 바뀐 저장소의 301(안 따름). ⑦ GitHub Enterprise Server의 `/api/v3` 접두사(관례, 문서에서 확인 못함).
 - **orchd가 실제 유닛에서 `/home/orch/orchd/ssh/keys`·`keys-staging`을 만들 수 있는지**(`ReadWritePaths=/home/orch/orchd`, 소유자 `orch`, 0700이 `umask`를 넘는지, `ProtectHome=read-only`와의 상호작용), 키 승격의 `RENAME_NOREPLACE`(리눅스에서는 컴파일만 확인).
 - **OpenSSH 9.6이 `ssh.MarshalPrivateKey`가 쓴 개인 키 파일을 받아들이는지**(시험은 같은 Go 라이브러리로 다시 파싱했을 뿐이다), **GitHub가 공개 키와 주석(`orchd-deploy`)을 받아들이는지**, `IdentitiesOnly`와 첫 실제 GitHub `git clone`·`push`.
-- **`github.com`의 `known_hosts` 항목과 방화벽**(`api.github.com:443`·`github.com:22`): 규칙은 사용자 결정이고 GitHub의 IP는 바뀐다.
+- **`github.com`(또는 `ssh.github.com:443`)의 `known_hosts` 항목과 ssh 도달:** 22는 닫혀 있다고 알려져 있고 방법(규칙 / 443 ssh)은 사용자 결정이다. **`api.github.com:443`은 저장소의 nft 파일(36행)이 공인 주소 443을 허용하므로 이미 열려 있을 가능성이 높으나 실서버의 규칙으로 확인하지 못했다.** `ssh.github.com:443` 형태의 ssh 주소는 코드가 받고 시험했으나 GitHub에서 실제로 되는지는 미확인.
 - **등록부 v2→v3 마이그레이션을 실서버 파일(제공자 `example-group-gitlab`)·uid·샌드박스로** 하는 것, `registry.json.v2.bak` 쓰기(폴더 fsync 포함), 롤백(등록부 복원)의 실제 영향, 샌드박스 안 `-check`.
 - **broker·orchd 버전 차이 구간의 실제 동작**(런북은 그 구간을 없애는 순서를 쓰지만, 옛 orchd가 새 broker 응답에서 실제로 기본 원격을 쓰는지는 W3c 코드 읽기(`56dfe3e`의 해석기가 `GitLab == nil`이면 건너뜀)로 알 뿐 서버에서 보지 않았다).
 - **GitLab 쪽 W3c 미확인의 이월:** **공용 배포 키가 두 번째 GitLab 프로젝트에 합류하는지**(허용 목록에 "키를 프로젝트에 켜기"가 없다), **GitLab 기본 브랜치 보호 설정**(더 약하면 모든 생성이 `protect`), GitLab link의 `GET projects/:path`와 `path_with_namespace` 대소문자·리다이렉트 동작, 깊이 4 그룹.
@@ -205,7 +212,7 @@ E1~E5가 각자 적은 표를 모았다. **이 표의 모든 "예상"은 코드�
 
 ## 7. 받아들인 한계 (알고서 둔 것)
 1. **이 도구는 GitHub의 저장소와 저장소에 붙인 배포 키를 지우지 못하고 등록부에서 프로젝트를 지우는 op도 없다.** 시험용 리소스는 사람이 GitHub에서 지우고 등록부 항목·폴더·`ssh/keys/<id>/`는 남는다.
-2. **프로젝트 id는 원격 저장소 이름과 같아야 한다**(GitHub는 대소문자 무시). 이름에 `_`·`.`·대문자가 있는 GitHub 저장소나 id 규칙 밖의 이름은 연결할 수 없다. **GitLab에서 경로에 `_`·대문자·`.`가 있는 프로젝트는 연결할 수 없다.** **새 저장소는 소문자 이름만 만든다.**
+2. **프로젝트 id는 원격 저장소 이름과 같아야 한다**(GitHub는 대소문자 무시, id는 소문자). **GitHub 저장소는 이름을 소문자로 바꾼 것이 id 규칙에 맞으면 연결할 수 있고**(`MyRepo` → `myrepo`), 이름에 `_`·`.`가 있거나(`my_repo`, `Repo.js`) id 규칙 밖이면 연결할 수 없다. **GitLab에서 경로에 `_`·대문자·`.`가 있는 프로젝트는 연결할 수 없다.** **새 저장소는 소문자 이름만 만든다.**
 3. **무료 요금제의 비공개 GitHub 저장소는 항상 `create_partial`(`protect`)로 끝난다**(보호 브랜치가 유료). 저장소는 파일만 있는 채로 남는다. 공개 저장소는 누구나 읽는다.
 4. **연결한 기존 저장소의 보호·설정은 이 도구가 보장하지 않는다**(배포 키만 붙인다). 쓰기 권한을 준 키로는 보호가 없는 브랜치에 푸시할 수 있다(기본은 읽기).
 5. **GitHub 토큰은 사용자 권한 전체를 가진 토큰일 수 있다**(클래식 `repo`): 코드는 9개 호출만 보내지만 유출되면 GitHub에서 그 이상이 가능하다. 서명된 변경과 만료일·폐기가 방어다.
@@ -223,11 +230,11 @@ E1~E5가 각자 적은 표를 모았다. **이 표의 모든 "예상"은 코드�
 1. **GitHub 토큰:** 만들지 여부, **종류(세분화 / 클래식 `public_repo` / 클래식 `repo`)와 만료일**. 세분화 토큰이 이 도구의 호출(개인 계정에 저장소 만들기 포함)을 덮는지는 확인하지 못했다: 공식 문서를 사용자가 직접 읽고 정한다. 값은 **웹 토큰 화면에만** 입력하고 채팅·터미널에 붙이지 않는다.
 2. **소유자:** 개인 계정(2026-11-12 결정). 조직은 쓰지 않는다.
 3. **공개/비공개와 요금제:** 공개는 누구나 읽는다, **무료 요금제에서는 비공개가 `protect`에서 막힌다**. 저장소마다 서명 화면에서 직접 고른다(기본값 없음).
-4. **방화벽 규칙(사용자 결정, 이 도구와 컨트롤러는 nft를 바꾸지 않는다):** `api.github.com:443`(broker)과 `github.com:22`(orchd). GitHub `meta` IP 대역을 허용할지, 중계 프록시를 둘지.
+4. **ssh 경로(사용자 결정, 이 도구와 컨트롤러는 nft를 바꾸지 않는다):** `github.com:22`를 여는 규칙(GitHub `meta`의 `git` IP 대역 등)을 정할지, 규칙 없이 `ssh://git@ssh.github.com:443`을 쓸지. `api.github.com:443`은 이미 열려 있을 가능성이 높다(런북 15.0 (e)에서 확인).
 5. **`github.com` 호스트 키를 GitHub 공식 SSH 지문과 사용자가 대조해 `known_hosts_gitlab`에 넣기**(`ssh-keyscan` 출력은 그것만으로 믿지 않는다. 절차: 런북 15.0 사용자 사전 작업 5).
 6. **정책 `registered` 클래스:** W3c에서 이미 필요하고 넣었다(14장). 없으면 제안이 `policy_class_missing`.
 7. **실제 저장소를 만들지 여부와 이름, 기존 저장소를 연결할지·어느 저장소인지:** **GitHub 저장소와 배포 키는 이 도구가 지울 수 없다**(사용자가 GitHub에서 직접 지운다, 등록부·폴더·`ssh/keys/<id>/`는 남는다). 시험용 이름으로.
-8. **한계를 받아들일지:** 프로젝트 id = 원격 저장소 이름, GitLab에서 `_`·대문자·`.` 경로는 연결 불가, 새 저장소는 소문자 이름만, `sample-app` 같은 정적 원격 프로젝트에는 연결 불가.
+8. **한계를 받아들일지:** 프로젝트 id = 원격 저장소 이름(GitHub는 대문자만 다른 이름은 가능, `_`·`.`는 불가), GitLab에서 `_`·대문자·`.` 경로는 연결 불가, 새 저장소는 소문자 이름만, `sample-app` 같은 정적 원격 프로젝트에는 연결 불가.
 9. **게시 권한(읽기/쓰기)과 작은 시험 작업으로 게시를 확인할지**(3-9).
 10. **컷오버가 안정되면 `/root/backup-w3e`를 언제 지울지**(토큰·키 사본이 들어 있어 `shred`), GitHub 토큰의 권한을 시험 뒤 줄일지·폐기할지, 롤백 뒤 `ssh/keys/`의 개인 키를 지울지(GitHub의 배포 키를 먼저 제거한 뒤).
 11. **W3d(PR·MR, 조건부 자동 병합)로 갈지.** 그때 빈 `checks`를 통과로 세지 않는 규칙을 넣는다(W3c 이월).
