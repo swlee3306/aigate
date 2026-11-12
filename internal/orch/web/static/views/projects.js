@@ -1392,7 +1392,7 @@ export function projectsView(ctx) {
       el('p', { class: 'lead' }, st.list.length === 0 ? '등록된 프로젝트가 없습니다.'
         : '등록된 프로젝트 ' + st.list.length + '개. AI 전송 허용을 바꾸거나 새로 등록하려면 패스키 서명이 필요합니다.'),
       el('div', { class: 'row' }, [
-        el('button', { type: 'button', class: ['btn', 'primary'], 'data-focus-key': 'add', on: { click: startRegister } }, '프로젝트 추가'),
+        el('button', { type: 'button', class: 'btn', 'data-focus-key': 'add', on: { click: startRegister } }, '프로젝트 추가'),
         ' ',
         el('button', { type: 'button', class: ['btn', 'primary'], 'data-focus-key': 'create', disabled: st.busy || flow.busy, on: { click: startCreate } }, '새 프로젝트 만들기'),
         ' ',
