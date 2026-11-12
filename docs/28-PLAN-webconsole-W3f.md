@@ -43,6 +43,15 @@
 - [ ] **시험(이름 그대로):** `TestRegistryV3MigratesToV4Atomically`(내용 불변, `origin`은 `unknown`/`legacy`, `.v3.bak` 한 번만), `TestOldBrokerRefusesV4`, `TestNewProjectsRecordOrigin`(created/linked), `TestDeleteActionsInSchema`(필드·subject 규칙·교차 action 서명 거부), `TestConfirmNameField`, `TestExistingActionsUnchangedByW3f`.
 - [ ] **커밋:** `feat(registry): registry v4 with project origin and delete actions`.
 
+### Task 1b (F1b): 기존 저장소 연결의 프로젝트 이름 제약 해제 (W3e 후속, 사용자 요청 2026-11-12)
+**배경:** W3e의 `link_project`·`attach_remote`는 프로젝트 id가 원격 저장소 이름과 같아야 했다(`remote_name_mismatch`). 그래서 `swlee3306/sulee_portfolio`처럼 `_`가 든 이름은 연결할 수 없었다. 사용자가 이 제약을 풀기를 원한다.
+**결정:** 연결·부착의 **프로젝트 id(= 서버의 폴더 이름 = 키 폴더 이름)는 사용자가 정하고 저장소 이름과 무관**하다. id 규칙은 그대로(`^[a-z][a-z0-9-]{1,39}$`). 저장소 이름·경로는 제공자 규칙대로 `_`·`.`·대문자(GitHub)를 허용한다(GitLab 경로의 소문자 제한은 broker의 GitLab 클라이언트 규칙이라 이번에는 그대로: 문서화). **새 저장소 만들기(`create_project`)는 계속 id = 저장소 이름이다**(우리가 이름을 정해 만들기 때문).
+**바꿀 곳:** orchd `link_project.go`의 `remote_name_mismatch` 검사와 `errNameMismatch` 제거, `create_project.go`의 복제 대상 검사에서 `NameMatches` 제거(`filepath.Base(entry.Path) == id`는 유지), `clone/remote.go`의 `NameMatches`를 연결된 프로젝트의 해석기·복제 경로에서 제거하되 **`created` 출처(F1의 `origin`)의 프로젝트는 계속 id와 이름이 같은지 확인**(등록부가 비정상일 때의 방어), 웹: 연결·부착 폼에 **편집 가능한 "프로젝트 이름" 칸**을 두고 저장소 이름에서 제안값(소문자, `_`·`.`→`-`, 규칙에 맞게 자름)을 채우되 사용자가 고칠 수 있다, 확인 화면에 "저장소 이름과 프로젝트 이름이 다름"을 알린다, `remote_name_mismatch`는 코드·웹 문구에서 제거. 서명되는 값은 그대로(subject = 프로젝트 id, `remote_path`). **안전 불변식은 유지:** 원격 URL은 등록부(제공자 `ssh_url` + `remote_path`)에서만 만들고, 복제 대상은 `repo_roots` 바로 아래 `<id>` 하나, 키는 `keys/<id>/`.
+- [ ] **시험:** `TestLinkAllowsProjectIdDifferentFromRepoName`(GitHub `Sulee_Portfolio`/`sulee_portfolio` → id `sulee-portfolio`), `TestLinkRepoNameWithUnderscoreAndDotAccepted`, `TestResolverBuildsRemoteFromRegistryPathNotId`(키는 id 폴더, 원격은 저장소 경로), `TestCloneDestIsProjectIdNotRepoName`, `TestCreateProjectStillRequiresIdEqualsName`, `TestCreatedOriginRowWithMismatchedNameRefusedByResolver`, 웹: `TestLinkFormSuggestsProjectNameAndAllowsEdit`, `TestLinkConfirmationShowsBothNames`, `TestRemoteNameMismatchCodeGone`, 이름 제안 함수 벡터(`sulee_portfolio`→`sulee-portfolio`, `Repo.js`→`repo-js`, 한 글자·숫자 시작·40자 초과 처리), 서명 변경 해시 벡터 불변. 기존 시험의 의미 변경 금지(바꾸면 이유).
+- [ ] **커밋:** `feat: link existing repositories with a project name independent of the repository name`.
+
+---
+
 ### Task 2 (F2): broker 삭제 클라이언트와 op
 **파일:** 수정 `internal/broker/githubapi.go`·`gitlabapi.go`(허용 표에 DELETE 행만 추가), `provider_iface.go`; 만들기 `delete_ops.go`.
 - [ ] **시험:** `TestOnlyDeleteRowsAddedToAllowlist`(정확히 F-D4의 행), `TestRemoteDeleteRefusedForLinkedUnknownLegacy`, `TestDeleteChecksRemoteIdAndName`(`remote_changed`), `TestDeleteKeyOnlyMatchingTitleAndFingerprint`, `TestGitLabSharedKeyNeverDeleted`, `TestNoGroupOrOrgOrTokenDeletion`, `TestSignedFieldsCoverEveryDeleteInput`, `TestDeleteUsesOnlyTheProvidersOwnToken`, `TestDeletePartialAndUnknownOutcomeNoAutoRetry`, `TestDailyLimit`, `TestCanaryTokenNeverInAnyOutput`.
