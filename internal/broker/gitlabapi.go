@@ -71,7 +71,7 @@ const (
 const (
 	CodeProviderUnreachable = "provider_unreachable"
 	CodeGitLabRefused       = "gitlab_refused"
-	CodeNotFound            = "gitlab_not_found" // 404: the call site maps it (group_unknown, ...)
+	CodeNotFound            = "not_found" // GET 404 (provider-neutral, internal): the call site maps it (group_unknown, ...)
 	CodeTokenRefUnknown     = "token_ref_unknown"
 	CodeBadURL              = "bad_url"
 	CodeProviderUnknown     = "provider_unknown"

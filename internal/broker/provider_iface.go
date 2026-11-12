@@ -165,9 +165,12 @@ func (g gitlabRepoProvider) AddDeployKey(ctx context.Context, repo RepoInfo, tit
 	return g.api.AddDeployKey(ctx, repo.ID, title, key, canPush)
 }
 
-// RepoProviderFor builds the client of the configured provider id for its kind
-// (the kind-aware apiFor). The base URL is re-validated for that kind. A
-// provider whose kind has no client answers ErrBadInput.
+// RepoProviderFor builds a NEW client of the configured provider id for its kind
+// (the kind-aware apiFor). A flow must call it once and reuse that one instance
+// for every step: the GitHub client remembers which repositories it created, and
+// only for those honours the justCreated handle (protection PUT, first files).
+// A handle used on another instance is refused. The base URL is re-validated for
+// that kind. A provider whose kind has no client answers ErrBadInput.
 func (s *Server) RepoProviderFor(providerID string) (RepoProvider, error) {
 	p, ok := s.Registry.ProviderByID(providerID)
 	if !ok {

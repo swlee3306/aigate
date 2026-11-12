@@ -37,6 +37,7 @@ type fakeGH struct {
 	override   func(w http.ResponseWriter, r *http.Request) bool
 	repos      map[string]string // lower-case "owner/repo" -> real full_name
 	protection string            // JSON of an existing protection ("" = none)
+	defBranch  string            // default branch GitHub reports ("" = main)
 	orgPages   int               // when >0: GET /user/orgs answers 100 entries for every page
 }
 
@@ -96,7 +97,7 @@ func (f *fakeGH) serve(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprint(w, "["+strings.Join(parts, ",")+"]")
 			return
 		}
-		fmt.Fprint(w, `[{"login":"Acme-Org","id":2},{"login":"bad_login"}]`)
+		fmt.Fprint(w, `[{"login":"Acme-Org","id":2},{"login":"bad.login"}]`)
 	case r.Method == "GET" && len(segs) == 3 && segs[0] == "repos":
 		f.mu.Lock()
 		real, ok := f.repos[strings.ToLower(segs[1]+"/"+segs[2])]
@@ -105,7 +106,11 @@ func (f *fakeGH) serve(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(404)
 			return
 		}
-		fmt.Fprintf(w, `{"id":31,"full_name":%q,"default_branch":"main","private":true}`, real)
+		db := f.defBranch
+		if db == "" {
+			db = "main"
+		}
+		fmt.Fprintf(w, `{"id":31,"full_name":%q,"default_branch":%q,"private":true}`, real, db)
 	case r.Method == "POST" && (p == "/user/repos" || (len(segs) == 3 && segs[0] == "orgs" && segs[2] == "repos")):
 		owner := "alice"
 		if segs[0] == "orgs" {
@@ -150,6 +155,21 @@ func (f *fakeGH) recorded() []string {
 	return append([]string(nil), f.reqs...)
 }
 func (f *fakeGH) hits() int { return len(f.recorded()) }
+
+// ghMade creates a repository through the client (the only way to get a
+// justCreated handle that the client honours).
+func ghMade(t *testing.T, a *GitHubAPI, name string) RepoInfo {
+	t.Helper()
+	owners, _, err := a.ListOwners(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := a.CreateRepo(context.Background(), CreateRepoReq{Owner: owners[0], Name: name, Private: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
 
 func ghTokens(t *testing.T) *TokenStore {
 	t.Helper()
@@ -292,7 +312,7 @@ func TestGitHubDoRefusesOffList(t *testing.T) {
 		{"GET", "/repos/alice/demo%2Fx", ""},
 		{"GET", "/repos/alice/demo%2e%2e", ""},
 		{"GET", "/repos/-alice/demo", ""},
-		{"GET", "/repos/ali_ce/demo", ""},
+		{"GET", "/repos/ali.ce/demo", ""},
 		{"GET", "/repos/alice/demo/", ""},
 		{"GET", "//repos/alice/demo", ""},
 		{"GET", "/repos/alice/demo/branches/main", ""},
@@ -353,7 +373,7 @@ func TestGitHubPathEncodingNoInjection(t *testing.T) {
 			t.Errorf("CreateRepo(%q): %v", s, err)
 		}
 	}
-	for _, s := range []string{"-a", "a_b", "a.b", "a--", strings.Repeat("a", 40)} {
+	for _, s := range []string{"-a", "a.b", "a--", strings.Repeat("a", 40)} {
 		if s == "a--" {
 			continue // valid shape: GitHub is the authority on consecutive hyphens
 		}
@@ -361,7 +381,8 @@ func TestGitHubPathEncodingNoInjection(t *testing.T) {
 			t.Errorf("GetOwner(%q): %v", s, err)
 		}
 	}
-	r := RepoInfo{ID: 31, Path: "alice/demo", justCreated: true}
+	r := ghMade(t, a, "demo")
+	before = f.hits()
 	for _, p := range []string{"../x", "a/../b", "a%2Fb", "a b", "a?b", "a#b", "a\nb", "x/./y", "", "/abs", "a/b/c/d/e", "ü", "a//b", ".."} {
 		if err := a.CommitFiles(ctx, r, []CommitFile{{p, "x"}}); ErrCode(err) != CodeBadInput {
 			t.Errorf("CommitFiles path %q: %v", p, err)
@@ -390,6 +411,8 @@ func TestGitHubPathEncodingNoInjection(t *testing.T) {
 	want := []string{
 		"GET /repos/Alice/De.mo_x-1",
 		"PUT /repos/alice/demo/contents/cmd/x/main.go",
+		"GET /repos/alice/demo", // default branch check after the first file
+
 		"PUT /repos/alice/demo/contents/.aigate.yml",
 	}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
@@ -500,9 +523,9 @@ func TestGitHubNoRedirect(t *testing.T) {
 func TestGitHubTextNeverReflected(t *testing.T) {
 	f := newFakeGH(t)
 	a := ghFor(t, f, ghTokens(t), nil)
+	r := ghMade(t, a, "demo")
 	for _, st := range []int{400, 401, 403, 404, 409, 422, 429, 500, 502, 302} {
 		f.fail = map[string]int{"GET /": st, "POST /": st, "PUT /": st}
-		r := RepoInfo{ID: 1, Path: "alice/demo", justCreated: true}
 		var errs []error
 		_, _, e1 := a.ListOwners(context.Background())
 		_, e2 := a.GetRepo(context.Background(), "alice/demo")
@@ -548,7 +571,7 @@ func TestGitHubStatusMapping(t *testing.T) {
 		{403, map[string]string{"X-RateLimit-Remaining": "0"}, CodeProviderRateLimited},
 		{403, map[string]string{"Retry-After": "60"}, CodeProviderRateLimited},
 		{403, map[string]string{"X-RateLimit-Remaining": "17"}, CodeGitHubRefused},
-		{404, nil, CodeNotFound},
+		{404, nil, CodeGitHubRefused}, // a 404 on a write is a refusal, never "not found"
 		{409, nil, CodeGitHubRefused},
 		{422, nil, CodeGitHubRefused},
 		{400, nil, CodeGitHubRefused},
@@ -684,6 +707,7 @@ func TestProtectionPutOnlyForJustCreatedRepo(t *testing.T) {
 	if err := a.EnsureProtectedMain(ctx, old); err != nil || puts(f) != 0 {
 		t.Fatalf("strong existing rule: %v", err)
 	}
+	fresh := ghMade(t, a, "fresh0")
 	for name, body := range map[string]string{
 		"force":    `{"allow_force_pushes":{"enabled":true},"allow_deletions":{"enabled":false},"enforce_admins":{"enabled":true}}`,
 		"delete":   `{"allow_force_pushes":{"enabled":false},"allow_deletions":{"enabled":true},"enforce_admins":{"enabled":true}}`,
@@ -691,8 +715,7 @@ func TestProtectionPutOnlyForJustCreatedRepo(t *testing.T) {
 		"missing":  `{"enforce_admins":{"enabled":true}}`,
 	} {
 		f.protection = body
-		created := RepoInfo{ID: 31, Path: "alice/new", justCreated: true}
-		if err := a.EnsureProtectedMain(ctx, created); !errors.Is(err, ErrProtectionWeaker) && !(name == "missing" && ErrCode(err) == CodeGitHubRefused) {
+		if err := a.EnsureProtectedMain(ctx, fresh); !errors.Is(err, ErrProtectionWeaker) && !(name == "missing" && ErrCode(err) == CodeGitHubRefused) {
 			t.Errorf("%s: %v", name, err)
 		}
 		if err := a.EnsureProtectedMain(ctx, old); err == nil {
@@ -788,6 +811,8 @@ func TestGitHubProviderURLRules(t *testing.T) {
 		{"https://api.github.com", "ssh://git@169.254.169.254"},
 		{"https://api.github.com", "ssh://git@GitHub.com"},
 		{"ftp://api.github.com", "ssh://git@github.com"},
+		{"https://github.com", "ssh://git@github.com"},     // the web host is not the API host
+		{"https://www.github.com", "ssh://git@github.com"}, // neither is www
 	}
 	for _, g := range bad {
 		if err := providerShape(mk(g[0], g[1]), defaultIPPolicy, true); err == nil {
@@ -1002,23 +1027,25 @@ func TestGitHubCreateRepoBodyAndGuards(t *testing.T) {
 	}
 	// commits need the handle of the create flow; contents are base64 on branch main
 	f.override = nil
+	r := ghMade(t, a, "demo")
 	f.mu.Lock()
 	f.reqs, f.bodies = nil, nil
 	f.mu.Unlock()
 	if err := a.CommitFiles(ctx, RepoInfo{ID: 1, Path: "alice/old"}, []CommitFile{{"README.md", "x"}}); ErrCode(err) != CodeBadInput || f.hits() != 0 {
 		t.Fatalf("CommitFiles on a repo not created here: %v", err)
 	}
-	r := RepoInfo{ID: 31, Path: "alice/demo", justCreated: true}
 	if err := a.CommitFiles(ctx, r, []CommitFile{{"README.md", "héllo"}, {"a.txt", "b"}}); err != nil {
 		t.Fatal(err)
 	}
-	var cb map[string]any
+	var cb, cb2 map[string]any
 	json.Unmarshal([]byte(f.bodies[0]), &cb)
+	json.Unmarshal([]byte(f.bodies[2]), &cb2)
 	dec, _ := base64.StdEncoding.DecodeString(cb["content"].(string))
-	if string(dec) != "héllo" || cb["branch"] != "main" || cb["message"] != "Add README.md" || cb["sha"] != nil {
-		t.Fatalf("%v", cb)
+	// the FIRST file carries no branch (GitHub initializes its default branch); the rest go to main
+	if _, has := cb["branch"]; has || string(dec) != "héllo" || cb["message"] != "Add README.md" || cb["sha"] != nil || cb2["branch"] != "main" || cb2["sha"] != nil {
+		t.Fatalf("%v %v", cb, cb2)
 	}
-	if got := f.recorded(); got[0] != "PUT /repos/alice/demo/contents/README.md" || got[1] != "PUT /repos/alice/demo/contents/a.txt" {
+	if got := f.recorded(); got[0] != "PUT /repos/alice/demo/contents/README.md" || got[1] != "GET /repos/alice/demo" || got[2] != "PUT /repos/alice/demo/contents/a.txt" {
 		t.Fatalf("%v", got)
 	}
 	// a failure midway stops: later files are not sent
@@ -1026,7 +1053,7 @@ func TestGitHubCreateRepoBodyAndGuards(t *testing.T) {
 	f.mu.Lock()
 	f.reqs = nil
 	f.mu.Unlock()
-	if err := a.CommitFiles(ctx, r, []CommitFile{{"README.md", "x"}, {"a.txt", "b"}, {"c.txt", "c"}}); err == nil || f.hits() != 2 {
+	if err := a.CommitFiles(ctx, r, []CommitFile{{"README.md", "x"}, {"a.txt", "b"}, {"c.txt", "c"}}); err == nil || f.hits() != 3 {
 		t.Fatalf("%v %v", err, f.recorded())
 	}
 	f.fail = map[string]int{}
@@ -1068,6 +1095,15 @@ func TestGitHubCreateRepoBodyAndGuards(t *testing.T) {
 	}
 	if err := a.AddDeployKey(ctx, r, "t", goodKey, false); ErrCode(err) != CodeGitHubRefused {
 		t.Fatalf("polarity: %v", err)
+	}
+	// read_only is mandatory in the answer
+	f.override = func(w http.ResponseWriter, r *http.Request) bool {
+		w.WriteHeader(201)
+		fmt.Fprint(w, `{"id":5}`)
+		return true
+	}
+	if err := a.AddDeployKey(ctx, r, "t", goodKey, false); ErrCode(err) != CodeGitHubRefused {
+		t.Fatalf("missing read_only accepted: %v", err)
 	}
 }
 
@@ -1320,5 +1356,201 @@ func TestSeamsNotReachableFromProduction(t *testing.T) {
 	}
 	if !strings.Contains(string(b), "http.ErrUseLastResponse") {
 		t.Fatal("redirects must be refused")
+	}
+}
+
+func TestGitHubFirstFileOmitsBranchAndChecksDefault(t *testing.T) {
+	ctx := context.Background()
+	f := newFakeGH(t)
+	a := ghFor(t, f, ghTokens(t), nil)
+	r := ghMade(t, a, "demo")
+	f.defBranch = "master" // the account's default branch name differs
+	f.mu.Lock()
+	f.reqs, f.bodies = nil, nil
+	f.mu.Unlock()
+	err := a.CommitFiles(ctx, r, []CommitFile{{"README.md", "x"}, {"a.txt", "b"}, {"c.txt", "c"}})
+	if !errors.Is(err, ErrDefaultBranchMismatch) || ErrCode(err) != CodeDefaultBranchMismatch {
+		t.Fatalf("mismatch: %v", err)
+	}
+	if got := f.recorded(); len(got) != 2 || !strings.HasPrefix(got[0], "PUT ") || got[1] != "GET /repos/alice/demo" {
+		t.Fatalf("nothing more may be written after a mismatch: %v", got)
+	}
+	var b map[string]any
+	json.Unmarshal([]byte(f.bodies[0]), &b)
+	if _, has := b["branch"]; has {
+		t.Fatalf("first file carries a branch: %v", b)
+	}
+	// a repository that now answers with another id is not ours
+	f.defBranch = ""
+	f.override = func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Method == "GET" {
+			fmt.Fprint(w, `{"id":99,"full_name":"alice/demo","default_branch":"main","private":true}`)
+			return true
+		}
+		return false
+	}
+	if _, err := a.DefaultBranch(ctx, r); ErrCode(err) != CodeGitHubRefused {
+		t.Fatalf("id mismatch accepted: %v", err)
+	}
+}
+
+func TestGitHubJustCreatedBoundToThisClient(t *testing.T) {
+	ctx := context.Background()
+	f := newFakeGH(t)
+	ts := ghTokens(t)
+	a := ghFor(t, f, ts, nil)
+	r := ghMade(t, a, "demo")
+	puts := func() int {
+		n := 0
+		for _, q := range f.recorded() {
+			if strings.HasPrefix(q, "PUT ") {
+				n++
+			}
+		}
+		return n
+	}
+	// forged variants of a real handle: another id, another path, a hand-built one
+	other := ghFor(t, f, ts, nil) // a second client instance (a different flow)
+	for name, h := range map[string]RepoInfo{
+		"other-id":   {ID: r.ID + 1, Path: r.Path, justCreated: true},
+		"other-path": {ID: r.ID, Path: "alice/other", justCreated: true},
+		"no-flag":    {ID: r.ID, Path: r.Path},
+	} {
+		n := puts()
+		if err := a.CommitFiles(ctx, h, []CommitFile{{"README.md", "x"}}); ErrCode(err) != CodeBadInput && name != "no-flag" && name != "other-id" {
+			t.Errorf("%s: CommitFiles %v", name, err)
+		}
+		if err := a.CommitFiles(ctx, h, []CommitFile{{"README.md", "x"}}); err == nil {
+			t.Errorf("%s: CommitFiles accepted", name)
+		}
+		if err := a.EnsureProtectedMain(ctx, h); err == nil {
+			t.Errorf("%s: protection written", name)
+		}
+		if puts() != n {
+			t.Errorf("%s: a PUT was sent for a forged handle", name)
+		}
+	}
+	// the genuine handle copied to another client instance is refused too
+	n := puts()
+	if err := other.CommitFiles(ctx, r, []CommitFile{{"README.md", "x"}}); ErrCode(err) != CodeBadInput {
+		t.Fatalf("foreign instance: %v", err)
+	}
+	if err := other.EnsureProtectedMain(ctx, r); !errors.Is(err, ErrProtectionWeaker) || puts() != n {
+		t.Fatalf("foreign instance protection: %v", err)
+	}
+	// the genuine one works, and a case variant of the same name is the same repo
+	if err := a.EnsureProtectedMain(ctx, r); err != nil || puts() != n+1 {
+		t.Fatalf("genuine handle: %v", err)
+	}
+}
+
+func TestGitHubProtectionResponseVerified(t *testing.T) {
+	ctx := context.Background()
+	for name, body := range map[string]string{
+		"force":    `{"allow_force_pushes":{"enabled":true},"allow_deletions":{"enabled":false},"enforce_admins":{"enabled":true}}`,
+		"delete":   `{"allow_force_pushes":{"enabled":false},"allow_deletions":{"enabled":true},"enforce_admins":{"enabled":true}}`,
+		"noadmins": `{"allow_force_pushes":{"enabled":false},"enforce_admins":{"enabled":false}}`,
+	} {
+		f := newFakeGH(t)
+		a := ghFor(t, f, ghTokens(t), nil)
+		r := ghMade(t, a, "demo")
+		f.override = func(w http.ResponseWriter, rq *http.Request) bool {
+			if rq.Method == "PUT" {
+				fmt.Fprint(w, body)
+				return true
+			}
+			return false
+		}
+		if err := a.EnsureProtectedMain(ctx, r); !errors.Is(err, ErrProtectionWeaker) {
+			t.Errorf("%s: weak PUT answer accepted: %v", name, err)
+		}
+	}
+	// allow_deletions absent in a strong answer is fine
+	f := newFakeGH(t)
+	a := ghFor(t, f, ghTokens(t), nil)
+	r := ghMade(t, a, "demo")
+	f.override = func(w http.ResponseWriter, rq *http.Request) bool {
+		if rq.Method == "PUT" {
+			fmt.Fprint(w, `{"allow_force_pushes":{"enabled":false},"enforce_admins":{"enabled":true}}`)
+			return true
+		}
+		return false
+	}
+	if err := a.EnsureProtectedMain(ctx, r); err != nil {
+		t.Fatalf("strong answer refused: %v", err)
+	}
+	// an answer without the fields is not proof either
+	f2 := newFakeGH(t)
+	a2 := ghFor(t, f2, ghTokens(t), nil)
+	r2 := ghMade(t, a2, "demo")
+	f2.override = func(w http.ResponseWriter, rq *http.Request) bool {
+		if rq.Method == "PUT" {
+			fmt.Fprint(w, `{}`)
+			return true
+		}
+		return false
+	}
+	if err := a2.EnsureProtectedMain(ctx, r2); !errors.Is(err, ErrProtectionWeaker) {
+		t.Fatalf("empty PUT answer accepted: %v", err)
+	}
+}
+
+func TestGitHubLoginAllowsUnderscore(t *testing.T) {
+	for _, ok := range []string{"octo_acme", "a_b", "Octo-Cat_x1"} {
+		if !validGHLogin(ok) {
+			t.Errorf("%q refused", ok)
+		}
+		if !githubAllowed("GET", "/repos/"+ok+"/demo", nil) {
+			t.Errorf("allowlist refuses owner %q", ok)
+		}
+	}
+	for _, bad := range []string{"_a", "-a", "a.b", "a b", "a/b", "a%5Fb", "ü", ""} {
+		if validGHLogin(bad) {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}
+
+func TestGitHubWriteNotFoundIsRefusalNotAbsence(t *testing.T) {
+	ctx := context.Background()
+	f := newFakeGH(t)
+	a := ghFor(t, f, ghTokens(t), nil)
+	r := ghMade(t, a, "demo")
+	f.fail = map[string]int{"PUT /": 404, "POST /": 404}
+	owners, _, _ := a.ListOwners(ctx)
+	_, e1 := a.CreateRepo(ctx, CreateRepoReq{Owner: owners[0], Name: "x1", Private: true})
+	e2 := a.CommitFiles(ctx, r, []CommitFile{{"README.md", "x"}})
+	e3 := a.AddDeployKey(ctx, r, "t", goodKey, false)
+	f.fail = map[string]int{"PUT /": 404}
+	f.protection = ""
+	e4 := a.EnsureProtectedMain(ctx, r) // GET 404 -> absent -> PUT 404
+	for i, e := range []error{e1, e2, e3, e4} {
+		if ErrCode(e) != CodeGitHubRefused || errors.Is(e, ErrNotFound) || ErrStatus(e) != 404 {
+			t.Errorf("%d: %v", i, e)
+		}
+	}
+	// a read 404 is still "absent"
+	f.fail = map[string]int{}
+	if _, err := a.GetRepo(ctx, "alice/none"); !errors.Is(err, ErrNotFound) {
+		t.Fatal(err)
+	}
+}
+
+func TestProviderSentencesAreNeutral(t *testing.T) {
+	for _, c := range []string{"provider_unreachable", "bad_url", "group_unknown", "project_name_taken", "create_partial", CodeGitHubRefused, CodeProviderRateLimited} {
+		m, ok := fixedMessages[c]
+		if !ok {
+			t.Errorf("%s not registered", c)
+			continue
+		}
+		if strings.Contains(m, "GitLab") && !strings.Contains(m, "GitHub") && c != "gitlab_refused" {
+			t.Errorf("%s names only GitLab: %q", c, m)
+		}
+		if c == CodeGitHubRefused && strings.Contains(m, "GitLab") {
+			t.Errorf("github_refused names GitLab: %q", m)
+		}
+	}
+	if CodeNotFound != "not_found" {
+		t.Errorf("CodeNotFound = %q", CodeNotFound)
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 
 	"aigate/internal/registrymsg"
@@ -61,19 +62,24 @@ const (
 
 // Fixed codes of the GitHub client (registered in fixedMessages).
 const (
-	CodeGitHubRefused       = "github_refused"
-	CodeProviderRateLimited = "provider_rate_limited"
+	CodeGitHubRefused         = "github_refused"
+	CodeProviderRateLimited   = "provider_rate_limited"
+	CodeDefaultBranchMismatch = "default_branch_mismatch"
 )
 
 var (
 	ErrGitHubRefused       = &CodeError{Code: CodeGitHubRefused}
 	ErrProviderRateLimited = &CodeError{Code: CodeProviderRateLimited}
+	// ErrDefaultBranchMismatch: after the first file the repository's default
+	// branch is not main. Internal code (the call site maps it to create_partial
+	// step default_branch); the repository exists and holds the first file.
+	ErrDefaultBranchMismatch = &CodeError{Code: CodeDefaultBranchMismatch}
 )
 
 // ---------- allowlist ----------
 
 const (
-	ghOwner = `[A-Za-z0-9][A-Za-z0-9-]{0,38}`
+	ghOwner = `[A-Za-z0-9][A-Za-z0-9_-]{0,38}` // '_' for Enterprise Managed Users logins
 	ghRepo  = `[A-Za-z0-9._-]{1,100}`
 	ghFile  = reFSeg + `(?:/` + reFSeg + `){0,3}`
 )
@@ -141,6 +147,13 @@ type GitHubAPI struct {
 	policy   ipPolicy
 	lookup   func(context.Context, string) ([]netip.Addr, error)
 	hc       *http.Client
+
+	// created: the lower-cased full_name -> repository id of every repository
+	// THIS client instance created. justCreated is honoured only for a handle
+	// that matches an entry (a copied, edited or foreign handle is not).
+	// One flow = one client instance (see Server.RepoProviderFor).
+	mu      sync.Mutex
+	created map[string]int64
 }
 
 // githubAPIPrefix is the kind-aware part of the API address: github.com serves
@@ -153,6 +166,22 @@ func githubAPIPrefix(base string) string {
 	return "/api/v3"
 }
 
+// validateGitHubBase is the provider URL rule for kind github: the generic
+// rules (https, http only for private/tailnet literals, address policy) plus:
+// the web hosts github.com and www.github.com are not API hosts (the API of
+// github.com is api.github.com), so they are refused as bad_url. api.github.com
+// and any other host (GitHub Enterprise Server, served under /api/v3) pass.
+func validateGitHubBase(base string, allow ipPolicy, strict bool) error {
+	if err := validateProviderURL(base, allow, strict); err != nil {
+		return err
+	}
+	_, rest, _ := strings.Cut(base, "://")
+	if h := authorityHost(rest); h == "github.com" || h == "www.github.com" {
+		return ErrBadURL
+	}
+	return nil
+}
+
 // NewGitHubAPI builds the client of provider p. The base URL must pass the
 // provider URL rules (https; http only for private/tailnet literals).
 func NewGitHubAPI(p Provider, tokens *TokenStore) (*GitHubAPI, error) {
@@ -160,7 +189,7 @@ func NewGitHubAPI(p Provider, tokens *TokenStore) (*GitHubAPI, error) {
 }
 
 func newGitHubAPI(p Provider, tokens *TokenStore, sm *apiSeams) (*GitHubAPI, error) {
-	a := &GitHubAPI{tokenRef: p.TokenRef, tokens: tokens, policy: defaultIPPolicy, lookup: defaultLookup}
+	a := &GitHubAPI{tokenRef: p.TokenRef, tokens: tokens, policy: defaultIPPolicy, lookup: defaultLookup, created: map[string]int64{}}
 	conn, total := apiConnTimeout, apiTotalTime
 	if sm != nil {
 		if sm.policy != nil {
@@ -179,7 +208,7 @@ func newGitHubAPI(p Provider, tokens *TokenStore, sm *apiSeams) (*GitHubAPI, err
 	if p.Kind != "github" || !registrymsg.ValidTokenRef(p.TokenRef) {
 		return nil, ErrBadInput
 	}
-	if err := validateProviderURL(p.BaseURL, a.policy, sm.strictHTTP()); err != nil {
+	if err := validateGitHubBase(p.BaseURL, a.policy, sm.strictHTTP()); err != nil {
 		return nil, err
 	}
 	a.base = p.BaseURL
@@ -279,7 +308,7 @@ func (a *GitHubAPI) do(ctx context.Context, method, path string, q url.Values, b
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != wantStatus {
-		return nil, githubStatusError(resp)
+		return nil, githubStatusError(resp, method)
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, apiMaxBody+1))
 	if err != nil || len(raw) > apiMaxBody {
@@ -290,10 +319,12 @@ func (a *GitHubAPI) do(ctx context.Context, method, path string, q url.Values, b
 
 // githubStatusError maps an unwanted answer to a fixed code from the status
 // class (and, for 403, the rate-limit headers; never the body).
-func githubStatusError(resp *http.Response) error {
+func githubStatusError(resp *http.Response, method string) error {
 	st := resp.StatusCode
 	switch {
-	case st == http.StatusNotFound:
+	case st == http.StatusNotFound && method == http.MethodGet:
+		// "absent" for a read; a 404 on a write (create, contents, protection,
+		// keys) is a refusal (no such owner/repo for this token), never "not found"
 		return &CodeError{Code: CodeNotFound, Status: st}
 	case st == http.StatusTooManyRequests:
 		return &CodeError{Code: CodeProviderRateLimited, Status: st}
@@ -470,13 +501,19 @@ func (a *GitHubAPI) DefaultBranch(ctx context.Context, repo RepoInfo) (string, e
 	if err != nil {
 		return "", err
 	}
+	if info.ID != repo.ID {
+		return "", ghBadResponse() // the name now belongs to another repository
+	}
 	return info.DefaultBranch, nil
 }
 
 // CreateRepo creates an empty repository (auto_init false) under an owner that
 // came from ListOwners/GetOwner. private is the signed visibility; the answer
-// must confirm owner/name AND that visibility, or the call is an error (the
-// repository then exists: the caller records it as an orphan).
+// must confirm owner/name AND that visibility, or the call is an error.
+//
+// Orphans: a 4xx answer (400/403/404/422) from the POST means GitHub created
+// nothing, so a caller must NOT record an orphan for it. Only a 2xx answer that
+// fails the checks, a 5xx, a 3xx or a transport error leaves the outcome unknown.
 func (a *GitHubAPI) CreateRepo(ctx context.Context, req CreateRepoReq) (RepoInfo, error) {
 	o := req.Owner
 	if !o.fromProvider || (o.Kind != "user" && o.Kind != "org") || !validGHLogin(o.Path) ||
@@ -504,21 +541,44 @@ func (a *GitHubAPI) CreateRepo(ctx context.Context, req CreateRepoReq) (RepoInfo
 		return RepoInfo{}, ghBadResponse()
 	}
 	info.justCreated = true
+	a.mu.Lock()
+	a.created[strings.ToLower(info.Path)] = info.ID
+	a.mu.Unlock()
 	return info, nil
 }
 
-// CommitFiles writes the files to branch main of a repository created in this
-// flow, one contents-API request per file in the given order (the first creates
-// the branch on an empty repository: UNVERIFIED against the docs, see the E2
-// report). No `sha` is ever sent, so an existing file can never be replaced.
-// Not atomic: an error means some files may already be committed.
+// madeHere reports whether repo is a repository THIS client instance created:
+// justCreated alone is not enough, the lower-cased path and the id must match
+// what CreateRepo recorded (a copied, edited or foreign handle fails).
+func (a *GitHubAPI) madeHere(repo RepoInfo) bool {
+	if !repo.justCreated {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	id, ok := a.created[strings.ToLower(repo.Path)]
+	return ok && id == repo.ID
+}
+
+// CommitFiles writes the files to a repository created by this client
+// instance, one contents-API request per file in the given order. The FIRST file
+// is sent WITHOUT `branch`, so GitHub initializes the empty repository on its own
+// default branch; the default branch is then read (GET repo, id must match) and
+// must be main, else ErrDefaultBranchMismatch (nothing more is written). The
+// remaining files go to branch main. No `sha` is ever sent, so an existing file
+// can never be replaced. Not atomic: an error means some files may already be
+// committed. Whether the contents API initializes an empty repository is
+// UNVERIFIED against the docs (see the E2 report).
 func (a *GitHubAPI) CommitFiles(ctx context.Context, repo RepoInfo, files []CommitFile) error {
 	owner, name, ok := validGHRepoInfo(repo)
-	if !ok || !repo.justCreated || !validCommitFiles(files) {
+	if !ok || !a.madeHere(repo) || !validCommitFiles(files) {
 		return ErrBadInput
 	}
-	for _, f := range files {
-		body := map[string]any{"message": "Add " + f.Path, "content": base64.StdEncoding.EncodeToString([]byte(f.Content)), "branch": apiBranch}
+	for i, f := range files {
+		body := map[string]any{"message": "Add " + f.Path, "content": base64.StdEncoding.EncodeToString([]byte(f.Content))}
+		if i > 0 {
+			body["branch"] = apiBranch
+		}
 		raw, err := a.do(ctx, http.MethodPut, "/repos/"+owner+"/"+name+"/contents/"+f.Path, nil, postJSON(body), http.StatusCreated)
 		if err != nil {
 			return err
@@ -533,6 +593,15 @@ func (a *GitHubAPI) CommitFiles(ctx context.Context, repo RepoInfo, files []Comm
 		}
 		if !decodeFields(raw, &r) || r.Content == nil || r.Content.Path == nil || *r.Content.Path != f.Path || r.Commit == nil || r.Commit.SHA == nil {
 			return ghBadResponse()
+		}
+		if i == 0 {
+			br, err := a.DefaultBranch(ctx, repo)
+			if err != nil {
+				return err
+			}
+			if br != apiBranch {
+				return ErrDefaultBranchMismatch
+			}
 		}
 	}
 	return nil
@@ -565,7 +634,7 @@ func (p ghProtectionJSON) strong() (strong, ok bool) {
 // EnsureProtectedMain reads the protection of main. A strong rule is fine; a
 // weaker rule is ErrProtectionWeaker and is never edited. When there is no rule
 // (404) the rule is written ONLY for a repository created in this flow
-// (repo.justCreated, set by CreateRepo and nowhere else): no required checks,
+// (repo.justCreated set by CreateRepo and remembered by this client instance): no required checks,
 // no required reviews, no restrictions, admins included, force pushes and
 // deletion off. For any other repository "no rule" is ErrProtectionWeaker and
 // nothing is written.
@@ -593,7 +662,7 @@ func (a *GitHubAPI) EnsureProtectedMain(ctx context.Context, repo RepoInfo) erro
 	if !errors.Is(err, ErrNotFound) {
 		return err
 	}
-	if !repo.justCreated {
+	if !a.madeHere(repo) {
 		return ErrProtectionWeaker
 	}
 	body := map[string]any{
@@ -608,9 +677,13 @@ func (a *GitHubAPI) EnsureProtectedMain(ctx context.Context, repo RepoInfo) erro
 	if err != nil {
 		return err
 	}
-	var j map[string]any
-	if !decodeFields(raw, &j) {
+	// the answer must show the rule we asked for (same check as for a rule we read)
+	var pj ghProtectionJSON
+	if !decodeFields(raw, &pj) {
 		return ghBadResponse()
+	}
+	if strong, ok := pj.strong(); !ok || !strong {
+		return ErrProtectionWeaker
 	}
 	return nil
 }
@@ -631,7 +704,7 @@ func (a *GitHubAPI) AddDeployKey(ctx context.Context, repo RepoInfo, title, key 
 		ID       *int64 `json:"id"`
 		ReadOnly *bool  `json:"read_only"`
 	}
-	if !decodeFields(raw, &r) || r.ID == nil || *r.ID <= 0 || (r.ReadOnly != nil && *r.ReadOnly == canPush) {
+	if !decodeFields(raw, &r) || r.ID == nil || *r.ID <= 0 || r.ReadOnly == nil || *r.ReadOnly == canPush {
 		return ghBadResponse()
 	}
 	return nil

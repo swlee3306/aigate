@@ -17,7 +17,11 @@ func providerShape(p Provider, allow ipPolicy, strictHTTP bool) error {
 	if !registrymsg.ValidProviderID(p.ID) || !registrymsg.ValidProviderKind(p.Kind) || !registrymsg.ValidTokenRef(p.TokenRef) {
 		return ErrBadInput
 	}
-	if err := validateProviderURL(p.BaseURL, allow, strictHTTP); err != nil {
+	base := validateProviderURL
+	if p.Kind == "github" {
+		base = validateGitHubBase // kind-aware: the web host github.com is not an API host
+	}
+	if err := base(p.BaseURL, allow, strictHTTP); err != nil {
 		return err
 	}
 	return validateSSHURL(p.SSHURL, allow)

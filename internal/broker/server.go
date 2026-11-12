@@ -65,7 +65,7 @@ var fixedMessages = map[string]string{
 
 	"repo_not_mapped": "이 저장소는 GitLab 프로젝트에 연결되어 있지 않습니다.",
 	"bad_branch":      "브랜치 이름이 올바르지 않습니다.",
-	"bad_url":         "GitLab 주소가 허용되지 않습니다. 설정한 제공자 주소나 GitLab이 돌려준 주소가 허용 범위 밖입니다.",
+	"bad_url":         "제공자 주소가 허용되지 않습니다. 설정한 제공자 주소나 제공자가 돌려준 주소가 허용 범위 밖입니다.",
 
 	"registry_unavailable": "프로젝트 등록부를 사용할 수 없습니다. 관리자가 확인해야 합니다.",
 
@@ -98,12 +98,12 @@ var fixedMessages = map[string]string{
 	"provider_exists":      "같은 id의 제공자가 이미 있습니다.",
 	"provider_in_use":      "이 제공자를 쓰는 프로젝트가 있어 삭제하거나 주소를 바꿀 수 없습니다.",
 	"token_ref_unknown":    "제공자가 쓸 토큰이 저장소에 없거나, 제공자와 종류가 맞지 않거나, 쓸 수 없습니다. 토큰 화면에서 확인하세요.",
-	"provider_unreachable": "GitLab에 연결하지 못했거나 응답이 없었습니다. 잠시 후 다시 시도하세요.",
+	"provider_unreachable": "제공자(GitLab 또는 GitHub)에 연결하지 못했거나 응답이 없었습니다. 잠시 후 다시 시도하세요.",
 	"gitlab_refused":       "GitLab이 요청을 받아들이지 않았습니다. 토큰 권한과 GitLab 설정을 확인하세요.",
-	"group_unknown":        "GitLab에 그런 그룹이 없습니다.",
+	"group_unknown":        "제공자에 그런 그룹(소유자)이 없습니다.",
 	"group_exists":         "같은 경로의 그룹이 이미 있습니다.",
-	"project_name_taken":   "같은 이름의 프로젝트가 이미 등록되어 있거나 GitLab에 있습니다. 기존 프로젝트는 가져오지 않습니다.",
-	"create_partial":       "GitLab에 일부만 만들어졌습니다. 이 도구는 삭제하지 않으니 GitLab에서 직접 정리한 뒤 다시 만드세요.",
+	"project_name_taken":   "같은 이름의 프로젝트가 이미 등록되어 있거나 제공자에 있습니다. 기존 프로젝트는 가져오지 않습니다.",
+	"create_partial":       "제공자에 일부만 만들어졌습니다. 이 도구는 삭제하지 않으니 제공자(GitLab 또는 GitHub)에서 직접 정리한 뒤 다시 만드세요.",
 	"deploy_key_mismatch":  "서명한 배포 키와 보낸 배포 키가 다릅니다.",
 	"template_unknown":     "알 수 없는 템플릿입니다.",
 
