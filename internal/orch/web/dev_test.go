@@ -326,6 +326,7 @@ func TestDevServer(t *testing.T) {
 		{Ref: "github-old", Kind: "github", Last4: "x9Y8", Expires: "2026-11-08", SetAt: "2026-05-01T09:00:00Z", Source: "store", DaysLeft: dd(-2), Usable: true},
 		{Ref: "gitlab-docs", Kind: "gitlab", Last4: "q7w6", Source: "store", Usable: true},
 		{Ref: "github-lost", Kind: "github", Last4: "m5n4", Expires: "2027-01-31", SetAt: "2026-08-01T09:00:00Z", Source: "store", DaysLeft: dd(82), Usable: false},
+		{Ref: "github-main", Kind: "github", Last4: "Gh77", Expires: "2027-02-01", SetAt: "2026-10-01T09:00:00Z", Source: "store", DaysLeft: dd(80), Usable: true},
 	}
 	if os.Getenv("ORCH_WEB_LONGTOKEN") != "" { // long names and path-like strings, for the 390px check
 		tokRows = append(tokRows,
@@ -478,24 +479,31 @@ func TestDevServer(t *testing.T) {
 	// line hash are the ones the browser recomputes. Select what the next call
 	// does with /dev-set-w3c?create=ok|partial|clone_failed|unknown|taken&clone=ok|fail|unknown.
 	var w3cMu sync.Mutex
-	type devProvider struct{ ID, BaseURL, SSHURL, TokenRef string }
+	type devProvider struct{ ID, Kind, BaseURL, SSHURL, TokenRef string }
 	devProviders := []devProvider{
-		{"gl", "http://100.64.0.10:18082", "ssh://git@100.64.0.10", "gitlab-main"},
-		{"gl-spare", "https://git.example.com", "ssh://git@git.example.com:2222", "gitlab-docs"},
+		{"gl", "gitlab", "http://100.64.0.10:18082", "ssh://git@100.64.0.10", "gitlab-main"},
+		{"gl-spare", "gitlab", "https://git.example.com", "ssh://git@git.example.com:2222", "gitlab-docs"},
+		{"gh", "github", "https://api.github.com", "ssh://git@github.com", "github-main"},
 	}
 	devGroups := []map[string]string{{"path": "team", "name": "team"}, {"path": "team/sub", "name": "sub"}, {"path": "docs-group", "name": "docs-group"}}
+	// GitHub owners: the account (capitals, as a real login has them) and an organisation
+	devOwners := []map[string]string{{"path": "SampleUser", "name": "SampleUser", "kind": "user"}, {"path": "acme-org", "name": "acme-org", "kind": "org"}}
 	devOrphans := []map[string]any{}
 	createMode, cloneMode := "ok", "ok"
-	devPub, devFP, devKeyHash := func() (string, string, string) {
-		priv := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, 32))
+	mkDevKey := func(seed byte, comment string) (string, string, string) {
+		priv := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{seed}, 32))
 		pk, err := ssh.NewPublicKey(priv.Public())
 		if err != nil {
 			t.Fatal(err)
 		}
-		line := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pk))) + " orchd@deploy"
+		line := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pk))) + " " + comment
 		sum := sha256.Sum256([]byte(line))
 		return line, ssh.FingerprintSHA256(pk), hex.EncodeToString(sum[:])
-	}()
+	}
+	devPub, devFP, devKeyHash := mkDevKey(7, "orchd@deploy")
+	// GitHub / link / attach proposals carry a per-repository key (a different one each time in the real server)
+	repoPub, repoFP, repoKeyHash := mkDevKey(11, "orchd-deploy")
+	linkMode, attachMode := "ok", "ok"
 	provUsed := func(id string) bool {
 		for _, p := range projects {
 			if p["provider"] == id {
@@ -507,7 +515,7 @@ func TestDevServer(t *testing.T) {
 	provViews := func(withUse bool) []map[string]any {
 		out := []map[string]any{}
 		for _, p := range devProviders {
-			m := map[string]any{"id": p.ID, "kind": "gitlab", "base_url": p.BaseURL, "ssh_url": p.SSHURL, "token_ref": p.TokenRef}
+			m := map[string]any{"id": p.ID, "kind": p.Kind, "base_url": p.BaseURL, "ssh_url": p.SSHURL, "token_ref": p.TokenRef}
 			if withUse {
 				m["in_use"] = provUsed(p.ID)
 			}
@@ -535,6 +543,11 @@ func TestDevServer(t *testing.T) {
 	mux.HandleFunc("GET /api/v1/providers/{id}/groups", func(w http.ResponseWriter, r *http.Request) {
 		w3cMu.Lock()
 		defer w3cMu.Unlock()
+		if r.PathValue("id") == "gh" {
+			b, _ := stdjson.Marshal(map[string]any{"groups": devOwners, "truncated": false})
+			serve(w, b)
+			return
+		}
 		b, _ := stdjson.Marshal(map[string]any{"groups": devGroups, "truncated": false})
 		serve(w, b)
 	})
@@ -553,13 +566,19 @@ func TestDevServer(t *testing.T) {
 		_ = stdjson.NewDecoder(r.Body).Decode(&in)
 		fields := in.Fields
 		var extra map[string]any
-		if in.Action == "create_project" {
+		_, ghCreate := in.Fields["visibility"]
+		perRepo := ghCreate || in.Action == "link_project" || in.Action == "attach_remote"
+		if in.Action == "create_project" || perRepo {
 			fields = map[string]any{}
 			for k, v := range in.Fields {
 				fields[k] = v
 			}
 			fields["deploy_key_sha256"] = devKeyHash
 			extra = map[string]any{"deploy_key": map[string]string{"public_key": devPub, "fingerprint": devFP}}
+			if perRepo {
+				fields["deploy_key_sha256"] = repoKeyHash
+				extra = map[string]any{"deploy_key": map[string]string{"public_key": repoPub, "fingerprint": repoFP}}
+			}
 		}
 		change, err := registrymsg.ChangeHash(in.Action, in.Subject, fields)
 		if err != nil {
@@ -570,14 +589,50 @@ func TestDevServer(t *testing.T) {
 		msg := signing.RegistryMessage{Action: in.Action, Subject: in.Subject, Change: change, Request: registrymsg.NewRequestID(), Issued: issued}
 		stamp := "서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다"
 		var pv []string
-		switch in.Action {
-		case "set_provider":
+		pubLine := "쓰기: 이 서버가 브랜치를 올릴 수 있는 배포 키로 등록합니다"
+		if str(fields, "publish") == "read" {
+			pubLine = "읽기: 배포 키는 읽기 전용으로 등록합니다(이 서버는 브랜치를 올리지 못합니다)"
+		}
+		aiLine := "이 프로젝트의 파일 내용은 AI 서비스로 전송되지 않습니다(전송 허용 꺼짐)"
+		if v, _ := fields["ai_context"].(bool); v {
+			aiLine = "[중요] 이 프로젝트의 파일 내용이 외부 AI 서비스(OpenAI)로 전송될 수 있게 허용합니다. AI 계획 기능을 쓰면 요구사항과 저장소의 일부 파일 내용이 서비스 밖으로 나갑니다"
+		}
+		keyWarn := "[중요] 이미 있는 저장소의 설정에 이 서버의 배포 키가 등록됩니다. 이 도구는 저장소를 만들거나 지우거나 다른 설정을 바꾸지 않으며, 등록한 키도 지우지 않습니다"
+		keyLine := "저장소 전용 배포 키 지문(SHA-256): " + repoFP + " (이 저장소 하나를 위해 지금 새로 만든 키입니다)"
+		switch {
+		case in.Action == "set_provider" && str(fields, "kind") == "github":
+			pv = []string{"제공자 '" + in.Subject + "'를 저장합니다(종류: github). 같은 id가 있으면 이 값으로 바뀝니다", "GitHub API 주소: " + str(fields, "base_url"), "ssh 주소: " + str(fields, "ssh_url"),
+				"사용할 토큰 이름: " + str(fields, "token_ref") + " (토큰 값은 이 화면에 나오지 않습니다)", "[중요] 이 토큰의 권한으로 위 주소의 GitHub에 저장소를 만들고 저장소별 배포 키를 등록합니다",
+				"이 제공자를 쓰는 프로젝트가 있으면 주소는 바꿀 수 없습니다", stamp}
+		case in.Action == "link_project":
+			pv = []string{"제공자 '" + str(fields, "provider") + "'에 이미 있는 저장소 '" + str(fields, "remote_path") + "'를 새 프로젝트 '" + in.Subject + "'로 가져옵니다", aiLine, "게시 권한 — " + pubLine,
+				"배포 키 지문(SHA-256): " + devFP + " (이 서버의 공용 배포 키 공개 키 파일 기준)", keyWarn, "등록 후 정책 종류(kind)는 registered 입니다", "가져온 뒤 이 서버에 자동으로 한 번 복제합니다", stamp}
+			if str(fields, "provider") == "gh" {
+				pv[3] = keyLine
+			}
+		case in.Action == "attach_remote":
+			pv = []string{"등록된 프로젝트 '" + in.Subject + "'에 제공자 '" + str(fields, "provider") + "'의 저장소 '" + str(fields, "remote_path") + "'를 연결합니다",
+				"연결한 뒤 이 프로젝트의 게시(push)와 복제는 이 원격을 씁니다. 프로젝트의 파일과 AI 전송 설정은 바뀌지 않습니다", "게시 권한 — " + pubLine, keyLine, keyWarn, stamp}
+		case in.Action == "create_project" && ghCreate:
+			visLine := "비공개 저장소로 만듭니다: 초대받은 사람만 볼 수 있습니다"
+			if str(fields, "visibility") == "public" {
+				visLine = "[중요] 공개 저장소로 만듭니다: 인터넷의 누구나 이 저장소의 코드를 읽을 수 있습니다"
+			}
+			desc := str(fields, "description")
+			if desc == "" {
+				desc = "(없음)"
+			}
+			pv = []string{"GitHub 제공자 '" + str(fields, "provider") + "'의 소유자 '" + str(fields, "group_path") + "'에 새 저장소 '" + in.Subject + "'를 만듭니다", visLine,
+				"템플릿: " + str(fields, "template") + " (코드에 고정된 파일들이 첫 커밋으로 들어갑니다)", "설명: " + desc, aiLine, "게시 권한 — " + pubLine, keyLine, "등록 후 정책 종류(kind)는 registered 입니다",
+				"브랜치 보호는 공개 저장소이거나 유료 요금제일 때만 켜집니다(안 되면 일부만 만들어진 것으로 알려 줍니다). 만든 뒤 이 도구는 저장소를 삭제하지 않습니다",
+				"만든 뒤 이 서버에 자동으로 한 번 복제합니다", stamp}
+		case in.Action == "set_provider":
 			pv = []string{"제공자 '" + in.Subject + "'를 저장합니다(종류: gitlab). 같은 id가 있으면 이 값으로 바뀝니다", "GitLab 주소: " + str(fields, "base_url"), "ssh 주소: " + str(fields, "ssh_url"),
 				"사용할 토큰 이름: " + str(fields, "token_ref") + " (토큰 값은 이 화면에 나오지 않습니다)", "[중요] 이 토큰의 권한으로 위 주소의 GitLab에 그룹과 프로젝트를 만듭니다",
 				"이 제공자를 쓰는 프로젝트가 있으면 주소는 바꿀 수 없습니다", stamp}
-		case "delete_provider":
+		case in.Action == "delete_provider":
 			pv = []string{"제공자 '" + in.Subject + "'를 삭제합니다", "이 제공자를 쓰는 프로젝트가 있으면 삭제되지 않습니다", "GitLab의 그룹과 프로젝트는 지워지지 않습니다", stamp}
-		case "create_group":
+		case in.Action == "create_group":
 			parent := str(fields, "parent_path")
 			if parent == "" {
 				parent = "(최상위)"
@@ -612,6 +667,21 @@ func TestDevServer(t *testing.T) {
 	}
 	mux.HandleFunc("POST /api/v1/providers/propose", devPropose)
 	mux.HandleFunc("POST /api/v1/projects/create/propose", devPropose)
+	mux.HandleFunc("POST /api/v1/projects/link/propose", devPropose)
+	mux.HandleFunc("POST /api/v1/projects/attach/propose", func(w http.ResponseWriter, r *http.Request) {
+		w3cMu.Lock()
+		mode := attachMode
+		w3cMu.Unlock()
+		// the real propose refuses these before anything is signed (attach=static: a --git-remote-for project)
+		switch mode {
+		case "propose-static":
+			devErr(w, 409, "static_remote_wins")
+		case "propose-already":
+			devErr(w, 409, "already_linked")
+		default:
+			devPropose(w, r)
+		}
+	})
 	mux.HandleFunc("POST /api/v1/providers/apply", func(w http.ResponseWriter, r *http.Request) {
 		var in w3cBody
 		_ = stdjson.NewDecoder(r.Body).Decode(&in)
@@ -621,17 +691,17 @@ func TestDevServer(t *testing.T) {
 		defer w3cMu.Unlock()
 		switch in.Action {
 		case "set_provider":
-			p := devProvider{in.Subject, str(in.Fields, "base_url"), str(in.Fields, "ssh_url"), str(in.Fields, "token_ref")}
+			p := devProvider{in.Subject, str(in.Fields, "kind"), str(in.Fields, "base_url"), str(in.Fields, "ssh_url"), str(in.Fields, "token_ref")}
 			for i := range devProviders {
 				if devProviders[i].ID == p.ID {
 					devProviders[i] = p
-					b, _ := stdjson.Marshal(map[string]any{"provider": map[string]any{"id": p.ID, "kind": "gitlab", "base_url": p.BaseURL, "ssh_url": p.SSHURL, "token_ref": p.TokenRef}})
+					b, _ := stdjson.Marshal(map[string]any{"provider": map[string]any{"id": p.ID, "kind": p.Kind, "base_url": p.BaseURL, "ssh_url": p.SSHURL, "token_ref": p.TokenRef}})
 					serve(w, b)
 					return
 				}
 			}
 			devProviders = append(devProviders, p)
-			b, _ := stdjson.Marshal(map[string]any{"provider": map[string]any{"id": p.ID, "kind": "gitlab", "base_url": p.BaseURL, "ssh_url": p.SSHURL, "token_ref": p.TokenRef}})
+			b, _ := stdjson.Marshal(map[string]any{"provider": map[string]any{"id": p.ID, "kind": p.Kind, "base_url": p.BaseURL, "ssh_url": p.SSHURL, "token_ref": p.TokenRef}})
 			serve(w, b)
 		case "delete_provider":
 			if provUsed(in.Subject) {
@@ -672,16 +742,26 @@ func TestDevServer(t *testing.T) {
 			devErr(w, 504, "outcome_unknown")
 			return
 		case "partial":
-			devOrphans = append(devOrphans, map[string]any{"provider": str(in.Fields, "provider"), "project": group + "/" + in.Subject, "project_id": 4242, "step": "deploy_key", "at": time.Now().UTC().Format("2006-01-02T15:04:05Z")})
+			_, gh := in.Fields["visibility"]
+			var pid any = 4242
+			step := "deploy_key"
+			if gh {
+				pid, step = nil, "protect"
+			}
+			devOrphans = append(devOrphans, map[string]any{"provider": str(in.Fields, "provider"), "project": group + "/" + in.Subject, "project_id": pid, "step": step, "origin": "created", "at": time.Now().UTC().Format("2006-01-02T15:04:05Z")})
 			w.WriteHeader(502)
 			b, _ := stdjson.Marshal(map[string]any{"error": map[string]any{"code": "create_partial", "message": "dev <img src=x onerror=alert(1)> SERVER-WORDS", "detail": map[string]any{
-				"provider": str(in.Fields, "provider"), "project": group + "/" + in.Subject, "project_id": 4242, "step": "deploy_key", "orphan_recorded": true, "orphan_dropped": false}}})
+				"provider": str(in.Fields, "provider"), "project": group + "/" + in.Subject, "project_id": pid, "step": step, "orphan_recorded": true, "orphan_dropped": false, "origin": "created"}}})
 			serve(w, b)
 			return
 		}
 		cloned := createMode != "clone_failed"
+		var remoteID any = 100 + len(projects)
+		if _, gh := in.Fields["visibility"]; gh {
+			remoteID = nil
+		}
 		p := map[string]any{"id": in.Subject, "path": "/home/orch/repos/" + in.Subject, "kind": "registered", "ai_context": in.Fields["ai_context"], "provider": in.Fields["provider"],
-			"gitlab": map[string]any{"project": group + "/" + in.Subject, "project_id": 100 + len(projects)}, "auto_merge": map[string]any{"enabled": false}, "cloned": cloned}
+			"gitlab": map[string]any{"project": group + "/" + in.Subject, "project_id": remoteID}, "auto_merge": map[string]any{"enabled": false}, "cloned": cloned}
 		projects = append(projects, p)
 		clone := map[string]any{"status": "cloned", "code": "ok"}
 		if !cloned {
@@ -689,6 +769,78 @@ func TestDevServer(t *testing.T) {
 		}
 		b, _ := stdjson.Marshal(map[string]any{"project": p, "clone": clone})
 		serve(w, b)
+	})
+	// W3e: link ("기존 저장소 연결") and attach ("원격 연결"). link=ok|clone_failed|partial|unknown|taken,
+	// attach=ok|keyfail|static|already|unknown select what the next apply answers; attach=propose-static and
+	// propose-already make the propose itself refuse (the real one does, before anything is signed).
+	mux.HandleFunc("POST /api/v1/projects/link/apply", func(w http.ResponseWriter, r *http.Request) {
+		var in w3cBody
+		_ = stdjson.NewDecoder(r.Body).Decode(&in)
+		time.Sleep(700 * time.Millisecond)
+		projMu.Lock()
+		w3cMu.Lock()
+		defer projMu.Unlock()
+		defer w3cMu.Unlock()
+		remote := str(in.Fields, "remote_path")
+		switch linkMode {
+		case "taken":
+			devErr(w, 409, "already_linked")
+			return
+		case "unknown":
+			devErr(w, 504, "outcome_unknown")
+			return
+		case "partial":
+			devOrphans = append(devOrphans, map[string]any{"provider": str(in.Fields, "provider"), "project": remote, "project_id": nil, "step": "deploy_key", "origin": "linked", "at": time.Now().UTC().Format("2006-01-02T15:04:05Z")})
+			w.WriteHeader(502)
+			b, _ := stdjson.Marshal(map[string]any{"error": map[string]any{"code": "link_partial", "message": "dev <img src=x onerror=alert(1)> SERVER-WORDS", "detail": map[string]any{
+				"provider": str(in.Fields, "provider"), "project": remote, "project_id": nil, "step": "deploy_key", "orphan_recorded": true, "orphan_dropped": false, "origin": "linked"}}})
+			serve(w, b)
+			return
+		}
+		cloned := linkMode != "clone_failed"
+		p := map[string]any{"id": in.Subject, "path": "/home/orch/repos/" + in.Subject, "kind": "registered", "ai_context": in.Fields["ai_context"], "provider": in.Fields["provider"],
+			"gitlab": map[string]any{"project": remote, "project_id": nil}, "auto_merge": map[string]any{"enabled": false}, "cloned": cloned}
+		projects = append(projects, p)
+		clone := map[string]any{"status": "cloned", "code": "ok"}
+		if !cloned {
+			clone = map[string]any{"status": "failed", "code": "host_not_pinned"}
+		}
+		b, _ := stdjson.Marshal(map[string]any{"project": p, "clone": clone})
+		serve(w, b)
+	})
+	mux.HandleFunc("POST /api/v1/projects/attach/apply", func(w http.ResponseWriter, r *http.Request) {
+		var in w3cBody
+		_ = stdjson.NewDecoder(r.Body).Decode(&in)
+		time.Sleep(700 * time.Millisecond)
+		projMu.Lock()
+		w3cMu.Lock()
+		defer projMu.Unlock()
+		defer w3cMu.Unlock()
+		switch attachMode {
+		case "static":
+			devErr(w, 409, "static_remote_wins")
+			return
+		case "already":
+			devErr(w, 409, "already_linked")
+			return
+		case "unknown":
+			devErr(w, 504, "outcome_unknown")
+			return
+		}
+		for _, p := range projects {
+			if p["id"] == in.Subject {
+				p["provider"] = in.Fields["provider"]
+				p["gitlab"] = map[string]any{"project": str(in.Fields, "remote_path"), "project_id": nil}
+				body := map[string]any{"project": p}
+				if attachMode == "keyfail" {
+					body["key"] = map[string]string{"status": "failed", "code": "key_unavailable"}
+				}
+				b, _ := stdjson.Marshal(body)
+				serve(w, b)
+				return
+			}
+		}
+		devErr(w, 404, "project_unknown")
 	})
 	mux.HandleFunc("POST /api/v1/projects/{id}/clone", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
@@ -751,6 +903,12 @@ func TestDevServer(t *testing.T) {
 				}
 				if v := r.URL.Query().Get("clone"); v != "" {
 					cloneMode = v
+				}
+				if v := r.URL.Query().Get("link"); v != "" {
+					linkMode = v
+				}
+				if v := r.URL.Query().Get("attach"); v != "" {
+					attachMode = v
 				}
 				w3cMu.Unlock()
 				_, _ = w.Write([]byte("ok"))

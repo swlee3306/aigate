@@ -1,0 +1,86 @@
+{
+  "auto_merge_global": {
+    "enabled": false,
+    "max_per_day": 5
+  },
+  "orphans": [
+    {
+      "provider": "gh",
+      "project": "SampleUser/half-made",
+      "project_id": null,
+      "step": "protect",
+      "at": "2026-11-12T12:00:00Z",
+      "origin": "created"
+    },
+    {
+      "provider": "gh",
+      "project": "octo/Existing-Repo",
+      "project_id": null,
+      "step": "deploy_key",
+      "at": "2026-11-12T13:00:00Z",
+      "origin": "linked"
+    }
+  ],
+  "projects": [
+    {
+      "id": "hello-world",
+      "path": "/home/orch/repos/hello-world",
+      "kind": "registered",
+      "ai_context": false,
+      "provider": "gh",
+      "gitlab": {
+        "project": "octo/Hello-World",
+        "project_id": null
+      },
+      "auto_merge": {
+        "enabled": false
+      },
+      "cloned": true
+    },
+    {
+      "id": "plain-app",
+      "path": "/home/orch/repos/plain-app",
+      "kind": "registered",
+      "ai_context": false,
+      "provider": null,
+      "gitlab": null,
+      "auto_merge": {
+        "enabled": false
+      },
+      "cloned": true
+    },
+    {
+      "id": "app-one",
+      "path": "/home/orch/repos/app-one",
+      "kind": "registered",
+      "ai_context": false,
+      "provider": "gl",
+      "gitlab": {
+        "project": "team/app-one",
+        "project_id": 7
+      },
+      "auto_merge": {
+        "enabled": false
+      },
+      "cloned": true
+    }
+  ],
+  "providers": [
+    {
+      "id": "gl",
+      "kind": "gitlab",
+      "base_url": "http://gitlab.example:18082",
+      "ssh_url": "ssh://git@gitlab.example",
+      "token_ref": "gl-admin",
+      "in_use": true
+    },
+    {
+      "id": "gh",
+      "kind": "github",
+      "base_url": "https://api.github.com",
+      "ssh_url": "ssh://git@github.com",
+      "token_ref": "github-main",
+      "in_use": true
+    }
+  ]
+}

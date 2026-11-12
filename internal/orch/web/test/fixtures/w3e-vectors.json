@@ -1,4 +1,138 @@
 {
+  "deploy_keys": [
+    {
+      "name": "per-repo key",
+      "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGa+fjMsekUzMr2dCn99sFX1xe8aBq2mbZizn7aBDEc6 orchd-deploy",
+      "line_sha256": "36edb11622e09d65dfc2fd912e4fdb7d07b10656273bf7c71bb3396d0f565495",
+      "fingerprint": "SHA256:ACp7het+5at0PuMIyNhhqe8OXAJ9oehORSHEyzwQYcg"
+    },
+    {
+      "name": "other per-repo key",
+      "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAtROtm0kkAVygkC7QeQRNOsXb7CMG8GlIwQ2o62458t orchd-deploy",
+      "line_sha256": "6d52aff112edee1b676f50c492a76e0196510fcea679035c3120840def5b49b1",
+      "fingerprint": "SHA256:MyywqLAP8mf5V+lqguH2tv47kye1HNP18mAXTVRwdr4"
+    }
+  ],
+  "github_owners": [
+    {
+      "value": "octo",
+      "ok": true
+    },
+    {
+      "value": "SampleUser",
+      "ok": true
+    },
+    {
+      "value": "a",
+      "ok": true
+    },
+    {
+      "value": "1abc",
+      "ok": true
+    },
+    {
+      "value": "corp_user",
+      "ok": true
+    },
+    {
+      "value": "a-b",
+      "ok": true
+    },
+    {
+      "value": "a-",
+      "ok": false
+    },
+    {
+      "value": "-a",
+      "ok": false
+    },
+    {
+      "value": "",
+      "ok": false
+    },
+    {
+      "value": "a b",
+      "ok": false
+    },
+    {
+      "value": "a/b",
+      "ok": false
+    },
+    {
+      "value": "a.b",
+      "ok": false
+    },
+    {
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ok": true
+    },
+    {
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ok": false
+    },
+    {
+      "value": "한글",
+      "ok": false
+    }
+  ],
+  "github_repos": [
+    {
+      "value": "Hello-World",
+      "ok": true
+    },
+    {
+      "value": "my_repo",
+      "ok": true
+    },
+    {
+      "value": "Repo.js",
+      "ok": true
+    },
+    {
+      "value": "a",
+      "ok": true
+    },
+    {
+      "value": ".",
+      "ok": false
+    },
+    {
+      "value": "..",
+      "ok": false
+    },
+    {
+      "value": "x.git",
+      "ok": false
+    },
+    {
+      "value": "x.GIT",
+      "ok": false
+    },
+    {
+      "value": "x.gitx",
+      "ok": true
+    },
+    {
+      "value": "a b",
+      "ok": false
+    },
+    {
+      "value": "a/b",
+      "ok": false
+    },
+    {
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ok": true
+    },
+    {
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ok": false
+    },
+    {
+      "value": "",
+      "ok": false
+    }
+  ],
   "good": [
     {
       "name": "github set_provider",
@@ -89,6 +223,181 @@
       "change": "9ac98e4b46b7929259494eb88e6b8c7e6160cd315b29120f49f8758c71e9d4cf"
     }
   ],
+  "messages": [
+    {
+      "name": "github set_provider",
+      "action": "set_provider",
+      "subject": "gh",
+      "change": "7f9db52a7a37186f5413f36181781ee482a9d56b6127a5a692b28c63d38010fb",
+      "request": "00112233445566778899aabbccddeeff",
+      "issued": "2026-11-12T10:04:05Z",
+      "text": "aigate-registry-v1\naction: set_provider\nsubject: gh\nchange: 7f9db52a7a37186f5413f36181781ee482a9d56b6127a5a692b28c63d38010fb\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-12T10:04:05Z\n",
+      "digest": "b83e2c77f1eefed5b51b621498f41210f79d502f279db805ea7957c3aa93b666"
+    },
+    {
+      "name": "create_project private",
+      "action": "create_project",
+      "subject": "hello",
+      "change": "9e0d693d2913df6874e282aaf574427ba3c95314120d2c6e3df6866f2cc50306",
+      "request": "00112233445566778899aabbccddeeff",
+      "issued": "2026-11-12T10:04:05Z",
+      "text": "aigate-registry-v1\naction: create_project\nsubject: hello\nchange: 9e0d693d2913df6874e282aaf574427ba3c95314120d2c6e3df6866f2cc50306\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-12T10:04:05Z\n",
+      "digest": "7d9afe159b7e4374d6791c055dd91f8079e88b479f385e705a38e761ddfa2182"
+    },
+    {
+      "name": "create_project public",
+      "action": "create_project",
+      "subject": "hello",
+      "change": "2c009545b46e9fc376b2e92ca92f6999b0aa6f0f99d48424ecd8f76f47c9887b",
+      "request": "00112233445566778899aabbccddeeff",
+      "issued": "2026-11-12T10:04:05Z",
+      "text": "aigate-registry-v1\naction: create_project\nsubject: hello\nchange: 2c009545b46e9fc376b2e92ca92f6999b0aa6f0f99d48424ecd8f76f47c9887b\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-12T10:04:05Z\n",
+      "digest": "44c4f91ff1d1e091e1e37f71c5fd7394d9c0b71e6f9a605d170b72087e0f98ee"
+    },
+    {
+      "name": "link_project github",
+      "action": "link_project",
+      "subject": "hello",
+      "change": "8e58b469022b5eaf48fb202e7896a84c1251892ca1515126e9239813fc78c095",
+      "request": "00112233445566778899aabbccddeeff",
+      "issued": "2026-11-12T10:04:05Z",
+      "text": "aigate-registry-v1\naction: link_project\nsubject: hello\nchange: 8e58b469022b5eaf48fb202e7896a84c1251892ca1515126e9239813fc78c095\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-12T10:04:05Z\n",
+      "digest": "8f933edc6cac481307dcf1fecc7aa9f756e16b822ecdb24f500b961f06465243"
+    },
+    {
+      "name": "link_project gitlab nested",
+      "action": "link_project",
+      "subject": "hello",
+      "change": "1fe2963737ae07c0a300012c58bd458166df7f3c0c8b68fe650fe29a95cc9c58",
+      "request": "00112233445566778899aabbccddeeff",
+      "issued": "2026-11-12T10:04:05Z",
+      "text": "aigate-registry-v1\naction: link_project\nsubject: hello\nchange: 1fe2963737ae07c0a300012c58bd458166df7f3c0c8b68fe650fe29a95cc9c58\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-12T10:04:05Z\n",
+      "digest": "1669993cdb66ffad70bdc92a53a1ef07ea511dbde186833d2b5c79ea35ce6ee9"
+    },
+    {
+      "name": "attach_remote",
+      "action": "attach_remote",
+      "subject": "a",
+      "change": "9ac98e4b46b7929259494eb88e6b8c7e6160cd315b29120f49f8758c71e9d4cf",
+      "request": "00112233445566778899aabbccddeeff",
+      "issued": "2026-11-12T10:04:05Z",
+      "text": "aigate-registry-v1\naction: attach_remote\nsubject: a\nchange: 9ac98e4b46b7929259494eb88e6b8c7e6160cd315b29120f49f8758c71e9d4cf\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-12T10:04:05Z\n",
+      "digest": "c5dec131547ec7a90734e60ef0804c2603c65ef46002042e3f47c4976a9e2865"
+    }
+  ],
+  "owner_github": [
+    {
+      "value": "octo",
+      "ok": true
+    },
+    {
+      "value": "SampleUser",
+      "ok": true
+    },
+    {
+      "value": "a/b",
+      "ok": false
+    },
+    {
+      "value": "a-",
+      "ok": false
+    },
+    {
+      "value": "",
+      "ok": false
+    }
+  ],
+  "owner_gitlab": [
+    {
+      "value": "team",
+      "ok": true
+    },
+    {
+      "value": "team/sub",
+      "ok": true
+    },
+    {
+      "value": "Team",
+      "ok": false
+    },
+    {
+      "value": "a",
+      "ok": false
+    },
+    {
+      "value": "aa/bb/cc/dd",
+      "ok": true
+    },
+    {
+      "value": "aa/bb/cc/dd/ee",
+      "ok": false
+    }
+  ],
+  "previews": {
+    "attach_remote": [
+      "등록된 프로젝트 'a'에 제공자 'gh'의 저장소 'octo/Hello-World'를 연결합니다",
+      "연결한 뒤 이 프로젝트의 게시(push)와 복제는 이 원격을 씁니다. 프로젝트의 파일과 AI 전송 설정은 바뀌지 않습니다",
+      "게시 권한 — 쓰기: 이 서버가 브랜치를 올릴 수 있는 배포 키로 등록합니다",
+      "저장소 전용 배포 키 지문(SHA-256): SHA256:ACp7het+5at0PuMIyNhhqe8OXAJ9oehORSHEyzwQYcg (이 저장소 하나를 위해 지금 새로 만든 키입니다)",
+      "[중요] 이미 있는 저장소의 설정에 이 서버의 배포 키가 등록됩니다. 이 도구는 저장소를 만들거나 지우거나 다른 설정을 바꾸지 않으며, 등록한 키도 지우지 않습니다",
+      "서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다"
+    ],
+    "create_project private": [
+      "GitHub 제공자 'gh'의 소유자 'octo'에 새 저장소 'hello'를 만듭니다",
+      "비공개 저장소로 만듭니다: 초대받은 사람만 볼 수 있습니다",
+      "템플릿: go (코드에 고정된 파일들이 첫 커밋으로 들어갑니다)",
+      "설명: (없음)",
+      "이 프로젝트의 파일 내용은 AI 서비스로 전송되지 않습니다(전송 허용 꺼짐)",
+      "게시 권한 — 쓰기: 이 서버가 브랜치를 올릴 수 있는 배포 키로 등록합니다",
+      "저장소 전용 배포 키 지문(SHA-256): SHA256:ACp7het+5at0PuMIyNhhqe8OXAJ9oehORSHEyzwQYcg (이 저장소 하나를 위해 지금 새로 만든 키입니다)",
+      "등록 후 정책 종류(kind)는 registered 입니다",
+      "브랜치 보호는 공개 저장소이거나 유료 요금제일 때만 켜집니다(안 되면 일부만 만들어진 것으로 알려 줍니다). 만든 뒤 이 도구는 저장소를 삭제하지 않습니다",
+      "만든 뒤 이 서버에 자동으로 한 번 복제합니다",
+      "서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다"
+    ],
+    "create_project public": [
+      "GitHub 제공자 'gh'의 소유자 'octo'에 새 저장소 'hello'를 만듭니다",
+      "[중요] 공개 저장소로 만듭니다: 인터넷의 누구나 이 저장소의 코드를 읽을 수 있습니다",
+      "템플릿: go (코드에 고정된 파일들이 첫 커밋으로 들어갑니다)",
+      "설명: (없음)",
+      "이 프로젝트의 파일 내용은 AI 서비스로 전송되지 않습니다(전송 허용 꺼짐)",
+      "게시 권한 — 쓰기: 이 서버가 브랜치를 올릴 수 있는 배포 키로 등록합니다",
+      "저장소 전용 배포 키 지문(SHA-256): SHA256:ACp7het+5at0PuMIyNhhqe8OXAJ9oehORSHEyzwQYcg (이 저장소 하나를 위해 지금 새로 만든 키입니다)",
+      "등록 후 정책 종류(kind)는 registered 입니다",
+      "브랜치 보호는 공개 저장소이거나 유료 요금제일 때만 켜집니다(안 되면 일부만 만들어진 것으로 알려 줍니다). 만든 뒤 이 도구는 저장소를 삭제하지 않습니다",
+      "만든 뒤 이 서버에 자동으로 한 번 복제합니다",
+      "서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다"
+    ],
+    "github set_provider": [
+      "제공자 'gh'를 저장합니다(종류: github). 같은 id가 있으면 이 값으로 바뀝니다",
+      "GitHub API 주소: https://api.github.com",
+      "ssh 주소: ssh://git@github.com",
+      "사용할 토큰 이름: github-main (토큰 값은 이 화면에 나오지 않습니다)",
+      "[중요] 이 토큰의 권한으로 위 주소의 GitHub에 저장소를 만들고 저장소별 배포 키를 등록합니다",
+      "이 제공자를 쓰는 프로젝트가 있으면 주소는 바꿀 수 없습니다",
+      "서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다"
+    ],
+    "link_project github": [
+      "제공자 'gh'에 이미 있는 저장소 'octo/Hello-World'를 새 프로젝트 'hello'로 가져옵니다",
+      "이 프로젝트의 파일 내용은 AI 서비스로 전송되지 않습니다(전송 허용 꺼짐)",
+      "게시 권한 — 읽기: 배포 키는 읽기 전용으로 등록합니다(이 서버는 브랜치를 올리지 못합니다)",
+      "저장소 전용 배포 키 지문(SHA-256): SHA256:ACp7het+5at0PuMIyNhhqe8OXAJ9oehORSHEyzwQYcg (이 저장소 하나를 위해 지금 새로 만든 키입니다)",
+      "[중요] 이미 있는 저장소의 설정에 이 서버의 배포 키가 등록됩니다. 이 도구는 저장소를 만들거나 지우거나 다른 설정을 바꾸지 않으며, 등록한 키도 지우지 않습니다",
+      "등록 후 정책 종류(kind)는 registered 입니다",
+      "가져온 뒤 이 서버에 자동으로 한 번 복제합니다",
+      "서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다"
+    ],
+    "link_project gitlab nested": [
+      "제공자 'gl'에 이미 있는 저장소 'team/sub/app.v2'를 새 프로젝트 'hello'로 가져옵니다",
+      "[중요] 이 프로젝트의 파일 내용이 외부 AI 서비스(OpenAI)로 전송될 수 있게 허용합니다. AI 계획 기능을 쓰면 요구사항과 저장소의 일부 파일 내용이 서비스 밖으로 나갑니다",
+      "게시 권한 — 읽기: 배포 키는 읽기 전용으로 등록합니다(이 서버는 브랜치를 올리지 못합니다)",
+      "배포 키 지문(SHA-256): SHA256:ACp7het+5at0PuMIyNhhqe8OXAJ9oehORSHEyzwQYcg (이 서버의 공용 배포 키 공개 키 파일 기준)",
+      "[중요] 이미 있는 저장소의 설정에 이 서버의 배포 키가 등록됩니다. 이 도구는 저장소를 만들거나 지우거나 다른 설정을 바꾸지 않으며, 등록한 키도 지우지 않습니다",
+      "등록 후 정책 종류(kind)는 registered 입니다",
+      "가져온 뒤 이 서버에 자동으로 한 번 복제합니다",
+      "서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다"
+    ]
+  },
   "refused": [
     {
       "name": "visibility empty",
@@ -279,6 +588,136 @@
         "ssh_url": "ssh://git@github.com",
         "token_ref": "github-main"
       }
+    }
+  ],
+  "remote_paths": [
+    {
+      "value": "octo/Hello-World",
+      "ok": true
+    },
+    {
+      "value": "team/sub/app.v2",
+      "ok": true
+    },
+    {
+      "value": "a/b/c/d/e",
+      "ok": true
+    },
+    {
+      "value": "a/b/c/d/e/f",
+      "ok": false
+    },
+    {
+      "value": "solo",
+      "ok": false
+    },
+    {
+      "value": "a//b",
+      "ok": false
+    },
+    {
+      "value": "a/./b",
+      "ok": false
+    },
+    {
+      "value": "a/../b",
+      "ok": false
+    },
+    {
+      "value": "octo/repo.git",
+      "ok": false
+    },
+    {
+      "value": "octo/repo.GIT",
+      "ok": false
+    },
+    {
+      "value": "octo/re%2fpo",
+      "ok": false
+    },
+    {
+      "value": "octo/저장소",
+      "ok": false
+    },
+    {
+      "value": "a/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "ok": true
+    },
+    {
+      "value": "a/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "ok": false
+    },
+    {
+      "value": "/a/b",
+      "ok": false
+    },
+    {
+      "value": "a/b/",
+      "ok": false
+    }
+  ],
+  "remote_paths_github": [
+    {
+      "value": "octo/Hello-World",
+      "ok": true
+    },
+    {
+      "value": "octo/my_repo",
+      "ok": true
+    },
+    {
+      "value": "a/b/c",
+      "ok": false
+    },
+    {
+      "value": "solo",
+      "ok": false
+    },
+    {
+      "value": "octo/x.git",
+      "ok": false
+    },
+    {
+      "value": "-a/b",
+      "ok": false
+    },
+    {
+      "value": "a_b/c",
+      "ok": true
+    }
+  ],
+  "remote_paths_gitlab": [
+    {
+      "value": "team/app-one",
+      "ok": true
+    },
+    {
+      "value": "team/sub/app-one",
+      "ok": true
+    },
+    {
+      "value": "Team/app-one",
+      "ok": false
+    },
+    {
+      "value": "team/App",
+      "ok": false
+    },
+    {
+      "value": "team/app_one",
+      "ok": false
+    },
+    {
+      "value": "aa/bb/cc/dd/ee",
+      "ok": true
+    },
+    {
+      "value": "aa/bb/cc/dd/ee/ff",
+      "ok": false
+    },
+    {
+      "value": "solo",
+      "ok": false
     }
   ]
 }

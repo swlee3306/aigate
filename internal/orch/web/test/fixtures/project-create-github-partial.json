@@ -1,0 +1,15 @@
+{
+  "error": {
+    "code": "create_partial",
+    "detail": {
+      "origin": "created",
+      "orphan_dropped": false,
+      "orphan_recorded": true,
+      "project": "SampleUser/hello",
+      "project_id": 7,
+      "provider": "gh",
+      "step": "protect"
+    },
+    "message": "GitLab에 일부만 만들어졌습니다. 이 도구는 삭제하지 않으니 GitLab에서 직접 정리한 뒤 다시 만드세요"
+  }
+}

@@ -263,7 +263,7 @@ func TestWebFixturesW3cVectors(t *testing.T) {
 	// there is a code the console must have a fixed sentence for.
 	codeRE := regexp.MustCompile(`apiErr\(http\.Status[A-Za-z]+, "([a-z_]+)"`)
 	seen := map[string]bool{}
-	for _, f := range []string{"providers.go", "create_project.go"} {
+	for _, f := range []string{"providers.go", "create_project.go", "link_project.go"} {
 		src, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
@@ -285,6 +285,15 @@ func TestWebFixturesW3cVectors(t *testing.T) {
 	sort.Strings(codes)
 	if len(codes) < 35 {
 		t.Fatalf("only %d codes found: %v", len(codes), codes)
+	}
+	// W3e: the codes the GitHub, link and attach paths add are all found (a scan that missed
+	// link_project.go would let the console ship without a sentence for them).
+	for _, c := range []string{"repo_not_found", "already_linked", "project_exists", "project_unknown", "remote_name_mismatch", "static_remote_wins", "key_expired",
+		"key_staging_failed", "key_unavailable", "github_refused", "provider_rate_limited", "not_supported_for_provider", "visibility_required",
+		"visibility_not_allowed", "link_partial"} {
+		if !seen[c] {
+			t.Errorf("error code %s is not in the scanned sources", c)
+		}
 	}
 	checkFixture(t, "w3c-error-codes.json", map[string]any{"codes": codes})
 }
@@ -444,6 +453,9 @@ func checkProviderConstants(t *testing.T) {
 		"delete_provider": {},
 		"create_group":    {"name": "grp", "path": "grp", "parent_path": "team"},
 		"create_project":  okFields,
+		// W3e: the two new actions (create_project's optional visibility is pinned in checkW3eConstants)
+		"link_project":  {"provider": "gh", "remote_path": "octo/Hello-World", "ai_context": false, "publish": "read", "deploy_key_sha256": strings.Repeat("a", 64)},
+		"attach_remote": {"provider": "gh", "remote_path": "octo/Hello-World", "publish": "read", "deploy_key_sha256": strings.Repeat("a", 64)},
 	}
 	for action, sample := range good {
 		key := "[ACTION_" + strings.ToUpper(action) + "]"
@@ -476,7 +488,7 @@ func checkProviderConstants(t *testing.T) {
 			}
 		}
 		subject := "gl"
-		if action == "create_project" {
+		if action == "create_project" || action == "link_project" {
 			subject = "ab"
 		}
 		if _, err := registrymsg.CanonicalChange(action, subject, sample); err != nil {
@@ -518,7 +530,7 @@ func checkProviderConstants(t *testing.T) {
 			}
 			f[name] = ""
 			subject := "gl"
-			if action == "create_project" {
+			if action == "create_project" || action == "link_project" {
 				subject = "ab"
 			}
 			_, err := registrymsg.CanonicalChange(action, subject, f)
@@ -560,13 +572,24 @@ func checkProviderConstants(t *testing.T) {
 	if werr != nil {
 		t.Fatal(werr)
 	}
-	for _, a := range []string{registrymsg.ActionSetProvider, registrymsg.ActionDeleteProvider, registrymsg.ActionCreateGroup, registrymsg.ActionCreateProject} {
+	for _, a := range []string{registrymsg.ActionSetProvider, registrymsg.ActionDeleteProvider, registrymsg.ActionCreateGroup, registrymsg.ActionCreateProject,
+		registrymsg.ActionLinkProject, registrymsg.ActionAttachRemote} {
 		if !strings.Contains(string(wa), a) {
 			t.Errorf("webauthn.js does not know action %s", a)
 		}
 		m := signing.RegistryMessage{Action: a, Subject: "ab", Change: strings.Repeat("a", 64), Request: strings.Repeat("b", 32), Issued: time.Date(2026, 11, 9, 10, 4, 5, 0, time.UTC)}
 		if m.Validate() != nil {
 			t.Errorf("signing refuses a %s message", a)
+		}
+	}
+	// Orphan origins: exactly the broker's two.
+	origins := jsList("ORPHAN_ORIGINS")
+	if len(origins) != 2 || !broker.ValidOrphanOrigin("created") || !broker.ValidOrphanOrigin("linked") || broker.ValidOrphanOrigin("bogus") {
+		t.Errorf("ORPHAN_ORIGINS %v", origins)
+	}
+	for _, o := range origins {
+		if !broker.ValidOrphanOrigin(o) {
+			t.Errorf("origin %q is not a broker origin", o)
 		}
 	}
 	// Shipped, loaded and routed.
@@ -580,44 +603,175 @@ func checkProviderConstants(t *testing.T) {
 	}
 }
 
-// checkW3eConstants is the "w3e" subtest of TestConstantsAgreeWithWeb. The
-// console has no GitHub flow yet (E5), so the page may only offer what Go
-// accepts: every provider kind the page's set_provider rule allows must be a
-// registrymsg kind; and if the page already declares a W3e action constant it
-// must equal registrymsg's. The Go side pins the facts the page will copy.
+// checkW3eConstants is the "w3e" subtest of TestConstantsAgreeWithWeb: what the
+// console copies for GitHub, visibility, link and attach is pinned to Go. A missing
+// constant or file is a failure, never a skip.
 func checkW3eConstants(t *testing.T) {
 	src, err := os.ReadFile("../web/static/views/providers.js")
 	if err != nil {
 		t.Fatalf("views/providers.js must exist and be readable: %v", err)
 	}
 	js := string(src)
+	jsRegex := func(name string) string {
+		m := regexp.MustCompile(`(?m)^(?:export )?const ` + name + ` = /(.*)/;\s*$`).FindStringSubmatch(js)
+		if m == nil {
+			t.Fatalf("JS regex constant %s not found", name)
+		}
+		return m[1]
+	}
+	jsInt := func(name string) int {
+		m := regexp.MustCompile(`(?m)^(?:export )?const ` + name + ` = ([0-9_]+);\s*$`).FindStringSubmatch(js)
+		if m == nil {
+			t.Fatalf("JS integer constant %s not found", name)
+		}
+		n, _ := strconv.Atoi(strings.ReplaceAll(m[1], "_", ""))
+		return n
+	}
+	jsString := func(name string) string {
+		m := regexp.MustCompile(`(?m)^(?:export )?const ` + name + ` = '([^']*)';\s*$`).FindStringSubmatch(js)
+		if m == nil {
+			t.Fatalf("JS string constant %s not found", name)
+		}
+		return m[1]
+	}
+	jsList := func(name string) []string {
+		m := regexp.MustCompile(`(?m)^(?:export )?const ` + name + ` = \[([^\]]*)\];\s*$`).FindStringSubmatch(js)
+		if m == nil {
+			t.Fatalf("JS list constant %s not found", name)
+		}
+		var out []string
+		for _, part := range strings.Split(m[1], ",") {
+			out = append(out, strings.Trim(strings.TrimSpace(part), "'"))
+		}
+		return out
+	}
+	// The page's set_provider kind rule: every kind it names is a registrymsg kind, and so is every kind it lists.
 	m := regexp.MustCompile(`ACTION_SET_PROVIDER \+ '\.kind': return ok\((.*)\);`).FindStringSubmatch(js)
 	if m == nil {
 		t.Fatal("the page's set_provider kind rule was not found")
 	}
-	kinds := regexp.MustCompile(`'([a-z]+)'`).FindAllStringSubmatch(m[1], -1)
-	if len(kinds) == 0 {
-		t.Fatalf("no provider kind in the page rule %q", m[1])
+	ruleKinds := regexp.MustCompile(`'([a-z]+)'`).FindAllStringSubmatch(m[1], -1)
+	if len(ruleKinds) != 2 {
+		t.Fatalf("the page rule names %d provider kinds: %q", len(ruleKinds), m[1])
 	}
-	for _, k := range kinds {
+	for _, k := range ruleKinds {
 		if !registrymsg.ValidProviderKind(k[1]) {
 			t.Errorf("the page offers provider kind %q that registrymsg refuses", k[1])
 		}
 	}
+	kinds := jsList("PROVIDER_KINDS")
+	if strings.Join(kinds, ",") != "gitlab,github" {
+		t.Errorf("PROVIDER_KINDS %v", kinds)
+	}
+	for _, k := range kinds {
+		if !registrymsg.ValidProviderKind(k) {
+			t.Errorf("PROVIDER_KINDS has %q, refused by registrymsg", k)
+		}
+	}
+	if registrymsg.ValidProviderKind("bitbucket") || registrymsg.ValidProviderKind("GitHub") || registrymsg.ValidProviderKind("") {
+		t.Error("provider kinds: the set is closed to gitlab and github")
+	}
 	for name, want := range map[string]string{"ACTION_LINK_PROJECT": registrymsg.ActionLinkProject, "ACTION_ATTACH_REMOTE": registrymsg.ActionAttachRemote} {
-		if mm := regexp.MustCompile(`(?m)^(?:export )?const ` + name + ` = '([^']*)';\s*$`).FindStringSubmatch(js); mm != nil && mm[1] != want {
-			t.Errorf("%s %q != %q", name, mm[1], want)
+		if got := jsString(name); got != want {
+			t.Errorf("%s %q != %q", name, got, want)
 		}
 	}
 	if mm := regexp.MustCompile(`token_ref_unknown: '([^']*)'`).FindStringSubmatch(js); mm == nil || strings.Contains(strings.ToLower(mm[1]), "gitlab") {
 		t.Errorf("the page's token_ref_unknown sentence must exist and be provider-neutral: %v", mm)
 	}
-	// Facts the page will copy (E5): kinds, the visibility enum and the remote path bounds.
-	if !registrymsg.ValidProviderKind("gitlab") || !registrymsg.ValidProviderKind("github") || registrymsg.ValidProviderKind("bitbucket") {
-		t.Error("provider kinds")
+	// Visibility: the enum, and optional exactly as registrymsg has it (with or without, never anything else).
+	vis := jsList("VISIBILITIES")
+	if strings.Join(vis, ",") != "public,private" {
+		t.Errorf("VISIBILITIES %v", vis)
+	}
+	hash64 := strings.Repeat("ab", 32)
+	cp := func(extra map[string]any) map[string]any {
+		f := map[string]any{"provider": "gh", "group_path": "octo", "template": "go", "description": "", "ai_context": false, "publish": "write", "deploy_key_sha256": hash64}
+		for k, v := range extra {
+			f[k] = v
+		}
+		return f
+	}
+	for _, v := range vis {
+		if _, err := registrymsg.CanonicalChange("create_project", "hello", cp(map[string]any{"visibility": v})); err != nil {
+			t.Errorf("visibility %q is refused by Go: %v", v, err)
+		}
+	}
+	for _, v := range []string{"", "Public", "internal", "PRIVATE"} {
+		if _, err := registrymsg.CanonicalChange("create_project", "hello", cp(map[string]any{"visibility": v})); err == nil {
+			t.Errorf("visibility %q must be refused", v)
+		}
+	}
+	optional := jsList("OPTIONAL_CREATE_FIELDS")
+	if strings.Join(optional, ",") != "visibility" {
+		t.Errorf("OPTIONAL_CREATE_FIELDS %v", optional)
+	}
+	if _, err := registrymsg.CanonicalChange("create_project", "hello", cp(nil)); err != nil {
+		t.Errorf("create_project without visibility must be accepted by Go: %v", err)
+	}
+	if _, err := registrymsg.CanonicalChange("create_project", "hello", cp(map[string]any{"visibility": "public", "extra": "x"})); err == nil {
+		t.Error("an extra field next to the optional one must be refused")
+	}
+	// GitHub names and the remote path bounds.
+	if got, want := jsRegex("GITHUB_LOGIN_RE"), "^"+registrymsg.GitHubLoginPattern+"$"; got != want {
+		t.Errorf("GITHUB_LOGIN_RE %q != %q", got, want)
+	}
+	if got, want := jsRegex("GITHUB_REPO_RE"), "^"+registrymsg.GitHubRepoPattern+"$"; got != want {
+		t.Errorf("GITHUB_REPO_RE %q != %q", got, want)
+	}
+	for name, want := range map[string]int{"MAX_REMOTE_SEGMENTS": registrymsg.MaxRemoteSegments, "MAX_REMOTE_SEGMENT_LEN": registrymsg.MaxRemoteSegmentLen, "MAX_REMOTE_PATH_LEN": registrymsg.MaxRemotePathLen} {
+		if got := jsInt(name); got != want {
+			t.Errorf("%s %d != %d", name, got, want)
+		}
 	}
 	if registrymsg.MaxRemoteSegments != 5 || registrymsg.MaxRemoteSegmentLen != 100 || registrymsg.MaxRemotePathLen != 255 {
 		t.Errorf("remote path bounds moved: %d %d %d", registrymsg.MaxRemoteSegments, registrymsg.MaxRemoteSegmentLen, registrymsg.MaxRemotePathLen)
+	}
+	// The GitHub address defaults are accepted by Go and are what the page fills in.
+	if got := jsString("GITHUB_API_URL"); got != "https://api.github.com" || !registrymsg.ValidBaseURL(got) {
+		t.Errorf("GITHUB_API_URL %q", got)
+	}
+	if got := jsString("GITHUB_SSH_URL"); got != "ssh://git@github.com" || !registrymsg.ValidSSHURL(got) {
+		t.Errorf("GITHUB_SSH_URL %q", got)
+	}
+	// The fixed preview lines of the W3e proposals, from the real previews (exact lines, not marks).
+	pvCreate := func(vis string) []string {
+		return createPreview(registryChange{Action: "create_project", Subject: "hello", Fields: cp(map[string]any{"visibility": vis})}, "SHA256:x")
+	}
+	contains := func(lines []string, want string) int {
+		n := 0
+		for _, l := range lines {
+			if l == want {
+				n++
+			}
+		}
+		return n
+	}
+	if got := jsString("PREVIEW_VIS_PUBLIC"); contains(pvCreate("public"), got) != 1 || contains(pvCreate("private"), got) != 0 {
+		t.Errorf("PREVIEW_VIS_PUBLIC %q is not the server's public line", got)
+	}
+	if got := jsString("PREVIEW_VIS_PRIVATE"); contains(pvCreate("private"), got) != 1 || contains(pvCreate("public"), got) != 0 {
+		t.Errorf("PREVIEW_VIS_PRIVATE %q is not the server's private line", got)
+	}
+	warn := jsString("PREVIEW_KEY_WARN")
+	link := registryChange{Action: "link_project", Subject: "hello", Fields: map[string]any{"provider": "gh", "remote_path": "octo/hello", "ai_context": false, "publish": "read", "deploy_key_sha256": hash64}}
+	attach := registryChange{Action: "attach_remote", Subject: "hello", Fields: map[string]any{"provider": "gh", "remote_path": "octo/hello", "publish": "read", "deploy_key_sha256": hash64}}
+	for _, c := range []registryChange{link, attach} {
+		for _, kind := range []string{"github", "gitlab"} {
+			if contains(remotePreview(c, kind, "SHA256:x"), warn) != 1 {
+				t.Errorf("PREVIEW_KEY_WARN is not the server's line for %s/%s", c.Action, kind)
+			}
+		}
+	}
+	// Timeouts: link and attach outwait orchd like a create; their propose reads the broker (limit 15 s).
+	if got := jsInt("LINK_APPLY_TIMEOUT_MS"); got < 130_000 {
+		t.Errorf("LINK_APPLY_TIMEOUT_MS %d must be at least 130000", got)
+	}
+	if got := jsInt("ATTACH_APPLY_TIMEOUT_MS"); got < 130_000 {
+		t.Errorf("ATTACH_APPLY_TIMEOUT_MS %d must be at least 130000", got)
+	}
+	if got := jsInt("LINK_PROPOSE_TIMEOUT_MS"); got <= 15_000 {
+		t.Errorf("LINK_PROPOSE_TIMEOUT_MS %d must exceed the broker read limit of 15 s", got)
 	}
 }
 
@@ -701,5 +855,102 @@ func TestWebFixturesW3eVectors(t *testing.T) {
 			}
 		}
 	}
-	checkFixture(t, "w3e-vectors.json", map[string]any{"good": good, "refused": refused})
+	// E5: the signing messages, the real preview sentences, the deploy keys and the name rules
+	// the browser's link / github code must reproduce (all evaluated by the real Go code).
+	issued := time.Date(2026, 11, 12, 10, 4, 5, 0, time.UTC)
+	request := "00112233445566778899aabbccddeeff"
+	type msgVec struct {
+		Name    string `json:"name"`
+		Action  string `json:"action"`
+		Subject string `json:"subject"`
+		Change  string `json:"change"`
+		Request string `json:"request"`
+		Issued  string `json:"issued"`
+		Text    string `json:"text"`
+		Digest  string `json:"digest"`
+	}
+	var messages []msgVec
+	for _, g := range good {
+		m := signing.RegistryMessage{Action: g.Action, Subject: g.Subject, Change: g.Change, Request: request, Issued: issued}
+		if err := m.Validate(); err != nil {
+			t.Fatalf("%s: %v", g.Name, err)
+		}
+		d := m.Digest()
+		messages = append(messages, msgVec{Name: g.Name, Action: m.Action, Subject: m.Subject, Change: m.Change, Request: request,
+			Issued: issued.Format(registryTimeFormat), Text: m.Text(), Digest: hex.EncodeToString(d[:])})
+	}
+	type keyVec struct {
+		Name        string `json:"name"`
+		Line        string `json:"line"`
+		LineSHA256  string `json:"line_sha256"`
+		Fingerprint string `json:"fingerprint"`
+	}
+	mkKey := func(name string, seed byte, comment string) keyVec {
+		priv := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{seed}, 32))
+		pk, err := ssh.NewPublicKey(priv.Public())
+		if err != nil {
+			t.Fatal(err)
+		}
+		line := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pk))) + " " + comment
+		if !brokerDeployKeyRE.MatchString(line) {
+			t.Fatalf("%s: line does not pass the broker rule", name)
+		}
+		return keyVec{Name: name, Line: line, LineSHA256: keyHash(line), Fingerprint: ssh.FingerprintSHA256(pk)}
+	}
+	keys := []keyVec{mkKey("per-repo key", 11, "orchd-deploy"), mkKey("other per-repo key", 12, "orchd-deploy")}
+	previews := map[string][]string{}
+	for _, g := range good {
+		c := registryChange{Action: g.Action, Subject: g.Subject, Fields: g.Fields}
+		switch g.Action {
+		case "create_project":
+			previews[g.Name] = createPreview(c, keys[0].Fingerprint)
+		case "link_project", "attach_remote":
+			kind := "gitlab"
+			if g.Fields["provider"] == "gh" {
+				kind = "github"
+			}
+			previews[g.Name] = remotePreview(c, kind, keys[0].Fingerprint)
+		default:
+			previews[g.Name] = providerPreview(c)
+		}
+	}
+	type strOK struct {
+		Value string `json:"value"`
+		OK    bool   `json:"ok"`
+	}
+	check := func(f func(string) bool, vals ...string) []strOK {
+		var out []strOK
+		for _, v := range vals {
+			out = append(out, strOK{Value: v, OK: f(v)})
+		}
+		return out
+	}
+	forKind := func(kind string, f func(string, string) bool) func(string) bool {
+		return func(s string) bool { return f(kind, s) }
+	}
+	ghLogins := check(registrymsg.ValidGitHubOwner, "octo", "SampleUser", "a", "1abc", "corp_user", "a-b", "a-", "-a", "", "a b", "a/b", "a.b",
+		strings.Repeat("a", 39), strings.Repeat("a", 40), "한글")
+	ghRepos := check(registrymsg.ValidGitHubRepoName, "Hello-World", "my_repo", "Repo.js", "a", ".", "..", "x.git", "x.GIT", "x.gitx", "a b", "a/b",
+		strings.Repeat("a", 100), strings.Repeat("a", 101), "")
+	remotePaths := check(registrymsg.ValidRemotePath, "octo/Hello-World", "team/sub/app.v2", "a/b/c/d/e", "a/b/c/d/e/f", "solo", "a//b", "a/./b", "a/../b",
+		"octo/repo.git", "octo/repo.GIT", "octo/re%2fpo", "octo/저장소", "a/"+strings.Repeat("b", 100), "a/"+strings.Repeat("b", 101), "/a/b", "a/b/")
+	remoteGH := check(forKind("github", registrymsg.ValidRemotePathForKind), "octo/Hello-World", "octo/my_repo", "a/b/c", "solo", "octo/x.git", "-a/b", "a_b/c")
+	remoteGL := check(forKind("gitlab", registrymsg.ValidRemotePathForKind), "team/app-one", "team/sub/app-one", "Team/app-one", "team/App", "team/app_one",
+		"aa/bb/cc/dd/ee", "aa/bb/cc/dd/ee/ff", "solo")
+	ownerGH := check(forKind("github", registrymsg.ValidOwnerForKind), "octo", "SampleUser", "a/b", "a-", "")
+	ownerGL := check(forKind("gitlab", registrymsg.ValidOwnerForKind), "team", "team/sub", "Team", "a", "aa/bb/cc/dd", "aa/bb/cc/dd/ee")
+	for _, set := range [][]strOK{ghLogins, ghRepos, remotePaths, remoteGH, remoteGL, ownerGH, ownerGL} {
+		sawOK, sawNo := false, false
+		for _, s := range set {
+			sawOK, sawNo = sawOK || s.OK, sawNo || !s.OK
+		}
+		if !sawOK || !sawNo {
+			t.Fatal("every validator vector set needs accepted and refused values")
+		}
+	}
+	checkFixture(t, "w3e-vectors.json", map[string]any{
+		"good": good, "refused": refused, "messages": messages, "deploy_keys": keys, "previews": previews,
+		"github_owners": ghLogins, "github_repos": ghRepos, "remote_paths": remotePaths, "remote_paths_github": remoteGH,
+		"remote_paths_gitlab": remoteGL, "owner_github": ownerGH, "owner_gitlab": ownerGL,
+	})
 }

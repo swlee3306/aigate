@@ -1,0 +1,17 @@
+{
+  "project": {
+    "id": "plain-app",
+    "path": "/home/orch/repos/plain-app",
+    "kind": "registered",
+    "ai_context": false,
+    "provider": "gh",
+    "gitlab": {
+      "project": "SampleUser/plain-app",
+      "project_id": null
+    },
+    "auto_merge": {
+      "enabled": false
+    },
+    "cloned": true
+  }
+}

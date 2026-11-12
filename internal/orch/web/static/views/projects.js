@@ -24,10 +24,10 @@ import {
   signRegistryChange, checkRegistryMessage, sha256Hex, activeSigners, rememberedPasskey, supported, waText,
 } from '../webauthn.js';
 import {
-  PROVIDER_ID_RE, TEMPLATES, PUBLISH_MODES, MAX_GROUP_DEPTH, PARTIAL_STEPS, ORPHAN_ORIGINS, ACTION_CREATE_GROUP, ACTION_CREATE_PROJECT,
-  validName, validGroupPath, validDescription, validProjectPath, validBaseUrl, makeFlow, confirmPanel, li as factItem, stepStates, stepList, stepLabel,
-  partialInfo, orphanBlock, ORPHAN_NOTICE, ERROR_TEXT as W3C_ERROR_TEXT, failureText as w3cFailureText, isUnknown, cloneText, CLONE_TEXT,
-  CLONE_TIMEOUT_MS, PROVIDER_TIMEOUT_MS, FLOW_TEXT, GROUP_SETTLE_MS,
+  PROVIDER_ID_RE, TEMPLATES, PUBLISH_MODES, VISIBILITIES, PROVIDER_KINDS, MAX_GROUP_DEPTH, PARTIAL_STEPS, ORPHAN_ORIGINS, ACTION_CREATE_GROUP, ACTION_CREATE_PROJECT,
+  ACTION_LINK_PROJECT, ACTION_ATTACH_REMOTE, validName, validGroupPath, validGitHubOwner, validOwnerForKind, validDescription, validRemotePath, validRemotePathForKind, validBaseUrl,
+  makeFlow, confirmPanel, li as factItem, stepStates, stepList, linkStepList, stepLabel, partialInfo, orphanBlock, orphanNotice, hostName, kindOfProvider,
+  ERROR_TEXT as W3C_ERROR_TEXT, failureText as w3cFailureText, isUnknown, cloneText, CLONE_TEXT, CLONE_TIMEOUT_MS, PROVIDER_TIMEOUT_MS, FLOW_TEXT, GROUP_SETTLE_MS,
 } from './providers.js';
 
 // --- constants shared with the server (TestConstantsAgreeWithWeb compares them) ---
@@ -272,7 +272,7 @@ const ORPHAN_AT_RE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/;
 // validOrphan: a half-made project row of the registry list, every member checked
 // (they are shown as text, never as markup, and never become an attribute).
 function validOrphan(o) {
-  return isObj(o) && typeof o.provider === 'string' && PROVIDER_ID_RE.test(o.provider) && validProjectPath(o.project) &&
+  return isObj(o) && typeof o.provider === 'string' && PROVIDER_ID_RE.test(o.provider) && validRemotePath(o.project) &&
     (o.project_id === null || (Number.isSafeInteger(o.project_id) && o.project_id > 0)) && PARTIAL_STEPS.includes(o.step) &&
     (o.origin === undefined || ORPHAN_ORIGINS.includes(o.origin)) && typeof o.at === 'string' && ORPHAN_AT_RE.test(o.at);
 }
@@ -301,12 +301,21 @@ export function projectsView(ctx) {
     signerNote: null,
     busy: false,
     result: null, // {error, text}
-    orphans: [], // half-made GitLab projects the server remembers (shape-checked rows only)
+    orphans: [], // half-made or half-linked repositories the server remembers (shape-checked rows only)
+    regProviders: [], // the providers of the registry list: the kind of an orphan's provider
   };
-  // W3c: a new group or project (providers.js holds the signed-change flow).
-  const cp = { providers: [], f: null, g: null, groups: null, truncated: false, groupsErr: null, groupsSeq: 0, which: 'create', clone: null, cloneBusy: false, pendingGroup: null };
+  // W3c: a new group or project (providers.js holds the signed-change flow). W3e: `lk` is the
+  // link ("기존 저장소 연결") or attach ("원격 연결") form.
+  const cp = { providers: [], f: null, g: null, groups: null, truncated: false, groupsErr: null, groupsSeq: 0, which: 'create', clone: null, cloneBusy: false, pendingGroup: null, keyFailed: false };
+  const lk = { mode: 'link', f: null, row: null };
   let groupTimer = null; // the settle timer of the provider select
-  const flow = makeFlow(ctx, { onChange: onFlowChange, onResult: onFlowResult });
+  // The kind of a provider (gitlab | github) from the lists this page has read; undefined when not known.
+  const kindFor = (id) => kindOfProvider(cp.providers, id) || kindOfProvider(st.regProviders, id);
+  const flow = makeFlow(ctx, {
+    onChange: onFlowChange,
+    onResult: onFlowResult,
+    kindOf: (sent) => kindFor(sent.action === ACTION_CREATE_GROUP ? sent.subject : sent.fields.provider),
+  });
   let signerP = null;
   let expiry = null; // {rows, warn}: the tokens that are due, for the banner on top of the list
   let listSeq = 0; // list loads: a newer load or an apply makes older answers stale
@@ -325,6 +334,7 @@ export function projectsView(ctx) {
       if (gone() || my !== listSeq) return;
       st.list = r && Array.isArray(r.projects) ? r.projects.filter(isObj) : [];
       st.orphans = r && Array.isArray(r.orphans) ? r.orphans.filter(validOrphan).slice(0, MAX_ORPHANS) : [];
+      st.regProviders = r && Array.isArray(r.providers) ? r.providers.filter((x) => isObj(x) && PROVIDER_KINDS.includes(x.kind)).slice(0, 50) : [];
       st.listFailed = null;
     } catch (err) {
       if (gone() || my !== listSeq) return;
@@ -362,6 +372,8 @@ export function projectsView(ctx) {
     flow.reset();
     cp.f = null;
     cp.g = null;
+    lk.f = null;
+    lk.row = null;
     cp.groups = null;
     cp.groupsSeq++;
     if (groupTimer !== null) {
@@ -569,7 +581,7 @@ export function projectsView(ctx) {
   // ---- W3c: new project and new group ----
   function onFlowChange() {
     if (st.step === 'x_confirm' && (flow.phase === 'sending' || flow.phase === 'done')) st.step = 'x_result';
-    if (st.step === 'x_confirm' || st.step === 'x_result' || st.step === 'cp_form' || st.step === 'cg_form') paint();
+    if (st.step === 'x_confirm' || st.step === 'x_result' || st.step === 'cp_form' || st.step === 'cg_form' || st.step === 'lk_form') paint();
   }
 
   // After a signed change ended, whatever the answer.
@@ -589,7 +601,12 @@ export function projectsView(ctx) {
     }
     // a project: the lists are read again (an unknown outcome certainly changed what they say, a half-made project adds an alert)
     cp.clone = null;
-    if (result.ok) {
+    cp.keyFailed = false;
+    if (result.ok && sent.action === ACTION_ATTACH_REMOTE) {
+      // an attach has no clone; its answer may say that the key could not be put in place
+      const k = isObj(result.data) ? result.data.key : null;
+      cp.keyFailed = isObj(k) && k.status === 'failed' && k.code === 'key_unavailable';
+    } else if (result.ok) {
       const c = validCloneResult(isObj(result.data) ? result.data.clone : null);
       // the folder was already there: the project exists but what this server holds under that name is unknown
       cp.clone = { state: c.status === 'cloned' ? 'ok' : c.status === 'already_cloned' ? 'check' : 'failed', code: c.code };
@@ -603,14 +620,17 @@ export function projectsView(ctx) {
   async function reloadProviders() {
     try {
       const r = await ctx.get('/api/v1/providers');
-      if (!gone() && r && Array.isArray(r.providers)) cp.providers = r.providers.filter((p) => isObj(p) && PROVIDER_ID_RE.test(p.id) && validBaseUrl(p.base_url)).slice(0, 50);
+      if (!gone() && r && Array.isArray(r.providers)) cp.providers = r.providers.filter(usableProvider).slice(0, 50);
     } catch {
       // the next screen reads them again
     }
   }
 
-  async function startCreate() {
-    if (st.busy || flow.busy) return;
+  // A provider this page can offer: a known kind and an address of the right shape.
+  const usableProvider = (p) => isObj(p) && PROVIDER_ID_RE.test(p.id) && PROVIDER_KINDS.includes(p.kind) && validBaseUrl(p.base_url);
+
+  // readProviders reads the provider list for a form; null (with a note on the list) when there is none to offer.
+  async function readProviders() {
     st.busy = true;
     st.note = null;
     paint();
@@ -618,21 +638,28 @@ export function projectsView(ctx) {
     try {
       r = await ctx.get('/api/v1/providers');
     } catch (err) {
-      if (gone()) return;
+      if (gone()) return null;
       st.busy = false;
       st.note = { error: true, text: w3cFailureText(err) };
       paint();
-      return;
+      return null;
     }
-    if (gone()) return;
+    if (gone()) return null;
     st.busy = false;
-    const provs = r && Array.isArray(r.providers) ? r.providers.filter((p) => isObj(p) && PROVIDER_ID_RE.test(p.id) && validBaseUrl(p.base_url)).slice(0, 50) : [];
+    const provs = r && Array.isArray(r.providers) ? r.providers.filter(usableProvider).slice(0, 50) : [];
     if (provs.length === 0) {
-      st.note = { error: false, text: '등록된 GitLab 제공자가 없습니다. 먼저 제공자를 추가하세요.', link: '#/providers' };
+      st.note = { error: false, text: '등록된 제공자가 없습니다. 먼저 제공자를 추가하세요.', link: '#/providers' };
       paint();
-      return;
+      return null;
     }
     cp.providers = provs;
+    return provs;
+  }
+
+  async function startCreate() {
+    if (st.busy || flow.busy) return;
+    const provs = await readProviders();
+    if (provs === null) return;
     cp.f = buildCreateForm();
     st.step = 'cp_form';
     paint();
@@ -641,11 +668,19 @@ export function projectsView(ctx) {
 
   function buildCreateForm() {
     const f = {};
-    f.provider = el('select', { id: 'cp-provider', 'data-focus-key': 'provider', on: { change: scheduleGroups, blur: commitGroups } },
-      cp.providers.map((p) => el('option', { value: p.id }, inline(p.id, 64) + ' — ' + inline(p.base_url, 80))));
+    f.provider = el('select', { id: 'cp-provider', 'data-focus-key': 'provider', on: { change: onProviderChange, blur: commitGroups } },
+      cp.providers.map((p) => el('option', { value: p.id }, inline(p.id, 64) + ' — ' + hostName(p.kind) + ' — ' + inline(p.base_url, 80))));
     f.provider.value = cp.providers[0].id;
     f.group = el('select', { id: 'cp-group', 'data-focus-key': 'group' }, [el('option', { value: '' }, '그룹을 불러오는 중…')]);
     f.group.value = '';
+    // GitHub only: the repository is public or private, and there is NO default: the first option is
+    // a placeholder and the propose button stays off until a real choice is made.
+    f.visibility = el('select', { id: 'cp-visibility', 'data-focus-key': 'visibility', on: { change: () => { setProblem(f, ''); paint(); } } }, [
+      el('option', { value: '' }, '선택하세요(필수)'),
+      el('option', { value: 'public' }, '공개(public) — 인터넷의 누구나 읽을 수 있음'),
+      el('option', { value: 'private' }, '비공개(private) — 초대받은 사람만'),
+    ]);
+    f.visibility.value = '';
     f.newGroup = el('button', { type: 'button', class: 'btn', 'data-focus-key': 'newgroup', on: { click: openGroupForm } }, '새 그룹 만들기');
     f.name = el('input', { type: 'text', id: 'cp-name', class: 'mono', autocomplete: 'off', spellcheck: 'false', maxlength: String(NAME_MAX_CHARS), 'data-focus-key': 'name' });
     f.desc = el('input', { type: 'text', id: 'cp-desc', autocomplete: 'off', 'data-focus-key': 'desc' });
@@ -666,8 +701,18 @@ export function projectsView(ctx) {
     f.problem.hidden = !text;
   };
 
+  // The provider select changed: a new provider is a new form, so a visibility chosen for the
+  // previous one is never carried over (no default, ever).
+  function onProviderChange() {
+    if (cp.f) cp.f.visibility.value = '';
+    scheduleGroups();
+  }
+
+  // The kind of the provider chosen in the create form (gitlab when it is not known).
+  const createKind = () => (cp.f && kindFor(cp.f.provider.value)) || 'gitlab';
+
   // scheduleGroups: the select fired a change (an arrow key fires one each). The old
-  // list is dropped at once, the GitLab call is made once the select is quiet.
+  // list is dropped at once, the provider call is made once the select is quiet.
   function scheduleGroups() {
     cp.groups = null;
     cp.groupsErr = null;
@@ -711,7 +756,12 @@ export function projectsView(ctx) {
       return;
     }
     if (gone() || my !== cp.groupsSeq) return;
-    cp.groups = r && Array.isArray(r.groups) ? r.groups.filter((g) => isObj(g) && validGroupPath(g.path)).slice(0, MAX_GROUPS) : [];
+    // GitLab rows: a lowercase group path. GitHub rows: one login (case kept) of the account or an organisation.
+    const gh = kindFor(provId) === 'github';
+    cp.groups = r && Array.isArray(r.groups)
+      ? r.groups.filter((g) => isObj(g) && (gh ? validGitHubOwner(g.path) && (g.kind === 'user' || g.kind === 'org') : validGroupPath(g.path)))
+        .slice(0, MAX_GROUPS).map((g) => ({ path: g.path, kind: gh ? g.kind : undefined }))
+      : [];
     cp.truncated = !!r && r.truncated === true;
     fillGroupSelect(select);
   }
@@ -721,9 +771,11 @@ export function projectsView(ctx) {
     const f = cp.f;
     if (!f) return;
     clear(f.group);
-    const first = cp.groups === null ? (cp.groupsErr ? '그룹 목록을 읽지 못했습니다' : '그룹을 불러오는 중…') : cp.groups.length === 0 ? '고를 그룹이 없습니다' : '그룹을 고르세요';
+    const gh = createKind() === 'github';
+    const what = gh ? '소유자' : '그룹';
+    const first = cp.groups === null ? (cp.groupsErr ? what + ' 목록을 읽지 못했습니다' : what + '를 불러오는 중…') : cp.groups.length === 0 ? '고를 ' + what + '가 없습니다' : what + '를 고르세요';
     f.group.appendChild(el('option', { value: '' }, first));
-    for (const g of cp.groups || []) f.group.appendChild(el('option', { value: g.path }, g.path));
+    for (const g of cp.groups || []) f.group.appendChild(el('option', { value: g.path }, gh ? g.path + ' — ' + (g.kind === 'user' ? '내 계정' : '조직') : g.path));
     f.group.value = select && (cp.groups || []).some((g) => g.path === select) ? select : '';
     f.newGroup.disabled = cp.groups === null;
     if (st.step === 'cp_form') paint();
@@ -738,14 +790,18 @@ export function projectsView(ctx) {
     const desc = typeof f.desc.value === 'string' ? f.desc.value : '';
     if (!validName(name)) return setProblem(f, '프로젝트 이름은 소문자로 시작하고 소문자·숫자·하이픈만 써서 2자 이상 40자 이내로 적으세요. (GitLab 프로젝트 이름, 프로젝트 ID, 폴더 이름으로 함께 쓰입니다.)');
     if (!PROVIDER_ID_RE.test(provider) || !cp.providers.some((p) => p.id === provider)) return setProblem(f, '제공자를 목록에서 고르세요.');
-    if (cp.groups === null || group === '' || !cp.groups.some((g) => g.path === group)) return setProblem(f, '그룹을 목록에서 고르세요. 그룹이 없으면 "새 그룹 만들기"를 쓰세요.');
+    const kind = kindFor(provider) || 'gitlab';
+    const gh = kind === 'github';
+    if (cp.groups === null || group === '' || !cp.groups.some((g) => g.path === group) || !validOwnerForKind(kind, group)) {
+      return setProblem(f, gh ? '소유자(내 계정 또는 조직)를 목록에서 고르세요. GitHub에서는 새 조직을 만들 수 없습니다.' : '그룹을 목록에서 고르세요. 그룹이 없으면 "새 그룹 만들기"를 쓰세요.');
+    }
+    if (gh && !VISIBILITIES.includes(f.visibility.value)) return setProblem(f, '공개(public) 또는 비공개(private)를 반드시 고르세요. 기본값이 없습니다.');
     if (!validDescription(desc)) return setProblem(f, '설명은 200자(글자 수) 이내여야 하고 줄바꿈·제어 문자·보이지 않는 문자·방향 전환 문자를 쓸 수 없습니다.');
     if (!TEMPLATES.includes(f.template.value) || !PUBLISH_MODES.includes(f.publish.value)) return setProblem(f, '템플릿과 게시 권한을 목록에서 고르세요.');
     setProblem(f, '');
-    startFlow({
-      action: ACTION_CREATE_PROJECT, subject: name,
-      fields: { provider, group_path: group, template: f.template.value, description: desc, ai_context: f.ai.checked === true, publish: f.publish.value },
-    }, 'create');
+    const fields = { provider, group_path: group, template: f.template.value, description: desc, ai_context: f.ai.checked === true, publish: f.publish.value };
+    if (gh) fields.visibility = f.visibility.value; // GitLab never gets this field (the server refuses it)
+    startFlow({ action: ACTION_CREATE_PROJECT, subject: name, fields }, 'create');
   }
 
   function openGroupForm() {
@@ -795,7 +851,7 @@ export function projectsView(ctx) {
     if (flow.phase === 'idle' && flow.note) {
       const note = flow.note;
       flow.note = null;
-      const f = which === 'group' ? cp.g : cp.f;
+      const f = which === 'group' ? cp.g : which === 'create' ? cp.f : lk.f;
       if (f) setProblem(f, note.text);
       paint();
       return;
@@ -808,14 +864,28 @@ export function projectsView(ctx) {
 
   function backFromFlow() {
     flow.reset();
-    st.step = cp.which === 'group' ? 'cg_form' : 'cp_form';
+    st.step = cp.which === 'group' ? 'cg_form' : cp.which === 'create' ? 'cp_form' : 'lk_form';
     paint();
   }
 
   // The clone of a registered project that has no folder yet. No signature: it
   // only clones what the registry already says. A timeout is "unknown", never retried.
+  const kindOfProject = (id) => {
+    const row = (st.list || []).find((x) => isObj(x) && x.id === id);
+    return row && typeof row.provider === 'string' ? kindFor(row.provider) : flow.sent && flow.sent.subject === id ? kindFor(flow.sent.fields.provider) : undefined;
+  };
+
+  // The sentence of a failed clone: GitHub's words for a GitHub project, else the clone text, else the shared text.
+  function cloneFailureText(code, kind) {
+    if (kind === 'github' && Object.prototype.hasOwnProperty.call(CLONE_TEXT, code)) return cloneText(code, 'github');
+    if (Object.prototype.hasOwnProperty.call(CLONE_TEXT, code)) return CLONE_TEXT[code];
+    if (Object.prototype.hasOwnProperty.call(W3C_ERROR_TEXT, code)) return W3C_ERROR_TEXT[code];
+    return cloneText(code);
+  }
+
   async function retryClone(id, where) {
     if (cp.cloneBusy || !SUBJECT_RE.test(id)) return;
+    const cloneKind = kindOfProject(id);
     cp.cloneBusy = true;
     if (where === 'result') cp.clone = { state: 'busy' };
     paint();
@@ -831,7 +901,7 @@ export function projectsView(ctx) {
     let text;
     if (outcome.ok) text = '이 서버에 복제했습니다.';
     else if (outcome.unknown) text = CLONE_TEXT.unknown;
-    else text = Object.prototype.hasOwnProperty.call(CLONE_TEXT, outcome.code) ? CLONE_TEXT[outcome.code] : (Object.prototype.hasOwnProperty.call(W3C_ERROR_TEXT, outcome.code) ? W3C_ERROR_TEXT[outcome.code] : cloneText(outcome.code));
+    else text = cloneFailureText(outcome.code, cloneKind);
     if (where === 'result') {
       cp.clone = outcome.ok ? { state: 'ok', code: 'ok', text }
         : outcome.code === 'already_cloned' ? { state: 'check', code: outcome.code, text }
@@ -858,40 +928,53 @@ export function projectsView(ctx) {
   function orphansBlock() {
     if (st.orphans.length === 0) return null;
     return el('div', { class: 'trunc', role: 'note', 'data-orphans': 'list' }, [
-      el('p', {}, 'GitLab에 일부만 만들어진 프로젝트 ' + st.orphans.length + '개가 있을 수 있습니다(만들기가 중간에 멈췄습니다).'),
-      el('ul', {}, st.orphans.map((o) => el('li', {}, [
-        el('span', { class: 'mono' }, o.project),
-        ' (프로젝트 ID ' + (o.project_id === null ? '알 수 없음' : String(o.project_id)) + ', 멈춘 단계: ' + stepLabel(o.step) + ', ' + o.at + ')',
-      ]))),
-      el('p', {}, ORPHAN_NOTICE),
+      el('p', {}, '제공자(GitLab/GitHub)에 일부만 만들어졌거나 연결이 중간에 멈춘 항목 ' + st.orphans.length + '개가 있을 수 있습니다.'),
+      el('ul', {}, st.orphans.map((o) => {
+        const kind = kindFor(o.provider);
+        const origin = o.origin === 'linked' ? 'linked' : 'created';
+        return el('li', { 'data-origin': origin }, [
+          el('span', { class: 'mono' }, o.project),
+          ' (프로젝트 ID ' + (o.project_id === null ? '알 수 없음' : String(o.project_id)) + ', 멈춘 단계: ' + stepLabel(o.step, kind) + ', ' + o.at + ')',
+          el('div', { class: 'note' }, orphanNotice(origin, kind)),
+        ]);
+      })),
     ]);
   }
 
   function renderCreateForm() {
     const f = cp.f;
+    const kind = createKind();
+    const gh = kind === 'github';
     const field = (labelText, id, control, hint) => el('div', { class: 'field' }, [el('label', { for: id }, labelText), control, hint ? el('span', { class: 'hint' }, hint) : null]);
+    const needVisibility = gh && !VISIBILITIES.includes(f.visibility.value);
     return el('div', { class: ['panel', 'canvas'] }, [
       el('h1', { id: 'h-projects' }, '새 프로젝트 만들기'),
-      el('p', { class: 'lead' }, 'GitLab에 빈 프로젝트를 만들고(첫 커밋, main 보호, 배포 키 포함) 이 서버에 복제해 등록합니다. 다음 화면에서 바뀔 내용을 모두 확인한 뒤 패스키로 서명합니다.'),
+      el('p', { class: 'lead' }, gh
+        ? 'GitHub에 빈 저장소를 만들고(첫 커밋, main 보호, 이 저장소 전용 배포 키 포함) 이 서버에 복제해 등록합니다. 다음 화면에서 바뀔 내용을 모두 확인한 뒤 패스키로 서명합니다.'
+        : 'GitLab에 빈 프로젝트를 만들고(첫 커밋, main 보호, 배포 키 포함) 이 서버에 복제해 등록합니다. 다음 화면에서 바뀔 내용을 모두 확인한 뒤 패스키로 서명합니다.'),
       el('div', { class: 'form' }, [
         field('제공자', 'cp-provider', f.provider),
-        field('그룹', 'cp-group', f.group, cp.groupsErr ? cp.groupsErr : cp.truncated ? '그룹이 많아 일부만 보입니다. 찾는 그룹이 없으면 GitLab에서 확인하세요.' : 'GitLab에 실제로 물어 받은 그룹입니다(프로젝트를 만들 권한이 있는 것만).'),
+        field(gh ? '소유자(내 계정 또는 조직)' : '그룹', 'cp-group', f.group,
+          cp.groupsErr ? cp.groupsErr : cp.truncated ? (gh ? '소유자가 많아 일부만 보입니다. 찾는 소유자가 없으면 GitHub에서 확인하세요.' : '그룹이 많아 일부만 보입니다. 찾는 그룹이 없으면 GitLab에서 확인하세요.')
+            : gh ? 'GitHub에 실제로 물어 받은 목록입니다(토큰의 계정과 속한 조직). GitHub에서는 새 조직을 이 도구로 만들 수 없습니다.' : 'GitLab에 실제로 물어 받은 그룹입니다(프로젝트를 만들 권한이 있는 것만).'),
         el('div', { class: ['row', 'rowgap'] }, [
-          f.newGroup,
+          gh ? null : f.newGroup, // GitHub has no group creation: the control is not there at all
           cp.groupsErr ? [' ', el('button', { type: 'button', class: 'btn', 'data-focus-key': 'regroups', on: { click: retryGroups } }, '다시 불러오기')] : null,
         ]),
-        field('프로젝트 이름', 'cp-name', f.name, '소문자·숫자·하이픈, 2~40자. GitLab 프로젝트 이름·프로젝트 ID·폴더 이름이 모두 이것입니다. GitLab이 예약한 이름은 GitLab이 거부할 수 있습니다.'),
+        field('프로젝트 이름', 'cp-name', f.name, gh ? '소문자·숫자·하이픈, 2~40자. GitHub 저장소 이름·프로젝트 ID·폴더 이름이 모두 이것입니다.'
+          : '소문자·숫자·하이픈, 2~40자. GitLab 프로젝트 이름·프로젝트 ID·폴더 이름이 모두 이것입니다. GitLab이 예약한 이름은 GitLab이 거부할 수 있습니다.'),
+        gh ? field('공개 여부(필수)', 'cp-visibility', f.visibility, '기본값이 없습니다. 공개 저장소는 인터넷의 누구나 코드를 읽을 수 있습니다. 비공개는 초대받은 사람만 봅니다. 브랜치 보호는 공개 저장소이거나 유료 요금제일 때만 켜집니다.') : null,
         field('설명(선택)', 'cp-desc', f.desc, '200자 이내.'),
         field('템플릿', 'cp-template', f.template, '코드에 고정된 파일들이 첫 커밋으로 들어갑니다.'),
         el('div', { class: 'field' }, [
           el('div', { class: 'row' }, [f.ai, ' ', el('label', { for: 'cp-ai' }, 'AI 전송 허용 (기본: 꺼짐)')]),
-          el('span', { class: 'hint' }, '켜면 AI 계획 기능이 이 프로젝트 파일의 일부 내용을 외부 AI 서비스(OpenAI)로 보낼 수 있습니다.'),
+          el('span', { class: 'hint' }, '켜면 AI 계획 기능이 이 프로젝트 파일의 일부 내용을 외부 AI 서비스(OpenAI)로 보낼 수 있습니다. 공개 여부와는 별개의 설정입니다.'),
         ]),
         field('게시 권한', 'cp-publish', f.publish, '쓰기: 이 서버가 브랜치를 올릴 수 있는 배포 키로 등록합니다. 읽기: 읽기 전용 키로 등록합니다.'),
         f.problem,
         noteNode(),
         el('div', { class: 'row' }, [
-          el('button', { type: 'button', class: ['btn', 'primary'], 'data-focus-key': 'confirm', disabled: flow.busy, on: { click: submitCreate } }, '변경 내용 확인'),
+          el('button', { type: 'button', class: ['btn', 'primary'], 'data-focus-key': 'confirm', disabled: flow.busy || needVisibility, on: { click: submitCreate } }, '변경 내용 확인'),
           ' ',
           el('button', { type: 'button', class: 'btn', 'data-focus-key': 'cancel', on: { click: toList } }, '취소'),
         ]),
@@ -922,7 +1005,8 @@ export function projectsView(ctx) {
   // The provider's GitLab address from this page's own provider list (not from the server's proposal).
   function providerUrlFact(id) {
     const prov = cp.providers.find((p) => p.id === id);
-    return factItem('제공자 GitLab 주소 (제공자 목록 기준)', prov ? inline(prov.base_url, 200) : '(목록에 없음)', { 'data-field': 'provider_url' });
+    const label = prov && prov.kind === 'github' ? '제공자 GitHub API 주소 (제공자 목록 기준)' : '제공자 GitLab 주소 (제공자 목록 기준)';
+    return factItem(label, prov ? inline(prov.base_url, 200) : '(목록에 없음)', { 'data-field': 'provider_url' });
   }
 
   function renderXConfirm() {
@@ -942,34 +1026,92 @@ export function projectsView(ctx) {
         onCancel: backFromFlow,
       });
     }
+    if (s.action === ACTION_LINK_PROJECT || s.action === ACTION_ATTACH_REMOTE) return renderRemoteConfirm(s);
     const f = flow.full || s.fields; // a refused proposal shows only what this page itself sent
     const key = flow.key;
     const yn = (b) => (b ? '예' : '아니오');
+    const gh = kindFor(s.fields.provider) === 'github';
     const factsList = [
       factItem('제공자', s.fields.provider, { 'data-field': 'provider' }),
       providerUrlFact(s.fields.provider),
-      factItem('그룹 경로', s.fields.group_path, { 'data-field': 'group_path' }),
+      factItem(gh ? '소유자' : '그룹 경로', s.fields.group_path, { 'data-field': 'group_path' }),
       factItem('프로젝트 이름', s.subject, { 'data-field': 'name' }),
+    ];
+    if (has(s.fields, 'visibility')) factsList.push(visibilityFact(s.fields.visibility));
+    factsList.push(
       factItem('템플릿', f.template, { 'data-field': 'template' }),
       factItem('설명', f.description === '' ? '(없음)' : f.description, { 'data-field': 'description' }),
       factItem('AI 전송 허용', yn(f.ai_context), { 'data-field': 'ai_context' }),
       factItem('게시 권한', f.publish === 'write' ? '쓰기 — 이 서버가 브랜치를 올릴 수 있는 배포 키' : '읽기 — 읽기 전용 배포 키', { 'data-field': 'publish' }),
-    ];
-    if (key) {
-      factsList.push(
-        factItem('배포 키 지문(ssh-keygen -l 형식)', key.fingerprint, { 'data-field': 'fingerprint' }),
-        factItem('공개 키(.pub) 앞부분', key.line.slice(0, KEY_PREFIX_CHARS) + '…', { 'data-field': 'key_prefix' }),
-        factItem('공개 키(.pub) 주석', key.line.split(' ').slice(2).join(' ') || '(없음)', { 'data-field': 'key_comment' }),
-        factItem('서명에 묶이는 키 해시(앞 16자)', key.hash.slice(0, 16) + '…', { 'data-field': 'key_hash' }),
-      );
-    }
+    );
+    if (key) keyFacts(factsList, key);
     return confirmPanel(flow, {
       title: '변경 내용 확인',
-      lead: '아래 내용이 전부입니다. 서명하면 GitLab에 프로젝트가 바로 만들어지고, 이 도구는 만든 것을 삭제하지 못합니다.',
+      lead: gh ? '아래 내용이 전부입니다. 서명하면 GitHub에 저장소가 바로 만들어지고, 이 도구는 만든 것을 삭제하지 못합니다.'
+        : '아래 내용이 전부입니다. 서명하면 GitLab에 프로젝트가 바로 만들어지고, 이 도구는 만든 것을 삭제하지 못합니다.',
       facts: factsList,
       extra: [
-        key ? el('p', { class: 'note', 'data-hint': 'fingerprint' }, '이 지문이 서버의 배포 키와 같은지 서버에서 ssh-keygen -l -f <.pub 파일 경로> 로 직접 비교해 확인하세요. 이 화면은 서버가 보낸 공개 키에서 지문을 스스로 계산했습니다.') : null,
+        key ? keyHint(gh) : null,
+        s.fields.visibility === 'public' ? publicWarning() : null,
         f.ai_context ? el('div', { class: 'trunc', 'data-emph': 'ai-on', role: 'note' }, '[중요] AI 전송 허용: 예. 이 프로젝트의 파일 내용이 외부 AI 서비스(OpenAI)로 전송될 수 있습니다.') : null,
+      ],
+      onSign: () => flow.sign(),
+      onCancel: backFromFlow,
+    });
+  }
+
+  // The deploy key as the browser verified it: fingerprint (computed here), the front of the line, its comment, the signed hash.
+  function keyFacts(list, key) {
+    list.push(
+      factItem('배포 키 지문(ssh-keygen -l 형식)', key.fingerprint, { 'data-field': 'fingerprint' }),
+      factItem('공개 키(.pub) 앞부분', key.line.slice(0, KEY_PREFIX_CHARS) + '…', { 'data-field': 'key_prefix' }),
+      factItem('공개 키(.pub) 주석', key.line.split(' ').slice(2).join(' ') || '(없음)', { 'data-field': 'key_comment' }),
+      factItem('서명에 묶이는 키 해시(앞 16자)', key.hash.slice(0, 16) + '…', { 'data-field': 'key_hash' }),
+    );
+  }
+
+  function keyHint(gh) {
+    return el('p', { class: 'note', 'data-hint': 'fingerprint' }, gh
+      ? '이 키는 이 저장소 전용입니다: 제안할 때마다 서버가 새로 만들며 다른 저장소에는 쓰이지 않습니다. 이 화면은 서버가 보낸 공개 키에서 지문을 스스로 계산했습니다. 만든 뒤 GitHub 저장소의 Settings → Deploy keys에 같은 지문의 키가 있어야 합니다.'
+      : '이 지문이 서버의 배포 키와 같은지 서버에서 ssh-keygen -l -f <.pub 파일 경로> 로 직접 비교해 확인하세요. 이 화면은 서버가 보낸 공개 키에서 지문을 스스로 계산했습니다.');
+  }
+
+  // The visibility of a new GitHub repository, in bold plain text (never colour alone).
+  function visibilityFact(v) {
+    return el('li', { 'data-field': 'visibility' }, [el('b', {}, '공개 여부'), ': ',
+      el('strong', {}, v === 'public' ? '공개(public) — 인터넷의 누구나 읽을 수 있음' : '비공개(private) — 초대받은 사람만')]);
+  }
+
+  function publicWarning() {
+    return el('div', { class: 'trunc', 'data-emph': 'public-warning', role: 'note' },
+      '[중요] 공개 저장소입니다: 인터넷의 누구나(로그인하지 않아도) 이 저장소의 코드를 읽을 수 있습니다. 이 도구는 만든 저장소를 비공개로 바꾸거나 삭제하지 못합니다. 코드에 비밀 값이 들어가지 않게 하세요.');
+  }
+
+  // The confirmation of a link or an attach: a repository that already exists gets this server's deploy key.
+  function renderRemoteConfirm(s) {
+    const f = flow.full || s.fields;
+    const key = flow.key;
+    const link = s.action === ACTION_LINK_PROJECT;
+    const gh = kindFor(s.fields.provider) === 'github';
+    const factsList = [
+      factItem('제공자', s.fields.provider, { 'data-field': 'provider' }),
+      providerUrlFact(s.fields.provider),
+      factItem('원격 저장소 경로', s.fields.remote_path, { 'data-field': 'remote_path' }),
+      factItem(link ? '새 프로젝트 ID(저장소 이름에서 정해짐)' : '연결할 프로젝트 ID', s.subject, { 'data-field': 'id' }),
+    ];
+    if (link) factsList.push(factItem('AI 전송 허용', f.ai_context ? '예' : '아니오', { 'data-field': 'ai_context' }));
+    factsList.push(factItem('게시 권한', f.publish === 'write' ? '쓰기 — 이 서버가 브랜치를 올릴 수 있는 배포 키' : '읽기 — 읽기 전용 배포 키', { 'data-field': 'publish' }));
+    if (key) keyFacts(factsList, key);
+    return confirmPanel(flow, {
+      title: '변경 내용 확인',
+      lead: link ? '아래 내용이 전부입니다. 서명하면 이미 있는 저장소를 이 서버의 새 프로젝트로 등록하고 복제합니다.'
+        : '아래 내용이 전부입니다. 서명하면 이 프로젝트의 게시와 복제가 이 원격 저장소를 쓰게 됩니다.',
+      warn: el('div', { class: 'trunc', role: 'note', 'data-warn': 'key-on-existing' },
+        '[중요] 이미 있는 저장소의 설정(Deploy keys)에 이 서버의 배포 키가 등록됩니다. 이 도구는 저장소를 만들거나 지우거나 다른 설정을 바꾸지 않으며, 등록한 키도 지우지 않습니다.'),
+      facts: factsList,
+      extra: [
+        key ? keyHint(gh) : null,
+        link && f.ai_context ? el('div', { class: 'trunc', 'data-emph': 'ai-on', role: 'note' }, '[중요] AI 전송 허용: 예. 이 프로젝트의 파일 내용이 외부 AI 서비스(OpenAI)로 전송될 수 있습니다.') : null,
       ],
       onSign: () => flow.sign(),
       onCancel: backFromFlow,
@@ -982,17 +1124,20 @@ export function projectsView(ctx) {
     if (s.action === ACTION_CREATE_GROUP) {
       const kind = r === null ? 'pending' : r.ok ? 'ok' : 'error';
       const body = r === null ? '서버로 변경을 보내는 중…' : r.ok ? '그룹을 만들었습니다. 그룹 목록을 다시 읽는 중…'
-        : r.unknown ? W3C_ERROR_TEXT.outcome_unknown : w3cFailureText(r.err);
+        : r.unknown ? W3C_ERROR_TEXT.outcome_unknown : w3cFailureText(r.err, kindFor(s.subject));
       return el('div', { class: ['panel', 'canvas'] }, [
         el('h1', { id: 'h-projects' }, r === null ? '만드는 중' : r.ok ? '완료' : '그룹을 만들지 못했습니다'),
         el('p', { class: kind === 'error' ? ['note', 'err'] : ['note', 'ok'], role: kind === 'error' ? 'alert' : 'status', 'data-result': kind }, body),
         kind === 'error' ? el('p', {}, [el('button', { type: 'button', class: ['btn', 'primary'], 'data-focus-key': 'back', on: { click: backFromFlow } }, '돌아가기')]) : null,
       ]);
     }
+    if (s.action === ACTION_LINK_PROJECT || s.action === ACTION_ATTACH_REMOTE) return renderRemoteResult(r, s);
+    const kind = kindFor(s.fields.provider);
+    const host = hostName(kind);
     if (r === null) {
       return el('div', { class: ['panel', 'canvas'] }, [
         el('h1', { id: 'h-projects' }, '만드는 중'),
-        el('p', { class: ['note', 'ok'], role: 'status', 'data-result': 'pending' }, '서버가 GitLab에 프로젝트를 만들고 있습니다(최대 약 90초 걸릴 수 있습니다). 끝나면 단계가 나옵니다. 이 화면을 닫아도 서버의 작업은 멈추지 않습니다.'),
+        el('p', { class: ['note', 'ok'], role: 'status', 'data-result': 'pending' }, '서버가 ' + host + '에 ' + (kind === 'github' ? '저장소' : '프로젝트') + '를 만들고 있습니다(최대 약 90초 걸릴 수 있습니다). 끝나면 단계가 나옵니다. 이 화면을 닫아도 서버의 작업은 멈추지 않습니다.'),
       ]);
     }
     if (r.ok) {
@@ -1000,11 +1145,11 @@ export function projectsView(ctx) {
       const cloneDone = c.state === 'ok';
       const cloneLine = cloneDone ? '이 서버에 복제했습니다.'
         : c.state === 'check' ? CLONE_TEXT.check
-        : c.state === 'busy' ? '복제하는 중입니다(최대 2분)…' : (c.text || cloneText(c.code));
+        : c.state === 'busy' ? '복제하는 중입니다(최대 2분)…' : (c.text || cloneText(c.code, kind));
       return el('div', { class: ['panel', 'canvas'] }, [
         el('h1', { id: 'h-projects' }, '완료'),
-        el('p', { class: ['note', 'ok'], role: 'status', 'data-result': 'ok' }, '프로젝트를 만들고 등록했습니다.'),
-        stepList(stepStates('ok', null, cloneDone)),
+        el('p', { class: ['note', 'ok'], role: 'status', 'data-result': 'ok' }, kind === 'github' ? '저장소를 만들고 등록했습니다.' : '프로젝트를 만들고 등록했습니다.'),
+        stepList(stepStates('ok', null, cloneDone), kind),
         el('p', { class: cloneDone ? ['note', 'ok'] : c.state === 'busy' ? ['note'] : ['note', 'err'], role: 'status', 'data-clone': c.state }, cloneLine),
         c.state === 'failed'
           ? el('p', {}, [el('button', { type: 'button', class: 'btn', 'data-focus-key': 'reclone', disabled: cp.cloneBusy, on: { click: () => retryClone(s.subject, 'result') } }, '다시 복제'), ' ',
@@ -1018,12 +1163,167 @@ export function projectsView(ctx) {
     const info = partial ? partialInfo(r.err, s) : null;
     return el('div', { class: ['panel', 'canvas'] }, [
       el('h1', { id: 'h-projects' }, '프로젝트를 만들지 못했습니다'),
-      el('p', { class: ['note', 'err'], role: 'alert', 'data-result': 'error' }, r.unknown ? W3C_ERROR_TEXT.outcome_unknown : w3cFailureText(r.err)),
-      partial && info.step !== null ? stepList(stepStates('partial', info.step, false)) : null,
-      partial ? orphanBlock(info) : null,
-      partial && info.step === null ? el('p', { class: 'note' }, '어느 단계에서 멈췄는지 알 수 없습니다. GitLab에서 위 경로를 확인하세요.') : null,
-      r.unknown ? el('p', { class: 'note' }, 'GitLab에 같은 이름의 프로젝트가 생겼는지, 목록의 알림에 올라왔는지 확인하세요. 같은 이름으로 다시 만들려면 먼저 그것을 확인하세요.') : null,
+      el('p', { class: ['note', 'err'], role: 'alert', 'data-result': 'error' }, r.unknown ? W3C_ERROR_TEXT.outcome_unknown : w3cFailureText(r.err, kind)),
+      partial && info.step !== null ? stepList(stepStates('partial', info.step, false), kind) : null,
+      partial ? orphanBlock(info, kind) : null,
+      partial && info.step === null ? el('p', { class: 'note' }, '어느 단계에서 멈췄는지 알 수 없습니다. ' + host + '에서 위 경로를 확인하세요.') : null,
+      r.unknown ? el('p', { class: 'note' }, host + '에 같은 이름의 ' + (kind === 'github' ? '저장소' : '프로젝트') + '가 생겼는지, 목록의 알림에 올라왔는지 확인하세요. 같은 이름으로 다시 만들려면 먼저 그것을 확인하세요.') : null,
       el('p', {}, [el('button', { type: 'button', class: ['btn', 'primary'], 'data-focus-key': 'back', on: { click: backToList } }, '목록으로')]),
+    ]);
+  }
+
+  // The result of a link or an attach. Nothing here is the server's word: the id and the remote path
+  // are the ones this page sent, the sentences are fixed by code.
+  function renderRemoteResult(r, s) {
+    const kind = kindFor(s.fields.provider);
+    const host = hostName(kind);
+    const link = s.action === ACTION_LINK_PROJECT;
+    if (r === null) {
+      return el('div', { class: ['panel', 'canvas'] }, [
+        el('h1', { id: 'h-projects' }, link ? '연결하는 중' : '원격을 연결하는 중'),
+        el('p', { class: ['note', 'ok'], role: 'status', 'data-result': 'pending' }, '서버가 ' + host + '의 저장소를 확인하고 배포 키를 등록하고 있습니다(최대 약 2분 걸릴 수 있습니다). 이 화면을 닫아도 서버의 작업은 멈추지 않습니다.'),
+      ]);
+    }
+    if (r.ok) {
+      const c = cp.clone || { state: 'ok', code: 'ok' };
+      const cloneDone = c.state === 'ok';
+      const cloneLine = cloneDone ? '이 서버에 복제했습니다.' : c.state === 'check' ? CLONE_TEXT.check
+        : c.state === 'busy' ? '복제하는 중입니다(최대 2분)…' : (c.text || cloneText(c.code, kind));
+      return el('div', { class: ['panel', 'canvas'] }, [
+        el('h1', { id: 'h-projects' }, '완료'),
+        el('p', { class: ['note', 'ok'], role: 'status', 'data-result': 'ok' }, link ? '이미 있는 저장소를 프로젝트로 등록했습니다.' : '프로젝트에 원격 저장소를 연결했습니다.'),
+        el('ul', { class: 'pfacts', 'aria-label': '연결 결과' }, [
+          factItem('프로젝트 ID', s.subject, { 'data-field': 'id' }),
+          factItem('원격 저장소', s.fields.remote_path, { 'data-field': 'remote_path' }),
+        ]),
+        link ? el('p', { class: cloneDone ? ['note', 'ok'] : c.state === 'busy' ? ['note'] : ['note', 'err'], role: 'status', 'data-clone': c.state }, cloneLine) : null,
+        !link && cp.keyFailed ? el('p', { class: ['note', 'err'], role: 'alert', 'data-note': 'key' }, W3C_ERROR_TEXT.key_unavailable) : null,
+        link && c.state === 'failed'
+          ? el('p', {}, [el('button', { type: 'button', class: 'btn', 'data-focus-key': 'reclone', disabled: cp.cloneBusy, on: { click: () => retryClone(s.subject, 'result') } }, '다시 복제'), ' ',
+            el('span', { class: 'note' }, '서명 없이 이미 등록된 내용대로 복제만 다시 합니다.')])
+          : null,
+        el('p', {}, [el('button', { type: 'button', class: ['btn', 'primary'], 'data-focus-key': 'back', on: { click: backToList } }, '목록으로')]),
+      ]);
+    }
+    const partial = r.err && r.err.code === 'link_partial';
+    const info = partial ? partialInfo(r.err, s) : null;
+    return el('div', { class: ['panel', 'canvas'] }, [
+      el('h1', { id: 'h-projects' }, link ? '연결하지 못했습니다' : '원격을 연결하지 못했습니다'),
+      el('p', { class: ['note', 'err'], role: 'alert', 'data-result': 'error' }, r.unknown ? W3C_ERROR_TEXT.outcome_unknown : w3cFailureText(r.err, kind)),
+      partial && info.step !== null ? linkStepList(info.step) : null,
+      partial ? orphanBlock(info, kind) : null,
+      partial && info.step === null ? el('p', { class: 'note' }, '어느 단계에서 멈췄는지 알 수 없습니다. ' + host + '에서 위 저장소의 배포 키를 확인하세요.') : null,
+      r.unknown ? el('p', { class: 'note' }, host + ' 저장소 설정(Deploy keys)에 이 서버의 배포 키(제목이 orchd로 시작)가 붙었는지와 목록을 확인하세요. 확인하기 전에는 같은 저장소를 다시 연결하지 마세요.') : null,
+      el('p', {}, [el('button', { type: 'button', class: ['btn', 'primary'], 'data-focus-key': 'back', on: { click: backToList } }, '목록으로')]),
+    ]);
+  }
+
+  // ---- link ("기존 저장소 연결") and attach ("원격 연결") ----
+  async function startRemote(mode, row) {
+    if (st.busy || flow.busy) return;
+    const provs = await readProviders();
+    if (provs === null) return;
+    lk.mode = mode;
+    lk.row = row || null;
+    lk.f = buildRemoteForm();
+    st.step = 'lk_form';
+    paint();
+  }
+
+  // remoteCheck: what the typed path means for the chosen provider: {id} when it can be signed, else {why}.
+  function remoteCheck() {
+    const f = lk.f;
+    const kind = kindFor(f.provider.value) || 'gitlab';
+    const remote = f.remote.value.trim();
+    if (!validRemotePathForKind(kind, remote)) return { why: 'path', kind };
+    const name = remote.slice(remote.lastIndexOf('/') + 1);
+    if (lk.mode === 'attach') {
+      const same = kind === 'github' ? name.toLowerCase() === lk.row.id : name === lk.row.id;
+      return same ? { id: lk.row.id, kind, remote } : { why: 'mismatch', kind };
+    }
+    // the project id is the repository name (GitHub names are case-insensitive: lower case)
+    const id = kind === 'github' ? name.toLowerCase() : name;
+    return validName(id) ? { id, kind, remote } : { why: 'id', id, kind };
+  }
+
+  function updateDerived() {
+    const f = lk.f;
+    if (!f || !f.derived) return;
+    const c = remoteCheck();
+    clear(f.derived);
+    f.derived.append(f.remote.value.trim() === '' ? '(저장소 경로를 적으면 나타납니다)' : c.id !== undefined && c.why === undefined ? c.id : c.why === 'id' ? '(사용할 수 없음: ' + c.id + ')' : '(경로를 확인하세요)');
+  }
+
+  function buildRemoteForm() {
+    const f = {};
+    const link = lk.mode === 'link';
+    f.provider = el('select', { id: 'lk-provider', 'data-focus-key': 'provider', on: { change: () => { setProblem(f, ''); updateDerived(); paint(); } } },
+      cp.providers.map((p) => el('option', { value: p.id }, inline(p.id, 64) + ' — ' + hostName(p.kind) + ' — ' + inline(p.base_url, 80))));
+    f.provider.value = cp.providers[0].id;
+    f.remote = el('input', { type: 'text', id: 'lk-remote', class: 'mono', autocomplete: 'off', spellcheck: 'false', maxlength: '255', 'data-focus-key': 'remote', on: { input: updateDerived } });
+    f.remote.value = '';
+    if (link) {
+      f.ai = el('input', { type: 'checkbox', id: 'lk-ai', 'data-focus-key': 'ai' });
+      f.ai.checked = false; // default: the repository's contents are NOT sent to an AI service
+    }
+    f.publish = el('select', { id: 'lk-publish', 'data-focus-key': 'publish' }, PUBLISH_MODES.map((m) => el('option', { value: m }, PUBLISH_TEXT[m])));
+    f.publish.value = 'read'; // an existing repository gets the least right unless the person asks for more
+    f.derived = el('span', { class: 'mono' }, '(저장소 경로를 적으면 나타납니다)');
+    f.problem = el('p', { class: ['note', 'err'], role: 'alert', 'data-problem': 'form' });
+    f.problem.hidden = true;
+    return f;
+  }
+
+  function submitRemote() {
+    const f = lk.f;
+    if (!f || flow.busy) return;
+    const c = remoteCheck();
+    if (c.why === 'path') {
+      return setProblem(f, c.kind === 'github' ? '원격 저장소 경로는 소유자/저장소 형태여야 합니다(예: octo/Hello-World). 점 경로, .git 끝, % 기호, 한글은 쓸 수 없습니다.'
+        : '원격 저장소 경로는 그룹/하위그룹/프로젝트 형태여야 합니다(소문자·숫자·하이픈 이름, 예: team/sub/app-one). 점 경로, .git 끝, % 기호는 쓸 수 없습니다.');
+    }
+    if (c.why === 'id') return setProblem(f, '저장소 이름에서 정해지는 프로젝트 ID(' + c.id + ')가 규칙에 맞지 않습니다. 프로젝트 ID는 소문자로 시작하고 소문자·숫자·하이픈만 써서 2~40자여야 합니다. 이 이름의 저장소는 연결할 수 없습니다.');
+    if (c.why === 'mismatch') return setProblem(f, W3C_ERROR_TEXT.remote_name_mismatch);
+    if (!PUBLISH_MODES.includes(f.publish.value)) return setProblem(f, '게시 권한을 목록에서 고르세요.');
+    setProblem(f, '');
+    const provider = f.provider.value;
+    if (lk.mode === 'link') {
+      startFlow({ action: ACTION_LINK_PROJECT, subject: c.id, fields: { provider, remote_path: c.remote, ai_context: f.ai.checked === true, publish: f.publish.value } }, 'link');
+    } else {
+      startFlow({ action: ACTION_ATTACH_REMOTE, subject: c.id, fields: { provider, remote_path: c.remote, publish: f.publish.value } }, 'attach');
+    }
+  }
+
+  function renderRemoteForm() {
+    const f = lk.f;
+    const link = lk.mode === 'link';
+    const kind = kindFor(f.provider.value) || 'gitlab';
+    const field = (labelText, id, control, hint) => el('div', { class: 'field' }, [el('label', { for: id }, labelText), control, hint ? el('span', { class: 'hint' }, hint) : null]);
+    return el('div', { class: ['panel', 'canvas'] }, [
+      el('h1', { id: 'h-projects' }, link ? '기존 저장소 연결' : '원격 연결'),
+      el('p', { class: 'lead' }, link
+        ? '제공자에 이미 있는 저장소를 이 서버의 새 프로젝트로 가져옵니다. 저장소를 만들거나 지우거나 설정을 바꾸지 않고, 이 서버의 배포 키만 등록합니다. 다음 화면에서 바뀔 내용을 모두 확인한 뒤 패스키로 서명합니다.'
+        : '이미 등록된 프로젝트에 제공자의 저장소를 원격으로 연결합니다. 프로젝트의 파일과 AI 설정은 바뀌지 않고, 이 서버의 배포 키가 그 저장소에 등록됩니다. 다음 화면에서 바뀔 내용을 모두 확인한 뒤 패스키로 서명합니다.'),
+      el('div', { class: 'form' }, [
+        link ? null : el('div', { class: 'field', 'data-field': 'subject' }, [el('div', {}, [el('b', {}, '연결할 프로젝트'), ': ', el('span', { class: 'mono' }, inline(lk.row.id, 64))]),
+          el('span', { class: 'hint' }, '이미 원격이 있는 프로젝트와, 서버 설정에 원격이 정해진 프로젝트는 연결할 수 없습니다(서버가 거부합니다).')]),
+        field('제공자', 'lk-provider', f.provider),
+        field('원격 저장소 경로', 'lk-remote', f.remote, kind === 'github' ? '소유자/저장소, 예: octo/Hello-World' : '그룹/하위그룹/프로젝트, 예: team/sub/app-one'),
+        link ? el('div', { class: 'field', 'data-field': 'derived-id' }, [el('div', {}, [el('b', {}, '프로젝트 ID(저장소 이름에서 정해집니다)'), ': ', f.derived]),
+          el('span', { class: 'hint' }, '프로젝트 ID는 원격 저장소 이름과 같아야 합니다' + (kind === 'github' ? '(GitHub: 소문자로 바꿉니다)' : '') + '. 그렇지 않은 저장소는 연결할 수 없습니다.')]) : null,
+        link ? el('div', { class: 'field' }, [
+          el('div', { class: 'row' }, [f.ai, ' ', el('label', { for: 'lk-ai' }, 'AI 전송 허용 (기본: 꺼짐)')]),
+          el('span', { class: 'hint' }, '켜면 AI 계획 기능이 이 저장소 파일의 일부 내용을 외부 AI 서비스(OpenAI)로 보낼 수 있습니다.'),
+        ]) : null,
+        field('게시 권한', 'lk-publish', f.publish, '기본은 읽기입니다. 쓰기: 이 서버가 브랜치를 올릴 수 있는 배포 키로 등록합니다.'),
+        f.problem,
+        noteNode(),
+        el('div', { class: 'row' }, [
+          el('button', { type: 'button', class: ['btn', 'primary'], 'data-focus-key': 'confirm', disabled: flow.busy, on: { click: submitRemote } }, '변경 내용 확인'),
+          ' ',
+          el('button', { type: 'button', class: 'btn', 'data-focus-key': 'cancel', on: { click: toList } }, '취소'),
+        ]),
+      ]),
     ]);
   }
 
@@ -1048,6 +1348,8 @@ export function projectsView(ctx) {
         return renderCreateForm();
       case 'cg_form':
         return renderGroupForm();
+      case 'lk_form':
+        return renderRemoteForm();
       case 'x_confirm':
         return renderXConfirm();
       case 'x_result':
@@ -1067,7 +1369,7 @@ export function projectsView(ctx) {
         el('caption', { class: 'sr' }, '등록된 프로젝트'),
         el('thead', {}, [el('tr', {}, [
           el('th', { scope: 'col' }, 'ID'), el('th', { scope: 'col' }, '경로'), el('th', { scope: 'col' }, '종류'),
-          el('th', { scope: 'col' }, 'AI 전송 허용'), el('th', { scope: 'col' }, 'GitLab 연결'), el('th', { scope: 'col' }, '복제'),
+          el('th', { scope: 'col' }, 'AI 전송 허용'), el('th', { scope: 'col' }, '원격 연결'), el('th', { scope: 'col' }, '복제'),
           el('th', { scope: 'col' }, '자동 병합'), el('th', { scope: 'col' }, '변경'),
         ])]),
         el('tbody', {}, rows),
@@ -1083,12 +1385,14 @@ export function projectsView(ctx) {
         ' ',
         el('button', { type: 'button', class: ['btn', 'primary'], 'data-focus-key': 'create', disabled: st.busy || flow.busy, on: { click: startCreate } }, '새 프로젝트 만들기'),
         ' ',
+        el('button', { type: 'button', class: 'btn', 'data-focus-key': 'link', disabled: st.busy || flow.busy, on: { click: () => startRemote('link', null) } }, '기존 저장소 연결'),
+        ' ',
         el('button', { type: 'button', class: 'btn', 'data-focus-key': 'reload', disabled: st.busy, on: { click: reload } }, '목록 새로고침'),
       ]),
       noteNode(),
       orphansBlock(),
       st.list.length > 0 ? el('div', { class: 'card' }, [table]) : null,
-      el('p', { class: 'note' }, 'GitLab 연결과 자동 병합은 지금은 읽기 전용입니다.'),
+      el('p', { class: 'note' }, '원격 연결(GitLab·GitHub)과 자동 병합 설정은 이 표에서 바꾸지 않습니다. 원격이 없는 프로젝트에는 "원격 연결" 단추가 있습니다.'),
     ]);
   }
 
@@ -1112,15 +1416,20 @@ export function projectsView(ctx) {
       }, [ai ? 'AI 전송 끄기' : 'AI 전송 켜기', el('span', { class: 'sr' }, ' (' + inline(p.id, 64) + ')')])
       : el('span', { class: 'note' }, '-');
     const gl = isObj(p.gitlab) && typeof p.gitlab.project === 'string' ? inline(p.gitlab.project, 120) : '연결 없음';
+    // a project with no remote of its own can get one (a static --git-remote-for entry is invisible here: the server refuses it)
+    const canAttach = idOk && !isObj(p.gitlab) && (p.provider === null || p.provider === undefined);
     return el('tr', {}, [
       el('td', { class: 'mono', 'data-label': 'ID' }, inline(p.id, 64)),
       el('td', { class: 'mono', 'data-label': '경로' }, inline(p.path, 200)),
       el('td', { class: 'mono', 'data-label': '종류' }, inline(p.kind, 64)),
       el('td', { 'data-label': 'AI 전송 허용' }, el('span', { class: ['chip', ai ? 'c-wait' : 'c-idle'] }, ai ? '예' : '아니오')),
-      el('td', { 'data-label': 'GitLab 연결' }, gl),
+      el('td', { 'data-label': '원격 연결' }, gl),
       el('td', { 'data-label': '복제' }, cloneCell(p, idOk)),
       el('td', { 'data-label': '자동 병합' }, isObj(p.auto_merge) && p.auto_merge.enabled === true ? '켜짐' : '꺼짐'),
-      el('td', {}, toggle),
+      el('td', {}, [toggle, canAttach ? [' ', el('button', {
+        type: 'button', class: 'btn', 'data-focus-key': 'attach-' + i, disabled: st.busy || flow.busy,
+        on: { click: () => startRemote('attach', { id: p.id }) },
+      }, ['원격 연결', el('span', { class: 'sr' }, ' (' + inline(p.id, 64) + ')')])] : null]),
     ]);
   }
 

@@ -1,0 +1,21 @@
+{
+  "clone": {
+    "status": "cloned",
+    "code": "ok"
+  },
+  "project": {
+    "id": "hello-world",
+    "path": "/home/orch/repos/hello-world",
+    "kind": "registered",
+    "ai_context": false,
+    "provider": "gh",
+    "gitlab": {
+      "project": "octo/Hello-World",
+      "project_id": null
+    },
+    "auto_merge": {
+      "enabled": false
+    },
+    "cloned": true
+  }
+}

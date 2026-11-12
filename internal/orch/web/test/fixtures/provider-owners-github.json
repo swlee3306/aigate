@@ -1,0 +1,15 @@
+{
+  "groups": [
+    {
+      "path": "SampleUser",
+      "name": "SampleUser",
+      "kind": "user"
+    },
+    {
+      "path": "acme-org",
+      "name": "acme-org",
+      "kind": "org"
+    }
+  ],
+  "truncated": false
+}

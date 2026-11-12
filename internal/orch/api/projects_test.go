@@ -1152,7 +1152,8 @@ func TestConstantsAgreeWithWeb(t *testing.T) {
 	bare := func(p string) string { return strings.TrimSuffix(strings.TrimPrefix(p, "^"), "$") }
 	for _, piece := range []string{
 		"action: (" + registrymsg.ActionRegisterProject + "|" + registrymsg.ActionSetFlag + "|" + registrymsg.ActionSetToken + "|" + registrymsg.ActionDeleteToken +
-			"|" + registrymsg.ActionSetProvider + "|" + registrymsg.ActionDeleteProvider + "|" + registrymsg.ActionCreateGroup + "|" + registrymsg.ActionCreateProject + ")",
+			"|" + registrymsg.ActionSetProvider + "|" + registrymsg.ActionDeleteProvider + "|" + registrymsg.ActionCreateGroup + "|" + registrymsg.ActionCreateProject +
+			"|" + registrymsg.ActionLinkProject + "|" + registrymsg.ActionAttachRemote + ")", // W3e E5: the two new actions are part of the browser's message format
 		"subject: (" + bare(subjectPattern) + ")",
 		"change: ([0-9a-f]{64})",
 		"request: ([0-9a-f]{32})",
