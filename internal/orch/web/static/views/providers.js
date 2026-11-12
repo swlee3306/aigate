@@ -56,6 +56,14 @@ export const ACTION_CREATE_GROUP = 'create_group';
 export const ACTION_CREATE_PROJECT = 'create_project';
 export const ACTION_LINK_PROJECT = 'link_project';
 export const ACTION_ATTACH_REMOTE = 'attach_remote';
+// W3f: the four signed deletion actions (registrymsg.Action*). TestConstantsAgreeWithWeb compares them.
+export const ACTION_REMOVE_PROJECT = 'remove_project';
+export const ACTION_DELETE_REMOTE_REPO = 'delete_remote_repo';
+export const ACTION_REMOVE_DEPLOY_KEY = 'remove_deploy_key';
+export const ACTION_CLEAR_ORPHAN = 'clear_orphan';
+export const DELETE_ACTIONS = [ACTION_REMOVE_PROJECT, ACTION_DELETE_REMOTE_REPO, ACTION_REMOVE_DEPLOY_KEY, ACTION_CLEAR_ORPHAN];
+// remote_id of delete_remote_repo: 1 to 15 digits, no leading zero (registrymsg.ValidRemoteID).
+export const REMOTE_ID_RE = /^[1-9][0-9]{0,14}$/;
 // W3e: provider kinds (set_provider.kind), the visibility of a new GitHub repository
 // (signed, no default), the GitHub address defaults and the name rules of a GitHub
 // owner / repository. TestConstantsAgreeWithWeb compares all of them with registrymsg.
@@ -83,6 +91,11 @@ export const CLONE_TIMEOUT_MS = 130000;
 // 15 s) and again when applying, and a link then clones: they outwait orchd like a create.
 export const LINK_PROPOSE_TIMEOUT_MS = 30000;
 export const LINK_APPLY_TIMEOUT_MS = 130000;
+// W3f: the delete applies outwait orchd (broker op up to 70 s plus the local removal); the removal preview
+// runs git and a size walk on the server (budget 25 s) and the signed proposals read the broker.
+export const DELETE_APPLY_TIMEOUT_MS = 130000;
+export const DELETE_PROPOSE_TIMEOUT_MS = 30000;
+export const REMOVAL_PREVIEW_TIMEOUT_MS = 30000;
 export const ATTACH_APPLY_TIMEOUT_MS = 130000;
 
 const MAX_PREVIEW_LINES = 14;
@@ -108,6 +121,12 @@ export const PREVIEW_VIS_PRIVATE = '비공개 저장소로 만듭니다: 초대�
 export const PREVIEW_ATTACH_PUSH_WARN = '[중요] 게시 권한이 쓰기입니다: 이 프로젝트의 로컬 저장소 기록(커밋 이력)이 이 원격으로 올라갈 수 있습니다. 원격이 공개 저장소라면 누구나 그 기록을 읽을 수 있습니다';
 export const PREVIEW_KEY_WARN = '[중요] 이미 있는 저장소의 설정에 이 서버의 배포 키가 등록됩니다. 이 도구는 저장소를 만들거나 지우거나 다른 설정을 바꾸지 않으며, 등록한 키도 지우지 않습니다';
 
+// W3f: marks of the server's fixed deletion lines (internal/orch/api deletePreview; TestConstantsAgreeWithWeb pins them).
+export const PREVIEW_DEL_LEGACY_MARK = '처음부터 있던(legacy) 프로젝트입니다';
+export const PREVIEW_DEL_IRREVERSIBLE_MARK = '[중요] 되돌릴 수 없습니다';
+export const PREVIEW_DEL_REMOTE_MARK = '[중요] 원격 저장소 ';
+export const PREVIEW_DEL_ALSO_MARK = '원격 삭제가 끝나면 이 서버의 복제본 폴더(';
+
 const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 const isObj = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
 const SCHEMA = {
@@ -117,6 +136,10 @@ const SCHEMA = {
   [ACTION_CREATE_PROJECT]: { provider: 's', group_path: 's', template: 's', description: 's', ai_context: 'b', publish: 's', deploy_key_sha256: 's' },
   [ACTION_LINK_PROJECT]: { provider: 's', remote_path: 's', ai_context: 'b', publish: 's', deploy_key_sha256: 's' },
   [ACTION_ATTACH_REMOTE]: { provider: 's', remote_path: 's', publish: 's', deploy_key_sha256: 's' },
+  [ACTION_REMOVE_PROJECT]: { scope: 's', legacy_ack: 'b' },
+  [ACTION_DELETE_REMOTE_REPO]: { remote_path: 's', remote_id: 's', confirm_name: 's', also_local: 'b' },
+  [ACTION_REMOVE_DEPLOY_KEY]: { remote_path: 's' },
+  [ACTION_CLEAR_ORPHAN]: { project: 's' },
 };
 // Fields that may be present or absent (registrymsg's optionalFields): `visibility` of a GitHub
 // create. Whether it must be there is the server's call per provider kind; this page sends it
@@ -180,6 +203,21 @@ export function validOwnerForKind(kind, s) {
   if (kind === 'gitlab') return validGroupPath(s);
   if (kind === 'github') return validGitHubOwner(s);
   return false;
+}
+
+// validConfirmName: the typed repository name of a remote deletion (registrymsg.ValidConfirmName):
+// one remote-path segment, case kept.
+export function validConfirmName(s) {
+  return typeof s === 'string' && s !== '' && s.length <= MAX_REMOTE_SEGMENT_LEN && !s.includes('/') && validRemotePath('x/' + s);
+}
+
+// validOrphanProject (registrymsg.ValidOrphanProject): a GitLab project (lowercase group path plus name)
+// or any remote path.
+export function validOrphanProject(s) {
+  if (typeof s !== 'string') return false;
+  const i = s.lastIndexOf('/');
+  const gitlabShape = i >= 0 && validGroupPath(s.slice(0, i)) && validName(s.slice(i + 1)) && s.split('/').length <= MAX_GROUP_DEPTH + 1;
+  return gitlabShape || validRemotePath(s);
 }
 
 // A project path as the registry holds it: 2 to 5 names (a group path and the project name).
@@ -302,6 +340,11 @@ function checkField(action, name, v) {
     case ACTION_LINK_PROJECT + '.remote_path': case ACTION_ATTACH_REMOTE + '.remote_path': return ok(validRemotePath(v));
     case ACTION_LINK_PROJECT + '.publish': case ACTION_ATTACH_REMOTE + '.publish': return ok(PUBLISH_MODES.includes(v));
     case ACTION_LINK_PROJECT + '.deploy_key_sha256': case ACTION_ATTACH_REMOTE + '.deploy_key_sha256': return ok(HASH_RE.test(v));
+    case ACTION_REMOVE_PROJECT + '.scope': return ok(v === 'local');
+    case ACTION_DELETE_REMOTE_REPO + '.remote_path': case ACTION_REMOVE_DEPLOY_KEY + '.remote_path': return ok(validRemotePath(v));
+    case ACTION_DELETE_REMOTE_REPO + '.remote_id': return ok(REMOTE_ID_RE.test(v));
+    case ACTION_DELETE_REMOTE_REPO + '.confirm_name': return ok(validConfirmName(v));
+    case ACTION_CLEAR_ORPHAN + '.project': return ok(validOrphanProject(v));
     default: return ok(false);
   }
 }
@@ -434,6 +477,25 @@ export const ERROR_TEXT = {
   key_expired: '제안할 때 만든 저장소 전용 배포 키가 만료되었거나(15분) 서버가 다시 시작되어 사라졌습니다. 오래된 내용으로는 서명하지 않습니다: 처음부터 다시 제안하세요. 변경은 적용되지 않았습니다.',
   key_staging_failed: '서버가 이 저장소 전용 배포 키를 준비하지 못했습니다(같은 이름의 키 폴더가 이미 있거나 서버 설정 문제입니다). 관리자가 확인해야 합니다. 변경은 적용되지 않았습니다.',
   key_unavailable: '이 프로젝트의 저장소 전용 배포 키 파일을 쓸 수 없어(없거나, 권한이 맞지 않거나, 옮기지 못했습니다) 복제와 게시를 할 수 없습니다. 프로젝트는 이미 등록되었을 수 있습니다. 관리자가 확인해야 합니다.',
+  // W3f: deletion (every code orchd's delete endpoints answer; fixed sentences, never the server's words)
+  project_busy: '이 프로젝트에 대기 중이거나 실행 중이거나 게시·승인 대기 중인 작업이 있어 지울 수 없습니다. 작업이 끝나거나 취소된 뒤 다시 시도하세요. 변경은 적용되지 않았습니다.',
+  busy_check_failed: '진행 중인 작업이 있는지 확인하지 못해 지우지 않았습니다. 잠시 후 다시 시도하세요. 변경은 적용되지 않았습니다.',
+  local_unsafe: '서버의 복제본 폴더가 이 도구가 지울 수 있는 모양이 아니어서(심볼릭 링크이거나 .git 폴더가 없거나 허용된 위치가 아님) 아무것도 지우지 않았습니다. 서버 관리자가 확인해야 합니다.',
+  key_unavailable_for_removal: '이 프로젝트의 배포 키 공개 키를 서버에서 읽을 수 없어 이 도구로 뗄 수 없습니다. 제공자 화면의 저장소 설정(Deploy keys)에서 제목이 orchd로 시작하는 키를 직접 제거하세요. 변경은 적용되지 않았습니다.',
+  no_remote: '이 프로젝트에는 연결된 원격 저장소가 없어 뗄 배포 키가 없습니다. 변경은 적용되지 않았습니다.',
+  delete_partial_local: '서버의 파일 지우기가 일부만 끝났습니다. 항목별 상태를 확인하세요. 자동으로 다시 시도하지 않았습니다.',
+  delete_rate_limited: '서버 전체의 삭제 횟수 한도(시간당·하루)에 도달했습니다. 나중에 다시 시도하세요. 변경은 적용되지 않았습니다.',
+  busy: '같은 프로젝트나 저장소에 대한 다른 변경이 진행 중입니다. 잠시 후 다시 시도하세요. 변경은 적용되지 않았습니다.',
+  orphan_unknown: '그런 고아 기록이 없습니다(이미 지워졌을 수 있습니다). 목록을 다시 읽어 확인하세요. 변경은 적용되지 않았습니다.',
+  repo_being_removed: '이 프로젝트의 서버 폴더를 지우는 중이라 지금은 작업을 내거나 복제할 수 없습니다. 잠시 후 다시 시도하세요.',
+  legacy_ack_required: '처음부터 있던(legacy) 프로젝트는 두 번째 확인이 있어야 지울 수 있습니다. 변경은 적용되지 않았습니다. 처음부터 다시 진행하세요.',
+  origin_unknown: '이 도구가 만든 저장소인지 알 수 없는 프로젝트라 원격 저장소는 지울 수 없습니다. 필요하면 GitHub·GitLab 화면에서 직접 지우세요. 변경은 적용되지 않았습니다.',
+  not_created_by_tool: '이 도구가 만들지 않고 연결만 한 저장소라 원격 저장소는 지울 수 없습니다. 연결한 저장소에서는 이 서버의 배포 키만 뗄 수 있습니다. 변경은 적용되지 않았습니다.',
+  remote_changed: '등록된 원격 저장소 정보와 요청이 다르거나, 제공자의 저장소가 바뀌었거나, 이미 원격이 없습니다. 목록을 다시 읽어 확인하세요. 변경은 적용되지 않았습니다.',
+  confirm_mismatch: '입력한 저장소 이름이 등록된 저장소 이름과 글자 그대로(대소문자 포함) 같지 않습니다. 변경은 적용되지 않았습니다.',
+  delete_partial: '원격 저장소 삭제가 일부만 처리되었거나 결과를 알 수 없습니다. 저장소가 지워졌을 수도, 아닐 수도 있습니다. 자동으로 다시 시도하지 않았고 서버의 복제본도 지우지 않았습니다. GitHub·GitLab 화면에서 확인한 뒤, 서버의 항목은 "복제본과 등록 지우기"로 정리하세요.',
+  key_not_found: '제공자의 저장소에서 이 서버의 배포 키(제목이 orchd로 시작하고 공개 키가 같은 것)를 찾지 못했습니다. 이미 제거되었을 수 있습니다. 변경은 적용되지 않았습니다.',
+  remove_refused: '제공자가 삭제 요청을 받아들이지 않았거나 대상이 하나로 정해지지 않아 아무것도 지우지 않았습니다. 토큰 권한과 제공자 화면을 확인하세요.',
   link_partial: '이미 있던 저장소에 이 서버의 배포 키가 붙었을 수 있습니다. 저장소는 지우지 마세요. 제공자 사이트에서 이 서버의 배포 키(제목이 orchd로 시작)만 직접 제거한 뒤 다시 시도하세요.',
 };
 
@@ -643,6 +705,10 @@ function mentions(sent, full, key) {
     case ACTION_DELETE_PROVIDER: return [sent.subject];
     case ACTION_CREATE_GROUP: return [sent.subject, f.name, f.path, f.parent_path === '' ? '(최상위)' : f.parent_path];
     case ACTION_LINK_PROJECT: case ACTION_ATTACH_REMOTE: return [f.provider, f.remote_path, sent.subject, key ? key.fingerprint : ''];
+    case ACTION_REMOVE_PROJECT: return [sent.subject];
+    case ACTION_DELETE_REMOTE_REPO: return [f.remote_path, f.confirm_name];
+    case ACTION_REMOVE_DEPLOY_KEY: return [sent.subject, f.remote_path];
+    case ACTION_CLEAR_ORPHAN: return [sent.subject, f.project];
     default: return [f.provider, f.group_path, sent.subject, f.template, f.description === '' ? '(없음)' : f.description, key ? key.fingerprint : ''];
   }
 }
@@ -709,6 +775,7 @@ async function analyze(sent, resp) {
   } else {
     if (!mentions(sent, full, key).every((needle) => needle !== '' && pv.some((x) => x.includes(needle)))) problems.push('preview_values');
     const count = (line) => pv.filter((x) => x === line).length;
+    const marks = (mark) => pv.filter((x) => x.includes(mark)).length;
     if (sent.action === ACTION_CREATE_PROJECT || sent.action === ACTION_LINK_PROJECT) {
       const on = count(PREVIEW_AI_ON);
       const off = count(PREVIEW_AI_OFF);
@@ -725,6 +792,15 @@ async function analyze(sent, resp) {
       const priv = count(PREVIEW_VIS_PRIVATE);
       const want = !has(full, 'visibility') ? [0, 0] : full.visibility === 'public' ? [1, 0] : [0, 1];
       if (pub !== want[0] || priv !== want[1]) problems.push('preview_visibility');
+    }
+    // W3f: the fixed lines that say what a deletion does, exactly once or never (never the server's word for it)
+    if (sent.action === ACTION_REMOVE_PROJECT) {
+      if (marks(PREVIEW_DEL_LEGACY_MARK) !== (full.legacy_ack ? 1 : 0)) problems.push('preview_legacy');
+      if (marks(PREVIEW_DEL_IRREVERSIBLE_MARK) !== 1) problems.push('preview_irreversible');
+    }
+    if (sent.action === ACTION_DELETE_REMOTE_REPO) {
+      if (marks(PREVIEW_DEL_REMOTE_MARK) !== 1) problems.push('preview_remote');
+      if (marks(PREVIEW_DEL_ALSO_MARK) !== (full.also_local ? 1 : 0)) problems.push('preview_also_local');
     }
     // a link or an attach adds this server's key to an existing repository: the server says so, once
     if (sent.action === ACTION_LINK_PROJECT || sent.action === ACTION_ATTACH_REMOTE) {
@@ -754,11 +830,16 @@ async function resolveSigner(ctx) {
 }
 
 const PROJECT_PATH = { [ACTION_CREATE_PROJECT]: 'create', [ACTION_LINK_PROJECT]: 'link', [ACTION_ATTACH_REMOTE]: 'attach' };
-const proposePath = (action) => (has(PROJECT_PATH, action) ? '/api/v1/projects/' + PROJECT_PATH[action] + '/propose' : '/api/v1/providers/propose');
-const applyPath = (action) => (has(PROJECT_PATH, action) ? '/api/v1/projects/' + PROJECT_PATH[action] + '/apply' : '/api/v1/providers/apply');
+// W3f: the deletion endpoints (the orphan one lives under /orphans).
+const DELETE_PATH = {
+  [ACTION_REMOVE_PROJECT]: '/api/v1/projects/remove', [ACTION_DELETE_REMOTE_REPO]: '/api/v1/projects/delete-remote',
+  [ACTION_REMOVE_DEPLOY_KEY]: '/api/v1/projects/remove-key', [ACTION_CLEAR_ORPHAN]: '/api/v1/orphans/clear',
+};
+const proposePath = (action) => (has(DELETE_PATH, action) ? DELETE_PATH[action] + '/propose' : has(PROJECT_PATH, action) ? '/api/v1/projects/' + PROJECT_PATH[action] + '/propose' : '/api/v1/providers/propose');
+const applyPath = (action) => (has(DELETE_PATH, action) ? DELETE_PATH[action] + '/apply' : has(PROJECT_PATH, action) ? '/api/v1/projects/' + PROJECT_PATH[action] + '/apply' : '/api/v1/providers/apply');
 // A link or an attach reads the registry through the broker while proposing: longer than a create's propose.
-const proposeTimeout = (action) => (action === ACTION_LINK_PROJECT || action === ACTION_ATTACH_REMOTE ? LINK_PROPOSE_TIMEOUT_MS : PROPOSE_TIMEOUT_MS);
-const applyTimeout = (action) => (action === ACTION_CREATE_PROJECT ? CREATE_APPLY_TIMEOUT_MS : action === ACTION_LINK_PROJECT ? LINK_APPLY_TIMEOUT_MS
+const proposeTimeout = (action) => (DELETE_ACTIONS.includes(action) ? DELETE_PROPOSE_TIMEOUT_MS : action === ACTION_LINK_PROJECT || action === ACTION_ATTACH_REMOTE ? LINK_PROPOSE_TIMEOUT_MS : PROPOSE_TIMEOUT_MS);
+const applyTimeout = (action) => (DELETE_ACTIONS.includes(action) ? DELETE_APPLY_TIMEOUT_MS : action === ACTION_CREATE_PROJECT ? CREATE_APPLY_TIMEOUT_MS : action === ACTION_LINK_PROJECT ? LINK_APPLY_TIMEOUT_MS
   : action === ACTION_ATTACH_REMOTE ? ATTACH_APPLY_TIMEOUT_MS : PROVIDER_TIMEOUT_MS);
 
 // makeFlow runs ONE signed change at a time for a view: propose -> check ->

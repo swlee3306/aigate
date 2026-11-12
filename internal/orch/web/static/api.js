@@ -14,6 +14,7 @@ const PATH_RE = /^\/api\/v1\/[A-Za-z0-9._~\/?=&%-]*$/;
 // Request headers a caller may add through opts.headers: ONLY the idempotency
 // key of a POST (a fixed shape). Everything else, the CSRF header included, is
 // api.js's own business and is refused here, not silently dropped.
+const PREVIEW_PATH_RE = /^\/api\/v1\/projects\/[a-z][a-z0-9-]{0,39}\/removal-preview$/;
 const IDEMPOTENCY_HEADER = 'Idempotency-Key';
 const IDEMPOTENCY_RE = /^[A-Za-z0-9]{16,64}$/;
 
@@ -90,6 +91,9 @@ async function once(method, path, body, opts) {
   }
   if (opts.headers) headers[IDEMPOTENCY_HEADER] = opts.headers[IDEMPOTENCY_HEADER];
   if (method !== 'GET' && method !== 'HEAD' && csrf) headers['X-Orch-CSRF'] = csrf;
+  // The one GET that needs the header: the removal preview is a write-tier read (it runs git on the server).
+  // Opt-in per call, and only for that path, so no other GET ever carries it.
+  if (method === 'GET' && opts.csrf === true && csrf && PREVIEW_PATH_RE.test(path)) headers['X-Orch-CSRF'] = csrf;
   const ctl = new AbortController();
   init.signal = ctl.signal;
   // opts.signal: the caller's own abort (a cancel button). Aborting it aborts
@@ -124,7 +128,7 @@ function toError(res, data) {
   if (e && typeof e.reason === 'string' && e.reason) err.reason = e.reason.slice(0, 500);
   // `detail` of a create_partial or link_partial refusal (where the half-made project is): a plain
   // object handed to the view, which checks every member itself before showing it.
-  if ((code === 'create_partial' || code === 'link_partial') && e.detail && typeof e.detail === 'object' && !Array.isArray(e.detail)) err.detail = e.detail;
+  if ((code === 'create_partial' || code === 'link_partial' || code === 'delete_partial_local') && e.detail && typeof e.detail === 'object' && !Array.isArray(e.detail)) err.detail = e.detail;
   return err;
 }
 

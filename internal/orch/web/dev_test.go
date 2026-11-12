@@ -871,6 +871,194 @@ func TestDevServer(t *testing.T) {
 		}
 		devErr(w, 404, "project_unknown")
 	})
+	// W3f: the deletion screens. Rows of every origin (a legacy one, created ones with a remote and a
+	// repository number, a linked one, one whose remote is already gone, a busy one, one with unknown
+	// counts), orphans of the three origins, a removal preview per row and the four propose/apply pairs.
+	// Select the apply with /dev-set-w3f?apply=ok|partial_local|partial|unknown|busy_error. Nothing real is
+	// called and no signature is verified: this is a look at the screens.
+	var w3fApply = "ok"
+	{
+		projMu.Lock()
+		w3cMu.Lock()
+		mk := func(id, origin string, over map[string]any) map[string]any {
+			m := map[string]any{"id": id, "path": "/home/orch/repos/" + id, "kind": "registered", "ai_context": false, "provider": nil, "gitlab": nil,
+				"auto_merge": map[string]any{"enabled": false}, "cloned": true, "origin": origin}
+			for k, v := range over {
+				m[k] = v
+			}
+			return m
+		}
+		projects = append(projects,
+			mk("toy", "legacy", map[string]any{"kind": "legacy"}),
+			mk("hello-gh", "created", map[string]any{"provider": "gh", "gitlab": map[string]any{"project": "SampleUser/hello-gh", "project_id": 123456789}}),
+			mk("lab", "created", map[string]any{"provider": "gl", "gitlab": map[string]any{"project": "team/lab", "project_id": 21}}),
+			mk("existing", "linked", map[string]any{"provider": "gh", "gitlab": map[string]any{"project": "octo/Existing-Repo", "project_id": 4242}}),
+			mk("old-app", "created", map[string]any{"provider": "gh", "remote_deleted_at": "2026-11-12T10:04:05Z"}),
+			mk("busy-app", "created", nil),
+			mk("unknown-counts", "unknown", nil),
+		)
+		devOrphans = append(devOrphans,
+			map[string]any{"provider": "gh", "project": "SampleUser/half-made", "project_id": nil, "step": "protect", "at": "2026-11-12T12:00:00Z", "origin": "created"},
+			map[string]any{"provider": "gh", "project": "octo/Existing-Repo-2", "project_id": nil, "step": "deploy_key", "at": "2026-11-12T13:00:00Z", "origin": "linked"},
+			map[string]any{"provider": "gl", "project": "team/mystery", "project_id": nil, "step": "project", "at": "2026-11-12T14:00:00Z"},
+		)
+		w3cMu.Unlock()
+		projMu.Unlock()
+	}
+	mux.HandleFunc("GET /api/v1/projects/{id}/removal-preview", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		time.Sleep(300 * time.Millisecond)
+		projMu.Lock()
+		defer projMu.Unlock()
+		for _, p := range projects {
+			if p["id"] != id {
+				continue
+			}
+			origin, _ := p["origin"].(string)
+			if origin == "" {
+				origin = "unknown"
+			}
+			_, gone := p["remote_deleted_at"]
+			body := map[string]any{"id": id, "origin": origin, "legacy": origin == "legacy", "has_remote": p["gitlab"] != nil, "remote_key_may_remain": p["gitlab"] != nil,
+				"remote_deleted_at": nil, "static_remote": id == "toy", "busy": id == "busy-app", "busy_unknown": false, "folder_exists": true, "is_git_repo": true,
+				"local_removable": true, "key_dir_exists": p["provider"] != nil, "size_bytes": 5242880, "size_known": true, "unpushed_commits": 0, "unpushed_known": true,
+				"changed_files": 0, "changed_known": true}
+			if gone {
+				body["remote_deleted_at"] = p["remote_deleted_at"]
+			}
+			switch id {
+			case "toy":
+				body["unpushed_commits"], body["changed_files"] = 2, 5
+			case "unknown-counts":
+				body["unpushed_known"], body["changed_known"], body["size_known"] = false, false, false
+			case "old-app":
+				body["unpushed_commits"] = 1
+			}
+			b, _ := stdjson.Marshal(body)
+			serve(w, b)
+			return
+		}
+		devErr(w, 404, "project_unknown")
+	})
+	devW3fPropose := func(w http.ResponseWriter, r *http.Request) {
+		var in w3cBody
+		_ = stdjson.NewDecoder(r.Body).Decode(&in)
+		change, err := registrymsg.ChangeHash(in.Action, in.Subject, in.Fields)
+		if err != nil {
+			devErr(w, 400, "bad_request")
+			return
+		}
+		issued := time.Now().UTC().Truncate(time.Second)
+		msg := signing.RegistryMessage{Action: in.Action, Subject: in.Subject, Change: change, Request: registrymsg.NewRequestID(), Issued: issued}
+		stamp := "서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다"
+		path := "/home/orch/repos/" + in.Subject
+		var pv []string
+		switch in.Action {
+		case "remove_project":
+			pv = []string{"프로젝트 '" + in.Subject + "'를 이 서버에서 지웁니다: 프로젝트 등록, 서버의 복제본 폴더(" + path + "), 이 프로젝트의 배포 키 폴더", "원격 저장소는 지워지지 않고 그대로 남습니다",
+				"[중요] 되돌릴 수 없습니다. 원격에 올라가지 않은 커밋과 저장하지 않은 변경은 이 서버의 복제본에만 있으므로 함께 사라집니다", "이 서버의 작업 기록은 남습니다"}
+			if ack, _ := in.Fields["legacy_ack"].(bool); ack {
+				pv = append(pv, "[중요] 처음부터 있던(legacy) 프로젝트입니다. 지우면 이 저장소로는 더 작업을 낼 수 없습니다(두 번째 확인을 했습니다)")
+			}
+		case "delete_remote_repo":
+			pv = []string{"[중요] 원격 저장소 '" + str(in.Fields, "remote_path") + "'를 제공자에서 삭제합니다. 되돌릴 수 없습니다(제공자 설정에 따라 복구 가능 기간이 있을 수 있으나 이 도구는 복구하지 않습니다)",
+				"이 도구가 만든 저장소만 지울 수 있으며, 저장소 이름 '" + str(in.Fields, "confirm_name") + "'을 직접 입력해 확인했습니다",
+				"삭제가 확실히 끝난 뒤에만 다음 단계를 합니다. 결과를 알 수 없으면 아무것도 더 하지 않고 자동으로 다시 시도하지 않습니다"}
+			if also, _ := in.Fields["also_local"].(bool); also {
+				pv = append(pv, "원격 삭제가 끝나면 이 서버의 복제본 폴더("+path+")와 이 프로젝트의 배포 키 폴더도 지웁니다",
+					"[중요] 원격이 지워지면 이 서버의 복제본이 유일한 사본일 수 있습니다. 원격에 올라가지 않은 커밋과 변경은 복제본과 함께 사라집니다",
+					"프로젝트 등록은 '원격 없음' 상태로 남습니다. 등록까지 지우려면 별도로 서명하는 프로젝트 삭제가 한 번 더 필요합니다")
+			} else {
+				pv = append(pv, "이 서버의 복제본과 프로젝트 등록은 그대로 남습니다(등록은 '원격 없음' 상태가 됩니다)")
+			}
+		case "remove_deploy_key":
+			pv = []string{"프로젝트 '" + in.Subject + "'의 저장소 '" + str(in.Fields, "remote_path") + "'에서 이 서버의 배포 키만 뗍니다(지문 " + repoFP + ")",
+				"저장소와 다른 키는 지워지지 않습니다. 프로젝트 등록과 서버의 복제본은 그대로입니다", "[중요] 키를 떼면 이 서버는 그 저장소를 복제하거나 게시하지 못합니다"}
+		default:
+			pv = []string{"제공자 '" + in.Subject + "'의 고아 기록 하나('" + str(in.Fields, "project") + "')를 지웁니다",
+				"외부에는 아무것도 보내지 않습니다. 제공자에 남아 있을 수 있는 프로젝트는 지워지지 않으니 제공자 화면에서 직접 정리하세요"}
+		}
+		pv = append(pv, stamp)
+		time.Sleep(400 * time.Millisecond)
+		out := map[string]any{"action": in.Action, "subject": in.Subject, "fields": in.Fields, "message": msg.Text(), "change": change,
+			"request": msg.Request, "issued": issued.Format("2006-01-02T15:04:05Z"), "preview": pv}
+		b, _ := stdjson.Marshal(out)
+		serve(w, b)
+	}
+	devW3fApply := func(w http.ResponseWriter, r *http.Request) {
+		var in w3cBody
+		_ = stdjson.NewDecoder(r.Body).Decode(&in)
+		projMu.Lock()
+		w3cMu.Lock()
+		defer projMu.Unlock()
+		defer w3cMu.Unlock()
+		time.Sleep(700 * time.Millisecond)
+		removeRow := func() {
+			for i, p := range projects {
+				if p["id"] == in.Subject {
+					projects = append(projects[:i], projects[i+1:]...)
+					return
+				}
+			}
+		}
+		switch w3fApply {
+		case "unknown":
+			devErr(w, 504, "outcome_unknown")
+			return
+		case "partial":
+			if in.Action == "delete_remote_repo" {
+				devErr(w, 504, "delete_partial")
+				return
+			}
+		case "busy_error":
+			devErr(w, 409, "project_busy")
+			return
+		case "partial_local":
+			if in.Action == "remove_project" || in.Action == "delete_remote_repo" {
+				if in.Action == "remove_project" {
+					removeRow()
+				}
+				w.WriteHeader(502)
+				json(w, `{"error":{"code":"delete_partial_local","message":"dev SERVER-WORDS","detail":{"remaining":["clone"],"clone":"kept_in_place","key":"removed","registry_removed":`+
+					strconv.FormatBool(in.Action == "remove_project")+`,"remote_deleted":`+strconv.FormatBool(in.Action == "delete_remote_repo")+`,"reason":"remove_failed"}}}`)
+				return
+			}
+		}
+		var out map[string]any
+		switch in.Action {
+		case "remove_project":
+			removeRow()
+			out = map[string]any{"id": in.Subject, "removed": true, "local": map[string]any{"clone": "removed", "key": "removed"}}
+		case "delete_remote_repo":
+			also, _ := in.Fields["also_local"].(bool)
+			for _, p := range projects {
+				if p["id"] == in.Subject {
+					p["gitlab"] = nil
+					p["remote_deleted_at"] = "2026-11-13T01:02:03Z"
+				}
+			}
+			out = map[string]any{"id": in.Subject, "remote_state": "deleted", "remote_deleted_at": "2026-11-13T01:02:03Z", "also_local": also, "registry": "kept"}
+			if also {
+				out["local"] = map[string]any{"clone": "removed", "key": "removed"}
+			}
+		case "remove_deploy_key":
+			out = map[string]any{"id": in.Subject, "key_removed": true}
+		default:
+			for i, o := range devOrphans {
+				if o["provider"] == in.Subject && o["project"] == str(in.Fields, "project") {
+					devOrphans = append(devOrphans[:i], devOrphans[i+1:]...)
+					break
+				}
+			}
+			out = map[string]any{"provider": in.Subject, "project": str(in.Fields, "project"), "cleared": true}
+		}
+		b, _ := stdjson.Marshal(out)
+		serve(w, b)
+	}
+	for _, p := range []string{"/api/v1/projects/remove", "/api/v1/projects/delete-remote", "/api/v1/projects/remove-key", "/api/v1/orphans/clear"} {
+		mux.HandleFunc("POST "+p+"/propose", devW3fPropose)
+		mux.HandleFunc("POST "+p+"/apply", devW3fApply)
+	}
 	console := web.Handler()
 	srv := &http.Server{Addr: "127.0.0.1:" + port, ReadHeaderTimeout: 5 * time.Second,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -897,6 +1085,15 @@ func TestDevServer(t *testing.T) {
 					tokApply = v
 				}
 				tokMu.Unlock()
+				_, _ = w.Write([]byte("ok"))
+				return
+			}
+			if r.URL.Path == "/dev-set-w3f" {
+				w3cMu.Lock()
+				if v := r.URL.Query().Get("apply"); v != "" {
+					w3fApply = v
+				}
+				w3cMu.Unlock()
 				_, _ = w.Write([]byte("ok"))
 				return
 			}

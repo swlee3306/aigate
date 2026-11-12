@@ -29,6 +29,7 @@ import {
   makeFlow, confirmPanel, li as factItem, stepStates, stepList, linkStepList, stepLabel, partialInfo, orphanBlock, orphanNotice, hostName, kindOfProvider,
   ERROR_TEXT as W3C_ERROR_TEXT, failureText as w3cFailureText, isUnknown, cloneText, CLONE_TEXT, CLONE_TIMEOUT_MS, PROVIDER_TIMEOUT_MS, FLOW_TEXT, GROUP_SETTLE_MS,
 } from './providers.js';
+import { makeDelete, DEL_TEXT } from './delete.js';
 
 // --- constants shared with the server (TestConstantsAgreeWithWeb compares them) ---
 
@@ -333,6 +334,14 @@ export function projectsView(ctx) {
     prepare: prepareResult,
     kindOf: (sent) => kindFor(sent.action === ACTION_CREATE_GROUP ? sent.subject : sent.fields.provider),
   });
+  // W3f: the deletion screens (delete.js) draw themselves into the `del` step.
+  const del = makeDelete(ctx, {
+    paint: () => { if (del.active) st.step = 'del'; paint(); },
+    rows: () => st.list || [],
+    providers: () => [...cp.providers, ...st.regProviders],
+    reload: () => loadList(),
+    toList: () => { toList(); },
+  });
   let signerP = null;
   let expiry = null; // {rows, warn}: the tokens that are due, for the banner on top of the list
   let listSeq = 0; // list loads: a newer load or an apply makes older answers stale
@@ -387,6 +396,7 @@ export function projectsView(ctx) {
   function toList() {
     propSeq++; // a proposal still in flight is for an abandoned change
     flow.reset();
+    del.reset();
     cp.f = null;
     cp.g = null;
     lk.f = null;
@@ -960,6 +970,7 @@ export function projectsView(ctx) {
           el('span', { class: 'mono' }, o.project),
           ' (프로젝트 ID ' + (o.project_id === null ? '알 수 없음' : String(o.project_id)) + ', 멈춘 단계: ' + stepLabel(o.step, kind) + ', ' + o.at + ')',
           el('div', { class: 'note' }, orphanNotice(origin, kind)),
+          el('button', { type: 'button', class: 'btn', 'data-focus-key': 'orphan-' + o.provider + '-' + o.project.replace(/[^A-Za-z0-9_-]/g, '-'), 'data-action': 'clear-orphan', disabled: st.busy || flow.busy || del.busy, on: { click: () => del.startOrphan(o, kind) } }, ['기록 지우기', el('span', { class: 'sr' }, ' (' + inline(o.project, 120) + ')')]),
         ]);
       })),
     ]);
@@ -1072,11 +1083,11 @@ export function projectsView(ctx) {
     if (key) keyFacts(factsList, key);
     return confirmPanel(flow, {
       title: '변경 내용 확인',
-      lead: gh ? '아래 내용이 전부입니다. 서명하면 GitHub에 저장소가 바로 만들어지고, 이 도구는 만든 것을 삭제하지 못합니다.'
-        : '아래 내용이 전부입니다. 서명하면 GitLab에 프로젝트가 바로 만들어지고, 이 도구는 만든 것을 삭제하지 못합니다.',
+      lead: gh ? '아래 내용이 전부입니다. 서명하면 GitHub에 저장소가 바로 만들어집니다. 나중에 이 도구로 지울 수 있지만 되돌릴 수 없습니다.'
+        : '아래 내용이 전부입니다. 서명하면 GitLab에 프로젝트가 바로 만들어집니다. 나중에 이 도구로 지울 수 있지만 되돌릴 수 없습니다.',
       facts: factsList,
       extra: [
-        repoName !== s.subject ? el('div', { class: 'trunc', role: 'note', 'data-note': 'name-differs' },
+        repoName.toLowerCase() !== s.subject ? el('div', { class: 'trunc', role: 'note', 'data-note': 'name-differs' },
           '프로젝트 이름(' + inline(s.subject, 64) + ')과 저장소 이름(' + inline(repoName, 110) + ')이 다릅니다. 이 서버의 폴더와 배포 키 폴더는 프로젝트 이름을, 원격 저장소는 위의 저장소 경로를 씁니다. 다르게 정해도 괜찮습니다.') : null,
         key ? keyHint(gh) : null,
         s.fields.visibility === 'public' ? publicWarning() : null,
@@ -1111,7 +1122,7 @@ export function projectsView(ctx) {
 
   function publicWarning() {
     return el('div', { class: 'trunc', 'data-emph': 'public-warning', role: 'note' },
-      '[중요] 공개 저장소입니다: 인터넷의 누구나(로그인하지 않아도) 이 저장소의 코드를 읽을 수 있습니다. 이 도구는 만든 저장소를 비공개로 바꾸거나 삭제하지 못합니다. 코드에 비밀 값이 들어가지 않게 하세요.');
+      '[중요] 공개 저장소입니다: 인터넷의 누구나(로그인하지 않아도) 이 저장소의 코드를 읽을 수 있습니다. 이 도구는 만든 저장소를 비공개로 바꾸지 못합니다(삭제는 할 수 있습니다). 코드에 비밀 값이 들어가지 않게 하세요.');
   }
 
   // The confirmation of a link or an attach: a repository that already exists gets this server's deploy key.
@@ -1136,10 +1147,10 @@ export function projectsView(ctx) {
       lead: link ? '아래 내용이 전부입니다. 서명하면 이미 있는 저장소를 이 서버의 새 프로젝트로 등록하고 복제합니다.'
         : '아래 내용이 전부입니다. 서명하면 이 프로젝트의 게시와 복제가 이 원격 저장소를 쓰게 됩니다.',
       warn: el('div', { class: 'trunc', role: 'note', 'data-warn': 'key-on-existing' },
-        '[중요] 이미 있는 저장소의 설정(Deploy keys)에 이 서버의 배포 키가 등록됩니다. 이 도구는 저장소를 만들거나 지우거나 다른 설정을 바꾸지 않으며, 등록한 키도 지우지 않습니다.'),
+        '[중요] 이미 있는 저장소의 설정(Deploy keys)에 이 서버의 배포 키가 등록됩니다. 이 도구는 저장소를 만들거나 지우거나 다른 설정을 바꾸지 않습니다. 등록한 키는 "배포 키만 떼기"로 뗄 수 있습니다.'),
       facts: factsList,
       extra: [
-        repoName !== s.subject ? el('div', { class: 'trunc', role: 'note', 'data-note': 'name-differs' },
+        repoName.toLowerCase() !== s.subject ? el('div', { class: 'trunc', role: 'note', 'data-note': 'name-differs' },
           '프로젝트 이름(' + inline(s.subject, 64) + ')과 저장소 이름(' + inline(repoName, 110) + ')이 다릅니다. 이 서버의 폴더와 배포 키 폴더는 프로젝트 이름을, 원격 저장소는 위의 저장소 경로를 씁니다. 다르게 정해도 괜찮습니다.') : null,
         key ? keyHint(gh) : null,
         link && f.ai_context ? el('div', { class: 'trunc', 'data-emph': 'ai-on', role: 'note' }, '[중요] AI 전송 허용: 예. 이 프로젝트의 파일 내용이 외부 AI 서비스(OpenAI)로 전송될 수 있습니다.') : null,
@@ -1418,6 +1429,8 @@ export function projectsView(ctx) {
         return renderXConfirm();
       case 'x_result':
         return renderXResult();
+      case 'del':
+        return del.render();
       case 'list':
         return renderList();
       default:
@@ -1493,8 +1506,18 @@ export function projectsView(ctx) {
       el('td', {}, [toggle, canAttach ? [' ', el('button', {
         type: 'button', class: 'btn', 'data-focus-key': 'attach-' + i, disabled: st.busy || flow.busy,
         on: { click: () => startRemote('attach', { id: p.id }) },
-      }, ['원격 연결', el('span', { class: 'sr' }, ' (' + inline(p.id, 64) + ')')])] : null]),
+      }, ['원격 연결', el('span', { class: 'sr' }, ' (' + inline(p.id, 64) + ')')])] : null, idOk ? deleteButton(p) : null]),
     ]);
+  }
+
+  // W3f: "삭제…" opens the deletion screens (delete.js). It is off while anything else of this page runs.
+  function deleteButton(p) {
+    const off = st.busy || flow.busy || cp.cloneBusy || del.busy;
+    return [' ', el('button', {
+      type: 'button', class: 'btn', 'data-focus-key': 'delete-' + p.id, 'data-action': 'delete', disabled: off, 'aria-describedby': off ? 'del-busy-hint' : null,
+      on: { click: () => { if (!(st.busy || flow.busy || cp.cloneBusy || del.busy)) del.start(p); } },
+    }, [DEL_TEXT.menu, el('span', { class: 'sr' }, ' (' + inline(p.id, 64) + ')')]),
+    off ? el('span', { class: ['hint', 'sr'], id: 'del-busy-hint' }, DEL_TEXT.menuBusy) : null];
   }
 
   function renderForm() {

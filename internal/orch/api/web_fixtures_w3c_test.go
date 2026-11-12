@@ -263,7 +263,7 @@ func TestWebFixturesW3cVectors(t *testing.T) {
 	// there is a code the console must have a fixed sentence for.
 	codeRE := regexp.MustCompile(`apiErr\(http\.Status[A-Za-z]+, "([a-z_]+)"`)
 	seen := map[string]bool{}
-	for _, f := range []string{"providers.go", "create_project.go", "link_project.go"} {
+	for _, f := range []string{"providers.go", "create_project.go", "link_project.go", "delete_project.go"} {
 		src, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
@@ -291,6 +291,15 @@ func TestWebFixturesW3cVectors(t *testing.T) {
 	for _, c := range []string{"repo_not_found", "already_linked", "project_exists", "project_unknown", "static_remote_wins", "key_expired",
 		"key_staging_failed", "key_unavailable", "github_refused", "provider_rate_limited", "not_supported_for_provider", "visibility_required",
 		"visibility_not_allowed", "link_partial"} {
+		if !seen[c] {
+			t.Errorf("error code %s is not in the scanned sources", c)
+		}
+	}
+	// W3f: every code the delete endpoints answer is found (delete_project.go holds them all, the
+	// broker ones included), so the console cannot ship without a fixed sentence for any of them.
+	for _, c := range []string{"project_busy", "busy_check_failed", "local_unsafe", "key_unavailable_for_removal", "no_remote", "delete_partial_local",
+		"delete_rate_limited", "busy", "orphan_unknown", "repo_being_removed", "legacy_ack_required", "origin_unknown", "not_created_by_tool",
+		"remote_changed", "confirm_mismatch", "delete_partial", "key_not_found", "remove_refused"} {
 		if !seen[c] {
 			t.Errorf("error code %s is not in the scanned sources", c)
 		}

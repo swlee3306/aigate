@@ -143,6 +143,38 @@
     {
       "repo": "ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_ab_",
       "name": "ab-ab-ab-ab-ab-ab-ab-ab-ab-ab-ab-ab-ab-a"
+    },
+    {
+      "repo": "Kelvin",
+      "name": "elvin"
+    },
+    {
+      "repo": "KK",
+      "name": "k-x"
+    },
+    {
+      "repo": "İstanbul",
+      "name": "stanbul"
+    },
+    {
+      "repo": "xİy",
+      "name": "x-y"
+    },
+    {
+      "repo": "😀",
+      "name": "project"
+    },
+    {
+      "repo": "a😀b",
+      "name": "a-b"
+    },
+    {
+      "repo": "😀😀",
+      "name": "project"
+    },
+    {
+      "repo": "ab🚀cd",
+      "name": "ab-cd"
     }
   ]
 }

@@ -22,6 +22,8 @@ func TestWebFixturesW3fNames(t *testing.T) {
 		strings.Repeat("a", 40), strings.Repeat("a", 41), strings.Repeat("a", 60), strings.Repeat("a", 100),
 		strings.Repeat("a", 39) + "_b", strings.Repeat("a", 39) + "-b", "9" + strings.Repeat("b", 59), strings.Repeat("9", 100), strings.Repeat("_", 100),
 		strings.Repeat("ab_", 40),
+		// Unicode look-alikes of ASCII letters: only ASCII A-Z is lower-cased, everything else is a separator
+		"\u212Aelvin", "K\u212A", "\u0130stanbul", "x\u0130y", "\U0001F600", "a\U0001F600b", "\U0001F600\U0001F600", "ab\U0001F680cd",
 	} {
 		n := registrymsg.SuggestProjectName(r)
 		if !registrymsg.ValidName(n) {

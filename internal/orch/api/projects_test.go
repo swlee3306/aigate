@@ -1153,7 +1153,8 @@ func TestConstantsAgreeWithWeb(t *testing.T) {
 	for _, piece := range []string{
 		"action: (" + registrymsg.ActionRegisterProject + "|" + registrymsg.ActionSetFlag + "|" + registrymsg.ActionSetToken + "|" + registrymsg.ActionDeleteToken +
 			"|" + registrymsg.ActionSetProvider + "|" + registrymsg.ActionDeleteProvider + "|" + registrymsg.ActionCreateGroup + "|" + registrymsg.ActionCreateProject +
-			"|" + registrymsg.ActionLinkProject + "|" + registrymsg.ActionAttachRemote + ")", // W3e E5: the two new actions are part of the browser's message format
+			"|" + registrymsg.ActionLinkProject + "|" + registrymsg.ActionAttachRemote + "|" + registrymsg.ActionRemoveProject + "|" + registrymsg.ActionDeleteRemoteRepo +
+			"|" + registrymsg.ActionRemoveDeployKey + "|" + registrymsg.ActionClearOrphan + ")", // W3e E5, W3f F4: the two new actions are part of the browser's message format
 		"subject: (" + bare(subjectPattern) + ")",
 		"change: ([0-9a-f]{64})",
 		"request: ([0-9a-f]{32})",
@@ -1280,6 +1281,7 @@ func TestConstantsAgreeWithWeb(t *testing.T) {
 	// The provider and project-creation constants (W3c): see checkProviderConstants.
 	t.Run("providers", checkProviderConstants)
 	t.Run("w3e", checkW3eConstants)
+	t.Run("w3f", checkW3fConstants)
 
 }
 
