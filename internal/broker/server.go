@@ -111,6 +111,8 @@ var fixedMessages = map[string]string{
 	// the E-D3 list arrives with the broker flows that raise it (E2, E3).
 	"not_supported_for_provider": "이 종류의 제공자에서는 지원하지 않는 작업입니다.",
 	"visibility_required":        "공개 여부(public 또는 private)를 반드시 골라야 합니다.",
+	"github_refused":             "GitHub이 요청을 받아들이지 않았습니다. 토큰 권한과 GitHub 설정을 확인하세요.",
+	"provider_rate_limited":      "제공자가 요청 횟수 한도를 알려 왔습니다. 잠시 후 다시 시도하세요.",
 	"visibility_not_allowed":     "이 제공자에서는 공개 여부를 정할 수 없습니다. GitLab 프로젝트는 항상 비공개로 만들어집니다.",
 }
 

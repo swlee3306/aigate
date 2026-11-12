@@ -500,3 +500,78 @@ func TestCheckValidatesProviders(t *testing.T) {
 		t.Fatalf("-check connected %d times", hits.Load())
 	}
 }
+
+// TestCheckValidatesGitHubProviders: -check is kind-aware (a github provider
+// needs a github-kind token, not a gitlab one), still read-only and network-free,
+// and refuses plain http to a public host.
+func TestCheckValidatesGitHubProviders(t *testing.T) {
+	cfg, state, _, _, hits := checkEnv(t)
+	co := trustForTest(filepath.Dir(cfg))
+	snapshot := func() string {
+		var sb strings.Builder
+		filepath.Walk(state, func(p string, fi os.FileInfo, err error) error {
+			if err == nil {
+				b, _ := os.ReadFile(p)
+				sb.WriteString(p + "|" + fi.Mode().String() + "|" + string(b) + "\n")
+			}
+			return nil
+		})
+		return sb.String()
+	}
+	reg := func(base, ssh string) {
+		body := `{"version":3,"providers":[{"id":"gh","kind":"github","base_url":"` + base + `","ssh_url":"` + ssh + `","token_ref":"gh-admin"}],"projects":[],"auto_merge_global":{"enabled":false,"max_per_day":5},"orphans":[]}`
+		os.Remove(filepath.Join(state, "registry.json"))
+		os.WriteFile(filepath.Join(state, "registry.json"), []byte(body), 0o600)
+		os.Chmod(filepath.Join(state, "registry.json"), 0o600)
+	}
+	run1 := func() (int, string) {
+		var out bytes.Buffer
+		rc := checkConfig(cfg, state, co, &out)
+		return rc, out.String()
+	}
+	tok := func(kind string) {
+		os.Mkdir(filepath.Join(state, "secrets"), 0o700)
+		os.Chmod(filepath.Join(state, "secrets"), 0o700)
+		os.Remove(filepath.Join(state, "secrets", "gh-admin"))
+		os.WriteFile(filepath.Join(state, "secrets", "gh-admin"), []byte("canary-NOT-A-REAL-TOKEN-0123456789abcdefXYZ"), 0o400)
+		os.Chmod(filepath.Join(state, "secrets", "gh-admin"), 0o400)
+		os.Remove(filepath.Join(state, "tokens.json"))
+		os.WriteFile(filepath.Join(state, "tokens.json"), []byte(`{"version":1,"tokens":[{"ref":"gh-admin","kind":"`+kind+`","last4":"0XYZ","expires":"","set_at":"2026-11-10T00:00:00Z"}]}`), 0o600)
+		os.Chmod(filepath.Join(state, "tokens.json"), 0o600)
+	}
+	reg("https://api.github.com", "ssh://git@github.com")
+	tok("gitlab") // wrong kind: warns, passes
+	before := snapshot()
+	rc, out := run1()
+	if rc != 0 || !strings.Contains(out, "github 종류 토큰") || !strings.Contains(out, "token_ref_unknown") {
+		t.Fatalf("wrong-kind token: rc=%d %s", rc, out)
+	}
+	if snapshot() != before {
+		t.Fatal("-check wrote into the state dir")
+	}
+	tok("github")
+	before = snapshot()
+	if rc, out = run1(); rc != 0 || strings.Contains(out, "token_ref_unknown") {
+		t.Fatalf("healthy github provider: rc=%d %s", rc, out)
+	}
+	if snapshot() != before {
+		t.Fatal("-check changed the state")
+	}
+	for _, c := range [][2]string{
+		{"http://api.github.com", "ssh://git@github.com"},
+		{"https://127.0.0.1", "ssh://git@github.com"},
+		{"https://api.github.com", "ssh://git@169.254.169.254"},
+	} {
+		reg(c[0], c[1])
+		if rc, out := run1(); rc == 0 {
+			t.Fatalf("%v accepted: %s", c, out)
+		}
+	}
+	reg("http://10.0.0.5", "ssh://git@10.0.0.5") // GitHub Enterprise Server on a private address
+	if rc, out := run1(); rc != 0 {
+		t.Fatalf("private http GHES refused: %s", out)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("-check connected %d times", hits.Load())
+	}
+}

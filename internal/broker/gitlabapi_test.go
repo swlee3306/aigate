@@ -874,6 +874,14 @@ func TestProductionCannotEnableSeams(t *testing.T) {
 		"gitlabapi.go|NewGitLabAPI|newGitLabAPI": true, // production: passes nil
 		"server.go|(type/var)|apiSeams":          true, // the Server field (never assigned)
 		"provider.go|GitLabAPIFor|newGitLabAPI":  true,
+		// W3e (E2): additions for the second client and the kind-aware factory;
+		// nothing existing is loosened (TestSeamsNotReachableFromProduction pins the rest).
+		"githubapi.go|(type/var)|apiSeams":               true,
+		"githubapi.go|newGitHubAPI|apiSeams":             true,
+		"githubapi.go|NewGitHubAPI|newGitHubAPI":         true,
+		"githubapi.go|newGitHubAPI|newGitHubAPI":         true,
+		"provider_iface.go|RepoProviderFor|newGitLabAPI": true,
+		"provider_iface.go|RepoProviderFor|newGitHubAPI": true,
 	}
 	for _, u := range uses {
 		if !allowedUse[u.file+"|"+u.fn+"|"+u.what] {
