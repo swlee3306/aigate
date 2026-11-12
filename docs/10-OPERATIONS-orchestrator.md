@@ -1044,8 +1044,10 @@ journalctl -u orchd -n 40 --no-pager
 > 4. **GitHub 토큰의 영향 범위.** broker가 GitHub에 보내는 호출은 코드에 고정된 9가지(자기 계정·조직 읽기, 저장소 확인, 개인·조직 저장소 만들기, 파일 만들기, 보호 브랜치 읽기·만들기, 배포 키 등록)뿐이고 삭제·변경(`DELETE`·`PATCH`)·병합·토큰·협업자·`/user/keys` 호출은 코드에 없다(시험으로 고정). 그래도 **토큰 자체는 그 사용자의 권한을 모두 가진 토큰**이다(클래식 `repo` 범위면 모든 비공개 저장소 접근): 한 번 유출되면 위 9가지 밖의 일도 GitHub에서 할 수 있다. **만료일을 두고(사용자 결정), 시험이 끝나면 폐기하거나 권한을 줄이고, 의심되면 GitHub에서 즉시 폐기한다.** 토큰 값은 **사용자가 웹 토큰 화면에 직접 입력한다. 이 대화·채팅·터미널에 붙이지 않는다.**
 > 5. **공개 저장소는 누구나 읽는다. 그리고 무료 요금제에서는 브랜치 보호가 공개 저장소에서만 켜진다.** 이 도구는 새 저장소의 `main`에 보호 규칙(강제 푸시·삭제 금지, 관리자 포함)을 켜야 성공으로 친다. **무료 요금제에서 비공개 저장소를 만들면 보호 단계에서 거부되어 `create_partial`(단계 `protect`)로 끝나고, 파일이 올라간 저장소만 GitHub에 남는다**(배포 키 등록과 등록부 기록은 그 뒤 단계라 일어나지 않는다: 쓸 수 없는 저장소). 요금제는 사용자가 안다: 비공개를 만들려면 유료 요금제(보호 브랜치 지원)여야 한다. 아니면 공개로 만들되 **시험용 이름으로, 템플릿 파일만 들어간다는 것을 알고, 끝난 뒤 지운다**(공개 시험 저장소도 한동안 세상에 보인다).
 > 6. **같은 배포 키를 두 번 쓰지 않는다.** GitHub는 한 공개 키를 저장소 하나에만 등록하게 한다. 그래서 GitHub 프로젝트는 저장소마다 orchd가 새 키 쌍을 만든다(GitLab 프로젝트는 W3c의 공용 키 그대로). **제안(propose)은 키만 만들고 등록부·GitHub에는 아무것도 쓰지 않는다.** 서명 뒤 적용이 성공하면 `ssh/keys/<id>/`로 옮기고, 적용되지 않은 키는 15분 뒤와 orchd 시작 때 지운다(자기가 만든 것만). **orchd를 재시작하면 서명 대기 중이던 제안은 `key_expired`("처음부터 다시 제안")가 된다.**
-> 7. **받아들인 한계:** 프로젝트 id는 원격 저장소 이름과 같아야 한다(GitHub는 대소문자만 달라도 된다). **GitHub 저장소는 이름을 소문자로 바꾼 것이 프로젝트 id 규칙(`^[a-z][a-z0-9-]{1,39}$`)에 맞으면 연결할 수 있다**(예: `MyRepo`는 id `myrepo`). 이름에 `_`·`.`가 있거나(`my_repo`, `Repo.js`) 규칙 밖이면(한 글자, 숫자로 시작, 40자 초과) 연결할 수 없다. GitLab에서 경로에 `_`·대문자·`.`가 있는 프로젝트는 연결할 수 없다. **새 저장소는 소문자 이름만 만든다.** GitHub의 "그룹 만들기"는 없다(조직 생성 API가 없다): 소유자는 내 계정 또는 이미 있는 조직이다.
+> 7. **받아들인 한계(W3f F1b 이후의 현재 규칙으로 고침):** **프로젝트 id는 원격 저장소 이름과 같을 필요가 없다**(연결 화면의 "프로젝트 이름" 입력칸에 저장소 이름에서 만든 제안 값이 채워지고 사람이 바꿀 수 있다: 예 저장소 `Sulee_Portfolio` → 이름 `sulee-portfolio`). `remote_name_mismatch` 오류는 없어졌다. 서버 폴더·키 폴더 이름은 프로젝트 이름이다. GitHub 저장소는 이름에 `_`·`.`·대문자가 있어도 연결할 수 있다. GitLab은 경로의 마지막 조각이 소문자 `^[a-z][a-z0-9-]{1,39}$`여야 하는 broker 규칙이 그대로여서 `_`·대문자·`.`가 있는 GitLab 프로젝트는 연결할 수 없다. **이 도구가 새로 만드는(`created`) 프로젝트는 id가 저장소 이름과 같고 새 저장소는 소문자 이름만 만든다.** GitHub의 "그룹 만들기"는 없다(조직 생성 API가 없다): 소유자는 내 계정 또는 이미 있는 조직이다.
 > 8. **절차가 요구하는 비밀 취급.** 이 절차의 어디에도 비밀을 채팅으로 보내라는 단계는 없다. GitHub 토큰은 웹 토큰 화면에만, 개인 키는 서버 안에서 `orch` 계정만 읽는다(이 절의 점검 명령도 개인 키를 열지 않는다. 예외는 단계 4의 E "키가 없어졌을 때": 그곳에서만 사람이 새 키를 만든다).
+
+> **W3f 이후의 읽는 법(2026-11-13).** 이 15장은 W3e 컷오버 때의 절차 기록이다. 그 뒤 W3f(프로젝트 삭제, 16장)가 구현되어 "이 도구는 GitHub의 저장소·배포 키를 지우지 못한다"(⚠ 1, 3-6·3-7·3-12의 같은 문구)는 W3e 시점의 사실이다: W3f 컷오버 뒤에는 이 도구가 **자기가 만든 저장소만** 서명 한 번으로 지우고(`origin: created`), 연결한 저장소에서는 **자기가 붙인 배포 키만** 뗀다. ⚠ 7과 3-7은 W3f F1b의 현재 규칙으로 고쳤다(프로젝트 이름과 저장소 이름이 달라도 된다).
 
 ### 15.0 시작 전에 모두 참이어야 하는 것
 - **출발점: W3c 컷오버가 끝난 상태**(14장). **실서버의 현재 상태가 이것이다(2026-11-12 기준 사용자·컨트롤러가 알려 준 사실, 이 저장소에서는 확인하지 못함):** broker·`orchd`가 W3c main `56dfe3e`, 등록부 버전 2, 제공자 `example-group-gitlab`, 웹에서 등록한 토큰 `orch-api-token`, nft는 GitLab `100.64.0.10`(22·18082)만 허용, `git` 2.43·OpenSSH 9.6, orchd에 기본 `--git-remote /home/orch/repos/remote.git`이 있음. 아래 점검 (a)로 이 사실을 서버에서 다시 본다.
@@ -1197,7 +1199,7 @@ journalctl -u orchd -n 40 --no-pager
 | 3-4 | **소유자 목록(읽기, GitHub 호출).** "새 프로젝트 만들기"에서 제공자 `github` 선택 | **소유자 선택**에 "내 계정"(첫 줄)과 속한 조직이 나온다. **"새 그룹 만들기"는 없다.** **공개 여부 선택은 "선택하세요(필수)"로 시작하고 기본값이 없으며, 고르기 전에는 "변경 내용 확인" 단추가 꺼져 있다.** 이것이 **토큰과 방화벽이 실제 GitHub에서 통하는 첫 확인**이다 | `provider_unreachable`(`api.github.com:443` 도달: 사전 점검 e), `github_refused`(토큰 만료·범위: 상태 범주만 알려 준다), `provider_rate_limited`. **소유자 목록이 비거나 오류면 3-6을 하지 않는다** |
 | 3-5 | **[컨트롤러] 도달·고정 확인(읽기 전용).** 사전 점검 (e)의 두 명령을 다시 | `curl`이 `200`, ssh가 `Permission denied (publickey).`(호스트 키 검증 통과) | ssh 경로·호스트 키(사용자 사전 작업 4·5) |
 | 3-6 | **[사용자 결정] 실제 저장소 만들기.** ⚠ **GitHub에 실제 저장소가 남고 이 도구는 지우지 못한다**(⚠ 1·5). 선택지 (a) **하지 않는다**(컷오버를 3-5에서 닫는다: 권장 기본), (b) **공개** 시험 저장소(누구나 읽는다, 끝난 뒤 사용자가 지운다), (c) **비공개**(유료 요금제일 때만: 무료면 `create_partial`(`protect`)로 끝나고 파일만 있는 저장소가 남는다). 소유자 "내 계정" → 이름·설명·템플릿 `basic`·**AI 전송 끔(기본)**·게시 권한 → **공개 여부를 직접 고름** → 확인 화면에서 **공개 여부 문구(굵게)와 저장소별 배포 키 지문**을 확인 → 패스키 서명 | (b)/(c)면 약 10~90초(화면: 단계 안내, 닫아도 서버는 계속한다). 성공: "만들었습니다"와 복제 `cloned`. **서버(컨트롤러, 읽기 전용):** `sudo ls -la /home/orch/repos/<이름>`(`orch:orch 700`, `.git`, `README.md`…), `sudo -u orch git -C /home/orch/repos/<이름> log --oneline`(**파일 수만큼 커밋**), `git remote -v`(`ssh://git@github.com/<GitHub 철자의 소유자>/<이름>.git`), `git status`(깨끗함), `sudo stat -c '%U:%G %a %n' /home/orch/orchd/ssh/keys /home/orch/orchd/ssh/keys/<이름> /home/orch/orchd/ssh/keys/<이름>/id_ed25519 /home/orch/orchd/ssh/keys/<이름>/id_ed25519.pub`(**`orch:orch 700`, 700, 600, 644**: 첫 실제 키 폴더 만들기), `sudo ls -A /home/orch/orchd/ssh/keys-staging`(**비어 있음**), `sudo ssh-keygen -l -f /home/orch/orchd/ssh/keys/<이름>/id_ed25519.pub`(**웹 확인 화면의 지문과 같아야 한다**), `.clone-*` 없음. **GitHub 화면(사용자):** 저장소가 고른 공개 여부, 기본 브랜치 `main`, `main` 보호(강제 푸시·삭제 금지, 관리자 포함), 배포 키 `orchd <이름>`이 1개이고 쓰기 여부가 고른 게시 권한과 같음, **계정에 다른 배포 키가 늘지 않음**. 원장에 `project_create`(`ok:true`)와 `project_clone`(`ok:true`) 한 줄씩. 등록부(1-6 호출)에 새 항목: `provider: github`, `remote.path: 소유자/이름`(GitHub 철자), `ai_context: false` | **`create_partial`**: 화면이 **GitHub에 남은 것의 경로와 단계**를 보여 준다("이 도구는 지우지 않습니다"): 경로를 적어 두고 GitHub에서 직접 지운다(같은 이름은 지우기 전까지 `project_name_taken`). 단계: `project`(만들어졌는지 불확실), `first_commit`(일부 파일만), `default_branch`(첫 파일이 `main`을 기본 브랜치로 만들지 않음 → 가정이 틀림, 보고), **`protect`(무료 요금제의 비공개이거나 보호 규칙 호출 실패: 배포 키·등록부는 만들어지지 않았다)**, `deploy_key`, `register`. `key_staging_failed`: `ssh` 폴더에 키 폴더를 만들 수 없음(사전 점검 b, 아무것도 쓰지 않았다). `key_expired`: 제안 뒤 15분이 지났거나 orchd가 재시작됨 → 처음부터 다시. `clone.status: failed`(`host_not_pinned`·`key_unavailable`·`clone_failed`…): 프로젝트는 만들어졌고 화면의 "다시 복제"로 서명 없이 다시 한다. **복제가 키를 못 받아들이면 OpenSSH 9.6과 Go가 만든 키 형식의 문제다: 보고** |
-| 3-7 | **[사용자 결정] 기존 저장소 연결(`link_project`).** ⚠ **이미 있는 저장소의 Deploy keys에 키가 등록되고 이 도구는 지우지 못한다.** 선택지 (a) 하지 않는다(기본), (b) 이름이 `^[a-z][a-z0-9-]{1,39}$`이고 **프로젝트 id와 같은**(대소문자만 달라도 됨) 저장소 하나를 연결. "기존 저장소 연결": 제공자·원격 경로(`소유자/이름`)·게시 권한(**기본 읽기**)·AI 전송(끔) → 확인 화면의 경고문("이미 있는 저장소의 설정에 이 서버의 배포 키가 등록됩니다…")과 키 지문 → 서명 | 성공 후 `/home/orch/repos/<id>` 복제, `keys/<id>/` 키 쌍, 등록부에 `remote.path`가 GitHub 철자, 원장 `project_link`. **GitHub(사용자):** 그 저장소에 `orchd <id>` 키 1개, 저장소의 다른 설정·파일은 그대로. **같은 키가 이미 있으면 성공이 아니라 거부**(`github_refused`) | `repo_not_found`(토큰이 볼 수 없는 저장소), `remote_name_mismatch`(이름이 id와 다름: 서명 전 거부), `already_linked`, **`link_partial`**(키가 붙었을 수 있다: **저장소는 지우지 말고** GitHub Deploy keys에서 `orchd`로 시작하는 키만 제거) |
+| 3-7 | **[사용자 결정] 기존 저장소 연결(`link_project`).** ⚠ **이미 있는 저장소의 Deploy keys에 키가 등록되고 이 도구는 지우지 못한다.** 선택지 (a) 하지 않는다(기본), (b) 저장소 하나를 연결(**프로젝트 이름은 입력칸에서 정한다**: 저장소 이름과 달라도 되고 `^[a-z][a-z0-9-]{1,39}$`이면 된다). "기존 저장소 연결": 제공자·원격 경로(`소유자/이름`)·게시 권한(**기본 읽기**)·AI 전송(끔) → 확인 화면의 경고문("이미 있는 저장소의 설정에 이 서버의 배포 키가 등록됩니다…")과 키 지문 → 서명 | 성공 후 `/home/orch/repos/<id>` 복제, `keys/<id>/` 키 쌍, 등록부에 `remote.path`가 GitHub 철자, 원장 `project_link`. **GitHub(사용자):** 그 저장소에 `orchd <id>` 키 1개, 저장소의 다른 설정·파일은 그대로. **같은 키가 이미 있으면 성공이 아니라 거부**(`github_refused`) | `repo_not_found`(토큰이 볼 수 없는 저장소), `already_linked`(이미 그 저장소가 다른 프로젝트에 연결됨), **`link_partial`**(키가 붙었을 수 있다: **저장소는 지우지 말고** GitHub Deploy keys에서 `orchd`로 시작하는 키만 제거) |
 | 3-8 | **원격 연결(`attach_remote`).** (a) **[사용자] 정적 원격 거부 확인(GitHub에 아무것도 쓰지 않음):** `sample-app` 행의 "원격 연결"에서 아무 GitHub 저장소 경로를 넣어 확인. **게시 권한을 쓰기로 고르면 확인 화면에 굵은 경고("[중요] 게시 권한이 쓰기입니다: 이 프로젝트의 로컬 저장소 기록(커밋 이력)이 이 원격으로 올라갈 수 있습니다. 원격이 공개 저장소라면 누구나 그 기록을 읽을 수 있습니다")가 한 번 나온다**(읽기에는 없다). attach는 **그 프로젝트에 대기·게시 대기·승인 대기 작업이 없을 때만** 한다 | **`sample-app`의 `remote`가 비어 있으면(`--git-remote-for` 정적 항목만 있음)** **`static_remote_wins`** 고정 문장이 서명 전에 나온다. **`remote`가 이미 있으면(옛 매핑이 있는 프로젝트)** "원격 연결" 단추가 아예 없거나 `already_linked`가 나오며 **이것은 정상이고 멈출 이유가 아니다**(옛 매핑이 있는 프로젝트에는 연결하지 않는다) | 제안이 열리면(둘 다 아님) 멈추고 보고 |
 | 3-8b | **[사용자 결정] 실제 연결:** 이미 등록되어 provider·원격이 없는 **새 시험용 로컬 프로젝트**에만(`toy`·`sample-app` 같은 운영 프로젝트의 게시 경로를 바꾸지 않는다) | `ai_context`·경로·종류 불변, `provider`·`remote`만 설정, 배포 키 1개 등록(GitHub), `keys/<id>/` | `already_linked`(원격 매핑이 이미 있음), `link_partial` |
 | 3-9 | **[사용자 결정] 새 GitHub 프로젝트에서 작은 작업 한 번(게시 확인).** 게시 권한을 **쓰기**로 만들었고 `registered`가 L1일 때만 의미가 있다. `orch submit --repo /home/orch/repos/<이름> --base <SHA> --class registered --agent claude --prompt '…'`(문서 한 줄 같은 작은 작업) | 게이트(`basic` 템플릿: **검사 없음**)를 통과하고 `push_branch`가 **해석기가 만든 원격(`ssh://git@github.com/…`)과 그 프로젝트의 키**로 `orch/<작업번호>` 브랜치를 올린다. GitHub 화면에 그 브랜치가 보인다(**PR은 만들지 않는다**: W3d). 보호된 `main`은 건드리지 않는다 | `publish` 고정 오류(해석기가 "알 수 없음 = 거부": 등록부·`known_hosts_gitlab`·키 모드), push 거부(읽기 키이거나 보호 규칙) |
@@ -1262,3 +1264,240 @@ sudo ls -a /home/orch/repos
 | 3-6 OpenSSH 9.6의 키 수용·복제 | `cloned` | | |
 | 3-7/3-8 키 중복 거부, 연결 범위 | 거부 / `ai_context` 불변 | | |
 | 3-11 원장·로그·개인 키 위치 | 키 5개뿐·0건·예상 두 곳 | | |
+
+
+## 16. W3f 컷오버 런북 (프로젝트 삭제: 서버의 복제본·등록·키 지우기, 이 도구가 만든 원격 저장소 지우기, 연결한 저장소에서 배포 키만 떼기, 고아 기록 지우기, `orch-broker`·`orchd` 갱신)
+설계는 `19-DESIGN-webconsole-W3-projects.md`, 계획은 `28-PLAN-webconsole-W3f.md`, 결과·시험·한계는 `29-RESULTS-webconsole-W3f.md`(**배포 현실 표**와 "실서버에서 확인하지 못한 것"은 거기 4·6장). **이 절차는 아직 실제 서버에서 한 번도 실행하지 않았다.** 아래 "예상"은 코드와 이 저장소의 시험(가짜 서명자·가짜 GitHub·가짜 GitLab·가짜 broker·임시 폴더)을 읽고 쓴 것이지 서버나 실제 GitHub·GitLab에서 본 출력이 아니다(11~15장과 같은 원칙). **W3f는 이 도구가 처음으로 삭제를 하는 단계다:** 서버의 폴더·키·등록을 지우고, GitHub·GitLab의 저장소를 지우고(이 도구가 만든 것만), 배포 키를 뗀다. **원격 저장소 삭제는 되돌릴 수 없다.** 순서는 바꾸지 않는다. 다르게 보이면 그 단계에서 멈추고 단계 4(롤백)를 고려하되, **삭제가 이미 일어난 뒤의 롤백은 지운 것을 되살리지 못한다**(⚠ 2).
+
+표기: **[사용자]** 사용자 본인의 작업 또는 명시적 승인이 필요, **[컨트롤러]** 읽기 전용 확인(서버 상태를 바꾸지 않음), **[되돌림 가능]** 아래 몇 줄로 원상 복구, **[주의]** 되돌리면 그 사이의 변경을 잃거나 이 도구가 되돌리지 못함. 경로는 11~15장과 같다(바이너리 `/usr/local/lib/aigate`와 `/usr/local/bin/orch-broker`, 설정 `/etc/orch-broker/broker.json`, 상태 `/var/lib/orch-broker`, broker 소켓 `/run/orch-broker/broker.sock`, orchd 설정 `/home/orch/orchd`, 저장소 `/home/orch/repos`). 리다이렉트(`>`·`>>`)가 필요한 명령은 `sudo sh -c '…'`로 쓴다. **비밀 값(토큰, 개인 키)은 이 절의 어떤 명령에도 넣지 않고 출력하지도 않으며, 채팅·터미널에 붙이지 않는다.**
+
+**orchd DB 스키마는 이번에 바뀌지 않는다(v8 그대로)**: 롤백에 DB 복원이 필요 없다. **유닛·orchd 플래그·`broker.json`·방화벽·`known_hosts_gitlab`·정책은 바뀌지 않는다**(새 설정 키·새 플래그 없음). 새로 생기는 것: **등록부 `registry.json`이 버전 4로 올라간다(프로젝트에 `origin`과 선택 필드 `remote_deleted_at`이 붙는다: 아래 ⚠ 2)**, 올리기 전 원본을 **`registry.json.v3.bak`**(0600, broker가 한 번만 쓰고 덮어쓰지 않음)로 남긴다, broker op `remove_project`·`delete_remote_repo`·`remove_deploy_key`·`clear_orphan`(모두 패스키 서명 필요), orchd의 `/api/v1/projects/remove|delete-remote|remove-key/propose|apply`·`/api/v1/orphans/clear/propose|apply`·`GET /api/v1/projects/{id}/removal-preview`, 웹의 프로젝트 행 "삭제…"와 고아 목록의 "기록 지우기", orchd가 `/home/orch/repos/<id>`와 `/home/orch/orchd/ssh/keys/<id>`를 `.deleting-<무작위>`로 이름을 바꾼 뒤 지우는 것(시작 때 남은 것을 치움). **웹 파일은 orchd 바이너리 안에 있으므로 orchd를 갱신해야 새 화면이 보인다**(단계 2 전에는 옛 화면이다).
+
+> **⚠ 먼저 읽을 것 (결정과 위험).**
+> 1. **원격 저장소 삭제는 되돌릴 수 없다(사용자 결정).** GitHub의 `DELETE`는 즉시 지운다. GitLab은 인스턴스 설정에 따라 "삭제 예약"(복구 가능 기간)이 될 수 있으나 **이 도구는 복구하지 않고 응답을 그대로 보여 주지도 않는다**(화면은 "삭제 요청됨" 고정 문장). 삭제할 수 있는 것은 **이 도구가 만든 저장소(`origin: created`)뿐**이다. 연결한 저장소는 절대 지우지 못하고 이 도구가 붙인 배포 키만 뗄 수 있다. 서명 화면에서 **저장소 이름을 글자 그대로(대소문자까지) 직접 입력**해야 서명 단추가 켜진다.
+> 2. **등록부가 버전 4로 올라간다. W3e broker는 버전 4 파일을 "깨짐"으로 보고 fail closed 한다(`registry_unavailable`).** 롤백은 바이너리만 되돌려서는 안 되고 `registry.json`을 버전 3 사본으로 되돌려야 한다(단계 4의 A). **`registry.json.v3.bak`은 broker가 마이그레이션 직전에 한 번만 쓰고 덮어쓰지 않는다: 이전 시도가 남긴 낡은 파일일 수 있으므로 롤백 전에 반드시 그것이 지금 기대하는 파일(루트 백업 `/root/backup-w3f`의 `registry.json`과 sha256이 같고 `"version":3`)인지 확인한다.** 그리고 **삭제가 이미 일어난 뒤에 등록부를 v3로 되돌리면 지워진 프로젝트의 행이 되살아난다**(폴더·키·원격은 없는데 행만 있다: 이 도구에는 그 행을 지우는 W3e 이하 기능이 없다). 삭제를 한 뒤에는 롤백보다 앞으로 고치는 쪽이 낫다.
+> 3. **삭제 권한은 일반 토큰에 이미 있다(사용자 결정 2026-11-12, 별도 삭제 토큰 없음).** 코드는 삭제 호출을 정확히 정해진 행(GitHub 저장소·GitHub 배포 키·GitLab 프로젝트·GitLab 프로젝트의 배포 키 비활성, 키 찾기 읽기)으로만, `origin: created`인 저장소에만, 서명과 저장소 번호·이름 확인 뒤에만 보낸다. 그래도 **토큰이 유출되면 그 계정의 저장소를 지울 수 있다**(사용자가 감수). **GitHub 토큰의 종류에 따라 삭제 권한이 다르다: 클래식 토큰은 `delete_repo` 범위가, 세분화 토큰은 저장소 권한 `Administration: Read and write`가 있어야 저장소 삭제가 된다(공식 문서에서 사용자가 직접 확인: 이 문서는 값을 적지 않는다).** 권한이 없으면 삭제는 `remove_refused`로 끝나고 아무것도 지워지지 않는다. GitLab은 토큰 범위 `api`와 그 프로젝트의 소유자(또는 관리자) 권한이 필요하다. **만료일을 짧게 두고 시험이 끝나면 권한을 줄이는 것을 권한다.**
+> 4. **시험 저장소 `w3e-smoke-1112`·`w3e-smoke-1113`의 원격은 이 도구로 지우지 못한다**(마이그레이션 뒤 `origin: unknown` → `origin_unknown`). 서버의 복제본·등록·키 폴더는 로컬 정리로 지울 수 있다. **GitHub의 저장소는 사용자가 GitHub 화면에서 직접 지운다**(저장소를 지우면 거기 등록된 배포 키도 함께 사라진다). 로컬 정리만 하고 저장소를 두면 그 저장소에는 `orchd <이름>` 배포 키가 남는다(화면의 "배포 키가 남을 수 있음" 안내).
+> 5. **원격 삭제 시험은 이 컷오버 뒤에 새로 만든 시험 저장소(`origin: created`)에서만 한다.** 이미 있는 저장소(`toy`·`sample-app`·스모크 둘·W3c가 만든 프로젝트)로는 하지 않는다. 사용자가 이름을 정한 새 시험 저장소를 공개로 만들고 그것만 지운다.
+> 6. **레거시 프로젝트(`toy`, `sample-app`)도 서버 쪽 삭제는 되지만 두 번째 확인과 서명되는 `legacy_ack`가 필요하다.** 원격 저장소(예: `sample-app`의 사내 GitLab)는 어떤 경우에도 이 도구로 지우지 못한다. **이 컷오버에서는 레거시 두 번째 확인 화면을 보기만 하고 서명하지 않는다**(3-6: 서명 전에 취소). 정적 `--git-remote-for`가 있는 `sample-app`를 나중에 지우면 orchd 유닛의 그 설정은 남는다(사람이 정리: 아래 "정적 원격 정리").
+> 7. **삭제 한도는 메모리에만 있다.** 원격 저장소 삭제는 broker 전체 하루 3회·시간당 2회, 로컬 정리·키 떼기·고아 지우기는 시간당 10회이고, **broker를 재시작하면 이 카운터가 0으로 돌아간다**(한도를 우회하려고 재시작하지 않는다). 주체별 한도(orchd): 원격 삭제 시간당 3, 로컬 정리 10, 키 떼기 10, 고아 20, 미리보기 30.
+> 8. **GitHub에는 이름으로만 지우는 `DELETE`가 있다(번호로 지우는 호출이 없다).** broker는 지우기 직전에 저장소를 읽어 번호와 이름이 등록부와 같은지 확인하지만 **그 읽기와 `DELETE` 사이에 같은 이름의 저장소가 다시 만들어지는 아주 짧은 틈은 남는다**(받아들인 위험, 서명한 번호가 확인 시점의 저장소와만 맞는다).
+> 9. **결과를 알 수 없으면 아무것도 더 하지 않는다.** `DELETE` 뒤의 시간 초과·5xx·연결 끊김은 `delete_partial`("일부만 되었거나 결과를 알 수 없음")이고 **자동 재시도도 로컬 정리도 일어나지 않으며 서명은 소모된다.** 상태를 다시 읽고 필요하면 새 서명으로 한다(아래 "delete_partial와 `delete_partial_local` 다루기").
+> 10. **미리보기는 서버의 `git`을 실행한다**(쓰기 등급 + CSRF 헤더 필요). 저장소 설정의 필터·훅은 실행하지 않도록 막았지만(시험으로 고정) **큰 복제본에서의 실제 시간(상한 25초)은 서버에서 본 적이 없다.** 결과는 개수와 예·아니오뿐이다(이름·경로·메시지 없음). 변경 개수를 알 수 없으면 화면은 "변경이 있을 수 있습니다"로 쓰고 지우겠다는 확인을 요구한다.
+> 11. **시험 저장소를 지우는 일도 서명이 필요하고 되돌릴 수 없다.** 필요하지 않으면 3-4(원격 삭제)를 하지 않고 컷오버를 3-3에서 닫는다(권장 기본: 로컬 정리만 확인).
+> 12. **절차가 요구하는 비밀 취급.** 이 절차의 어디에도 비밀을 채팅으로 보내라는 단계는 없다. 토큰 값은 웹 토큰 화면에만 입력한다.
+
+### 16.0 시작 전에 모두 참이어야 하는 것
+- **출발점: W3e 컷오버가 끝난 상태(15장).** **실서버의 현재 상태(2026-11-12 사용자·컨트롤러가 알려 준 사실, 이 저장소에서는 확인하지 못함):** broker·`orchd`가 W3e main `3830546`, 등록부 버전 3(`registry.json.v2.bak`가 남아 있음), 제공자 `example-group-gitlab`·`swlee3306-github`(ssh `ssh://git@ssh.github.com:443`), 토큰 `orch-api-token`·`swlee3306-github-token`, 정책 클래스 `registered` 있음, `known_hosts_gitlab`에 GitLab과 `[ssh.github.com]:443` 항목, 프로젝트 `toy`·`sample-app`(레거시)·W3c/W3e에서 만든 것·`w3e-smoke-1112`(`basic`)·`w3e-smoke-1113`(`go`), GitHub에 시험 저장소 둘(공개). 아래 점검 (a)로 이 사실을 서버에서 다시 본다.
+  - **W3e 컷오버가 끝나지 않았다면** 15장을 먼저 끝까지 한다. 15장과 16장을 한 번에 합치지 않는다.
+- **실행 중·대기 중·게시 대기·승인 대기 작업이 없다**(`orch list`, `orch approvals`: 끝난 작업의 기록은 있어도 된다). 단계 1은 broker를, 단계 2는 `orchd`를 재시작한다. **지울 시험 프로젝트에는 어떤 작업도 제출하지 않는다**(진행 중 작업이 있으면 `project_busy`).
+- **웹 서명에 쓸 패스키 서명자가 등록되어 있다**(`sudo orch admin signers list`에 `webauthn` 형식). **새 서명 동작 4개는 아직 한 번도 실제 패스키로 확인하지 않았다.**
+- **백업은 `/root/backup-w3f`(root 소유 0700)에만 둔다.** `orch`가 쓸 수 있는 폴더에는 두지 않는다. **사전 점검 전에 [컨트롤러/root]가 먼저 만든다**: `sudo install -d -m 0700 -o root -g root /root/backup-w3f /root/backup-w3f/bin`. **백업 복사는 모두 `cp -an`(덮어쓰지 않음)이다**: 이전 시도의 사본이 있으면 그것이 이번 시작 상태(등록부 v3)인지 `sudo grep -o '"version": *[0-9]*' …`로 보고, 아니면 옛 사본을 `이름.old-<날짜>`로 옮긴 뒤 복사한다.
+- **사전 점검 (단계 1 전에, 전부 읽기 전용이고 값·개인 키를 찍지 않는 명령. 컨트롤러가 서버에서 직접 한다).** 하나라도 예상과 다르면 **시작하지 않고** 보고한다.
+  - **(a) W3e 상태와 등록부.** `systemctl is-active orch-broker orchd` → `active` 둘. `sudo sha256sum /usr/local/bin/orch-broker /usr/local/lib/aigate/orchd`(결과를 기록: 롤백 확인에 쓴다). `sudo stat -c '%U:%G %a %n' /var/lib/orch-broker /var/lib/orch-broker/registry.json` → **`orch-broker:orch-broker 700`**, 파일 `orch-broker:orch-broker 600`. `sudo grep -o '"version": *[0-9]*' /var/lib/orch-broker/registry.json` → **`"version":3`**(이미 4면 누군가 새 broker를 먼저 시작한 것: 멈추고 확인). `sudo ls /var/lib/orch-broker`에 `registry.json`, **`registry.json.v2.bak`**, `used-requests.json`, `budget.json`, `secrets`, `tokens.json`이 있고 **`registry.json.v3.bak`는 아직 없다**(있으면 낡은 파일: 단계 1에서 새로 쓰이지 않고 시작이 거부될 수 있다 → `/root/backup-w3f/registry.json.v3.bak.old-<날짜>`로 옮기고 보고). 제공자와 프로젝트 읽기(값 없음)는 단계 1-2에서 `/root/backup-w3f`에 저장한다.
+  - **(b) 저장소 루트와 프로젝트 경로.** `sudo stat -c '%U:%G %a %F %n' /home/orch/repos` → **`orch:orch 700 directory`**(심볼릭 링크가 아님). `sudo grep -n -A3 repo_roots /etc/orch-broker/broker.json`의 첫 항목이 `/home/orch/repos`. **등록부의 모든 프로젝트 경로가 `<루트>/<id>`와 글자 그대로 같은지**(같지 않은 행은 로컬 정리가 `local_unsafe`로 거부된다): 
+    ```
+    sudo -u orch python3 -c 'import socket,json;s=socket.socket(socket.AF_UNIX);s.connect("/run/orch-broker/broker.sock");s.sendall(b"{\"v\":1,\"op\":\"projects\"}\n");r=json.loads(s.makefile().readline())["result"];[print(p["id"],p["path"],"OK" if p["path"]=="/home/orch/repos/"+p["id"] else "DIFFERENT") for p in r["projects"]]'
+    ```
+    모든 줄이 `OK`여야 한다. `DIFFERENT`인 프로젝트는 이 기능으로 서버 쪽 삭제를 할 수 없다(원격 삭제와 키 떼기는 된다). `sudo find /home/orch/repos -mindepth 1 -maxdepth 1 -printf '%y %u:%g %m %f\n'` → 각 프로젝트가 **`d orch:orch 700 <이름>`**(`l`이면 심볼릭 링크라 `local_unsafe`로 거부된다). 각 프로젝트 폴더에 `.git` **디렉터리**가 있는지(`sudo ls -d /home/orch/repos/*/.git`).
+  - **(c) 키 폴더 소유자·모드.** `sudo find /home/orch/orchd/ssh/keys -mindepth 1 -maxdepth 2 -printf '%y %u:%g %m %p\n'` → 프로젝트 폴더 `d orch:orch 700`, `id_ed25519` `f orch:orch 600`, `id_ed25519.pub` `f orch:orch 644`(키 폴더 소유자가 `orch`가 아니면 그 프로젝트의 키 폴더 제거가 `local_unsafe`/`key_unavailable_for_removal`로 거부된다).
+  - **(d) 저장소 루트 아래에 마운트·바인드 마운트·다른 파일 시스템이 없다**(이름 바꾸기가 한 파일 시스템 안에서만 된다): `findmnt -rn -o TARGET | grep -e '^/home/orch/repos' -e '^/home/orch/orchd'`(출력 없음, 종료 코드 1이 정상), `sudo stat -c '%d %n' /home/orch/repos /home/orch/repos/* /home/orch/orchd/ssh/keys /home/orch/orchd/ssh/keys/*`(같은 줄의 첫 열 값이 같아야 한다: 한 폴더 그룹 안에서 다르면 멈춘다).
+  - **(e) 유닛 샌드박스(바뀌지 않았는지).** `systemctl show orchd -p User -p ReadWritePaths -p ProtectSystem -p ProtectHome -p PrivateTmp` → `User=orch`, `ReadWritePaths`에 **`/home/orch/orchd`**와 **`/home/orch/repos`**, `ProtectSystem=strict`, `ProtectHome=read-only`, `PrivateTmp=yes`. 쓰기 가능성만 본다(만들지 않는다): `sudo systemd-run --wait --pipe -p User=orch -p ProtectSystem=strict -p ProtectHome=read-only -p 'ReadWritePaths=/home/orch/orchd /home/orch/repos' -p PrivateTmp=yes /bin/sh -c 'test -w /home/orch/repos && test -w /home/orch/orchd/ssh/keys && echo writable'`(예상 `writable`). **이 점검은 이름 바꾸기·`RemoveAll`이 실제로 되는지를 보증하지 못한다**(그것은 3-2의 첫 실제 로컬 정리에서 처음 드러난다: 못 하면 `delete_partial_local`/`local_unsafe`, 등록은 먼저 지워졌을 수 있다: 아래 복구).
+  - **(f) 서버의 `git`.** `sudo -u orch sh -c 'git --version'`(예상 2.43). 미리보기가 이 `git`을 쓴다.
+  - **(g) 토큰과 삭제 권한(사용자 몫: 서버에서는 볼 수 없다).** [사용자] GitHub 토큰 화면에서 `swlee3306-github-token`의 종류와 권한을 본다: 클래식이면 `delete_repo` 범위, 세분화면 대상 저장소(새 시험 저장소가 "선택한 저장소"에 들어가는지 포함)와 `Administration: Read and write`. 권한이 없으면 3-4의 삭제가 `remove_refused`로 끝난다(안전한 실패). [사용자] GitLab 토큰 `orch-api-token`의 범위(`api`)와 소유자 권한. 이 도구와 컨트롤러는 토큰 값을 읽지 않는다.
+  - **(h) 정책 `registered`와 `known_hosts_gitlab`(바뀌지 않음).** `sudo grep -n -B1 -A2 registered /home/orch/orchd/policy.yml`, `sudo ssh-keygen -F '[ssh.github.com]:443' -f /home/orch/orchd/ssh/known_hosts_gitlab`(항목 있음). 새 시험 저장소를 만들 때(3-4)만 쓰인다.
+  - **(i) 샌드박스 안 `-check` 기준선.** 현재(W3e) 바이너리로 단계 1-4의 `-check` 명령을 한 번 돌려 출력을 기록한다.
+  - **(j) 아무것도 돌고 있지 않다.** `orch list`, `orch approvals`.
+  - **서버에서 쓰기 시험을 따로 하지 않는다.** 위 점검으로 알 수 없는 것(GitHub·GitLab의 실제 `DELETE` 응답, 실제 폴더 삭제, 실제 패스키 서명, 큰 복제본의 미리보기 시간)은 단계 3에서 처음 드러난다.
+
+**사용자 사전 작업 (컨트롤러가 대신할 수 없다).**
+1. **[사용자 결정] 이 컷오버에서 무엇을 할지.** (1) 로컬 정리 시험(3-2: `w3e-smoke-1112`의 서버 쪽만 지움, 원격은 그대로), (2) 배포 키만 떼기 시험(3-3: `w3e-smoke-1113`, 이 프로젝트는 그 뒤 게시를 못 한다), (3) **원격 저장소 삭제 시험(3-4, 되돌릴 수 없음)은 새로 만든 시험 저장소 하나에만**(없으면 하지 않는다), (4) 레거시 두 번째 확인 화면 보기(3-6, 서명하지 않음), (5) 고아 기록이 있으면 지우기(3-7). 하지 않을 것은 건너뛴다.
+2. **[사용자 결정] GitHub 토큰 권한**(위 ⚠ 3, (g)). 삭제 시험이 끝나면 권한을 줄일지·토큰을 새로 만들지.
+3. **스모크 저장소 둘의 GitHub 쪽 정리는 사용자가 한다**(3-9). 이 도구로는 지우지 못한다.
+4. **새 시험 저장소의 이름과 공개 여부**(3-4용): `^[a-z][a-z0-9-]{1,39}$`, 예 `w3f-smoke-1114`. 공개 저장소는 누구나 읽는다. 끝난 뒤 이 도구로 지운다.
+
+**알아둘 것 (코드 읽기와 시험 기준, 실서버·실제 GitHub 미확인).**
+0. **웹에서 만든 모든 삭제는 서명이 필요하다.** 확인 화면에 지울 대상 전체가 평문으로 나오고(원격 이름과 주소, 복제본 경로, 키 폴더, 원격에 올라가지 않은 커밋 수·변경 파일 수, **되돌릴 수 없음**) **브라우저가 `change` 해시를 다시 계산해 서버의 값과 같고 서버가 보낸 문장이 브라우저가 기대하는 문장과 정확히 같을 때만** 서명 단추가 켜진다.
+1. **지우기의 종류 넷.** (a) "복제본과 등록 지우기": `remove_project`(서버의 복제본·키 폴더·등록, 원격은 그대로, 되돌릴 수 있는 쪽), (b) "복제본과 원격 저장소 지우기": `delete_remote_repo`(+ 선택 `also_local`: 같은 서명으로 원격을 지운 뒤 복제본·키 폴더까지 지움, **등록은 "원격 없음" 상태로 남고 지우려면 두 번째 서명인 (a)가 필요하다. 자동으로 하지 않는다**), (c) "배포 키만 떼기": `remove_deploy_key`(저장소와 등록은 그대로, 연결한 저장소를 정리할 때), (d) 고아 목록의 "기록 지우기": `clear_orphan`(외부 호출 없음).
+2. **서버 쪽 삭제가 거부되는 경우(서명 전):** 진행 중 작업이 있음(`project_busy`), 폴더가 심볼릭 링크이거나 `<루트>/<id>`가 아님(`local_unsafe`), 다른 프로젝트의 경로 안/위에 있음(`local_unsafe`), 레거시를 두 번째 확인 없이(`legacy_ack_required`), 원격 삭제에서 출처가 `linked`(`not_created_by_tool`)·`unknown`·`legacy`(`origin_unknown`), 저장소 번호·이름이 달라짐(`remote_changed`), 입력한 이름이 다름(`confirm_mismatch`). 이 거부들은 서명을 소모하지 않는다.
+3. **순서(되돌릴 수 없는 일부터 하지 않는다).** 원격 삭제: 서명·모양 검증과 `project_busy` 확인 → broker가 저장소를 읽어 번호·이름 확인 → `DELETE` 한 번 → 등록부에 `remote: 없음`+`remote_deleted_at` → (`also_local`이면) orchd가 복제본·키 폴더 삭제. **`Provider`는 등록부에 남는다**(그래서 이 프로젝트에 다른 저장소를 `attach`할 수 없다: `already_linked`). `remove_project`는 broker가 서명을 확인하고 행을 지운 뒤 orchd가 폴더를 지운다(등록이 먼저 지워진다: 폴더 삭제가 실패하면 등록 없는 폴더가 남는다: 아래 복구).
+4. **복제본에 원격에 올라가지 않은 커밋·수정이 있으면** 확인 화면이 개수를 보이고 지우겠다는 체크를 요구한다. **원격이 이미 지워진 프로젝트(또는 `also_local`)에서는 복제본이 유일한 사본일 수 있다는 경고가 항상 나온다.**
+5. **키 떼기**는 orchd가 그 프로젝트의 `id_ed25519.pub`을 읽어 broker에 주고(브라우저는 키를 보내지 않는다), broker가 제목 `orchd <프로젝트 id>`**와** 공개 키 본문이 둘 다 맞는 키 하나만 뗀다(다른 키는 건드리지 않는다). GitLab은 그 프로젝트에서만 키를 비활성화한다(공용 키 자체는 지우지 않는다). 공개 키 파일이 없으면 `key_unavailable_for_removal`: GitHub 화면에서 사람이 지운다.
+6. **알 수 없는 결과.** `delete_partial`·`outcome_unknown`·시간 초과·연결 끊김: 화면이 상태를 다시 읽고 안내하며 자동으로 다시 하지 않는다. 같은 서명은 쓸 수 없다.
+7. **원장:** 새 이벤트 `project_remove`·`remote_delete`·`key_remove`·`orphan_clear`, 키는 `actor,action,subject,ok,code`뿐(경로·이름·원격 주소 없음).
+8. **롤백하면 W3e broker는 등록부 버전 4를 모른다**(⚠ 2).
+
+### 컷오버에서만 확인할 수 있는 것 (사전 목록: 결과 문서 29번 6장에 "확인함/못 함"으로 남긴다)
+1. **실제 GitHub `DELETE /repos/{owner}/{repo}`:** 토큰 종류(클래식 `delete_repo` / 세분화 `Administration: write`)별 성공(204 가정)과 권한 부족(403/404 가정 → `remove_refused`), 지연이 있는지.
+2. **GitLab `DELETE /projects/{id}`:** 성공 상태(202 가정, 문서에 없음)와 인스턴스의 지연 삭제, 키 비활성(`DELETE /projects/{id}/deploy_keys/{key_id}`)의 성공(204 가정)과 공용 키가 다른 프로젝트에서 계속 쓰이는지.
+3. **GitHub 이름 수준 TOCTOU**(⚠ 8: 관찰 불가능한 위험, 시험으로 보이지 못함).
+4. **orchd가 실제 유닛 샌드박스에서 이름 바꾸기+`RemoveAll`을 하는지**(소유자·`ReadWritePaths`·마운트 없음), `.deleting-*` 시작 청소.
+5. **큰 복제본의 미리보기 시간(상한 25초)과 `git` 2.43에서 개수가 맞는지.**
+6. **등록부 v3→v4 마이그레이션을 실서버 파일·uid·샌드박스로**(1-4)와 `registry.json.v3.bak`.
+7. **IME·붙여넣기·포커스(저장소 이름 입력칸)를 실제 Chrome에서**, 실제 orchd에서의 CSRF 헤더(미리보기 GET), 실제 패스키가 만든 새 동작 4개의 서명을 broker가 검증하는지.
+8. **390px에서 보지 못한 화면**(결과 문서 29번 6장의 목록).
+
+### 단계 1. broker 갱신·등록부 마이그레이션 [사용자][주의: 등록부가 버전 4로 올라간다 → 롤백은 단계 4의 A]
+**순서: (orchd 정지) → 백업 → (Mac) 게이트·빌드 → 옛 broker 정지 → 새 바이너리 설치 → 샌드박스 안에서 `-check` → 시작 → 읽기 점검.** `broker.json`은 바뀌지 않는다.
+
+**1-0. 빌드 전 게이트 (Mac, 저장소에서). 하나라도 실패하면 빌드하지 않는다.**
+```
+go test -run TestConstantsAgreeWithWeb -v ./internal/orch/api     # --- PASS 이고 SKIP 이 없어야 한다
+go vet ./... ; gofmt -l .                                         # gofmt 출력 없음
+GOOS=darwin go vet ./cmd/... ./internal/... ; GOOS=linux go vet ./cmd/... ./internal/...
+go test ./... -count=1 -race
+node --test "internal/orch/web/test/*.test.js"
+```
+(결과 문서 29번 2장의 숫자와 같은 커밋인지 확인한다.)
+
+**1-1. 새 바이너리 (Mac).** `GOOS=linux GOARCH=amd64 go build -o /tmp/w3f/<이름> ./cmd/<이름>`을 `orch-broker`, `orchd`, `orch`, `aigate`에 대해 하고(`uname -m`에 맞춘다) `scp`로 VM `/tmp/w3f/`에 보낸다. **아직 설치하지 않는다.**
+
+**1-2. `orchd`를 멈추고 백업한다. [사용자]** 먼저 실행 중·대기·게시 대기·승인 대기 작업이 없는지 본다(`orch list`, `orch approvals`). 없으면 `sudo systemctl stop orchd`. 이 시점부터 단계 2의 시작까지 **웹 콘솔·작업 처리·게시가 멈춘다.** (W3f는 broker→orchd 응답에 필드를 더하기만 해서 옛 orchd와 새 broker가 만나도 게시가 열려 있지는 않지만, 15장과 같은 순서를 지킨다: 옛 orchd는 `origin`을 무시하고, 새 orchd와 옛 broker는 삭제 op에 `unknown_op`을 받아 "broker 연결 불가"로 보인다.)
+
+**백업(`cp -an`: 덮어쓰지 않음). `/root/backup-w3f`(root 0700, 16.0에서 이미 만듦).** broker의 상태 폴더는 **broker를 멈춘 뒤 1-3에서** 복사한다.
+```
+B=/root/backup-w3f
+sudo install -d -m 0700 -o root -g root $B $B/bin       # 이미 있으면 그대로
+sudo stat -c '%U:%G %a %n' $B          # root:root 700 이어야 한다
+sudo cp -an /usr/local/bin/orch-broker $B/bin/orch-broker
+for f in orchd orch aigate; do sudo cp -an /usr/local/lib/aigate/$f $B/bin/$f; done
+sudo cp -an /etc/orch-broker $B/etc-orch-broker
+sudo cp -an /home/orch/orchd/policy.yml $B/policy.yml.pre-w3f
+sudo cp -an /home/orch/orchd/ssh/known_hosts_gitlab $B/known_hosts_gitlab.pre-w3f
+sudo cp -an /etc/systemd/system/orch-broker.service $B/orch-broker.service.pre-w3f
+sudo cp -an /etc/systemd/system/orchd.service $B/orchd.service.pre-w3f; sudo cp -an /etc/systemd/system/orchd.service.d $B/ 2>/dev/null
+# 컷오버 전후 비교용 읽기 응답(값 없음)
+for op in providers projects; do sudo -u orch python3 -c 'import socket,sys;s=socket.socket(socket.AF_UNIX);s.connect("/run/orch-broker/broker.sock");s.sendall(("{\"v\":1,\"op\":\""+sys.argv[1]+"\"}\n").encode());print(s.makefile().readline())' $op | sudo tee $B/$op-before.json >/dev/null; done
+# 목록만(개인 키는 복사하지 않는다): 키 폴더·저장소 폴더의 이름·소유자·모드
+sudo sh -c "find /home/orch/orchd/ssh/keys /home/orch/repos -mindepth 1 -maxdepth 2 -printf '%y %u:%g %m %p\n' > $B/tree-before.txt"
+sudo ls -lR $B | head -50
+```
+(소켓은 `orch` 계정만 쓸 수 있어 읽기는 `sudo -u orch`로 하고 root 전용 폴더에는 `sudo tee`로 저장한다.) 백업에는 `openai.key`(0400)와 **토큰 파일 사본(1-3의 상태 폴더 사본의 `secrets/`)**이 들어간다: **`orch`가 쓸 수 있는 폴더에 두지 않는다.** 안정되면 사용자가 `sudo find /root/backup-w3f -path '*secrets*' -type f -exec shred -u {} +`와 `sudo shred -u /root/backup-w3f/etc-orch-broker/openai.key`로 비밀 사본을 지운다. **개인 키는 백업하지 않는다**: 지운 키 폴더는 되살릴 수 없고, 필요하면 새 키로 다시 연결한다.
+
+**1-3. 옛 broker 정지 → 새 바이너리 설치.** **옛 broker를 반드시 먼저 멈춘다**(읽기와 쓰기 사이에 잠금이 없다). (정지한 뒤 1-4가 실패하면 broker는 멈춘 채로 남는다: 곧바로 단계 4의 A.)
+```
+sudo systemctl stop orch-broker
+sudo cp -an /var/lib/orch-broker $B/var-lib-orch-broker       # registry.json(버전 3)이 여기 있다: 롤백의 핵심. broker가 멈춘 뒤의 사본이다
+sudo grep -o '"version": *[0-9]*' $B/var-lib-orch-broker/registry.json    # "version":3 (아니면 16.0의 `cp -an` 주의를 본다)
+sudo sha256sum $B/var-lib-orch-broker/registry.json /var/lib/orch-broker/registry.json       # 같아야 한다(기록)
+sudo install -o root -g root -m 0755 /tmp/w3f/orch-broker /usr/local/bin/orch-broker
+```
+**1-4. 샌드박스 안에서 `-check`(시작 전).** 유닛과 같은 샌드박스 옵션(13~15장과 같은 명령):
+```
+sudo systemd-run --wait --pipe -p User=orch-broker -p Group=orch-broker -p SupplementaryGroups=orch -p ProtectSystem=strict -p ProtectHome=yes -p SystemCallFilter=@system-service /usr/local/bin/orch-broker -check -config /etc/orch-broker/broker.json -state-dir /var/lib/orch-broker
+```
+예상: `orch-broker: 점검 통과 (…)` 한 줄과 `Finished with result: success`(종료 코드 0), 사전 점검 (i)의 기준선과 같은 경고만. **`-check`는 등록부를 올리지 않는다**: 끝난 뒤에도 `sudo grep -o '"version": *[0-9]*' /var/lib/orch-broker/registry.json`이 **`"version":3`** 이어야 한다. 실패 문장이 나오면 **시작하지 않고 멈춘다 → 단계 4의 A.**
+
+**1-5. 시작(등록부가 여기서 버전 4로 올라간다).**
+```
+sudo systemctl start orch-broker
+systemctl status orch-broker --no-pager; sudo journalctl -u orch-broker -n 30 --no-pager
+sudo stat -c '%U:%G %a %n' /var/lib/orch-broker /var/lib/orch-broker/registry.json /var/lib/orch-broker/registry.json.v3.bak
+sudo grep -o '"version": *[0-9]*' /var/lib/orch-broker/registry.json
+sudo sha256sum /var/lib/orch-broker/registry.json.v3.bak /root/backup-w3f/var-lib-orch-broker/registry.json
+sudo ls -a /var/lib/orch-broker | grep -c '^\.state-' || true
+```
+예상: 유닛 `active (running)`, 로그에 오류 없음. 폴더 `orch-broker:orch-broker 700`, `registry.json`은 **`600`이고 `"version":4`**, **`registry.json.v3.bak`가 `orch-broker:orch-broker 600`으로 있고 root 백업의 `registry.json`과 sha256이 같다**(같지 않으면 낡은 `.v3.bak`가 있었던 것: 멈추고 보고), `registry.json.v2.bak`는 그대로, 임시 파일 `.state-*` 없음(0). **파일이 버전 3 그대로이거나 broker가 시작하지 않으면 멈춘다 → 사전 점검 a·e와 유닛 샌드박스를 다시 보고 단계 4의 A.**
+
+**1-6. 읽기 op와 회귀.** `orch` 계정이 소켓으로 호출한다(값을 찍지 않는 읽기, 15장 1-6과 같은 명령):
+```
+for op in providers projects status tokens; do sudo -u orch python3 -c 'import socket,sys;s=socket.socket(socket.AF_UNIX);s.connect("/run/orch-broker/broker.sock");s.sendall(("{\"v\":1,\"op\":\""+sys.argv[1]+"\"}\n").encode());print(s.makefile().readline())' $op; done
+```
+예상: `providers`는 두 제공자(내용 불변). `projects`는 단계 1 전(`$B/projects-before.json`)과 같은 프로젝트·`ai_context`·`provider`·`remote`이고 **모든 프로젝트에 `"origin"`이 있다: `toy`·`sample-app`는 `legacy`, 그 밖의 모든 프로젝트(`w3e-smoke-1112`·`w3e-smoke-1113` 포함)는 `unknown`**. `remote_deleted_at`은 없다. `status`·`tokens`는 이전과 같다. **프로젝트 목록·`ai_context`·`remote`가 바뀌었거나 `origin`이 위와 다르면 멈춘다 → 단계 4의 A.**
+
+**검증 체크리스트:** 1-4 통과(등록부 아직 v3), 1-5의 유닛 active·`registry.json` 600·`"version":4`·`.v3.bak` 600과 sha256 일치, 1-6의 읽기 응답. **그래도 안 되면:** 단계 4의 A. orchd는 멈춘 상태다(1-2).
+
+### 단계 2. `orchd` 갱신 [사용자]
+**DB 스키마가 바뀌지 않으므로 DB를 복원할 필요가 없다.** `orchd`는 1-2에서 이미 멈춰 있다. **웹 파일이 orchd 안에 있으므로 이 단계가 끝나야 새 화면이 보인다.**
+```
+sudo systemctl is-active orchd          # inactive
+for f in orchd orch aigate; do sudo install -o root -g root -m 0755 /tmp/w3f/$f /usr/local/lib/aigate/$f; done
+sudo systemctl start orchd
+journalctl -u orchd -n 40 --no-pager
+```
+유닛과 드롭인은 바꾸지 않는다. **검증 체크리스트**
+- 로그: 오류 없이 대기, `approvals: mode signed`, 스키마 오류 없음. 시작 때 `.deleting-*` 청소는 한 일이 없다면 로그에 아무것도 없다.
+- `orch list`: 단계 1 이전의 작업이 모두 그대로, 마지막 번호가 같다.
+- **새 바이너리가 설치되어 도는지: 해시를 비교한다.** `sudo sha256sum /usr/local/lib/aigate/orchd /tmp/w3f/orchd`의 두 값이 같아야 한다(`orch`·`aigate`도). 시작 시각은 `systemctl show orchd -p ActiveEnterTimestamp`.
+- 로그인 없이는 닫혀 있는지: `curl -sk -o /dev/null -w '%{http_code}\n' https://<FQDN>/api/v1/projects/w3e-smoke-1112/removal-preview` → **401**(같은 방식으로 `POST /api/v1/projects/remove/propose`, `POST /api/v1/projects/delete-remote/propose`, `POST /api/v1/projects/remove-key/propose`, `POST /api/v1/orphans/clear/propose`도 401). **이것은 "로그인 없이는 닫혀 있다"는 것만 증명한다**(버전은 위 해시로 본다).
+- 저장소 루트 아래에 `.deleting-*`·`.remove-refused-*` 이름이 없다: `sudo ls -a /home/orch/repos /home/orch/orchd/ssh/keys`.
+
+**그래도 안 되면:** 단계 4(롤백: orchd를 먼저 멈춘 채 A→B 순서).
+
+### 단계 3. 웹에서 확인 [사용자]
+**전제:** 단계 1·2 통과, 사용자 사전 작업을 마쳤다. Mac 브라우저에서 `https://<FQDN>/`에 패스키로 로그인. "예상"은 코드·시험(`internal/orch/web/test/delete.test.js`, `internal/orch/api/w3f_f3_test.go`·`adversarial_w3f_test.go`, `internal/broker/delete_ops_test.go`·`adversarial_w3f_test.go`)에서 읽은 것이다. **순서를 지킨다: 되돌릴 수 있는 것(로컬 정리) 먼저, 되돌릴 수 없는 것(원격 삭제)은 마지막, 그리고 새로 만든 시험 저장소에만.**
+
+| # | 할 일 | 예상(코드·시험 기준) | 다르면 |
+|---|---|---|---|
+| 3-1 | **기존 화면 회귀.** `#/providers`, `#/projects` 열기 | 프로젝트 목록·제공자 목록이 단계 1 전과 같고 **각 프로젝트 행에 "삭제…" 단추**가 새로 보인다(진행 중인 일이 있는 동안은 꺼져 있고 이유 문장이 있다). 고아 알림이 있으면 "기록 지우기" 단추가 새로 보인다. 제공자 화면에 비밀 입력칸이 없다 | 단추가 없으면 브라우저 캐시(강력 새로고침), 목록이 비면 단계 1·2 |
+| 3-2 | **[사용자] 로컬 정리 시험: `w3e-smoke-1112`(출처 `unknown`, 원격은 그대로).** 행의 "삭제…" → "복제본과 등록 지우기…"(원격 저장소는 선택지에 없거나 이유 문장과 함께 꺼져 있다: 출처를 모르는 프로젝트) → **미리보기**(원격에 올라가지 않은 커밋·수정한 파일 개수(0이 예상이지만 작업 #47이 만든 `orch/47` 브랜치가 원격에 없으면 0이 아닐 수 있다: 0이 아니면 개수를 읽고 "그래도 지운다" 체크 후 진행), 크기, 지울 폴더 경로·키 폴더, "원격은 그대로", GitHub 프로젝트라 **"배포 키가 남을 수 있음"** 안내) → 확인 화면(브라우저가 `change`를 다시 계산, 서버 문장이 기대와 정확히 같음) → 패스키 서명 | 결과 "완료": 단계별 표시(등록 지움, 복제본 지움, 키 폴더 지움). **서버(컨트롤러, 읽기 전용):** `sudo ls -a /home/orch/repos`(**`w3e-smoke-1112`가 없고 `.deleting-*`도 없다**), `sudo ls -a /home/orch/orchd/ssh/keys`(그 이름의 폴더 없음), 같은 방식으로 `projects` 읽기에 그 프로젝트가 없다. 원장에 `project_remove`(`ok:true`) 한 줄, 키는 `actor,action,subject,ok,code`뿐. **GitHub(사용자):** `w3e-smoke-1112` 저장소가 **그대로 있고** 배포 키 `orchd w3e-smoke-1112`가 **그대로 남아 있다**(3-9에서 저장소를 지우면 함께 사라진다). 다른 프로젝트(`w3e-smoke-1113` 등)의 폴더·키는 그대로 | `project_busy`(진행 중 작업: 끝나거나 취소한 뒤), `local_unsafe`(폴더가 심볼릭 링크이거나 소유자·경로가 이상함: 사전 점검 b·c·d 다시), 서명 거부(`bad_signature`: **새 동작의 실제 패스키 서명 검증은 처음**: 멈추고 보고), `delete_partial_local`(등록은 지워졌는데 폴더가 남음: 아래 복구), `busy_check_failed` |
+| 3-3 | **[사용자 결정] 배포 키만 떼기 시험: `w3e-smoke-1113`.** 행의 "삭제…" → "배포 키만 떼기" → 확인 화면(**지문**이 서버가 계산한 `ssh-keygen -l`과 같아야 한다) → 서명. ⚠ 이 프로젝트는 그 뒤 **복제·게시를 못 한다**(키를 뗐다). 하지 않으면 건너뛴다 | 결과 "완료". **GitHub(사용자):** `w3e-smoke-1113` 저장소는 그대로이고 배포 키 `orchd w3e-smoke-1113`이 사라졌고 **다른 키는 그대로**(계정의 다른 배포 키가 줄지 않았다). 등록부·폴더·`ssh/keys/w3e-smoke-1113/`는 그대로(키 떼기는 서버의 파일을 지우지 않는다). 원장 `key_remove`. 연결한 기존 저장소(`origin: linked`)에서도 같은 동작이다(이 컷오버에는 연결한 저장소가 없다) | `key_not_found`(제목과 키 본문이 맞는 키가 없음: 이미 지웠거나 사람이 바꿈), `remove_refused`(제공자 거부 또는 같은 키가 둘 이상), `key_unavailable_for_removal`(공개 키 파일 없음: GitHub 화면에서 사람이 지운다), `github_refused`(토큰 권한: "아무것도 지우지 않았습니다" 문장) |
+| 3-4 | **[사용자 결정, 되돌릴 수 없음] 원격 저장소 삭제 시험: 이 컷오버에서 새로 만든 시험 저장소 하나에만.** (a) "새 프로젝트 만들기"로 `w3f-smoke-1114`(예) 만들기: 제공자 `github`, 소유자 내 계정, 템플릿 `basic`, **공개**, 서명(15장 3-6과 같다). 복제 `cloned`, 등록부에 `origin: created` 확인(`projects` 읽기). (b) 그 행의 "삭제…" → "복제본과 원격 저장소 지우기…": 미리보기(원격 이름·주소, 복제본 경로, 키 폴더, 커밋·변경 개수, **굵은 "되돌릴 수 없음"**) → **저장소 이름을 글자 그대로 입력**(틀리면 서명 단추가 꺼져 있다: 대소문자 틀린 값으로 한 번 확인) → "이어서 복제본도 지움"을 고르면 **같은 서명으로 서버의 복제본도 지워지고 복제본이 유일한 사본일 수 있다는 경고와 지우겠다는 체크가 필요하다** → 서명 | (b) 결과: "원격 저장소 삭제를 요청했습니다"(GitHub는 완료) + 단계 표시(원격 삭제, 복제본·키 폴더 지움, **등록은 "원격 없음"으로 남음**). 원장에 `remote_delete`. **GitHub(사용자):** `https://github.com/<소유자>/w3f-smoke-1114`가 **404**. **서버:** 복제본·키 폴더 없음. `projects` 읽기에서 그 프로젝트의 `remote`는 없고 `remote_deleted_at`이 있으며 `provider`는 **그대로**(그래서 같은 프로젝트에 다른 저장소를 `attach`할 수 없다). (c) **후속 "복제본과 등록 지우기…"**(결과 화면의 단추: 두 번째, 따로 서명): 미리보기는 "원격은 이미 지워졌다"를 강하게 경고 → 서명 → 등록이 지워진다. 이 서명은 자동으로 시작되지 않는다(단추를 눌러야 한다) | `remove_refused`(**토큰 권한 부족**: 위 ⚠ 3: 아무것도 지워지지 않았다: 저장소가 그대로 있는지 GitHub에서 확인), `remote_changed`(번호·이름이 등록부와 다름: 지우지 않았다), `not_created_by_tool`/`origin_unknown`(출처: 만든 저장소가 아니다), `confirm_mismatch`, `delete_rate_limited`(하루 3회·시간당 2회), `delete_partial`(**아래 "delete_partial와 `delete_partial_local` 다루기"**), `delete_partial_local` |
+| 3-5 | **`attach_remote` 거부 확인(3-4 뒤, 선택, 저장소에 아무것도 쓰지 않음):** 3-4(b) 뒤 등록이 남은 동안 그 프로젝트에 "원격 연결"을 시도 | `already_linked`(제공자가 남아 있어서). 등록을 지운 뒤(3-4 c)에는 프로젝트가 없다 | 연결이 되면 멈추고 보고(`Provider`를 지우는 결함) |
+| 3-6 | **레거시 두 번째 확인 화면 확인(`toy` 또는 `sample-app`): 서명하지 않는다 — 서명 전에 취소한다.** 행의 "삭제…" → "복제본과 등록 지우기…" → 미리보기(첫 화면에는 **서명으로 가는 단추가 없다**, "다음: 두 번째 확인"만) → 필요한 체크 후 "다음: 두 번째 확인" → **두 번째 화면**(굵은 문장 "이것은 처음부터 있던 프로젝트입니다. 서버의 복제본과 등록이 지워지고…", 원격에 안 올라간 커밋·변경 개수, **프로젝트 이름을 한 번 더 직접 입력**) → 틀린 이름 몇 개(대소문자, 공백)로 단추가 꺼진 채인지 보고 **여기서 "취소"(또는 이전 화면)로 나간다. 변경 확인·서명 단추를 누르지 않는다** | 예상 문장이 모두 보이고, 정확한 이름을 넣기 전에는 진행 단추가 꺼져 있다. **서버에는 아무 일도 일어나지 않는다:** `sudo ls -a /home/orch/repos`에 `toy`·`sample-app`가 그대로, 원장에 `project_remove` 없음, `orch` 로그에 propose 요청 없음. (`sample-app`의 정적 `--git-remote-for` 안내는 서명 전 확인 화면에 나오는 문장이라 이 단계에서는 보이지 않을 수 있다) | 첫 화면에 서명 단추가 보이거나 두 번째 화면 없이 서명으로 가면 **멈추고 보고한다**(레거시 안전장치의 결함) |
+| 3-7 | **고아 기록 지우기(고아가 있을 때만).** 고아 알림이 있으면 항목의 "기록 지우기" → 출처별 문장(`created`: "이 도구가 원격 저장소를 지우지 않습니다", `linked`, 출처 불명) → 서명 | "고아 기록을 지웠습니다. 제공자에는 아무것도 하지 않았습니다." 외부 요청 없음. 원장 `orphan_clear`. 고아가 없으면 건너뛴다 | `orphan_unknown`(이미 지워짐) |
+| 3-8 | **[컨트롤러] 누출 점검(읽기 전용).** 표 아래 "3-8 점검 명령"의 코드 블록을 실행한다 | 모드: 폴더 700, 파일 600. **원장:** 키 **`action,actor,code,ok,subject`뿐**. **로그:** 개수 **`0`**. **개인 키 위치:** `/home/orch/orchd/ssh/id_gitlab_deploy`와 남은 프로젝트의 `keys/<이름>/id_ed25519`뿐. `.deleting-*`·`.remove-refused-*` 없음. 삭제한 프로젝트의 폴더·키 폴더 없음 | 토큰·개인 키·경로가 보이면 **멈추고 보고한다**(GitHub에서 토큰을 즉시 폐기하는 것은 사용자 결정) |
+| 3-9 | **[사용자] GitHub 쪽 정리(이 도구로 지우지 못하는 것).** `w3e-smoke-1112`(3-2 뒤)와 `w3e-smoke-1113`을 GitHub 화면에서 직접 지운다(저장소 Settings > Danger Zone). 지우면 거기 등록된 배포 키도 사라진다. 3-4의 저장소는 이미 지워졌다 | GitHub에서 둘 다 404. 이 도구의 등록부에는 `w3e-smoke-1113`이 남아 있을 수 있다: 3-2와 같은 로컬 정리로 지운다(`remote`가 이미 없는 것과 상관없이 `remove_project`는 된다) | — |
+| 3-10 | **브로커를 멈춘 상태**(선택): `sudo systemctl stop orch-broker` → 프로젝트 행의 "삭제…"와 미리보기를 연다 | 미리보기·삭제 모두 고정 오류(브로커에 연결할 수 없음: 미리보기는 등록부에서 경로를 읽으므로 503 `broker_unavailable`). 작업 제출·취소·이미 복제된 프로젝트로의 작업 실행은 그대로. 끝나면 `sudo systemctl start orch-broker`(**한도 카운터가 0으로 돌아간다**: ⚠ 7) | 기존 기능까지 막히면 단계 4 |
+| 3-11 | **[컨트롤러] 삭제 한도·재시작 확인(선택).** 3-4를 한 번 했다면 broker 로그에 그 삭제가 한 줄 있다(`delete_remote_repo` 성공, 토큰·이름 없음). | 한도 거부(`delete_rate_limited`)는 일부러 만들지 않는다 | — |
+
+**3-8 점검 명령** (표 안에 `\|`를 쓰지 않으려고 표 밖에 둔다):
+```
+sudo sh -c 'stat -c "%U:%G %a %n" /var/lib/orch-broker /var/lib/orch-broker/*.json /var/lib/orch-broker/secrets'
+sudo grep -e project_remove -e remote_delete -e key_remove -e orphan_clear /home/orch/orchd/gate-home/.aigate/ledger/orchd.jsonl | tail -10
+sudo grep -e project_remove -e remote_delete -e key_remove -e orphan_clear /home/orch/orchd/gate-home/.aigate/ledger/orchd.jsonl | grep -c -e '/home/' -e 'ssh://' -e 'https://' -e '.git"'
+sudo journalctl -u orch-broker -u orchd --since '1 hour ago' --no-pager | grep -c -e 'PRIVATE KEY' -e ghp_ -e github_pat_ -e glpat- -e Authorization -e Bearer -e PRIVATE-TOKEN
+sudo grep -rl 'PRIVATE KEY' /home/orch/orchd /var/lib/orch-broker /run/orch-broker 2>/dev/null
+sudo ls -a /home/orch/repos /home/orch/orchd/ssh/keys /home/orch/orchd/ssh/keys-staging
+```
+(`grep -c`가 0을 찍으면 종료 코드 1이다: 정상이다. 원장 줄에서 키 이름을 눈으로 본다: `action,actor,code,ok,subject`. 둘째 `grep -c`(경로·원격 주소가 원장에 있는지)는 `0`이어야 한다. 제공자 id(`example-group-gitlab` 등)나 오류 코드(`gitlab_refused`)는 원장에 있어도 정상이라 그 글자로는 찾지 않는다.)
+
+**검증 체크리스트(요약):** 3-1(삭제… 단추), 3-2(로컬 정리가 폴더·키·등록을 지우고 원격은 그대로), 3-3(키만 떼고 다른 키·저장소는 그대로, 한 것만), 3-4(새 시험 저장소만 원격 삭제, 이름 입력 게이트, 등록 후속 서명이 자동이 아님), 3-6(레거시는 두 번째 화면 없이 서명으로 못 가고 서명 전에 취소), 3-8의 모드·원장·로그·개인 키 위치. 결과(**확인함/못 함**)는 결과 문서 29번 6장에 남긴다.
+
+**그래도 안 되면:** 화면 문제(표시·문구)만이면 롤백하지 않고 기록한다. **의도하지 않은 것이 지워졌거나, 원장·로그·화면에 토큰·개인 키가 보이거나, 등록부가 깨졌으면(`registry_unavailable`) 즉시 broker를 멈추고(단계 4의 A) 사용자에게 보고한다.** 지워진 GitHub 저장소·폴더·키는 되살릴 수 없다.
+
+### delete_partial와 `delete_partial_local` 다루기 (서버에서 일부러 만들지 않는다)
+삭제 도중의 부분 실패는 서버에서 일부러 만들 수 없다. 일어나면 **화면의 안내를 먼저 읽고, 같은 서명을 다시 쓰지 말고, 아래 순서로 상태를 읽는다.** 화면은 자동으로 다시 하지 않는다.
+- **`delete_partial`(504, 원격 삭제 결과 불확실):** `DELETE`가 나갔을 수 있다. **로컬 정리는 일어나지 않았다.** (1) **[사용자] GitHub(또는 GitLab) 화면에서 저장소가 있는지 본다.** (2) 저장소가 **없다** → 등록부는 아직 원격을 가리킨다: 웹의 "복제본과 등록 지우기…"(`remove_project`: 서명 필요, `legacy_ack` 불필요)로 정리한다. 다시 "원격 삭제"를 시도하면 `remote_changed`가 나온다(저장소가 없으므로). (3) 저장소가 **있다** → 웹의 "원격 저장소 다시 지우기…"(새 제안·새 서명)로 다시 한다. 화면은 이 프로젝트를 "원격이 이미 지워졌을 수 있다"로 취급해 유일한 사본 경고와 체크를 요구한다.
+- **`delete_partial_local`(502):** 원격은 지워졌거나(원격 삭제의 `also_local`) 등록이 지워졌는데(`remove_project`) 로컬 정리가 덜 됨. 화면이 항목별 상태(`removed`·`already_gone`·`kept_in_place`·`moved_aside`)와 이유(`project_busy`·`busy_check_failed`·`in_progress`·`remove_failed`)를 보인다. **`kept_in_place`**: 손대지 않았다(원래 자리에 그대로). **`moved_aside`**: 폴더가 프로젝트 이름에서 `.deleting-<무작위>`로 옮겨졌고 삭제가 도중에 멈췄다 → **orchd를 재시작하면 시작 때 청소가 이어서 지운다**(`sudo systemctl restart orchd`: 작업이 없을 때). `.remove-refused-<hex>`는 바꿔치기가 의심되어 옮겨진 폴더이며 청소가 건드리지 않는다: 내용을 사람이 보고 판단한다.
+- **등록이 지워졌는데 폴더가 남은 경우(등록 없는 폴더):** 두 방법. (A) 그 경로를 웹의 기존 폴더 등록(`register_project`, 서명 필요)으로 다시 등록한 뒤 "복제본과 등록 지우기…"(`remove_project`)를 다시 한다(레거시였다면 `legacy_ack`를 다시 한다). (B) 사람이 지운다: `sudo ls -la /home/orch/repos/<이름>`로 **정말 그 폴더인지** 보고 `sudo -u orch rm -rf -- /home/orch/repos/<이름>`(키 폴더도 같은 방식으로 `…/ssh/keys/<이름>`). **되돌릴 수 없다.** 지우기 전에 원격에 올라가지 않은 커밋이 없는지(`sudo -u orch git -C <폴더> log --branches --not --remotes --oneline`) 본다.
+- **`remote_key_may_remain`:** 연결한 저장소를 정리할 때는 로컬 정리 전에 "배포 키만 떼기"를 먼저 하라는 안내가 보인다. 키를 떼지 않고 등록을 지우면 GitHub 저장소에 `orchd <이름>` 키가 남는다: GitHub에서 사람이 지운다.
+
+### 단계 4. 롤백 [사용자][주의]
+**순서: orchd를 먼저 멈춘다 → A(broker) → B(orchd).** **삭제가 일어난 뒤의 롤백은 지운 것을 되살리지 못한다(⚠ 2): 먼저 `projects` 읽기·`/root/backup-w3f/tree-before.txt`와 지금 상태를 비교해 무엇이 지워졌는지 적어 둔다.**
+**전제:** `orch list`와 `orch approvals`에 실행 중·대기·게시 대기·승인 대기 작업이 없다.
+
+**A. broker를 W3e 상태로 되돌리기(DB는 건드리지 않는다). 바이너리와 등록부를 함께 되돌린다.**
+1. `sudo systemctl stop orchd`, 이어서 `sudo systemctl stop orch-broker`
+2. 바이너리를 **root 전용 백업에서** 복원: `sudo install -o root -g root -m 0755 /root/backup-w3f/bin/orch-broker /usr/local/bin/orch-broker`. `broker.json`은 이번에 바뀌지 않았다.
+3. **등록부를 버전 3 사본으로 되돌린다**(W3e broker는 버전 4를 깨짐으로 본다). **먼저 어느 사본을 쓸지 확인한다:** `sudo sha256sum /root/backup-w3f/var-lib-orch-broker/registry.json /var/lib/orch-broker/registry.json.v3.bak` — **두 값이 같고 `sudo grep -o '"version": *[0-9]*' /root/backup-w3f/var-lib-orch-broker/registry.json`이 `"version":3`이면** root 백업을 쓴다. **`.v3.bak`는 broker가 한 번만 쓰고 덮어쓰지 않으므로 이전 시도의 낡은 파일일 수 있다: 두 값이 다르면 `.v3.bak`를 믿지 않고 root 백업만 쓴다(root 백업이 없고 `.v3.bak`만 있을 때는 그 안의 `"version":3`과 프로젝트 목록(`toy`·`sample-app`…)이 지금 기대하는 것인지 사람이 보고 정한다).** `sudo install -o orch-broker -g orch-broker -m 0600 /root/backup-w3f/var-lib-orch-broker/registry.json /var/lib/orch-broker/registry.json`, 이어서 `sudo grep -o '"version": *[0-9]*' /var/lib/orch-broker/registry.json`이 `"version":3`인지. **상태 폴더 전체를 되돌리지 않는다**(예산 기록·쓴 요청 ID·웹에서 등록한 토큰이 되돌아간다).
+4. **다시 컷오버할 때를 위해, 이 롤백으로 남은 낡은 `.v3.bak`을 치운다**: `sudo mv /var/lib/orch-broker/registry.json.v3.bak /root/backup-w3f/registry.json.v3.bak.rolledback-$(date +%Y%m%d-%H%M%S)`(그대로 두면 다음 마이그레이션이 "이미 있는 백업"을 덮어쓰지 않고 시작을 거부할 수 있다).
+5. `sudo systemctl start orch-broker`; 15장 1-6의 `providers`·`projects`·`status`·`tokens`가 W3e 상태(`origin` 필드 없음)를 주는지 본다.
+6. **경고:** 복원한 등록부는 컷오버 전 상태이므로 **컷오버 뒤 이 도구가 지운 프로젝트의 행이 되살아난다**(폴더·키·원격은 없다). 3-4의 시험 저장소 행이 `remote`를 가진 채 되살아나지만 GitHub의 저장소는 이미 지워졌다. 이 행들을 지우는 기능은 W3e 이하에 없다: **사람이 위 `tree-before.txt`와 비교해 어떤 행이 죽었는지 적고 W3f를 다시 올려 `remove_project`로 정리하거나(권장) 등록부를 사람이 고친다(서명 없는 파일 편집: 위험, 하지 않는 것을 권한다).** `secrets/`·`tokens.json`은 그대로 둔다.
+
+**B. `orchd`·CLI를 W3e 상태로 되돌리기(DB 복원 불필요).**
+1. (orchd는 A-1에서 멈춰 있다)
+2. `for f in orchd orch aigate; do sudo install -o root -g root -m 0755 /root/backup-w3f/bin/$f /usr/local/lib/aigate/$f; done`(세 개는 항상 같이. **웹은 `orchd`에 들어 있으므로** 삭제 화면도 함께 사라진다)
+3. `sudo systemctl start orchd`. 브라우저 캐시면 강력 새로고침.
+
+**C. 지운 것은 되살릴 수 없다.** GitHub의 저장소(되살릴 수 없음), GitLab의 저장소(인스턴스 설정에 따라 삭제 예약 상태에서 GitLab 화면의 복구가 가능할 수 있으나 이 도구 밖의 일이고 확인하지 못했다), 서버의 복제본(원격이 남아 있으면 같은 원격을 "기존 저장소 연결"로 다시 연결해 새로 복제할 수 있다: 새 키가 생긴다), 키 폴더(개인 키는 되살릴 수 없다: 같은 방식으로 새 키). `.deleting-*`로 옮겨진 폴더는 orchd 재시작이 지운다.
+
+**검증:** `journalctl -u orchd`·`journalctl -u orch-broker`에 오류가 없고, `orch list`가 단계 2 이전과 같으며, 15장의 화면(GitHub 제공자, 새 프로젝트, 연결)이 동작한다. **그래도 안 되면:** 아무것도 더 지우지 말고 `journalctl -u orch-broker -n 80`, `ls -l /usr/local/bin /usr/local/lib/aigate /var/lib/orch-broker`와 `sudo ls -lR /root/backup-w3f | head -50`을 사용자에게 보고한다. W3e 이전까지 가야 하면 15장 단계 4(`/root/backup-w3e`).
+
+### 정적 `--git-remote-for` 정리 (`sample-app`를 지운 뒤에만, 사용자 결정)
+`sample-app`처럼 orchd 유닛에 정적 `--git-remote-for <id>=<주소>`가 있는 프로젝트를 지워도 그 설정은 남는다. 없는 폴더를 가리키는 정적 원격은 해롭지 않지만 지저분하다. 정리는 **사람이** 한다: `systemctl cat orchd | grep -e git-remote-for`로 줄을 찾고 `/root/backup-w3f/orchd.service.pre-w3f`와 비교해 백업한 뒤 유닛(또는 드롭인)에서 그 인자를 지우고 `sudo systemctl daemon-reload && sudo systemctl restart orchd`(작업이 없을 때). 이 컷오버에서는 `sample-app`를 지우지 않으므로 하지 않는다.
+
+### 관찰 기록 (컷오버 때 채운다: 결과 문서 29번 9장으로 옮긴다)
+| 항목 | 예상 | 본 것 | 판정 |
+|---|---|---|---|
+| 1-5 등록부 | `"version":4`, 600, `.v3.bak` 600 + sha256이 root 백업과 일치 | | |
+| 1-6 `projects` 비교 | 같은 프로젝트·값, `toy`·`sample-app` `legacy`, 나머지 `unknown` | | |
+| 3-2 로컬 정리(실제 서명, 실제 폴더 삭제) | 폴더·키·등록 지워짐, 원격·배포 키 그대로 | | |
+| 3-2 `.deleting-*` 남음 | 없음 | | |
+| 3-3 키 떼기 | 그 키만 사라짐, 다른 키·저장소 그대로 | | |
+| 3-4 원격 삭제(토큰 권한, 상태 코드) | 저장소 404, `remote_deleted_at`, `Provider` 유지 | | |
+| 3-4 이름 입력 게이트·IME/붙여넣기 | 틀리면 단추 꺼짐, 포커스 유지 | | |
+| 3-4 후속 등록 지우기 | 자동 시작 없음, 별도 서명 | | |
+| 3-6 레거시 두 번째 화면 | 서명 단추 없이 서명으로 못 감, 취소 후 변화 없음 | | |
+| 3-8 원장·로그·개인 키 위치 | 키 5개뿐·0건·예상 위치 | | |
+| 미리보기 시간(가장 큰 복제본) | 25초 안 | | |

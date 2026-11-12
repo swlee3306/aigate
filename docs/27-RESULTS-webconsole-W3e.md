@@ -1,6 +1,6 @@
 # 웹 콘솔 W3e — 결과 기록 (2026-11-12)
 
-> 상태: **구현 완료, 컷오버 대기.** 코드와 시험은 이 저장소(브랜치 `impl/webconsole-w3e`)에서 끝났고, 실제 서버(orch-vm)와 실제 GitHub에는 아직 아무것도 하지 않았다. 배포·되돌리기 절차는 `10-OPERATIONS-orchestrator.md` 15장, 설계는 `19-DESIGN-webconsole-W3-projects.md`, 계획은 `26-PLAN-webconsole-W3e.md`. 출발점은 W3c 컷오버가 끝난 서버(등록부 v2 운영 중, 제공자 `example-group-gitlab`)다.
+> 상태: **컷오버 완료(2026-11-12 22:26 KST, 실서버 orch-vm, main `3830546`). 실서버·실제 GitHub에서 확인한 것과 아직 못 한 것은 6장 맨 앞(6.0)과 9장.** 아래 본문(1~5장, 7~8장과 6장의 원래 목록)은 컷오버 전, 구현을 끝낸 시점의 기록이다: 코드와 시험은 브랜치 `impl/webconsole-w3e`에서 끝났고, 그 시점에는 실제 서버(orch-vm)와 실제 GitHub에 아무것도 하지 않았다. 배포·되돌리기 절차는 `10-OPERATIONS-orchestrator.md` 15장, 설계는 `19-DESIGN-webconsole-W3-projects.md`, 계획은 `26-PLAN-webconsole-W3e.md`. 출발점은 W3c 컷오버가 끝난 서버(등록부 v2 운영 중, 제공자 `example-group-gitlab`)다.
 > 이 문서의 "확인함"은 이 저장소에서 실제로 실행한 시험(macOS, **시험용 서명자·가짜 GitHub·가짜 GitLab·가짜 broker·임시 폴더·가짜 `git`/`ssh` 경로·명백한 더미 값**)과 ego-browser로 개발용 고정 서버를 본 것(E5 보고서)만 가리킨다. **실제 GitHub, 실제 토큰, 실제 패스키 서명, 리눅스 systemd 샌드박스 안의 broker·orchd, 실제 `uid`의 파일 소유·모드, 실제 OpenSSH 9.6으로의 `git clone`/`push`는 한 번도 쓰지 않았다**(6장). 이 작업에서 실제 키·토큰을 만들거나 요청하지 않았고 어떤 서버에도 접속하지 않았다. 시험 값은 `ghp_canary-NOT-A-REAL-TOKEN-…` 꼴의 더미다.
 > **W3a~W3c의 교훈(임시 폴더 시험이 실서버의 권한 문제를 숨겼음)을 구조에 넣었다:** 새 코드가 실행 사용자·유닛 샌드박스 아래에서 만지는 경로·소유자·모드는 4장의 표로 모았고, 컨트롤러가 컷오버 전에 서버에서 읽기 전용으로 보는 목록은 런북 15.0에 있다.
 
@@ -197,7 +197,23 @@ E1~E5가 각자 적은 표를 모았다. **이 표의 모든 "예상"은 코드�
 
 ## 6. 실서버·실제 GitHub에서 확인하지 못한 것
 
-**아래 전부는 이 저장소에서 한 번도 확인하지 않았다. 컷오버(런북 15장)에서 처음 확인한다.** 시험은 가짜 GitHub·가짜 GitLab·가짜 broker·임시 폴더로 요청 모양과 흐름만 확인했다.
+### 6.0 컷오버(2026-11-12)에서 실서버·실제 GitHub로 확인한 결과
+컷오버는 사용자와 컨트롤러가 2026-11-12에 했고, 아래는 그때 서버에서 본 것이다(이 문서를 쓴 구현 단계에서 본 것이 아니다). 항목은 아래 6장의 원래 목록(컷오버 전 기록)과 같은 순서이며 **확인함**/**아직 못 함**으로 표시한다.
+- **절차:** broker·orchd를 22:26 KST에 갱신했다(백업 `/root/backup-w3e`). **확인함.**
+- **등록부 v2→v3 마이그레이션(실서버 파일·uid·샌드박스):** 성공, `registry.json.v2.bak`이 원본과 같음. **확인함.** 롤백(등록부 복원)의 실제 영향: **아직 못 함**(롤백하지 않았다). 샌드박스 안 `-check`와 폴더 fsync 실패 경로의 별도 기록: 이 기록에 없음, **아직 못 함**으로 둔다.
+- **정책 `registered`:** 컷오버에서 추가했다. **확인함.**
+- **GitHub 제공자 등록(실제 패스키 서명):** `swlee3306-github`(ssh 주소 `ssh://git@ssh.github.com:443`)를 실제 패스키로 등록했다. **확인함**(GitHub 종류 `set_provider`의 실제 서명 검증).
+- **GitHub 호스트 키:** `[ssh.github.com]:443`의 호스트 키를 GitHub 공식 문서와 `api.github.com/meta`의 지문(`SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU`)과 한 글자씩 맞춘 뒤 고정했다. **확인함.** `api.github.com:443`은 열려 있고 `github.com:22`는 닫혀 있다(알려진 제약, 선택 B로 해결). **확인함.**
+- **토큰 범위:** 첫 `create_project`가 `github_refused`(토큰 범위 부족)로 끝났고 사용자가 토큰을 바꾼 뒤 성공했다. **확인함**(범위가 모자라면 안전하게 거부됨). 바꾼 토큰의 종류(클래식/세분화)와 권한 이름은 이 기록에 없다: 세분화 토큰의 권한 이름·개인 계정 저장소 생성 가능 여부는 **아직 못 함**.
+- **실제 GitHub 저장소 생성:** `swlee3306/w3e-smoke-1112`(`basic` 템플릿)와 `w3e-smoke-1113`(`go` 템플릿)을 **공개**로 만들었고 `main`이 기본 브랜치이며 보호가 켜졌고 배포 키가 등록됐고 복제가 각각 커밋 3개·6개로 끝났다. 저장소별 키 폴더는 700, 키 파일은 600. **확인함**: 빈 저장소에 `branch` 없는 첫 파일 → 기본 브랜치 `main`, 보호 `PUT`의 본문·응답, 배포 키 `POST` 성공, `POST /user/repos` 응답 모양, 키 폴더 만들기·`RENAME_NOREPLACE` 승격(실제 유닛 샌드박스), OpenSSH 9.6이 orchd의 개인 키를 받아들임, GitHub가 공개 키(주석 포함)를 받아들임, 저장소별 키로 `ssh.github.com:443`을 통한 복제. **아직 못 함:** 무료 요금제 비공개 저장소의 보호 거부(403 가정: 두 저장소 모두 공개), 같은 공개 키 중복 등록의 거부 응답, 한도 응답 헤더, 이름이 바뀐 저장소의 301, GitHub Enterprise `/api/v3`.
+- **게시:** 작업 #47(`basic` 템플릿)은 판정 `verification_incomplete`(`no_required_checks`)였다. `basic` 템플릿은 검사가 비어 있고 게이트는 빈 검사를 통과로 세지 않으므로 **예상한 동작**이다. 작업 #48(`go` 템플릿)은 통과했고 `orch/48` 브랜치를 `ssh.github.com:443`으로 GitHub에 올렸다. **확인함**(해석기가 만든 원격과 그 프로젝트의 키로 게시).
+- **기존 저장소 연결(`link_project`)·원격 연결(`attach_remote`)의 실제 실행:** **아직 못 함.** 연결하려던 `sulee_portfolio`는 프로젝트 id가 저장소 이름과 같아야 하는 W3e 규칙(`_`) 때문에 연결할 수 없었고 W3f F1b에서 규칙이 풀렸다. 실제 패스키 서명으로 `link_project`·`attach_remote`를 검증하는 것도 **아직 못 함.** GitLab 쪽 이월(공용 배포 키가 두 번째 프로젝트에 합류하는지, GitLab 기본 브랜치 보호 설정)도 **아직 못 함.**
+- **웹 화면(키보드만·스크린 리더, 실제 Chrome의 포커스·130초 대기, 390px의 보지 못한 화면):** 이 기록에 없음, **아직 못 함.**
+- **broker·orchd 버전 차이 구간:** 런북 순서(orchd를 먼저 멈춤)로 구간을 만들지 않았다. 구간의 동작은 **아직 못 함**(관찰하지 않음).
+- **알려진 제약:** `api.github.com:443` 열림·`github.com:22` 닫힘(위), 이 도구는 이 시점에 GitHub의 저장소·배포 키를 지우지 못했다(스모크 저장소 둘은 사용자가 GitHub에서 지워야 한다: W3f에서 `origin: unknown`이라 원격 삭제 불가, 로컬 정리만 가능).
+
+### 6.1 컷오버 전 기록(원문)
+**아래 목록은 컷오버 전(구현 시점)의 기록이다. 컷오버 결과는 위 6.0.** 시험은 가짜 GitHub·가짜 GitLab·가짜 broker·임시 폴더로 요청 모양과 흐름만 확인했다.
 - **실제 GitHub에서:** ① 빈 저장소에 콘텐츠 API로 첫 파일이 **`branch` 없이** 올라가 `main`이 기본 브랜치가 되는지(문서는 빈 저장소에 대해 침묵), 계정의 기본 브랜치 이름이 다르면 `default_branch` 단계로 끝남. ② 보호 `PUT`의 **본문 수용과 응답**, 보호가 없는 브랜치의 `GET`이 404인지, **무료 요금제 비공개 저장소의 보호가 403으로 거부되는지**(가정), `GET`이 `allow_deletions.enabled`를 주는지. ③ **배포 키 `POST`**의 성공 응답(201 가정), **같은 공개 키 중복 시 응답**(422 가정, 어떤 4xx든 거부로 매핑), `read_only` 응답 echo. ④ **토큰 범위:** 클래식 `repo`·`public_repo`가 생성·콘텐츠·보호·배포 키를 덮는지, **세분화 토큰의 권한 이름과 개인 계정에 새 저장소를 만들 수 있는지**(문서 페이지가 명시하지 않음). ⑤ 한도 응답(403 + `x-ratelimit-remaining: 0`, 헤더 없는 이차 한도는 `github_refused`로 분류됨). ⑥ `POST /user/repos` 응답의 `private`·`full_name` 모양, 이름이 바뀐 저장소의 301(안 따름). ⑦ GitHub Enterprise Server의 `/api/v3` 접두사(관례, 문서에서 확인 못함).
 - **orchd가 실제 유닛에서 `/home/orch/orchd/ssh/keys`·`keys-staging`을 만들 수 있는지**(`ReadWritePaths=/home/orch/orchd`, 소유자 `orch`, 0700이 `umask`를 넘는지, `ProtectHome=read-only`와의 상호작용), 키 승격의 `RENAME_NOREPLACE`(리눅스에서는 컴파일만 확인).
 - **OpenSSH 9.6이 `ssh.MarshalPrivateKey`가 쓴 개인 키 파일을 받아들이는지**(시험은 같은 Go 라이브러리로 다시 파싱했을 뿐이다), **GitHub가 공개 키와 주석(`orchd-deploy`)을 받아들이는지**, `IdentitiesOnly`와 첫 실제 GitHub `git clone`·`push`.
@@ -241,4 +257,11 @@ E1~E5가 각자 적은 표를 모았다. **이 표의 모든 "예상"은 코드�
 12. **앞단 프록시의 제한시간**이 130초보다 짧다면 올릴지.
 
 ## 9. 컷오버 기록
-아직 없음(컷오버 전). 컷오버를 하면 이 장에 서버에서 본 것만 적는다(21·23·25번 문서와 같은 방식). 런북 15장 끝의 "관찰 기록" 표를 옮긴다.
+2026-11-12 22:26 KST에 broker·orchd를 갱신했다(백업 `/root/backup-w3e`). 서버에서 본 것만 적는다(자세한 항목별 판정은 6.0).
+- 등록부 v2 → v3 마이그레이션 성공, `registry.json.v2.bak`은 원본과 같다. 정책 `registered` 추가.
+- 실제 패스키로 제공자 `swlee3306-github`(`ssh://git@ssh.github.com:443`) 등록. `[ssh.github.com]:443` 호스트 키는 GitHub 공식 문서·`api.github.com/meta`의 지문(`SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU`)과 일치한 것을 확인한 뒤 고정.
+- 첫 `create_project`는 `github_refused`(토큰 범위)로 실패, 사용자가 토큰을 바꾼 뒤 성공. `swlee3306/w3e-smoke-1112`(`basic`)·`w3e-smoke-1113`(`go`)가 공개로 만들어졌고 `main` 보호, 배포 키 등록, 복제 커밋 3개·6개, 저장소별 키 폴더 700/600.
+- 작업 #47(`basic`): `verification_incomplete`·`no_required_checks`(빈 검사는 게이트가 거부: 예상). 작업 #48(`go`): 통과, `orch/48`을 `ssh.github.com:443`로 게시.
+- 알려진 제약: `api.github.com:443` 열림, `github.com:22` 닫힘. `sulee_portfolio` 연결은 F1b 전에는 불가능했다.
+- 하지 않은 것: 롤백, `link_project`·`attach_remote` 실제 실행, 비공개 저장소 생성, GitLab 두 번째 프로젝트.
+
