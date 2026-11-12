@@ -2,7 +2,7 @@
 
 > **에이전트 실행자용:** 필수 하위 스킬은 `superpowers:subagent-driven-development`(권장) 또는 `superpowers:executing-plans`이다. 단계는 체크박스(`- [ ]`)로 추적한다. **상태: 초안 v0.1(2026-11-12), 사용자 승인 전. 승인 전에는 구현하지 않는다.**
 
-**배경(사용자 요청, 2026-11-12):** "클론이든 원격이든 지우는 기능을 만들어줬으면 좋겠다." W3a~W3e의 **가장 큰 설계 원칙은 "삭제 코드가 아예 없다"였다**(관리자 토큰이 새도 삭제는 못 하게). 이 계획은 그 원칙을 **의도적으로 부분 해제**한다: 삭제를 넣되 서명·허용 목록·범위 제한·출처 확인으로 가둔다. 이 변경은 토큰의 최악의 피해 범위를 넓히므로(저장소 삭제 가능), 아래 "토큰 분리" 결정이 핵심이다.
+**배경(사용자 요청, 2026-11-12):** "클론이든 원격이든 지우는 기능을 만들어줬으면 좋겠다." W3a~W3e의 **가장 큰 설계 원칙은 "삭제 코드가 아예 없다"였다**(관리자 토큰이 새도 삭제는 못 하게). 이 계획은 그 원칙을 **의도적으로 부분 해제**한다: 삭제를 넣되 서명·허용 목록·범위 제한·출처 확인으로 가둔다. 이 변경은 토큰의 최악의 피해 범위를 넓힌다(저장소 삭제 가능). 사용자가 삭제용 토큰 분리를 하지 않기로 했으므로(F-D1) 그 위험은 코드의 범위 제한(출처·번호·서명)으로만 줄인다.
 
 **목표:** 웹에서 서명 한 번으로 (a) **서버의 복제본과 등록·키를 지우고**(로컬 정리: 되돌릴 수 있음, 원격 저장소는 그대로), (b) **이 도구가 만든 원격 저장소를 지우고**(GitHub·GitLab, 되돌릴 수 없음), (c) **연결해 둔 기존 저장소에서 이 도구가 붙인 배포 키만 떼며**(저장소는 그대로), (d) 고아 기록을 지운다.
 
@@ -18,19 +18,19 @@
 - **로컬 정리 전에 확인할 것(데이터 손실 방지):** 복제본에 **원격에 올라가지 않은 커밋이나 수정 안 된 파일**이 있으면(`git status`·`git log @{u}..`) 확인 화면에 보여 주고(개수만, 내용 아님) 사용자가 그래도 지우겠다고 체크해야 한다. 원격이 이미 지워졌으면 그 복제본이 유일한 사본일 수 있으니 같은 경고를 강하게 한다.
 
 ## 정해 둔 결정 (구현자가 다시 정하지 않는다)
-- **F-D1 토큰 분리(가장 중요):** 평소 쓰는 토큰은 삭제 권한이 없는 채로 둔다. 제공자에 선택 필드 **`delete_token_ref`**(저장소의 같은 종류 토큰 이름)를 더하고, **원격 저장소 삭제·배포 키 떼기는 이 토큰으로만** 한다(없으면 `delete_token_missing`). GitHub는 클래식 토큰의 `delete_repo` 범위가 필요하다(**사용자가 GitHub에서 확인**). 권장 운영: 삭제할 때만 그 토큰을 웹에서 등록하고, 끝나면 웹에서 토큰을 지우고 GitHub에서 폐기한다(`set_token`·`delete_token`이 이미 있다). `set_provider`에 `delete_token_ref`가 들어가므로 서명된다.
+- **F-D1 삭제 토큰(사용자 결정 2026-11-12, 초안의 "삭제용 토큰 분리"를 철회):** 사용자가 이미 **일반 토큰에 삭제 권한(GitHub `delete_repo` 등)까지 모두 주어 두었으므로 별도 삭제 토큰을 만들지 않는다.** 삭제 호출도 제공자의 기존 `token_ref` 토큰을 쓴다(제공자 스키마·`set_provider`·토큰 화면은 바뀌지 않는다). **그 결과 이 토큰이 유출되면 토큰 소유 계정의 저장소를 지울 수 있다는 점은 사용자가 감수한 위험이다**(코드는 그 위험을 키우지 않도록 삭제 호출을 정확히 F-D4의 행들로만, `origin: created`인 저장소에만, 서명·번호 확인 뒤에만 한다). 만료일을 짧게 두고 시험이 끝나면 권한을 줄이는 것을 권한다.
 - **F-D2 등록부 버전 4:** 프로젝트에 `origin`(`created`|`linked`|`unknown`)과 `remote_deleted_at`(선택) 추가. v3→v4 마이그레이션은 W3e의 방식(원자적, `registry.json.v3.bak` 한 번만, W3d 등과 충돌 없음)이고, **기존 프로젝트의 `origin`은 `unknown`**(레거시 `legacy` 종류는 `legacy`). 새로 만든 것은 `created`, 연결한 것은 `linked`. W3e 이하 broker는 v4를 깨짐으로 보고 fail closed(롤백은 백업 복원).
 - **F-D3 서명 action(`aigate-registry-v1`에 추가):** `remove_project`(subject=프로젝트 id; fields `scope`=`local`만 허용: 서버의 복제본·키·등록부 항목 제거, 원격은 그대로; `legacy_ack`(bool): 레거시 프로젝트는 `true`여야 하고 그 밖의 프로젝트는 `false`/없음), `delete_remote_repo`(subject=프로젝트 id; fields `remote_path`, `remote_id`(숫자 문자열), `confirm_name`(저장소 이름과 같아야 함), `also_local`(bool: 성공 뒤 로컬 정리까지 이어서 함)), `remove_deploy_key`(subject=프로젝트 id; fields `remote_path`: **연결(`linked`)한 프로젝트에서 이 도구가 붙인 배포 키만 떼고** 프로젝트는 등록부에 남김), `clear_orphan`(subject=제공자 id; fields `project`: 고아 기록 하나 제거, 외부 호출 없음). 기존 action 불변.
-- **F-D4 broker 외부 호출 허용 목록 추가(정확히 이것만, 시험이 모든 요청을 가로채 확인):** GitHub `DELETE /repos/{owner}/{repo}`(`delete_token_ref`로만, 그 프로젝트의 `origin == created`이고 `remote.id`가 맞을 때만), GitHub `DELETE /repos/{owner}/{repo}/keys/{id}`와 `GET …/keys`(키 찾기: 제목 `orchd <id>`와 공개 키 지문이 둘 다 맞는 것만 떼며 **다른 키는 절대 건드리지 않는다**), GitLab `DELETE /projects/{id}`(`delete_token_ref`로만, `origin == created`, `project_id` 일치), GitLab 배포 키는 **공용 키 하나를 여러 프로젝트가 같이 쓰므로 GitLab 쪽 키 떼기는 `DELETE /projects/{id}/deploy_keys/{key_id}`(그 프로젝트에서만 비활성)로 한정**하고 키 자체를 지우는 호출(`DELETE /deploy_keys/…`)은 코드에 없다. 그룹·조직·토큰·협업자·다른 저장소를 지우는 호출은 코드에 없다. GitLab 서버 설정에 따라 지연 삭제(복구 가능 기간)가 될 수 있으며 응답은 그대로 보고하지 않고 "삭제 요청됨" 고정 문장만 쓴다.
+- **F-D4 broker 외부 호출 허용 목록 추가(정확히 이것만, 시험이 모든 요청을 가로채 확인):** GitHub `DELETE /repos/{owner}/{repo}`(제공자의 `token_ref` 토큰으로, 그 프로젝트의 `origin == created`이고 `remote.id`가 맞을 때만), GitHub `DELETE /repos/{owner}/{repo}/keys/{id}`와 `GET …/keys`(키 찾기: 제목 `orchd <id>`와 공개 키 지문이 둘 다 맞는 것만 떼며 **다른 키는 절대 건드리지 않는다**), GitLab `DELETE /projects/{id}`(제공자의 `token_ref` 토큰으로, `origin == created`, `project_id` 일치), GitLab 배포 키는 **공용 키 하나를 여러 프로젝트가 같이 쓰므로 GitLab 쪽 키 떼기는 `DELETE /projects/{id}/deploy_keys/{key_id}`(그 프로젝트에서만 비활성)로 한정**하고 키 자체를 지우는 호출(`DELETE /deploy_keys/…`)은 코드에 없다. 그룹·조직·토큰·협업자·다른 저장소를 지우는 호출은 코드에 없다. GitLab 서버 설정에 따라 지연 삭제(복구 가능 기간)가 될 수 있으며 응답은 그대로 보고하지 않고 "삭제 요청됨" 고정 문장만 쓴다.
 - **F-D5 한도:** 원격 저장소 삭제는 **하루 3회**(broker 전체), 주체별 시간당 3회; 로컬 정리·키 떼기·고아 지우기는 시간당 10회. 속도 제한은 첫 외부 쓰기 직전에만 소모(W3c 규칙).
-- **F-D6 오류 코드(고정 문장):** `legacy_ack_required`(레거시를 두 번째 확인 없이 지우려 함), `project_busy`, `origin_unknown`, `not_created_by_tool`(연결한 저장소를 원격 삭제하려 함), `delete_token_missing`, `remote_changed`, `confirm_mismatch`, `delete_partial`(원격은 지워졌는데 로컬 정리가 덜 됨 → 상태를 읽고 다시 정리), `key_not_found`, `remove_refused`(제공자가 거부: 토큰 범위 부족 가능). 모두 provider·broker 원문을 반영하지 않는다.
+- **F-D6 오류 코드(고정 문장):** `legacy_ack_required`(레거시를 두 번째 확인 없이 지우려 함), `project_busy`, `origin_unknown`, `not_created_by_tool`(연결한 저장소를 원격 삭제하려 함), `remote_changed`, `confirm_mismatch`, `delete_partial`(원격은 지워졌는데 로컬 정리가 덜 됨 → 상태를 읽고 다시 정리), `key_not_found`, `remove_refused`(제공자가 거부: 토큰 범위 부족 가능). 모두 provider·broker 원문을 반영하지 않는다.
 - **F-D7 웹:** 프로젝트 행에 "삭제…" 메뉴(레거시·바쁜 프로젝트는 비활성). 대화상자 없이 화면 전환으로: (1) 무엇을 지울지 고르기(서버 복제본만 / 복제본+원격 저장소 / 배포 키만 떼기), (2) **지울 대상 전체를 평문으로 나열**(원격 이름과 주소, 공개 여부, 복제본 경로, 키 폴더, 원격에 안 올라간 커밋 수·변경 파일 수, **되돌릴 수 없음** 굵게), (3) 원격 삭제는 저장소 이름 직접 입력, (4) 확인 화면에서 브라우저가 `change`를 다시 계산해 맞을 때만 서명, (5) 결과: 단계별 완료 표시와 `delete_partial` 안내(남은 일과 다시 하기). 고아 목록에 "기록 지우기"(서명).
 
 ## 검토 초점 (개별 시험이 놓치기 쉬운 것, 가능성 순)
 1. **잘못된 대상 삭제:** 이름 변경·소유 이전·같은 이름 재생성(`remote_changed`), `linked`·`unknown`·`legacy` 출처의 원격 삭제 거부(레거시는 로컬 삭제만, 두 번째 확인과 `legacy_ack` 필요), 대소문자 이름, id와 번호 일치, 다른 제공자 id로의 혼동, 서명된 값과 실제 요청의 불일치.
 2. **되돌릴 수 없는 순서:** 원격 삭제 후 로컬 정리 실패, 로컬 정리 후 원격 실패가 일어나지 않는 순서인지, 결과 불확실 때 자동 재시도·재서명 유도 없음, 같은 서명 재사용 불가.
 3. **로컬 삭제의 파일 시스템 안전:** 심볼릭 링크·`..`·다른 폴더로의 교체 경쟁, `repo_roots` 밖, 레거시 프로젝트 폴더(`sample-app`, `toy`)가 `legacy_ack` 서명 없이는 어떤 경로로도 지워지지 않는지, 진행 중 작업, 시작 때 `.deleting-*` 청소가 남의 것을 지우지 않는지.
-4. **토큰 분리:** 삭제 호출이 일반 토큰으로 나가지 않는지, `delete_token_ref` 변경이 서명 대상인지, 삭제 토큰이 없을 때 일반 토큰으로 대체되지 않는지, 삭제 토큰이 다른 호출(생성·연결)에 쓰이지 않는지.
+4. **토큰 사용 범위:** 삭제 호출이 제공자의 토큰만 쓰는지(OpenAI 키나 다른 종류 토큰으로 나가지 않음), 토큰 종류가 제공자 종류와 맞는지, 삭제 호출이 서명된 대상 밖으로 나가지 않는지, 삭제 권한이 이미 있다는 가정 하에서도 출처·번호·서명 확인이 토큰 권한에 기대지 않고 코드에서 먼저 강제되는지.
 5. **허용 목록 확장의 한계:** 새 `DELETE` 행이 정확히 위 셋뿐인지(GitHub 저장소, GitHub 배포 키, GitLab 프로젝트·프로젝트 배포 키 비활성), 경로 인코딩·주입, 응답 본문 비반영.
 6. **배포 현실:** orchd가 폴더를 지울 수 있는지(`ReadWritePaths`, 소유자), 등록부 v4와 롤백(`registry.json.v3.bak`), 서버의 기존 프로젝트(`w3e-smoke-1112`·`1113`은 `origin: unknown`이 되어 원격 삭제 대상이 아님: 사용자가 직접 지우거나 아래 메모 참조), 토큰 권한(`delete_repo`)은 사용자 몫.
 
@@ -40,12 +40,12 @@
 
 ### Task 1 (F1): 등록부 버전 4, 새 action·필드·오류 코드
 **파일:** 수정 `internal/registrymsg/*`, `internal/approval/signing/registry_message.go`, `internal/broker/registry.go`(+시험), 웹 상수 드리프트 시험.
-- [ ] **시험(이름 그대로):** `TestRegistryV3MigratesToV4Atomically`(내용 불변, `origin`은 `unknown`/`legacy`, `.v3.bak` 한 번만), `TestOldBrokerRefusesV4`, `TestNewProjectsRecordOrigin`(created/linked), `TestDeleteActionsInSchema`(필드·subject 규칙·교차 action 서명 거부), `TestConfirmNameField`, `TestDeleteTokenRefOnProvider`(서명 대상에 들어감), `TestExistingActionsUnchangedByW3f`.
+- [ ] **시험(이름 그대로):** `TestRegistryV3MigratesToV4Atomically`(내용 불변, `origin`은 `unknown`/`legacy`, `.v3.bak` 한 번만), `TestOldBrokerRefusesV4`, `TestNewProjectsRecordOrigin`(created/linked), `TestDeleteActionsInSchema`(필드·subject 규칙·교차 action 서명 거부), `TestConfirmNameField`, `TestExistingActionsUnchangedByW3f`.
 - [ ] **커밋:** `feat(registry): registry v4 with project origin and delete actions`.
 
 ### Task 2 (F2): broker 삭제 클라이언트와 op
 **파일:** 수정 `internal/broker/githubapi.go`·`gitlabapi.go`(허용 표에 DELETE 행만 추가), `provider_iface.go`; 만들기 `delete_ops.go`.
-- [ ] **시험:** `TestOnlyDeleteRowsAddedToAllowlist`(정확히 F-D4의 행), `TestDeleteUsesOnlyDeleteToken`, `TestRemoteDeleteRefusedForLinkedUnknownLegacy`, `TestDeleteChecksRemoteIdAndName`(`remote_changed`), `TestDeleteKeyOnlyMatchingTitleAndFingerprint`, `TestGitLabSharedKeyNeverDeleted`, `TestNoGroupOrOrgOrTokenDeletion`, `TestSignedFieldsCoverEveryDeleteInput`, `TestDeletePartialAndUnknownOutcomeNoAutoRetry`, `TestDailyLimit`, `TestCanaryTokenNeverInAnyOutput`.
+- [ ] **시험:** `TestOnlyDeleteRowsAddedToAllowlist`(정확히 F-D4의 행), `TestRemoteDeleteRefusedForLinkedUnknownLegacy`, `TestDeleteChecksRemoteIdAndName`(`remote_changed`), `TestDeleteKeyOnlyMatchingTitleAndFingerprint`, `TestGitLabSharedKeyNeverDeleted`, `TestNoGroupOrOrgOrTokenDeletion`, `TestSignedFieldsCoverEveryDeleteInput`, `TestDeleteUsesOnlyTheProvidersOwnToken`, `TestDeletePartialAndUnknownOutcomeNoAutoRetry`, `TestDailyLimit`, `TestCanaryTokenNeverInAnyOutput`.
 - [ ] **커밋:** `feat(broker): signed project deletion with a separate delete token`.
 
 ### Task 3 (F3): orchd 로컬 정리와 엔드포인트
@@ -58,7 +58,7 @@
 - [ ] **커밋:** `feat(web): project deletion screens`.
 
 ### Task 5 (F5): 적대 시험, 결과(`docs/29`), 컷오버 런북(`docs/10` 16장)
-- [ ] 적대 시험과 변이 표(서명 검증 제거, `remote_id` 확인 제거, `origin` 확인 제거, 삭제 토큰 대신 일반 토큰 사용, 레거시 거부 제거, `SameFile` 확인 제거, 허용 목록 확장 한계 제거 등), 결과 문서(서버에서 확인하지 못한 것: 실제 GitHub `DELETE`와 `delete_repo` 범위, GitLab 지연 삭제, orchd의 실제 폴더 삭제 권한 등), 런북(등록부 v4 백업·마이그레이션·롤백, **삭제 토큰은 사용자가 웹에서만 입력하고 끝나면 지움**, 되돌릴 수 없는 단계는 사용자 결정).
+- [ ] 적대 시험과 변이 표(서명 검증 제거, `remote_id` 확인 제거, `origin` 확인 제거, 삭제 토큰 대신 일반 토큰 사용, 레거시 거부 제거, `SameFile` 확인 제거, 허용 목록 확장 한계 제거 등), 결과 문서(서버에서 확인하지 못한 것: 실제 GitHub `DELETE`와 `delete_repo` 범위, GitLab 지연 삭제, orchd의 실제 폴더 삭제 권한 등), 런북(등록부 v4 백업·마이그레이션·롤백, 삭제 권한은 일반 토큰에 이미 있음(별도 토큰 없음), 되돌릴 수 없는 단계는 사용자 결정).
 - [ ] 전체 `go test ./... -race`, node, `TestConstantsAgreeWithWeb`; 커밋 `test: adversarial suite for W3f`, `docs: W3f results and cutover runbook`.
 
 ---
@@ -66,5 +66,5 @@
 ## 자체 검토 기록
 - **레거시(사용자 결정 2026-11-12):** 레거시 프로젝트의 서버 쪽 삭제는 허용하되 두 번째 확인(`legacy_ack` 서명)을 거친다. 레거시의 원격은 지우지 못한다.
 - **범위:** 요청의 "클론"(F3 로컬 정리)과 "원격"(F2 원격 저장소 삭제)을 덮는다. 추가한 것: 배포 키만 떼기(연결한 저장소를 지우지 않고 정리), 고아 기록 지우기(삭제 기능이 없어서 쌓이던 것). **의도적으로 뺀 것:** 그룹·조직 삭제, 출처 주장(`claim_origin`), 서명 없는 삭제, 일괄 삭제, W3d(자동 병합).
-- **원칙 변경의 근거와 한계:** 삭제 권한은 일반 토큰에 주지 않고 **별도 삭제 토큰**에만 둔다(F-D1). 그래도 삭제 토큰이 유출되면 그 계정의 모든 저장소가 위험하므로 평소에는 등록하지 않는 것이 권장 운영이다.
-- **사용자 확인이 필요한 값(계획 승인 시):** ① 삭제 토큰 분리(권장) 승인, ② 레거시 프로젝트는 서버 쪽 삭제만 두 번째 확인과 함께 허용(원격 삭제는 불가), ③ 이미 만든 시험 저장소의 원격은 사용자가 직접 지움, ④ 원격 삭제는 이 도구가 만든 것만, ⑤ GitHub 삭제용 클래식 토큰(`delete_repo`)은 사용자가 만들고 쓴 뒤 폐기.
+- **원칙 변경의 근거와 한계:** 사용자가 일반 토큰에 삭제 권한까지 주었다(F-D1). 토큰이 유출되면 그 계정의 저장소가 위험하다는 점은 사용자가 감수했다.
+- **사용자 확인이 필요한 값(계획 승인 시):** ① (철회됨) 삭제 토큰 분리는 하지 않음: 일반 토큰에 삭제 권한이 이미 있음, ② 레거시 프로젝트는 서버 쪽 삭제만 두 번째 확인과 함께 허용(원격 삭제는 불가), ③ 이미 만든 시험 저장소의 원격은 사용자가 직접 지움, ④ 원격 삭제는 이 도구가 만든 것만, ⑤ GitHub 토큰의 `delete_repo` 범위는 사용자가 이미 부여함(확인은 사용자 몫).
