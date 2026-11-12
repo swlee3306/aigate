@@ -75,6 +75,31 @@ type RepoProvider interface {
 	// AddDeployKey registers one public key. canPush false means read only
 	// (GitHub read_only is the inverse of GitLab can_push).
 	AddDeployKey(ctx context.Context, repo RepoInfo, title, key string, canPush bool) error
+
+	// W3f: the delete side. Every call below works only on a handle this very
+	// client instance produced (see delete_clients.go): LiveRepo first, then
+	// DeleteRepo / ListDeployKeys, and RemoveDeployKey only for a key that
+	// ListDeployKeys of this instance returned. A DELETE is sent at most once per
+	// handle and is never retried.
+	//
+	// LiveRepo reads the repository (GET) and reports what the provider says,
+	// whatever name it carries: the caller compares id and name.
+	LiveRepo(ctx context.Context, fullPath string) (RepoInfo, error)
+	// DeleteRepo deletes the repository LiveRepo just returned.
+	DeleteRepo(ctx context.Context, repo RepoInfo) error
+	// ListDeployKeys lists the repository's deploy keys (complete list or an error).
+	ListDeployKeys(ctx context.Context, repo RepoInfo) ([]DeployKeyInfo, error)
+	// RemoveDeployKey takes one listed key off THIS repository. GitLab: the key is
+	// disabled for this project only; no call deletes a key everywhere.
+	RemoveDeployKey(ctx context.Context, repo RepoInfo, key DeployKeyInfo) error
+}
+
+// DeployKeyInfo is one deploy key of a repository: the provider's id, its title
+// and the public key body ("type base64", no comment).
+type DeployKeyInfo struct {
+	ID    int64
+	Title string
+	Body  string
 }
 
 // SameRepoPath reports whether two repository paths name the same repository
@@ -93,7 +118,7 @@ func IsProviderRefused(err error) bool {
 	return c == CodeGitLabRefused || c == CodeGitHubRefused
 }
 
-// ---------- GitLab implementation (a thin adapter, no new behaviour) ----------
+// ---------- GitLab implementation (a thin adapter) ----------
 
 type gitlabRepoProvider struct{ api *GitLabAPI }
 
@@ -163,6 +188,22 @@ func (g gitlabRepoProvider) EnsureProtectedMain(ctx context.Context, repo RepoIn
 
 func (g gitlabRepoProvider) AddDeployKey(ctx context.Context, repo RepoInfo, title, key string, canPush bool) error {
 	return g.api.AddDeployKey(ctx, repo.ID, title, key, canPush)
+}
+
+func (g gitlabRepoProvider) LiveRepo(ctx context.Context, fullPath string) (RepoInfo, error) {
+	return g.api.liveRepo(ctx, fullPath)
+}
+
+func (g gitlabRepoProvider) DeleteRepo(ctx context.Context, repo RepoInfo) error {
+	return g.api.deleteRepo(ctx, repo)
+}
+
+func (g gitlabRepoProvider) ListDeployKeys(ctx context.Context, repo RepoInfo) ([]DeployKeyInfo, error) {
+	return g.api.listDeployKeys(ctx, repo)
+}
+
+func (g gitlabRepoProvider) RemoveDeployKey(ctx context.Context, repo RepoInfo, key DeployKeyInfo) error {
+	return g.api.removeDeployKey(ctx, repo, key)
 }
 
 // RepoProviderFor builds a NEW client of the configured provider id for its kind

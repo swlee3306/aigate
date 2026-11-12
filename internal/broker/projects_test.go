@@ -798,13 +798,14 @@ func TestOpAllowlistIncludesOnlyNewOps(t *testing.T) {
 	}
 	sort.Strings(got)
 	// W3c adds the provider, group and project-creation ops; W3e adds link_project
-	// and attach_remote (and nothing else).
-	want := []string{"attach_remote", "create_group", "create_mr", "create_project", "delete_provider", "delete_token", "link_project",
-		"list_groups", "projects", "providers", "refine", "register_project", "set_flag", "set_provider", "set_token", "status", "tokens"}
+	// and attach_remote; W3f adds the four signed deletion ops (remove_project,
+	// delete_remote_repo, remove_deploy_key, clear_orphan) and nothing else.
+	want := []string{"attach_remote", "clear_orphan", "create_group", "create_mr", "create_project", "delete_provider", "delete_remote_repo", "delete_token", "link_project",
+		"list_groups", "projects", "providers", "refine", "register_project", "remove_deploy_key", "remove_project", "set_flag", "set_provider", "set_token", "status", "tokens"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("ops = %v, want %v", got, want)
 	}
-	for _, op := range []string{"delete_project", "unregister_project", "remove_project",
+	for _, op := range []string{"delete_project", "unregister_project",
 		"set_auto_merge", "update_project", "delete", "register", "delete_group", "set_providers"} {
 		r, _ := call(t, w.sock, `{"v":1,"op":"`+op+`","args":{}}`)
 		if r.OK || r.Code != "unknown_op" {

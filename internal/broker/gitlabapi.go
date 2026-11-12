@@ -354,8 +354,25 @@ var allowlist = []allowEntry{
 	al("POST", `projects/`+reID+`/deploy_keys`),
 }
 
+// gitlabDeleteRows are the W3f rows, kept apart from `allowlist` (the pre-W3f
+// table stays as it was); allowed consults both. TestOnlyDeleteRowsAddedToAllowlist
+// pins the exact set.
+//
+//	DELETE /projects/{id}                       a project this tool created (broker op delete_remote_repo)
+//	GET    /projects/{id}/deploy_keys           list the project's deploy keys (to find ours; read only)
+//	DELETE /projects/{id}/deploy_keys/{key_id}  take ONE key off THIS project
+//
+// There is no global deploy key delete (/deploy_keys/...), no group, user, token
+// or member delete. (GitLab itself removes a key record that no project uses any
+// more when it is taken off its last project; the client never asks for that.)
+var gitlabDeleteRows = []allowEntry{
+	al("DELETE", `projects/`+reID),
+	al("GET", `projects/`+reID+`/deploy_keys`, "per_page", "page"),
+	al("DELETE", `projects/`+reID+`/deploy_keys/`+reID),
+}
+
 func allowed(method, path string, q url.Values) bool {
-	for _, e := range allowlist {
+	for _, e := range append(append([]allowEntry(nil), allowlist...), gitlabDeleteRows...) {
 		if e.method != method || !e.path.MatchString(path) {
 			continue
 		}
@@ -410,6 +427,8 @@ type GitLabAPI struct {
 	policy   ipPolicy
 	lookup   func(context.Context, string) ([]netip.Addr, error)
 	hc       *http.Client
+
+	del delState // W3f: handles of the delete flows (see delete_clients.go)
 }
 
 // NewGitLabAPI builds the client of provider p. The base URL must pass

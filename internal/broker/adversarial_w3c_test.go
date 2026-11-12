@@ -313,7 +313,7 @@ func TestEveryGitLabRequestIsAllowlisted(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, rq := range []struct{ m, p string }{
-		{"DELETE", "/api/v4/projects/21"}, {"DELETE", "/api/v4/groups/team"}, {"PUT", "/api/v4/projects/21"}, {"PATCH", "/api/v4/projects/21"},
+		{"DELETE", "/api/v4/groups/team"}, {"PUT", "/api/v4/projects/21"}, {"PATCH", "/api/v4/projects/21"},
 		{"POST", "/api/v4/projects/21/merge_requests/1/merge"}, {"GET", "/api/v4/user"}, {"POST", "/api/v4/projects/21/access_tokens"},
 		{"POST", "/api/v4/projects/21/repository/commits"}, {"POST", "/api/v4/projects/21/deploy_keys/5/enable"},
 	} {
@@ -408,7 +408,12 @@ func TestEveryGitLabRequestIsAllowlisted(t *testing.T) {
 			}
 			if bl, ok := n.(*ast.BasicLit); ok && bl.Kind == token.STRING {
 				switch bl.Value {
-				case `"DELETE"`, `"PUT"`, `"PATCH"`:
+				case `"DELETE"`:
+					// W3f: only the two delete rows of gitlabDeleteRows in gitlabapi.go
+					if f != "gitlabapi.go" {
+						t.Errorf("%s contains the literal %s", f, bl.Value)
+					}
+				case `"PUT"`, `"PATCH"`:
 					t.Errorf("%s contains the literal %s", f, bl.Value)
 				}
 			}

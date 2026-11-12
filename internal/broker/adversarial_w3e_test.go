@@ -414,7 +414,7 @@ func TestEveryGitHubRequestIsAllowlisted(t *testing.T) {
 	probe := newFakeGH(t)
 	pa := ghFor(t, probe, ghTokens(t), nil)
 	for _, c := range []struct{ m, p string }{
-		{"DELETE", "/repos/alice/demo"}, {"PATCH", "/repos/alice/demo"}, {"DELETE", "/repos/alice/demo/keys/5"}, {"PUT", "/repos/alice/demo/pulls/1/merge"},
+		{"PATCH", "/repos/alice/demo"}, {"PUT", "/repos/alice/demo/pulls/1/merge"},
 		{"POST", "/repos/alice/demo/merges"}, {"GET", "/user/keys"}, {"POST", "/user/keys"}, {"GET", "/repos/alice/demo/collaborators"},
 		{"PUT", "/repos/alice/demo/collaborators/bob"}, {"POST", "/repos/alice/demo/forks"}, {"POST", "/authorizations"}, {"GET", "/repos/alice/demo/branches/main/protection/enforce_admins"},
 	} {
@@ -431,7 +431,12 @@ func TestEveryGitHubRequestIsAllowlisted(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, bad := range []string{"MethodDelete", "MethodPatch", `"DELETE"`, `"PATCH"`, "/user/keys", "collaborators"} {
+		// W3f: the DELETE verb is spelled only in the two rows of githubDeleteRows
+		// (githubapi.go); the flows of create/link never spell it.
+		if want := map[string]int{"githubapi.go": 2}[f]; bytes.Count(src, []byte(`"DELETE"`)) != want {
+			t.Errorf("%s spells DELETE %d times, want %d", f, bytes.Count(src, []byte(`"DELETE"`)), want)
+		}
+		for _, bad := range []string{"MethodDelete", "MethodPatch", `"PATCH"`, "/user/keys", "collaborators"} {
 			if bytes.Contains(src, []byte(bad)) {
 				t.Errorf("%s contains %q", f, bad)
 			}

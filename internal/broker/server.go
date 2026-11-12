@@ -120,6 +120,17 @@ var fixedMessages = map[string]string{
 	"repo_not_found": "제공자에서 그 저장소를 찾을 수 없습니다. 이 도구는 이미 있는 저장소만 연결하며, 토큰이 볼 수 있는 저장소여야 합니다.",
 	"link_partial":   "이미 있던 저장소에 이 서버의 배포 키가 붙었을 수 있습니다. 저장소는 지우지 마세요. 제공자 화면에서 이 서버의 배포 키(제목이 orchd로 시작)만 직접 제거한 뒤 다시 시도하세요.",
 	"already_linked": "이미 제공자에 연결된 프로젝트이거나, 같은 원격 저장소가 다른 프로젝트에 연결되어 있습니다.",
+
+	// W3f (F2): deletion. Provider-neutral; nothing the provider says is shown.
+	"legacy_ack_required": "처음부터 있던(레거시) 프로젝트는 두 번째 확인을 거쳐 서명해야 지울 수 있고, 그 밖의 프로젝트에는 두 번째 확인이 없습니다.",
+	"origin_unknown":      "이 프로젝트의 원격 저장소를 이 도구가 만들었는지 알 수 없어 원격 저장소는 지울 수 없습니다. 필요하면 제공자 화면에서 직접 지우세요.",
+	"not_created_by_tool": "이 도구가 만든 저장소가 아니라 연결한 기존 저장소이므로 원격 저장소는 지울 수 없습니다. 이 도구가 붙인 배포 키만 뗄 수 있습니다.",
+	"remote_changed":      "원격 저장소가 등록부의 기록과 다릅니다(이름 변경, 소유 이전, 다시 만듦, 이미 삭제됨 등). 아무것도 지우지 않았습니다. 상태를 다시 읽으세요.",
+	"confirm_mismatch":    "입력한 저장소 이름이 실제 저장소 이름과 글자 그대로 같지 않습니다.",
+	"delete_partial":      "삭제가 일부만 끝났거나 결과를 알 수 없습니다. 자동으로 다시 시도하지 않습니다. 제공자 화면과 이 화면에서 현재 상태를 다시 확인한 뒤 결정하세요.",
+	"key_not_found":       "이 프로젝트의 배포 키(제목 orchd 와 프로젝트 id)를 저장소에서 찾지 못했습니다. 아무것도 지우지 않았습니다.",
+	"remove_refused":      "삭제 요청이 거부되었거나, 지울 대상을 하나로 정할 수 없어 아무것도 지우지 않았습니다. 토큰 권한과 제공자 설정을 확인하세요.",
+	"orphan_unknown":      "그런 고아 기록이 없습니다.",
 }
 
 // Default per-op processing time limits (decision D1).
@@ -155,6 +166,14 @@ var defaultOpTimeouts = map[string]time.Duration{
 	// and the orphan records first).
 	"link_project":  45 * time.Second,
 	"attach_remote": 45 * time.Second,
+
+	// W3f. A `timeout` reply to a delete means the outcome is UNKNOWN: re-read
+	// `projects` (and look at the provider) before doing anything else; nothing
+	// is retried automatically. remove_deploy_key may page through the key list.
+	"remove_project":     10 * time.Second,
+	"delete_remote_repo": 45 * time.Second,
+	"remove_deploy_key":  60 * time.Second,
+	"clear_orphan":       10 * time.Second,
 }
 
 // State is the broker's mutable limit state.
@@ -170,6 +189,13 @@ type State struct {
 	// W3e (E-D6): link_project and attach_remote share this one broker-wide
 	// cap (per-actor limits live in orchd).
 	LinkRemote *HourlyLimiter
+
+	// W3f (F-D5): remote repository deletion is capped per rolling day and per
+	// hour, broker-wide (in memory: a restart resets it; per-actor limits are
+	// orchd's). Key removal, remove_project and clear_orphan share DeleteLocal.
+	DeleteRepoDay  *HourlyLimiter
+	DeleteRepoHour *HourlyLimiter
+	DeleteLocal    *HourlyLimiter
 }
 
 // Server is the broker socket server. Zero-valued tuning fields take their
@@ -278,6 +304,10 @@ func New(cfg Config, o Options) (*Server, error) {
 			CreateProject: NewHourlyLimiter(maxCreateProjectPerHour, o.Clock),
 			CreateGroup:   NewHourlyLimiter(maxCreateGroupPerHour, o.Clock),
 			LinkRemote:    NewHourlyLimiter(maxLinkRemotePerHour, o.Clock),
+
+			DeleteRepoDay:  NewWindowLimiter(maxDeleteRepoPerDay, 24*time.Hour, o.Clock),
+			DeleteRepoHour: NewHourlyLimiter(maxDeleteRepoPerHour, o.Clock),
+			DeleteLocal:    NewHourlyLimiter(maxLocalDeletePerHour, o.Clock),
 		},
 	}
 	s.OpenAI = &OpenAIClient{KeyFn: s.currentOpenAIKey, Model: cfg.OpenAI.Model}
@@ -313,6 +343,11 @@ func New(cfg Config, o Options) (*Server, error) {
 
 		"link_project":  s.linkProjectHandler,
 		"attach_remote": s.attachRemoteHandler,
+
+		"remove_project":     s.removeProjectHandler,
+		"delete_remote_repo": s.deleteRemoteRepoHandler,
+		"remove_deploy_key":  s.removeDeployKeyHandler,
+		"clear_orphan":       s.clearOrphanHandler,
 	}
 	return s, nil
 }

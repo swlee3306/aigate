@@ -103,8 +103,25 @@ var githubAllowlist = []allowEntry{
 	gal("POST", `repos/`+ghOwner+`/`+ghRepo+`/keys`),
 }
 
+// githubDeleteRows are the W3f rows (the only DELETE the GitHub client can send,
+// plus the read that finds a deploy key). Kept apart from githubAllowlist so the
+// pre-W3f table stays byte for byte what it was; githubAllowed consults both.
+// TestOnlyDeleteRowsAddedToAllowlist pins the exact set.
+//
+//	DELETE /repos/{owner}/{repo}            a repository this tool created (broker op delete_remote_repo)
+//	GET    /repos/{owner}/{repo}/keys       list deploy keys (to find ours)
+//	DELETE /repos/{owner}/{repo}/keys/{id}  one deploy key of ours
+//
+// Nothing else is deletable: no branch, protection, file, hook, collaborator,
+// organization, user key or token.
+var githubDeleteRows = []allowEntry{
+	gal("DELETE", `repos/`+ghOwner+`/`+ghRepo),
+	gal("GET", `repos/`+ghOwner+`/`+ghRepo+`/keys`, "per_page", "page"),
+	gal("DELETE", `repos/`+ghOwner+`/`+ghRepo+`/keys/`+reID),
+}
+
 func githubAllowed(method, path string, q url.Values) bool {
-	for _, e := range githubAllowlist {
+	for _, e := range append(append([]allowEntry(nil), githubAllowlist...), githubDeleteRows...) {
 		if e.method != method || !e.path.MatchString(path) {
 			continue
 		}
@@ -154,6 +171,8 @@ type GitHubAPI struct {
 	// One flow = one client instance (see Server.RepoProviderFor).
 	mu      sync.Mutex
 	created map[string]int64
+
+	del delState // W3f: handles of the delete flows (see delete_clients.go)
 }
 
 // githubAPIPrefix is the kind-aware part of the API address: github.com serves

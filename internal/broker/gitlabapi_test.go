@@ -228,7 +228,6 @@ func TestDoRefusesOffListRequests(t *testing.T) {
 	f := newFakeGL(t)
 	a := apiFor(t, f, apiTokens(t), nil)
 	cases := []struct{ m, p, q string }{
-		{"DELETE", "/api/v4/projects/21", ""},
 		{"DELETE", "/api/v4/groups/team", ""},
 		{"DELETE", "/api/v4/projects/21/protected_branches/main", ""},
 		{"PUT", "/api/v4/projects/21", ""},
@@ -245,7 +244,6 @@ func TestDoRefusesOffListRequests(t *testing.T) {
 		{"GET", "/api/v4/projects/21", ""},
 		{"POST", "/api/v4/projects/21/repository/commits", ""},
 		{"POST", "/api/v4/projects/21/deploy_keys/1/enable", ""},
-		{"GET", "/api/v4/projects/21/deploy_keys", ""},
 		{"POST", "/api/v4/projects/21/protected_branches/main", ""},
 		{"GET", "/api/v4/projects/21/protected_branches", ""},
 		{"GET", "/api/v4/groups", "owned=true"},
@@ -285,7 +283,7 @@ func TestDoRefusesOffListRequests(t *testing.T) {
 	// answers not-allowlisted, never token_ref_unknown
 	empty, _ := newTestTokenStore(t)
 	a2 := apiFor(t, f, empty, nil)
-	if _, err := a2.do(context.Background(), "DELETE", "/api/v4/projects/21", nil, nil, 200); ErrCode(err) != CodeNotAllowlisted {
+	if _, err := a2.do(context.Background(), "DELETE", "/api/v4/groups/team", nil, nil, 200); ErrCode(err) != CodeNotAllowlisted {
 		t.Fatalf("got %v", err)
 	}
 }
@@ -914,9 +912,14 @@ func TestClientHasOneSendPath(t *testing.T) {
 			t.Errorf("%q appears %d times, want exactly once (inside do)", pat, strings.Count(s, pat))
 		}
 	}
-	for _, m := range []string{"http.MethodDelete", "http.MethodPut", "http.MethodPatch", `"DELETE"`, `"PUT"`, `"PATCH"`} {
+	// W3f: the DELETE verb is spelled only in the two rows of gitlabDeleteRows
+	// (the senders live in delete_clients.go, pinned by TestDeleteVerbOnlyInRows).
+	for _, m := range []string{"http.MethodDelete", "http.MethodPut", "http.MethodPatch", `"PUT"`, `"PATCH"`} {
 		if strings.Contains(s, m) {
 			t.Errorf("client mentions %s", m)
 		}
+	}
+	if n := strings.Count(s, `"DELETE"`); n != 2 {
+		t.Errorf(`"DELETE" appears %d times in gitlabapi.go, want exactly the 2 delete rows`, n)
 	}
 }

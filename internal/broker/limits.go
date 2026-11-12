@@ -21,6 +21,16 @@ type HourlyLimiter struct {
 	limit int
 	clock func() time.Time
 	hits  []time.Time
+	win   time.Duration // 0: one hour
+}
+
+// NewWindowLimiter is a limiter over a trailing window other than an hour (W3f:
+// remote repository deletion has a rolling-day cap). In memory only: a broker
+// restart resets it.
+func NewWindowLimiter(limit int, window time.Duration, clock func() time.Time) *HourlyLimiter {
+	l := NewHourlyLimiter(limit, clock)
+	l.win = window
+	return l
 }
 
 // NewHourlyLimiter returns a limiter; clock nil means time.Now.
@@ -32,7 +42,11 @@ func NewHourlyLimiter(limit int, clock func() time.Time) *HourlyLimiter {
 }
 
 func (l *HourlyLimiter) prune(now time.Time) {
-	cut := now.Add(-time.Hour)
+	w := l.win
+	if w <= 0 {
+		w = time.Hour
+	}
+	cut := now.Add(-w)
 	i := 0
 	for i < len(l.hits) && !l.hits[i].After(cut) {
 		i++

@@ -279,15 +279,12 @@ func TestGitHubDoRefusesOffList(t *testing.T) {
 	f := newFakeGH(t)
 	a := ghFor(t, f, ghTokens(t), nil)
 	cases := []struct{ m, p, q string }{
-		{"DELETE", "/repos/alice/demo", ""},
 		{"DELETE", "/repos/alice/demo/branches/main/protection", ""},
-		{"DELETE", "/repos/alice/demo/keys/5", ""},
 		{"PATCH", "/repos/alice/demo", ""},
 		{"PUT", "/repos/alice/demo", ""},
 		{"PATCH", "/repos/alice/demo/branches/main/protection", ""},
 		{"POST", "/repos/alice/demo/branches/main/protection", ""},
 		{"PUT", "/repos/alice/demo/keys", ""},
-		{"GET", "/repos/alice/demo/keys", ""},
 		{"POST", "/repos/alice/demo/merges", ""},
 		{"PUT", "/repos/alice/demo/pulls/1/merge", ""},
 		{"POST", "/repos/alice/demo/pulls", ""},
@@ -355,7 +352,7 @@ func TestGitHubDoRefusesOffList(t *testing.T) {
 	}
 	empty, _ := newTestTokenStore(t)
 	a2 := ghFor(t, f, empty, nil)
-	if _, err := a2.do(context.Background(), "DELETE", "/repos/alice/demo", nil, nil, 200); ErrCode(err) != CodeNotAllowlisted {
+	if _, err := a2.do(context.Background(), "DELETE", "/repos/alice/demo/branches/main/protection", nil, nil, 200); ErrCode(err) != CodeNotAllowlisted {
 		t.Fatalf("refusal must come before the token read: %v", err)
 	}
 }
@@ -1154,7 +1151,10 @@ func TestGitHubClientHasOneSendPath(t *testing.T) {
 			t.Errorf("%q appears %d times, want exactly once (inside do)", pat, strings.Count(s, pat))
 		}
 	}
-	for _, m := range []string{"http.MethodDelete", "http.MethodPatch", `"DELETE"`, `"PATCH"`, "ReadAll(resp.Body)", "Header.Get(\"Link\")", "\"Link\""} {
+	if n := strings.Count(s, `"DELETE"`); n != 2 { // W3f: only the two delete rows
+		t.Errorf(`"DELETE" appears %d times in githubapi.go, want exactly the 2 delete rows`, n)
+	}
+	for _, m := range []string{"http.MethodDelete", "http.MethodPatch", `"PATCH"`, "ReadAll(resp.Body)", "Header.Get(\"Link\")", "\"Link\""} {
 		if strings.Contains(s, m) {
 			t.Errorf("client mentions %s", m)
 		}

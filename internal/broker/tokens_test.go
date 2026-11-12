@@ -707,7 +707,7 @@ func TestWriteOpsRefuseWhenUsedRequestsBroken(t *testing.T) {
 
 func TestOpAllowlistDeleteProjectStillUnknown(t *testing.T) {
 	w := newWEnv(t)
-	for _, op := range []string{"delete_project", "unregister_project", "remove_project", "delete", "delete_secret",
+	for _, op := range []string{"delete_project", "unregister_project", "delete", "delete_secret",
 		"remove_token", "unset_token", "set_secret", "get_token", "update_token", "delete_tokens", "register", "delete_Token", "set_Token"} {
 		r, _ := call(t, w.sock, `{"v":1,"op":"`+op+`","args":{}}`)
 		if r.OK || r.Code != "unknown_op" {
