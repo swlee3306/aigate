@@ -286,7 +286,7 @@ func TestPartialFailureRecordsOrphan(t *testing.T) {
 			if n != 1 {
 				t.Fatalf("POST /projects sent %d times", n)
 			}
-			// the name stays taken until the user cleans Remote: the retry is refused
+			// the name stays taken until the user cleans GitLab: the retry is refused
 			if x.idKnow { // GitLab has the project now: the name is taken until the user cleans up
 				c.gl.mu.Lock()
 				c.gl.fail = map[string]int{}

@@ -97,7 +97,7 @@ var fixedMessages = map[string]string{
 	"provider_unknown":     "등록되지 않은 제공자입니다.",
 	"provider_exists":      "같은 id의 제공자가 이미 있습니다.",
 	"provider_in_use":      "이 제공자를 쓰는 프로젝트가 있어 삭제하거나 주소를 바꿀 수 없습니다.",
-	"token_ref_unknown":    "제공자가 쓸 gitlab 종류 토큰이 저장소에 없거나 쓸 수 없습니다. 토큰 화면에서 확인하세요.",
+	"token_ref_unknown":    "제공자가 쓸 토큰이 저장소에 없거나, 제공자와 종류가 맞지 않거나, 쓸 수 없습니다. 토큰 화면에서 확인하세요.",
 	"provider_unreachable": "GitLab에 연결하지 못했거나 응답이 없었습니다. 잠시 후 다시 시도하세요.",
 	"gitlab_refused":       "GitLab이 요청을 받아들이지 않았습니다. 토큰 권한과 GitLab 설정을 확인하세요.",
 	"group_unknown":        "GitLab에 그런 그룹이 없습니다.",

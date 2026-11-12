@@ -269,3 +269,23 @@ func TestResolverNilClientNeverResolves(t *testing.T) {
 	}
 	r.Invalidate() // must not panic
 }
+
+// A provider-linked project whose remote link is missing (new orchd with an
+// old broker, or a broker-only rollback) is refuse-class, never the default
+// remote; an unlisted or legacy project still uses the default.
+func TestResolverProviderLinkedWithoutRemoteIsRefused(t *testing.T) {
+	f := startRegistry(t, view(
+		proj("no-link", "/r/no-link", "gl", ""),
+		proj("legacy", "/r/legacy", "", ""),
+	))
+	r, _ := newResolver(t, f)
+	if got, ok := r.Resolve("/r/no-link"); got != "" || !ok {
+		t.Errorf("provider-linked without remote: %q,%v want refuse (\"\",true)", got, ok)
+	}
+	if got, ok := r.Resolve("/r/legacy"); got != "" || ok {
+		t.Errorf("legacy project: %q,%v want default (\"\",false)", got, ok)
+	}
+	if got, ok := r.Resolve("/r/unlisted"); got != "" || ok {
+		t.Errorf("unlisted project: %q,%v want default", got, ok)
+	}
+}

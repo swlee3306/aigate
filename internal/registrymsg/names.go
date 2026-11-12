@@ -42,8 +42,9 @@ func ValidProviderKind(s string) bool { return providerKinds[s] }
 
 const (
 	// MaxRemoteSegments is the most segments a remote path may have
-	// (owner/repo for GitHub, group/…/name for GitLab).
-	MaxRemoteSegments = 4
+	// (owner/repo for GitHub; for GitLab a group path of at most MaxGroupDepth
+	// segments plus the project name).
+	MaxRemoteSegments = MaxGroupDepth + 1
 	// MaxRemoteSegmentLen caps one segment, MaxRemotePathLen the whole path.
 	MaxRemoteSegmentLen = 100
 	MaxRemotePathLen    = 255
@@ -51,7 +52,7 @@ const (
 
 // ValidRemotePath reports whether s names a remote repository: 2 to
 // MaxRemoteSegments segments of [A-Za-z0-9._-], no empty segment, no "." or
-// ".." segment, no ".git" suffix on the last segment, each at most
+// ".." segment, no segment ending in ".git" (anywhere), each at most
 // MaxRemoteSegmentLen bytes and the whole at most MaxRemotePathLen. Case is
 // accepted as written: folding it (GitHub names are case-insensitive) is the
 // broker's call, per provider.
@@ -63,7 +64,7 @@ func ValidRemotePath(s string) bool {
 	if len(segs) < 2 || len(segs) > MaxRemoteSegments {
 		return false
 	}
-	for i, seg := range segs {
+	for _, seg := range segs {
 		if seg == "" || seg == "." || seg == ".." || len(seg) > MaxRemoteSegmentLen {
 			return false
 		}
@@ -73,7 +74,7 @@ func ValidRemotePath(s string) bool {
 				return false
 			}
 		}
-		if i == len(segs)-1 && len(seg) >= 4 && strings.EqualFold(seg[len(seg)-4:], ".git") {
+		if len(seg) >= 4 && strings.EqualFold(seg[len(seg)-4:], ".git") {
 			return false
 		}
 	}

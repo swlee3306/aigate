@@ -211,7 +211,7 @@
       }
     },
     {
-      "name": "link remote_path five segments",
+      "name": "link remote_path six segments",
       "action": "link_project",
       "subject": "hello",
       "fields": {
@@ -219,7 +219,7 @@
         "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
         "provider": "gh",
         "publish": "read",
-        "remote_path": "a/b/c/d/e"
+        "remote_path": "a/b/c/d/e/f"
       }
     },
     {

@@ -410,7 +410,7 @@ func projectView(p broker.Project) (ProjectView, bool) {
 	}
 	if p.Remote != nil {
 		// The console's view keeps its field names (gitlab.project/project_id).
-		if p.Remote.Path == "" || len(p.Remote.Path) > 200 || hostileText(p.Remote.Path) {
+		if p.Remote.Path == "" || len(p.Remote.Path) > registrymsg.MaxRemotePathLen || hostileText(p.Remote.Path) {
 			return ProjectView{}, false
 		}
 		v.GitLab = &projectGitLab{Project: p.Remote.Path, ProjectID: p.Remote.ID}

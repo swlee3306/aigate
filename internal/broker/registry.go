@@ -25,26 +25,28 @@ import (
 //
 // Fail closed: only a truly missing file starts a fresh registry (and migrates
 // the legacy broker.json entries once). A file that is broken, unknown-keyed,
-// of a version other than 1 or 2, not owned by the broker account or not 0600
-// is never treated as "absent": the broker keeps running but every read and
-// write that depends on the registry answers registry_unavailable.
+// of a version other than 1, 2 or 3, not owned by the broker account or not
+// 0600 is never treated as "absent": the broker keeps running but every read
+// and write that depends on the registry answers registry_unavailable.
 //
-// Versions. The file is version 2 (W3c: providers, project provider links and
-// GitLab ids, orphan records). A valid version 1 file (W3a/W3b) is migrated to
-// 2 when it is opened: same content, rewritten atomically as 0600 (temp file,
-// fsync, rename); if the write fails the v1 file is untouched and the open is a
-// start failure. A W3b broker accepts only version 1 and unknown keys are
-// refused, so it treats a version 2 file as broken (fail closed): rolling the
-// broker back means restoring the registry from the pre-migration backup.
+// Versions. The file is version 3 (W3e: provider kinds gitlab and github,
+// per-project remote:{path,id}, orphan records). A valid version 1 (W3a/W3b)
+// or version 2 (W3c, gitlab:{project,project_id} links) file is migrated to 3
+// when it is opened: same content and meaning, rewritten atomically as 0600
+// (temp file, fsync, rename), after a byte-exact backup registry.json.v<N>.bak
+// that is never overwritten; if either write fails the old file is untouched
+// and the open is a start failure. A W3c broker accepts only version 2 and
+// refuses unknown keys, so it treats a version 3 file as broken (fail closed):
+// rolling the broker back means restoring the registry from that backup.
 
 const (
 	// RegistryFileName and UsedRequestsFileName live in the state directory.
 	RegistryFileName     = "registry.json"
 	UsedRequestsFileName = "used-requests.json"
 
-	// registryVersion is what this code writes. registryVersionV1 is the only
-	// older version it still reads (and migrates). TestOldBrokerVersionRefusesV2
-	// pins both.
+	// registryVersion is what this code writes. registryVersionV2 and V1 are the
+	// older versions it still reads (and migrates). TestOldBrokerRefusesV3 and
+	// TestOldBrokerVersionRefusesV2 pin them.
 	registryVersion = 3
 	// registryVersionV2 is the W3c file shape: project links are
 	// gitlab:{project,project_id}; read once and migrated to version 3.
@@ -271,12 +273,18 @@ func OpenRegistry(dir string, legacy LegacySource, o RegistryOptions) (*Registry
 			}
 			if migrated {
 				// v1/v2 -> v3: same content, atomic replace (never exclusive:
-				// the old file is the one being replaced). Any error is a start
-				// failure. Per stage: before the rename (temp write, fsync) the
-				// v1 file is untouched; after the rename (only the directory
-				// fsync can still fail) the file is already v2 and the next
-				// start reads it as a normal v2 file. There is no lock between
-				// reading v1 and renaming v2: stop the old broker first.
+				// the old file is the one being replaced). First a byte-exact
+				// backup registry.json.v<N>.bak (0600, only if absent, never
+				// overwritten, fsynced): a W3c broker cannot read v3, so a
+				// rollback restores it. Any error is a start failure. Per
+				// stage: before the rename (temp write, fsync) the old file is
+				// untouched; after the rename (only the directory fsync can
+				// still fail) the file is already v3 and the next start reads
+				// it as a normal v3 file. There is no lock between reading the
+				// old file and renaming v3: stop the old broker first.
+				if berr := writeBackupOnce(st.path, data, string(topLevelVersion(data))); berr != nil {
+					return nil, errors.New("프로젝트 등록부의 백업을 저장할 수 없습니다")
+				}
 				if _, werr := writeAtomic(st.path, mustMarshalRegistry(reg), o.failAt, false); werr != nil {
 					return nil, errors.New("프로젝트 등록부를 저장할 수 없습니다")
 				}
@@ -542,9 +550,57 @@ type projectV2 struct {
 	AutoMerge AutoMerge     `json:"auto_merge"`
 }
 
-// topLevelKeys returns the raw top-level values of a JSON object. It refuses
-// anything that the strict struct decoder could read differently from the
-// version dispatch: a repeated key, or two keys that differ only in case (Go's
+// topLevelVersion is the raw version token of a file parseRegistry accepted
+// ("1" or "2" when it is being migrated).
+func topLevelVersion(data []byte) string {
+	head, _ := topLevelKeys(data)
+	return string(head["version"])
+}
+
+// writeBackupOnce saves data as <path>.v<version>.bak: 0600, created through a
+// temp file in the same directory and linked into place so an existing backup
+// is never replaced, fsynced (file and directory). An existing backup is not an
+// error.
+func writeBackupOnce(path string, data []byte, version string) error {
+	if version != "1" && version != "2" {
+		return errors.New("unexpected version")
+	}
+	bak := path + ".v" + version + ".bak"
+	if _, err := os.Lstat(bak); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".state-bak-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer func() { tmp.Close(); os.Remove(name) }()
+	if err := tmp.Chmod(0o600); err != nil {
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := os.Link(name, bak); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
+}
+
+// topLevelKeys returns the raw top-level values of a JSON object (the
+// version dispatch reads "version" from it). It refuses anything that the
+// strict struct decoder could read differently from that dispatch: a repeated key, or two keys that differ only in case (Go's
 // decoder matches struct fields case-insensitively), and trailing data.
 func topLevelKeys(data []byte) (map[string]json.RawMessage, bool) {
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -713,8 +769,14 @@ func validateRegistry(r *Registry) error {
 		}
 		if p.Remote != nil {
 			g := p.Remote
-			if !projectRE.MatchString(g.Path) || strings.Contains("/"+g.Path+"/", "/../") ||
+			if len(g.Path) > registrymsg.MaxRemotePathLen || !projectRE.MatchString(g.Path) || strings.Contains("/"+g.Path+"/", "/../") ||
 				strings.Contains("/"+g.Path+"/", "/./") {
+				return errRegProject
+			}
+			// A provider-linked remote is a path the signed link/attach and the
+			// create flows can produce; only the legacy (provider-less) link
+			// keeps the looser broker.json rule.
+			if p.Provider != nil && !registrymsg.ValidRemotePath(g.Path) {
 				return errRegProject
 			}
 			// A repository id belongs to a provider. A link without a provider is

@@ -181,11 +181,11 @@ func (s *Server) setProviderHandler(ctx context.Context, raw json.RawMessage) (a
 			r.Providers = append(r.Providers, p)
 			return nil
 		}
-		// (d) a provider that projects use keeps its addresses: clone and push
+		// (d) a provider that projects use keeps its addresses and kind: clone and push
 		// remotes are derived from them, so moving them under existing projects
 		// would redirect those. A token swap or the same values is fine.
 		old := r.Providers[i]
-		if (old.BaseURL != p.BaseURL || old.SSHURL != p.SSHURL) && providerReferenced(r, p.ID) {
+		if (old.BaseURL != p.BaseURL || old.SSHURL != p.SSHURL || old.Kind != p.Kind) && providerReferenced(r, p.ID) {
 			return ErrProviderInUse
 		}
 		r.Providers[i] = p
@@ -291,7 +291,16 @@ func (s *Server) createGroupHandler(ctx context.Context, raw json.RawMessage) (a
 		return fail("bad_request")
 	}
 	fields := map[string]any{"name": a.Name, "path": a.Path, "parent_path": a.ParentPath}
-	if oe := s.verifySigned(registrymsg.ActionCreateGroup, a.ID, fields, a.Change, a.Request, a.Issued, a.Signature); oe != nil {
+	if s.Registry.Err() != nil {
+		return fail("registry_unavailable")
+	}
+	shape := func() *OpError { // a non-gitlab provider is refused before the ID is burnt
+		if p, ok := s.Registry.ProviderByID(a.ID); ok && p.Kind != "gitlab" {
+			return fail1("not_supported_for_provider")
+		}
+		return nil
+	}
+	if oe := s.verifySignedShape(registrymsg.ActionCreateGroup, a.ID, fields, a.Change, a.Request, a.Issued, a.Signature, shape); oe != nil {
 		return nil, oe
 	}
 	api, oe := s.apiFor(a.ID)

@@ -117,10 +117,15 @@ func (r *Resolver) refresh() {
 	}
 	table := map[string]string{}
 	for _, p := range view.Projects {
-		if p.Provider == nil || p.Remote == nil {
+		if p.Provider == nil {
 			continue // not a provider-linked project
 		}
+		// Provider-linked but unresolved is refuse-class even without a remote
+		// link (an old broker, a rollback): never the default --git-remote.
 		table[p.Path] = ""
+		if p.Remote == nil {
+			continue
+		}
 		ssh, known := providers[*p.Provider]
 		if !known || !lastSegmentIs(p.Remote.Path, p.ID) {
 			continue

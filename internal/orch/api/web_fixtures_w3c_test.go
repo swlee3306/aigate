@@ -603,11 +603,14 @@ func checkW3eConstants(t *testing.T) {
 			t.Errorf("%s %q != %q", name, mm[1], want)
 		}
 	}
+	if mm := regexp.MustCompile(`token_ref_unknown: '([^']*)'`).FindStringSubmatch(js); mm == nil || strings.Contains(strings.ToLower(mm[1]), "gitlab") {
+		t.Errorf("the page's token_ref_unknown sentence must exist and be provider-neutral: %v", mm)
+	}
 	// Facts the page will copy (E5): kinds, the visibility enum and the remote path bounds.
 	if !registrymsg.ValidProviderKind("gitlab") || !registrymsg.ValidProviderKind("github") || registrymsg.ValidProviderKind("bitbucket") {
 		t.Error("provider kinds")
 	}
-	if registrymsg.MaxRemoteSegments != 4 || registrymsg.MaxRemoteSegmentLen != 100 || registrymsg.MaxRemotePathLen != 255 {
+	if registrymsg.MaxRemoteSegments != 5 || registrymsg.MaxRemoteSegmentLen != 100 || registrymsg.MaxRemotePathLen != 255 {
 		t.Errorf("remote path bounds moved: %d %d %d", registrymsg.MaxRemoteSegments, registrymsg.MaxRemoteSegmentLen, registrymsg.MaxRemotePathLen)
 	}
 }
@@ -674,7 +677,7 @@ func TestWebFixturesW3eVectors(t *testing.T) {
 		{Name: "link remote_path dot git", Action: "link_project", Subject: "hello", Fields: link(map[string]any{"remote_path": "octo/repo.git"})},
 		{Name: "link remote_path percent", Action: "link_project", Subject: "hello", Fields: link(map[string]any{"remote_path": "octo/re%2fpo"})},
 		{Name: "link remote_path unicode", Action: "link_project", Subject: "hello", Fields: link(map[string]any{"remote_path": "octo/저장소"})},
-		{Name: "link remote_path five segments", Action: "link_project", Subject: "hello", Fields: link(map[string]any{"remote_path": "a/b/c/d/e"})},
+		{Name: "link remote_path six segments", Action: "link_project", Subject: "hello", Fields: link(map[string]any{"remote_path": "a/b/c/d/e/f"})},
 		{Name: "link subject one letter", Action: "link_project", Subject: "a", Fields: link(nil)},
 		{Name: "link without ai_context", Action: "link_project", Subject: "hello", Fields: link(map[string]any{"ai_context": nil})},
 		{Name: "attach with ai_context", Action: "attach_remote", Subject: "hello", Fields: attach(map[string]any{"ai_context": false})},

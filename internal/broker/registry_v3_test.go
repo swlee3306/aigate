@@ -391,3 +391,97 @@ func TestRegistryV3Rules(t *testing.T) {
 		}
 	})
 }
+
+func TestRegistryRemotePathRulesForProviderLinkedProjects(t *testing.T) {
+	ghp := Provider{ID: "gh", Kind: "github", BaseURL: "https://api.github.com", SSHURL: "ssh://git@github.com", TokenRef: "github-main"}
+	seg := func(n int) string { return strings.Repeat("a", n) }
+	try := func(prov *string, path string) error {
+		st := mustOpen(t, stateDirFor(t), LegacySource{})
+		return st.Update(func(r *Registry) error {
+			r.Providers = []Provider{ghp}
+			r.Projects = []Project{{ID: "a", Path: "/srv/a", Kind: "k", Provider: prov, Remote: &RemoteLink{Path: path}}}
+			return nil
+		})
+	}
+	for _, p := range []string{"o/r", "a/b/c/d/e", "Octo/Hello.v2", seg(100) + "/" + seg(100) + "/" + seg(53)} {
+		if err := try(strp("gh"), p); err != nil {
+			t.Errorf("provider-linked %q refused: %v", p, err)
+		}
+	}
+	for _, p := range []string{"o/r.git", "o/r.git/x", "a/b/c/d/e/f", "o/r%2f", "o/./r", seg(100) + "/" + seg(100) + "/" + seg(54), "o/" + seg(101), "o/r s", "o/ré"} {
+		if err := try(strp("gh"), p); err == nil {
+			t.Errorf("provider-linked %q accepted", p)
+		}
+	}
+	// legacy (no provider) keeps its loose rule but shares the 255-byte cap
+	if err := try(nil, "grp/sub/proj"); err != nil {
+		t.Errorf("legacy refused: %v", err)
+	}
+	if err := try(nil, seg(100)+"/"+seg(100)+"/"+seg(54)); err == nil {
+		t.Error("legacy path over 255 bytes accepted")
+	}
+}
+
+func TestV2ToV3WritesBackupOnceNeverOverwritten(t *testing.T) {
+	dir := stateDirFor(t)
+	p := writeRegFile(t, dir, v2Sample, 0o600)
+	bak := p + ".v2.bak"
+	st := mustOpen(t, dir, LegacySource{})
+	data, err := os.ReadFile(bak)
+	if err != nil || string(data) != v2Sample {
+		t.Fatalf("backup missing or different: %v", err)
+	}
+	if fi, _ := os.Stat(bak); fi.Mode().Perm() != 0o600 {
+		t.Fatalf("backup mode %v", fi.Mode())
+	}
+	if string(readFile(t, p)) != v3Want {
+		t.Fatal("registry not migrated")
+	}
+	// later writes and starts never touch the backup
+	if err := st.Update(func(r *Registry) error { r.AutoMergeGlobal.MaxPerDay = 11; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	mustOpen(t, dir, LegacySource{})
+	if got, _ := os.ReadFile(bak); string(got) != v2Sample {
+		t.Fatal("backup changed")
+	}
+	if left := tempLeftovers(t, dir); len(left) != 0 {
+		t.Fatalf("temp files left: %v", left)
+	}
+	// an existing backup is never overwritten, even by another v2 file
+	dir2 := stateDirFor(t)
+	p2 := writeRegFile(t, dir2, v2Sample, 0o600)
+	if err := os.WriteFile(p2+".v2.bak", []byte("keep me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mustOpen(t, dir2, LegacySource{})
+	if got, _ := os.ReadFile(p2 + ".v2.bak"); string(got) != "keep me" {
+		t.Fatal("existing backup overwritten")
+	}
+	// no backup when nothing is migrated (fresh and already-v3 registries), and none for a broken file
+	dir3 := stateDirFor(t)
+	mustOpen(t, dir3, LegacySource{})
+	mustOpen(t, dir3, LegacySource{})
+	dir4 := stateDirFor(t)
+	writeRegFile(t, dir4, strings.Replace(v2Sample, `"version":2`, `"version":2,"x":1`, 1), 0o600)
+	OpenRegistry(dir4, LegacySource{}, regOpts())
+	for _, d := range []string{dir3, dir4} {
+		if m, _ := filepath.Glob(filepath.Join(d, "*.bak")); len(m) != 0 {
+			t.Fatalf("unexpected backup %v", m)
+		}
+	}
+	// a backup that cannot be written is a start failure and leaves the v2 file alone
+	if os.Geteuid() != 0 {
+		dir5 := stateDirFor(t)
+		p5 := writeRegFile(t, dir5, v2Sample, 0o600)
+		os.Chmod(dir5, 0o500)
+		defer os.Chmod(dir5, 0o700)
+		if _, err := OpenRegistry(dir5, LegacySource{}, regOpts()); err == nil || errors.Is(err, ErrRegistryBroken) {
+			t.Fatalf("want a start failure, got %v", err)
+		}
+		os.Chmod(dir5, 0o700)
+		if string(readFile(t, p5)) != v2Sample {
+			t.Fatal("v2 file changed")
+		}
+	}
+}

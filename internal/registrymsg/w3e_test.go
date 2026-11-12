@@ -224,7 +224,7 @@ func TestRemotePathRules(t *testing.T) {
 	seg := func(n int) string { return strings.Repeat("a", n) }
 	good := []string{
 		"octo/Hello-World", "octo/repo.name", "my_org/my_repo", "a/b", "A1/B2", "x-y/z_w.v",
-		"group/sub/name", "group/sub/sub2/name", "o/" + seg(MaxRemoteSegmentLen), "o/.hidden", "o/-dash", "o/_u", "o/a.git.b", "o/a.gitx",
+		"group/sub/name", "group/sub/sub2/name", "a/b/c/d/e", "o/" + seg(MaxRemoteSegmentLen), "o/.hidden", "o/-dash", "o/_u", "o/a.git.b", "o/a.gitx",
 	}
 	for _, s := range good {
 		if !ValidRemotePath(s) {
@@ -232,12 +232,12 @@ func TestRemotePathRules(t *testing.T) {
 		}
 	}
 	bad := map[string]string{
-		"empty": "", "single": "solo", "five segments": "a/b/c/d/e", "leading slash": "/a/b", "trailing slash": "a/b/", "double slash": "a//b",
+		"empty": "", "single": "solo", "six segments": "a/b/c/d/e/f", "leading slash": "/a/b", "trailing slash": "a/b/", "double slash": "a//b",
 		"dot segment": "a/./b", "dotdot segment": "a/../b", "dotdot first": "../b", "dot last": "a/.", "dotdot last": "a/..",
-		"percent": "a/b%2f", "percent 2f": "a%2fb/c", "percent plain": "a/b%41", "dot git": "octo/repo.git", "dot git middle seg": "octo/repo.git/x.git",
+		"percent": "a/b%2f", "percent 2f": "a%2fb/c", "percent plain": "a/b%41", "dot git": "octo/repo.git", "dot git middle seg": "octo/repo.git/x.git", "dot git middle only": "octo/repo.git/x", "dot git first": "x.git/repo", "dot git upper": "octo/Repo.GIT",
 		"dot git only": "octo/.git", "backslash": `a\b/c`, "space": "a/b c", "unicode": "a/bé", "cjk": "소유자/저장소", "fullwidth slash": "a／b/c",
 		"nul": "a/b\x00", "newline": "a/b\n", "colon": "a:b/c", "at": "a@b/c", "query": "a/b?x=1", "hash": "a/b#f", "tab": "a/b\t",
-		"segment too long": "o/" + seg(MaxRemoteSegmentLen+1), "total too long": strings.Repeat(seg(100)+"/", 3) + seg(100), "invalid utf8": "a/b\xff",
+		"segment too long": "o/" + seg(MaxRemoteSegmentLen+1), "total too long": strings.Repeat(seg(100)+"/", 3) + seg(100), "total 256": seg(100) + "/" + seg(100) + "/" + seg(54), "invalid utf8": "a/b\xff",
 		"url": "https://github.com/a/b", "ssh form": "git@github.com:a/b", "star": "a/*", "plus": "a/b+c", "tilde": "a/~b",
 	}
 	for name, s := range bad {
@@ -267,7 +267,8 @@ func TestRemotePathRules(t *testing.T) {
 		t.Error("case must be accepted")
 	}
 	// total length cap is the sum, 4 max-length segments + 3 slashes is over it
-	if ValidRemotePath(seg(100)+"/"+seg(100)+"/"+seg(100)+"/"+seg(100)) || !ValidRemotePath(seg(100)+"/"+seg(99)) {
+	if ValidRemotePath(seg(100)+"/"+seg(100)+"/"+seg(100)+"/"+seg(100)) || !ValidRemotePath(seg(100)+"/"+seg(99)) ||
+		!ValidRemotePath(seg(100)+"/"+seg(100)+"/"+seg(53)) { // 100+1+100+1+53 = 255
 		t.Error("total length boundary")
 	}
 }

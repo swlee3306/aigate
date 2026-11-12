@@ -184,3 +184,41 @@ func TestCreateProjectSignedFieldsCarryVisibilityOnlyWhenSent(t *testing.T) {
 		t.Fatal("visibility is not part of the signed hash")
 	}
 }
+
+// A provider that projects use cannot change its kind either (clone and push
+// remotes were derived under the old kind).
+func TestSetProviderKindChangeBlockedWhileInUse(t *testing.T) {
+	c := newE1(t)
+	c.ownProject("gl", "p-one")
+	f := c.providerFields(c.gl.URL)
+	f["kind"], f["token_ref"] = "github", "gh-tok"
+	c.wantCode("set_provider", c.signedArgs(c.alice, registrymsg.ActionSetProvider, "gl", f), "provider_in_use")
+	if p, _ := c.s.Registry.ProviderByID("gl"); p.Kind != "gitlab" || p.TokenRef != "gl-admin" {
+		t.Fatalf("provider changed: %+v", p)
+	}
+	// unused provider: the kind may change (token of the new kind)
+	c.wantCode("set_provider", c.signedArgs(c.alice, registrymsg.ActionSetProvider, "gh", func() map[string]any {
+		g := c.providerFields(c.gl.URL)
+		g["kind"], g["token_ref"] = "gitlab", "gl-admin"
+		return g
+	}()), "")
+}
+
+// create_group on a github provider is refused in the shape step like
+// create_project: no request ID is burnt.
+func TestNotSupportedForProviderBurnsNoID(t *testing.T) {
+	c := newE1(t)
+	g := c.signedArgs(c.alice, registrymsg.ActionCreateGroup, "gh", map[string]any{"name": "newg", "path": "newg", "parent_path": ""})
+	c.wantCode("create_group", g, "not_supported_for_provider")
+	c.wantCode("create_group", g, "not_supported_for_provider") // request_reused if an ID had been burnt
+	p := c.ghProjectArgs(c3Name, "private", nil)
+	c.wantCode("create_project", p, "not_supported_for_provider")
+	c.wantCode("create_project", p, "not_supported_for_provider")
+	c.noGLHits("not supported")
+}
+
+func TestTokenRefUnknownSentenceIsProviderNeutral(t *testing.T) {
+	if m := fixedMessages["token_ref_unknown"]; strings.Contains(strings.ToLower(m), "gitlab") || strings.Contains(strings.ToLower(m), "github") {
+		t.Fatalf("sentence names a provider: %q", m)
+	}
+}
