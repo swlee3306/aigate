@@ -317,7 +317,9 @@ func (h *handler) cloneProject(ctx context.Context, id string, timeout time.Dura
 		}
 	}
 	remote, ok := clone.RemoteForKind(kind, sshURL, entry.Remote.Path)
-	if !ok || !clone.NameMatches(kind, entry.Remote.Path, id) || filepath.Base(entry.Path) != id {
+	// The folder is the project id; the repository name does not matter (W3f F1b), except for a
+	// project this tool created, whose id IS the repository name (defence in depth).
+	if !ok || filepath.Base(entry.Path) != id || (entry.Origin == broker.OriginCreated && !clone.NameMatches(kind, entry.Remote.Path, id)) {
 		return fail(errNotClonable)
 	}
 	if !h.directUnderRoot(entry.Path) || !safeProjectPath(entry.Path) {

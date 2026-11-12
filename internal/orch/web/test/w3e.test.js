@@ -646,16 +646,16 @@ test('TestSignOnlyWhenChangeMatchesW3e', async () => {
 test('TestLinkProjectFlow', async () => {
   const ctx = await mountProjects();
   await openLinkForm(ctx);
-  // the form: provider, remote path, ai (off), publish (explicit), and the id it derives
+  // the form: provider, remote path, ai (off), publish (explicit), and the editable project name
   assert.deepEqual(optionValues(byId(ctx.root, 'lk-provider')), ['gl', 'gh']);
   assert.equal(byId(ctx.root, 'lk-ai').checked, false, 'AI transfer is off by default');
   assert.equal(byId(ctx.root, 'lk-publish').value, 'read');
   fillRemote(ctx, { provider: 'gh', remote: 'octo/Hello-World' });
-  const derived = byData(ctx.root, 'field', 'derived-id')[0];
-  assert.ok(derived && text(derived).includes('hello-world'), 'the derived project id is shown (github: the lower-cased repository name)');
+  assert.equal(byId(ctx.root, 'lk-name').value, 'hello-world', 'the project name is suggested from the repository name');
   fillRemote(ctx, { provider: 'gl', remote: 'team/sub/app-two' });
-  assert.ok(text(byData(ctx.root, 'field', 'derived-id')[0]).includes('app-two'), 'gitlab: the repository name itself');
-  // refused before any proposal
+  assert.equal(byId(ctx.root, 'lk-name').value, 'app-two');
+  // refused before any proposal (W3f F1b: the name may differ from the repository name, so `_`, `.`,
+  // capitals and one letter are no longer refusals; only the path rules and the project name rules are)
   const refuse = (provider, remote, re) => {
     fillRemote(ctx, { provider, remote });
     click(proposeBtn(ctx));
@@ -663,9 +663,6 @@ test('TestLinkProjectFlow', async () => {
     assert.equal(posts(ctx, '/api/v1/projects/link/propose').length, 0, remote);
   };
   refuse('gh', 'solo', /경로/);
-  refuse('gh', 'octo/my_repo', /ID|이름/); // the id would be my_repo: not a project name
-  refuse('gh', 'octo/Repo.js', /ID|이름/);
-  refuse('gh', 'octo/x', /ID|이름/); // one letter
   refuse('gh', 'a/b/c', /경로/); // github is owner/repo
   refuse('gh', 'octo/repo.git', /경로/);
   refuse('gh', 'octo/../x', /경로/);
@@ -673,9 +670,15 @@ test('TestLinkProjectFlow', async () => {
   refuse('gh', 'octo/저장소', /경로/);
   refuse('gh', 'octo/' + 'a'.repeat(101), /경로/);
   refuse('gl', 'Team/app-two', /경로/);
-  refuse('gl', 'team/App-Two', /경로|ID|이름/);
+  refuse('gl', 'team/App-Two', /경로/); // GitLab keeps its lower-case name rule (the broker's GitLab client)
+  refuse('gl', 'team/my_repo', /경로/);
   refuse('gl', 'a/b/c/d/e/f', /경로/);
   refuse('gh', '', /경로/);
+  for (const ok of ['octo/my_repo', 'octo/Repo.js', 'octo/x', 'octo/9lives']) {
+    fillRemote(ctx, { provider: 'gh', remote: ok });
+    assert.equal(proposeBtn(ctx).hasAttribute('disabled'), false, ok + ': a repository name with _ . capitals or one letter can be linked');
+    assert.ok(P.validName(byId(ctx.root, 'lk-name').value), ok);
+  }
   // a good one: nothing is sent before the button
   fillRemote(ctx, { provider: 'gh', remote: 'octo/Hello-World', publish: 'read' });
   click(proposeBtn(ctx));
@@ -686,6 +689,7 @@ test('TestLinkProjectFlow', async () => {
   const f = facts(ctx);
   assert.ok(f.remote_path.includes('octo/Hello-World'));
   assert.ok(f.id.includes('hello-world'));
+  assert.ok(f.repo_name.includes('Hello-World'));
   assert.match(f.publish, /읽기/);
   assert.match(f.ai_context, /아니오/);
   assert.ok(f.fingerprint.includes(KEY.fingerprint));
@@ -743,17 +747,16 @@ test('TestAttachRemoteFlow', async () => {
   await openAttachForm(ctx, 'plain-app');
   assert.ok(text(byData(ctx.root, 'field', 'subject')[0]).includes('plain-app'), 'the project is fixed, not typed');
   assert.ok(!byId(ctx.root, 'lk-ai'), 'attach does not touch the AI setting: no such control');
-  // the name rule: the repository must carry the project id (github: up to case)
+  // path rules only: the repository name no longer has to carry the project id (W3f F1b)
   const refuse = (remote, re, provider) => {
     fillRemote(ctx, { provider: provider || 'gh', remote });
     click(proposeBtn(ctx));
     assert.match(problemText(ctx), re, remote);
     assert.equal(posts(ctx, '/api/v1/projects/attach/propose').length, 0, remote);
   };
-  refuse('octo/other-name', /같아야/);
   refuse('solo', /경로/);
   refuse('a/b/c', /경로/);
-  refuse('team/Plain-App', /경로|같아야/, 'gl');
+  refuse('team/Plain-App', /경로/, 'gl');
   fillRemote(ctx, { provider: 'gh', remote: 'octo/Plain-App', publish: 'write' });
   click(proposeBtn(ctx));
   await waitSignable(ctx);
@@ -779,7 +782,7 @@ test('TestAttachRemoteFlow', async () => {
   await until(() => byData(k.root, 'result', 'ok').length === 1, 'attached with key note');
   assert.ok(text(k.root).includes(P.ERROR_TEXT.key_unavailable));
   // the refusals: static remote and already linked, in FIXED texts, at propose and at apply time
-  for (const code of ['static_remote_wins', 'already_linked', 'remote_name_mismatch', 'repo_not_found', 'project_unknown']) {
+  for (const code of ['static_remote_wins', 'already_linked', 'repo_not_found', 'project_unknown']) {
     const atPropose = await mountProjects({ 'POST /api/v1/projects/attach/propose': () => { throw apiError(409, code, SECRET); } });
     await openAttachForm(atPropose, 'plain-app');
     fillRemote(atPropose, { provider: 'gh', remote: 'octo/Plain-App' });
@@ -801,7 +804,7 @@ test('TestAttachRemoteFlow', async () => {
 });
 
 test('TestAllNewErrorCodesFixedTextsW3e', async () => {
-  const NEW = ['repo_not_found', 'already_linked', 'project_exists', 'project_unknown', 'remote_name_mismatch', 'static_remote_wins', 'key_expired', 'key_staging_failed',
+  const NEW = ['repo_not_found', 'already_linked', 'project_exists', 'project_unknown', 'static_remote_wins', 'key_expired', 'key_staging_failed',
     'key_unavailable', 'github_refused', 'provider_rate_limited', 'not_supported_for_provider', 'visibility_required', 'visibility_not_allowed', 'link_partial'];
   for (const c of NEW) assert.ok(CODES.includes(c), c + ' is in the generated list');
   assert.ok(CODES.length >= 46);
@@ -837,7 +840,7 @@ test('TestAllNewErrorCodesFixedTextsW3e', async () => {
       return c;
     },
   };
-  for (const code of ['repo_not_found', 'already_linked', 'project_exists', 'remote_name_mismatch', 'static_remote_wins', 'key_expired', 'key_staging_failed', 'key_unavailable',
+  for (const code of ['repo_not_found', 'already_linked', 'project_exists', 'static_remote_wins', 'key_expired', 'key_staging_failed', 'key_unavailable',
     'github_refused', 'provider_rate_limited', 'not_supported_for_provider', 'visibility_required', 'visibility_not_allowed']) {
     for (const [name, mk] of Object.entries(screens)) {
       const c = await mk(code);
@@ -1242,16 +1245,15 @@ test('TestFormHintsAndAccessibilityW3e', async () => {
   assert.ok(hint && /공개|비공개/.test(text(hint)), 'the hint says why');
   fillCreate(ctx, { visibility: 'public' });
   assert.ok(!proposeBtn(ctx).hasAttribute('aria-describedby'), 'enabled: no pointer needed');
-  // 100-character names cannot widen the page: the css lets the derived id and the hints wrap anywhere
+  // 100-character names cannot widen the page: the css lets the project name field and the hints wrap anywhere
   const css = src('style.css');
   assert.match(css, /\.field[^{]*\{[^}]*overflow-wrap:\s*anywhere/, 'field content wraps');
   const long = 'a' + 'b'.repeat(99);
   const l = await mountProjects();
   await openLinkForm(l);
   fillRemote(l, { provider: 'gh', remote: 'octo/' + long });
-  const d = text(byData(l.root, 'field', 'derived-id')[0]);
-  assert.ok(d.includes('사용할 수 없음') || d.includes(long.toLowerCase()), d.slice(0, 80));
-  assert.match(css, /\[data-field=["']?derived-id["']?\][^{]*\{[^}]*overflow-wrap:\s*anywhere|\.field[^{]*\{[^}]*overflow-wrap:\s*anywhere/);
+  assert.equal(byId(l.root, 'lk-name').value.length, 40, 'a 100-character repository name suggests a 40-character project name');
+  assert.ok(P.validName(byId(l.root, 'lk-name').value));
 });
 
 test('TestPartialAndUnknownShowIntendedVisibilityW3e', async () => {
@@ -1283,10 +1285,6 @@ test('TestPartialAndUnknownShowIntendedVisibilityW3e', async () => {
 });
 
 test('TestWordingFixesW3e', async () => {
-  assert.ok(!/GitHub/.test(P.ERROR_TEXT.remote_name_mismatch), 'the baseline makes no GitHub claim (it is what GitLab screens show)');
-  const gh = P.failureText(apiError(400, 'remote_name_mismatch'), 'github');
-  assert.ok(/GitHub/.test(gh) && /대소문자/.test(gh));
-  assert.ok(!/대소문자/.test(P.failureText(apiError(400, 'remote_name_mismatch'), 'gitlab')));
   // a failed token-list read says so; it does not tell the person to register a token
   const ctx = await mountProviders({ '/api/v1/settings/tokens': () => { throw apiError(503, 'tokens_unavailable', SECRET); } });
   await openProviderForm(ctx);
@@ -1405,4 +1403,128 @@ test('TestAttachWriteWarnsThatLocalHistoryMayBePushedW3e', async () => {
   await toLinkConfirm(l, { provider: 'gh', remote: 'octo/Hello-World', publish: 'write' });
   await waitSignable(l);
   assert.ok(!text(l.root).includes(WARN));
+});
+
+// ---- W3f F1b: the project name is the person's, independent of the repository name ----------------
+
+const setName = (ctx, v) => { byId(ctx.root, 'lk-name').value = v; fire(byId(ctx.root, 'lk-name'), 'input'); };
+const isDisabled = (b) => b.hasAttribute('disabled');
+
+test('TestSuggestProjectNameVectors', () => {
+  const NAMES = fx('w3f-names.json').suggestions;
+  assert.ok(NAMES.length >= 30);
+  for (const v of NAMES) assert.equal(PR.suggestProjectName(v.repo), v.name, JSON.stringify(v.repo));
+  // the cases the plan names, written out (the Go file is the authority; these keep the file honest)
+  for (const [repo, name] of [['sulee_portfolio', 'sulee-portfolio'], ['Repo.js', 'repo-js'], ['9lives', 'p-9lives'], ['a', 'a-x'], ['9', 'p-9'], ['...', 'project'],
+    ['a'.repeat(60), 'a'.repeat(40)], ['a'.repeat(39) + '_b', 'a'.repeat(39)]]) {
+    assert.ok(NAMES.some((v) => v.repo === repo && v.name === name), repo.slice(0, 20) + ' is a Go vector');
+    assert.equal(PR.suggestProjectName(repo), name);
+  }
+  // total and always valid, whatever the input
+  for (const repo of ['', '-', '___', 'é', '😀x', 'a b', 'A'.repeat(300), '9'.repeat(300), 'a-'.repeat(100), '\u0000', 'x\ud800y']) {
+    const n = PR.suggestProjectName(repo);
+    assert.ok(P.validName(n) && n.length <= 40, JSON.stringify(repo) + ' -> ' + n);
+  }
+});
+
+test('TestLinkFormSuggestsProjectNameAndAllowsEdit', async () => {
+  const ctx = await mountProjects();
+  await openLinkForm(ctx);
+  const name = () => byId(ctx.root, 'lk-name').value;
+  assert.equal(name(), '', 'nothing is suggested before a path is typed');
+  assert.equal(isDisabled(proposeBtn(ctx)), false, 'an empty form is refused on click with the path message, as before');
+  fillRemote(ctx, { provider: 'gh', remote: 'swlee3306/Sulee_Portfolio' });
+  assert.equal(name(), 'sulee-portfolio');
+  assert.equal(byLabel(ctx.root, '프로젝트 이름').length, 0, 'a label, not a button');
+  assert.ok(byTag(ctx.root, 'label').some((l) => text(l) === '프로젝트 이름' && l.getAttribute('for') === 'lk-name'));
+  // the suggestion follows the repository until the person edits it
+  fillRemote(ctx, { remote: 'swlee3306/Other.Repo' });
+  assert.equal(name(), 'other-repo');
+  setName(ctx, 'my-site');
+  fillRemote(ctx, { remote: 'swlee3306/Third_One' });
+  assert.equal(name(), 'my-site', 'an edited name is kept');
+  // a bad name blocks the button with a fixed hint the button points at
+  for (const bad of ['My-Site', 'my_site', '9site', 'a', '', 'x'.repeat(41), 'my site', 'é-é', '-a']) {
+    setName(ctx, bad);
+    const btn = proposeBtn(ctx);
+    assert.equal(isDisabled(btn), true, JSON.stringify(bad) + ' blocks the propose button');
+    const hint = byId(ctx.root, 'lk-name-hint');
+    assert.ok(hint && hint.hidden !== true && /소문자로 시작하고 소문자·숫자·하이픈만/.test(text(hint)) && /2~40자/.test(text(hint)), 'fixed hint');
+    assert.equal(btn.getAttribute('aria-describedby'), 'lk-name-hint');
+    assert.equal(findHostile(text(hint)), null);
+  }
+  assert.equal(posts(ctx, '/api/v1/projects/link/propose').length, 0, 'nothing was sent');
+  // a good name unblocks it; the signed subject is the name, the remote path is the repository's
+  setName(ctx, 'my-site');
+  assert.equal(isDisabled(proposeBtn(ctx)), false);
+  assert.equal(proposeBtn(ctx).hasAttribute('aria-describedby'), false);
+  assert.equal(byId(ctx.root, 'lk-name-hint').hidden, true);
+  click(proposeBtn(ctx));
+  await waitSignable(ctx);
+  assert.deepEqual(bodyOf(ctx, '/api/v1/projects/link/propose'), {
+    action: 'link_project', subject: 'my-site', fields: { provider: 'gh', remote_path: 'swlee3306/Third_One', ai_context: false, publish: 'read' },
+  });
+  click(signBtn(ctx));
+  await until(() => byData(ctx.root, 'result', 'ok').length === 1, 'linked');
+  const applied = bodyOf(ctx, '/api/v1/projects/link/apply');
+  assert.equal(applied.subject, 'my-site');
+  assert.equal(applied.fields.remote_path, 'swlee3306/Third_One');
+  assert.equal(applied.change, await P.computeChange('link_project', 'my-site', applied.fields), 'the change hash is the unchanged W3e rule');
+  // the path stays the problem when it is: an invalid path with a typed name is still a path message, unblocked
+  const c2 = await mountProjects();
+  await openLinkForm(c2);
+  fillRemote(c2, { provider: 'gh', remote: 'solo' });
+  setName(c2, 'fine-name');
+  assert.equal(isDisabled(proposeBtn(c2)), false);
+  click(proposeBtn(c2));
+  assert.match(problemText(c2), /경로/);
+  // an attach has no name field: the project exists and keeps its id
+  const a = await mountProjects();
+  await openAttachForm(a, 'plain-app');
+  assert.equal(byId(a.root, 'lk-name'), undefined);
+  fillRemote(a, { provider: 'gh', remote: 'octo/Totally_Other.Name' });
+  assert.equal(isDisabled(proposeBtn(a)), false);
+  click(proposeBtn(a));
+  await waitSignable(a);
+  assert.equal(bodyOf(a, '/api/v1/projects/attach/propose').subject, 'plain-app');
+  assert.equal(bodyOf(a, '/api/v1/projects/attach/propose').fields.remote_path, 'octo/Totally_Other.Name');
+});
+
+test('TestLinkConfirmationShowsBothNames', async () => {
+  const ctx = await mountProjects();
+  await openLinkForm(ctx);
+  fillRemote(ctx, { provider: 'gh', remote: 'swlee3306/Sulee_Portfolio' });
+  click(proposeBtn(ctx));
+  await waitSignable(ctx);
+  const f = facts(ctx);
+  assert.ok(f.id.includes('sulee-portfolio') && f.repo_name.includes('Sulee_Portfolio') && f.remote_path.includes('swlee3306/Sulee_Portfolio'));
+  const note = byData(ctx.root, 'note', 'name-differs');
+  assert.equal(note.length, 1, 'the names differ: said so');
+  assert.ok(text(note[0]).includes('sulee-portfolio') && text(note[0]).includes('Sulee_Portfolio') && /다릅니다/.test(text(note[0])));
+  // same names: no note
+  const same = await mountProjects();
+  await openLinkForm(same);
+  fillRemote(same, { provider: 'gl', remote: 'team/sub/app-two' });
+  click(proposeBtn(same));
+  await waitSignable(same);
+  assert.equal(byData(same.root, 'note', 'name-differs').length, 0);
+  assert.ok(facts(same).repo_name.includes('app-two'));
+  // attach: the existing project and a repository with another name
+  const a = await mountProjects();
+  await openAttachForm(a, 'plain-app');
+  fillRemote(a, { provider: 'gh', remote: 'octo/Other_Name' });
+  click(proposeBtn(a));
+  await waitSignable(a);
+  assert.equal(byData(a.root, 'note', 'name-differs').length, 1);
+  assert.ok(facts(a).id.includes('plain-app') && facts(a).repo_name.includes('Other_Name'));
+  // a hostile repository name stays text
+  assert.equal(findAll(note[0], (e) => e.tagName === 'IMG').length, 0);
+});
+
+test('TestRemoteNameMismatchCodeGone', () => {
+  assert.equal(CODES.includes('remote_name_mismatch'), false, 'not in the generated code list');
+  assert.equal(has(P.ERROR_TEXT, 'remote_name_mismatch'), false);
+  assert.equal(has(P.GITHUB_TEXT, 'remote_name_mismatch'), false);
+  for (const f of ['views/projects.js', 'views/providers.js']) assert.ok(!src(f).includes('remote_name_mismatch'), f);
+  assert.ok(!/같아야 합니다/.test(src('views/projects.js')), 'no sentence that demands equal names');
 });

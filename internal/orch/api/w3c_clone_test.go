@@ -92,8 +92,9 @@ func TestCloneRemoteOnlyFromRegistry(t *testing.T) {
 	mk("no provider", func(m map[string]any) { m["provider"] = nil })
 	mk("no gitlab link", func(m map[string]any) { m["remote"] = nil })
 	mk("unknown provider", func(m map[string]any) { m["provider"] = "evil" })
-	mk("project name differs from id", func(m map[string]any) {
+	mk("created project name differs from id", func(m map[string]any) { // W3f F1b: linked ones may differ
 		m["remote"] = map[string]any{"path": "team/other-name", "id": 1}
+		m["origin"] = "created"
 	})
 	mk("traversal in project", func(m map[string]any) { m["remote"] = map[string]any{"path": "team/../x", "id": 1} })
 	mk("path outside roots", func(m map[string]any) { m["path"] = "/etc/app-one" })

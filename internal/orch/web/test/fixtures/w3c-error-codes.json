@@ -43,7 +43,6 @@
     "provider_unknown",
     "provider_unreachable",
     "registry_unavailable",
-    "remote_name_mismatch",
     "repo_not_found",
     "request_reused",
     "signers_unavailable",

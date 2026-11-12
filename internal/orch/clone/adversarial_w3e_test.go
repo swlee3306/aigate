@@ -20,7 +20,7 @@ import (
 func TestResolverGitHubFailClosedMatrixW3e(t *testing.T) {
 	f := startRegistry(t, ghView(
 		proj("hello", "/r/hello", "gh", "Octo/Hello"),
-		proj("renamed", "/r/renamed", "gh", "Octo/other"),
+		created(proj("renamed", "/r/renamed", "gh", "Octo/other")),
 		proj("dotgit", "/r/dotgit", "gh", "Octo/dotgit.git"),
 		proj("travers", "/r/travers", "gh", "Octo/../travers"),
 		proj("optionlike", "/r/optionlike", "gh", "-oProxyCommand=x/optionlike"),

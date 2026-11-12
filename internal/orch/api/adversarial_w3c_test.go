@@ -264,6 +264,7 @@ func TestResolverNeverTrustsRequestData(t *testing.T) {
 	unpinned["provider"] = "evil"
 	badName := e.linked("app-three")
 	badName["remote"] = map[string]any{"path": "team/other-name", "id": 3}
+	badName["origin"] = "created" // W3f F1b: only a project this tool created must be named by its id
 	e.wb.mu.Lock()
 	e.wb.providers = append(e.wb.providers, map[string]any{"id": "evil", "kind": "gitlab", "base_url": "http://evil.example", "ssh_url": "ssh://git@evil.example", "token_ref": "gl-admin"})
 	e.wb.mu.Unlock()

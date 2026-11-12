@@ -383,3 +383,45 @@ func validHostname(h string) bool {
 	}
 	return true
 }
+
+// SuggestProjectName turns a remote repository name into a suggestion for the
+// project id of link_project (the user may change it; the project id is the
+// folder name and key folder on the server and need not equal the repository
+// name). Rule, in order: lower-case A-Z; every character outside [a-z0-9-]
+// (`_`, `.`, anything else) becomes `-`; runs of `-` collapse; leading and
+// trailing `-` are removed; nothing left gives "project"; a name that does not
+// start with a letter gets the prefix "p-"; the result is cut to 40 characters
+// and trailing `-` trimmed again; a single character gets "-x" appended. The
+// result always satisfies ValidName. The browser has the same function
+// (suggestProjectName in projects.js, pinned by a Go-generated vector file).
+func SuggestProjectName(repo string) string {
+	var b strings.Builder
+	dash := true // swallows leading and repeated hyphens
+	for i := 0; i < len(repo); i++ {
+		c := repo[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c >= 'a' && c <= 'z' || c >= '0' && c <= '9' {
+			b.WriteByte(c)
+			dash = false
+		} else if !dash {
+			b.WriteByte('-')
+			dash = true
+		}
+	}
+	s := strings.TrimRight(b.String(), "-")
+	if s == "" {
+		s = "project"
+	}
+	if s[0] < 'a' || s[0] > 'z' {
+		s = "p-" + s
+	}
+	if len(s) > 40 {
+		s = strings.TrimRight(s[:40], "-")
+	}
+	if len(s) < 2 {
+		s += "-x"
+	}
+	return s
+}

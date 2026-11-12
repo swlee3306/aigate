@@ -635,7 +635,6 @@ func TestLinkAttachRefusalsBeforeSignature(t *testing.T) {
 		cases = append(cases, tc{name, c, b, status, code})
 	}
 	add("link: unknown provider", func() (int, []byte) { return mkLink("app-one", "nope", "team/app-one") }, 404, "provider_unknown")
-	add("link: name differs from the repo", func() (int, []byte) { return mkLink("other-name", "gh", "Octo-Cat/app-one") }, 400, "remote_name_mismatch")
 	add("link: github needs owner/repo", func() (int, []byte) { return mkLink("app-one", "gh", "a/b/app-one") }, 400, "bad_request")
 	add("link: gitlab needs lowercase", func() (int, []byte) { return mkLink("app-one", "gl", "Team/app-one") }, 400, "bad_request")
 	add("link: existing project id", func() (int, []byte) { return mkLink("att-one", "gh", "Octo-Cat/att-one") }, 409, "project_exists")
@@ -644,8 +643,7 @@ func TestLinkAttachRefusalsBeforeSignature(t *testing.T) {
 	add("attach: unknown project", func() (int, []byte) { return mkAttach("nobody", "gh", "Octo-Cat/nobody") }, 404, "project_unknown")
 	add("attach: already provider-linked", func() (int, []byte) { return mkAttach("linked-one", "gh", "Octo-Cat/linked-one") }, 409, "already_linked")
 	add("attach: legacy remote mapping", func() (int, []byte) { return mkAttach("legacy-one", "gh", "Octo-Cat/legacy-one") }, 409, "already_linked")
-	add("attach: name differs", func() (int, []byte) { return mkAttach("att-two", "gh", "Octo-Cat/else") }, 400, "remote_name_mismatch")
-	add("attach: same repo linked elsewhere", func() (int, []byte) { return mkAttach("att-two", "gh", "octo-cat/dup-repo") }, 400, "remote_name_mismatch")
+	add("attach: same repo linked elsewhere", func() (int, []byte) { return mkAttach("att-two", "gh", "octo-cat/dup-repo") }, 409, "already_linked")
 	for _, c := range cases {
 		if c.c != c.status || v1Code(c.b) != c.code {
 			t.Errorf("%s: %d %s", c.name, c.c, c.b)
@@ -832,14 +830,14 @@ func TestApplyMapsNewCodes(t *testing.T) {
 }
 
 func TestOrchdOwnCodesAreFixed(t *testing.T) {
-	for _, he := range []*httpError{errKeyExpired, errKeyStagingFailed, errStaticRemoteWins, errNameMismatch, errKeyUnavailable, errRepoNotFound, errAlreadyLinked, errLinkPartial, errLinkUnknown,
+	for _, he := range []*httpError{errKeyExpired, errKeyStagingFailed, errStaticRemoteWins, errKeyUnavailable, errRepoNotFound, errAlreadyLinked, errLinkPartial, errLinkUnknown,
 		errGHRefused, errProviderRateLimited, errNotSupportedForProvider, errVisibilityRequired, errVisibilityNotAllowed} {
 		if he.v1Code == "" || he.msg == "" || he.code < 400 || hostileText(he.msg) || strings.ContainsAny(he.msg, "{}<>") {
 			t.Errorf("%+v", he)
 		}
 	}
-	statuses := map[string]int{"key_expired": 409, "key_staging_failed": 503, "static_remote_wins": 409, "remote_name_mismatch": 400, "key_unavailable": 503, "link_partial": 502}
-	for _, he := range []*httpError{errKeyExpired, errKeyStagingFailed, errStaticRemoteWins, errNameMismatch, errKeyUnavailable, errLinkPartial} {
+	statuses := map[string]int{"key_expired": 409, "key_staging_failed": 503, "static_remote_wins": 409, "key_unavailable": 503, "link_partial": 502}
+	for _, he := range []*httpError{errKeyExpired, errKeyStagingFailed, errStaticRemoteWins, errKeyUnavailable, errLinkPartial} {
 		if statuses[he.v1Code] != he.code {
 			t.Errorf("%s: %d", he.v1Code, he.code)
 		}

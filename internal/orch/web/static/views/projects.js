@@ -209,6 +209,22 @@ export function defaultId(path) {
   return id.slice(0, SUBJECT_MAX);
 }
 
+// suggestProjectName is the prefilled project name of a link form, from the repository name
+// (registrymsg.SuggestProjectName; TestSuggestProjectNameVectors pins every case from a Go-made file).
+// Lower-case A-Z; every run of characters outside [a-z0-9] becomes one `-`; trim `-`; nothing left is
+// "project"; not starting with a letter gets "p-"; cut to 40 and trim `-`; one character gets "-x".
+// The result is always a valid project name. It is only a suggestion: the person may edit it.
+export function suggestProjectName(repo) {
+  let s = String(repo).replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32)).replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  if (s === '') s = 'project';
+  if (!/^[a-z]/.test(s)) s = 'p-' + s;
+  if (s.length > SUBJECT_MAX) s = s.slice(0, SUBJECT_MAX).replace(/-+$/, '');
+  if (s.length < 2) s += '-x';
+  return s;
+}
+
+const NAME_HINT = '프로젝트 이름은 소문자로 시작하고 소문자·숫자·하이픈만 써서 2~40자여야 합니다. 고치면 다음 단계로 갈 수 있습니다.';
+
 const isObj = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
 
 // --- analysis of a proposal --------------------------------------------------
@@ -1039,6 +1055,7 @@ export function projectsView(ctx) {
     const key = flow.key;
     const yn = (b) => (b ? '예' : '아니오');
     const gh = kindFor(s.fields.provider) === 'github';
+    const repoName = repoNameOf(String(s.fields.remote_path));
     const factsList = [
       factItem('제공자', s.fields.provider, { 'data-field': 'provider' }),
       providerUrlFact(s.fields.provider),
@@ -1059,6 +1076,8 @@ export function projectsView(ctx) {
         : '아래 내용이 전부입니다. 서명하면 GitLab에 프로젝트가 바로 만들어지고, 이 도구는 만든 것을 삭제하지 못합니다.',
       facts: factsList,
       extra: [
+        repoName !== s.subject ? el('div', { class: 'trunc', role: 'note', 'data-note': 'name-differs' },
+          '프로젝트 이름(' + inline(s.subject, 64) + ')과 저장소 이름(' + inline(repoName, 110) + ')이 다릅니다. 이 서버의 폴더와 배포 키 폴더는 프로젝트 이름을, 원격 저장소는 위의 저장소 경로를 씁니다. 다르게 정해도 괜찮습니다.') : null,
         key ? keyHint(gh) : null,
         s.fields.visibility === 'public' ? publicWarning() : null,
         f.ai_context ? el('div', { class: 'trunc', 'data-emph': 'ai-on', role: 'note' }, '[중요] AI 전송 허용: 예. 이 프로젝트의 파일 내용이 외부 AI 서비스(OpenAI)로 전송될 수 있습니다.') : null,
@@ -1101,11 +1120,13 @@ export function projectsView(ctx) {
     const key = flow.key;
     const link = s.action === ACTION_LINK_PROJECT;
     const gh = kindFor(s.fields.provider) === 'github';
+    const repoName = repoNameOf(String(s.fields.remote_path));
     const factsList = [
       factItem('제공자', s.fields.provider, { 'data-field': 'provider' }),
       providerUrlFact(s.fields.provider),
       factItem('원격 저장소 경로', s.fields.remote_path, { 'data-field': 'remote_path' }),
-      factItem(link ? '새 프로젝트 ID(저장소 이름에서 정해짐)' : '연결할 프로젝트 ID', s.subject, { 'data-field': 'id' }),
+      factItem('저장소 이름', repoName, { 'data-field': 'repo_name' }),
+      factItem(link ? '새 프로젝트 이름(서버 폴더·키 폴더 이름)' : '연결할 프로젝트 이름(서버 폴더·키 폴더 이름)', s.subject, { 'data-field': 'id' }),
     ];
     if (link) factsList.push(factItem('AI 전송 허용', f.ai_context ? '예' : '아니오', { 'data-field': 'ai_context' }));
     factsList.push(factItem('게시 권한', f.publish === 'write' ? '쓰기 — 이 서버가 브랜치를 올릴 수 있는 배포 키' : '읽기 — 읽기 전용 배포 키', { 'data-field': 'publish' }));
@@ -1118,6 +1139,8 @@ export function projectsView(ctx) {
         '[중요] 이미 있는 저장소의 설정(Deploy keys)에 이 서버의 배포 키가 등록됩니다. 이 도구는 저장소를 만들거나 지우거나 다른 설정을 바꾸지 않으며, 등록한 키도 지우지 않습니다.'),
       facts: factsList,
       extra: [
+        repoName !== s.subject ? el('div', { class: 'trunc', role: 'note', 'data-note': 'name-differs' },
+          '프로젝트 이름(' + inline(s.subject, 64) + ')과 저장소 이름(' + inline(repoName, 110) + ')이 다릅니다. 이 서버의 폴더와 배포 키 폴더는 프로젝트 이름을, 원격 저장소는 위의 저장소 경로를 씁니다. 다르게 정해도 괜찮습니다.') : null,
         key ? keyHint(gh) : null,
         link && f.ai_context ? el('div', { class: 'trunc', 'data-emph': 'ai-on', role: 'note' }, '[중요] AI 전송 허용: 예. 이 프로젝트의 파일 내용이 외부 AI 서비스(OpenAI)로 전송될 수 있습니다.') : null,
       ],
@@ -1241,28 +1264,47 @@ export function projectsView(ctx) {
     paint();
   }
 
-  // remoteCheck: what the typed path means for the chosen provider: {id} when it can be signed, else {why}.
+  const repoNameOf = (remote) => remote.slice(remote.lastIndexOf('/') + 1);
+
+  // remoteCheck: what the typed path (and, for a link, the typed project name) means for the chosen
+  // provider: {id} when it can be signed, else {why}. The project id is the person's choice and has
+  // nothing to do with the repository name (an attach keeps the id of the project it started from).
   function remoteCheck() {
     const f = lk.f;
     const kind = kindFor(f.provider.value) || 'gitlab';
     const remote = f.remote.value.trim();
     if (!validRemotePathForKind(kind, remote)) return { why: 'path', kind };
-    const name = remote.slice(remote.lastIndexOf('/') + 1);
-    if (lk.mode === 'attach') {
-      const same = kind === 'github' ? name.toLowerCase() === lk.row.id : name === lk.row.id;
-      return same ? { id: lk.row.id, kind, remote } : { why: 'mismatch', kind };
-    }
-    // the project id is the repository name (GitHub names are case-insensitive: lower case)
-    const id = kind === 'github' ? name.toLowerCase() : name;
+    if (lk.mode === 'attach') return { id: lk.row.id, kind, remote };
+    const id = f.name.value.trim();
     return validName(id) ? { id, kind, remote } : { why: 'id', id, kind };
   }
 
+  // A bad project name blocks the propose button with a fixed hint (what submitRemote would refuse
+  // anyway). An invalid PATH is reported on click, as before, so the button is not blocked while the
+  // path is the problem: only a link whose name is empty or invalid while the path is fine (or the name
+  // was typed) is blocked.
+  function nameBlocked() {
+    const f = lk.f;
+    if (lk.mode !== 'link' || !f || !f.name) return false;
+    const kind = kindFor(f.provider.value) || 'gitlab';
+    const name = f.name.value.trim();
+    return !validName(name) && (name !== '' || validRemotePathForKind(kind, f.remote.value.trim()));
+  }
+
+  // The name field follows the repository name until the person edits it. The button state is part of
+  // the render, so a repaint happens only when the blocked state changes (the inputs are kept).
   function updateDerived() {
     const f = lk.f;
-    if (!f || !f.derived) return;
-    const c = remoteCheck();
-    clear(f.derived);
-    f.derived.append(f.remote.value.trim() === '' ? '(저장소 경로를 적으면 나타납니다)' : c.id !== undefined && c.why === undefined ? c.id : c.why === 'id' ? '(사용할 수 없음: ' + c.id + ')' : '(경로를 확인하세요)');
+    if (!f || !f.name) return;
+    const kind = kindFor(f.provider.value) || 'gitlab';
+    const remote = f.remote.value.trim();
+    if (!f.nameTouched) f.name.value = validRemotePathForKind(kind, remote) ? suggestProjectName(repoNameOf(remote)) : '';
+    const blocked = nameBlocked();
+    f.nameHint.hidden = !blocked;
+    if (blocked !== f.blocked) {
+      f.blocked = blocked;
+      paint();
+    }
   }
 
   function buildRemoteForm() {
@@ -1273,13 +1315,19 @@ export function projectsView(ctx) {
     f.provider.value = cp.providers[0].id;
     f.remote = el('input', { type: 'text', id: 'lk-remote', class: 'mono', autocomplete: 'off', spellcheck: 'false', maxlength: '255', 'data-focus-key': 'remote', on: { input: updateDerived } });
     f.remote.value = '';
+    f.nameTouched = false;
+    f.blocked = false;
     if (link) {
+      f.name = el('input', { type: 'text', id: 'lk-name', class: 'mono', autocomplete: 'off', spellcheck: 'false', maxlength: String(SUBJECT_MAX), 'data-focus-key': 'name',
+        on: { input: () => { f.nameTouched = true; setProblem(f, ''); updateDerived(); } } });
+      f.name.value = '';
+      f.nameHint = el('span', { class: ['hint', 'err'], id: 'lk-name-hint', role: 'alert', 'data-hint': 'name' }, NAME_HINT);
+      f.nameHint.hidden = true;
       f.ai = el('input', { type: 'checkbox', id: 'lk-ai', 'data-focus-key': 'ai' });
       f.ai.checked = false; // default: the repository's contents are NOT sent to an AI service
     }
     f.publish = el('select', { id: 'lk-publish', 'data-focus-key': 'publish' }, PUBLISH_MODES.map((m) => el('option', { value: m }, PUBLISH_TEXT[m])));
     f.publish.value = 'read'; // an existing repository gets the least right unless the person asks for more
-    f.derived = el('span', { class: 'mono' }, '(저장소 경로를 적으면 나타납니다)');
     f.problem = el('p', { class: ['note', 'err'], role: 'alert', 'data-problem': 'form' });
     f.problem.hidden = true;
     return f;
@@ -1293,8 +1341,7 @@ export function projectsView(ctx) {
       return setProblem(f, c.kind === 'github' ? '원격 저장소 경로는 소유자/저장소 형태여야 합니다(예: octo/Hello-World). 점 경로, .git 끝, % 기호, 한글은 쓸 수 없습니다.'
         : '원격 저장소 경로는 그룹/하위그룹/프로젝트 형태여야 합니다(소문자·숫자·하이픈 이름, 예: team/sub/app-one). 점 경로, .git 끝, % 기호는 쓸 수 없습니다.');
     }
-    if (c.why === 'id') return setProblem(f, '저장소 이름에서 정해지는 프로젝트 ID(' + c.id + ')가 규칙에 맞지 않습니다. 프로젝트 ID는 소문자로 시작하고 소문자·숫자·하이픈만 써서 2~40자여야 합니다. 이 이름의 저장소는 연결할 수 없습니다.');
-    if (c.why === 'mismatch') return setProblem(f, w3cFailureText({ code: 'remote_name_mismatch' }, c.kind));
+    if (c.why === 'id') return setProblem(f, NAME_HINT);
     if (!PUBLISH_MODES.includes(f.publish.value)) return setProblem(f, '게시 권한을 목록에서 고르세요.');
     setProblem(f, '');
     const provider = f.provider.value;
@@ -1310,6 +1357,11 @@ export function projectsView(ctx) {
     const link = lk.mode === 'link';
     const kind = kindFor(f.provider.value) || 'gitlab';
     const field = (labelText, id, control, hint) => el('div', { class: 'field' }, [el('label', { for: id }, labelText), control, hint ? el('span', { class: 'hint' }, hint) : null]);
+    const blocked = nameBlocked();
+    f.blocked = blocked;
+    f.nameHint && (f.nameHint.hidden = !blocked);
+    const confirmBtn = el('button', { type: 'button', class: ['btn', 'primary'], 'data-focus-key': 'confirm', disabled: flow.busy || blocked,
+      'aria-describedby': blocked ? 'lk-name-hint' : null, on: { click: submitRemote } }, '변경 내용 확인');
     return el('div', { class: ['panel', 'canvas'] }, [
       el('h1', { id: 'h-projects' }, link ? '기존 저장소 연결' : '원격 연결'),
       el('p', { class: 'lead' }, link
@@ -1320,8 +1372,9 @@ export function projectsView(ctx) {
           el('span', { class: 'hint' }, '이미 원격이 있는 프로젝트와, 서버 설정에 원격이 정해진 프로젝트는 연결할 수 없습니다(서버가 거부합니다).')]),
         field('제공자', 'lk-provider', f.provider),
         field('원격 저장소 경로', 'lk-remote', f.remote, kind === 'github' ? '소유자/저장소, 예: octo/Hello-World' : '그룹/하위그룹/프로젝트, 예: team/sub/app-one'),
-        link ? el('div', { class: 'field', 'data-field': 'derived-id' }, [el('div', {}, [el('b', {}, '프로젝트 ID(저장소 이름에서 정해집니다)'), ': ', f.derived]),
-          el('span', { class: 'hint' }, '프로젝트 ID는 원격 저장소 이름과 같아야 합니다' + (kind === 'github' ? '(GitHub: 소문자로 바꿉니다)' : '') + '. 그렇지 않은 저장소는 연결할 수 없습니다.')]) : null,
+        link ? el('div', { class: 'field', 'data-field': 'project-name' }, [el('label', { for: 'lk-name' }, '프로젝트 이름'), f.name,
+          el('span', { class: 'hint' }, '이 서버의 폴더 이름과 배포 키 폴더 이름이 되는 이름입니다. 소문자로 시작하고 소문자·숫자·하이픈만, 2~40자. 저장소 이름에서 제안한 값이며 고칠 수 있습니다. 저장소 이름과 달라도 됩니다.'),
+          f.nameHint]) : null,
         link ? el('div', { class: 'field' }, [
           el('div', { class: 'row' }, [f.ai, ' ', el('label', { for: 'lk-ai' }, 'AI 전송 허용 (기본: 꺼짐)')]),
           el('span', { class: 'hint' }, '켜면 AI 계획 기능이 이 저장소 파일의 일부 내용을 외부 AI 서비스(OpenAI)로 보낼 수 있습니다.'),
@@ -1330,7 +1383,7 @@ export function projectsView(ctx) {
         f.problem,
         noteNode(),
         el('div', { class: 'row' }, [
-          el('button', { type: 'button', class: ['btn', 'primary'], 'data-focus-key': 'confirm', disabled: flow.busy, on: { click: submitRemote } }, '변경 내용 확인'),
+          confirmBtn,
           ' ',
           el('button', { type: 'button', class: 'btn', 'data-focus-key': 'cancel', on: { click: toList } }, '취소'),
         ]),

@@ -89,6 +89,12 @@ func proj(id, path, provider, gl string) map[string]any {
 	return p
 }
 
+// created marks a registry row as made by this tool (origin "created": its id IS the repository name).
+func created(p map[string]any) map[string]any {
+	p["origin"] = "created"
+	return p
+}
+
 func view(projects ...map[string]any) map[string]any {
 	return map[string]any{"projects": projects, "providers": []any{
 		map[string]any{"id": "gl", "kind": "gitlab", "base_url": "http://gitlab.example:18082", "ssh_url": "ssh://git@gitlab.example", "token_ref": "gl-admin"},
@@ -138,7 +144,7 @@ func TestResolverBuildsFromRegistryOnly(t *testing.T) {
 		proj("app-one", "/r/app-one", "gl", "team/app-one"),
 		proj("legacy", "/r/legacy", "", ""),
 		proj("plain", "/r/plain", "", "team/plain"), // a link without provider: not resolvable here
-		proj("odd-name", "/r/odd-name", "gl", "team/other"),
+		created(proj("odd-name", "/r/odd-name", "gl", "team/other")),
 		proj("gone-prov", "/r/gone-prov", "nope", "team/gone-prov"),
 		proj("bad-path", "/r/bad-path", "gl", "team/../bad-path"),
 	))
@@ -150,7 +156,7 @@ func TestResolverBuildsFromRegistryOnly(t *testing.T) {
 		"/r/app-one":   {"ssh://git@gitlab.example/team/app-one.git", true},
 		"/r/legacy":    {"", false},
 		"/r/plain":     {"", false},
-		"/r/odd-name":  {"", true}, // project name differs from the id: refused
+		"/r/odd-name":  {"", true}, // created by this tool and its name differs from the id: refused
 		"/r/gone-prov": {"", true}, // unknown provider: refused
 		"/r/bad-path":  {"", true},
 		"/r/unknown":   {"", false},

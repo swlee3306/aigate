@@ -463,7 +463,7 @@ func TestBrokerHostileSentencesNeverReachResponsesLedgerOrLogW3e(t *testing.T) {
 
 // Refusals that must come before any signature, key or write, for the new
 // actions: static_remote_wins (also appearing between propose and apply),
-// remote_name_mismatch, already_linked (legacy mapping included), project
+// already_linked (legacy mapping included), project
 // exists, folder exists, policy class missing, github.com host not pinned for a
 // GitHub link, no broker. No staged key remains, no write reaches the broker,
 // no signing message is handed out, no ledger event is written.
@@ -494,8 +494,6 @@ func TestRefusalsBeforeSignatureLeaveNoKeyNoWriteNoEventW3e(t *testing.T) {
 	}
 	add("attach to a static-remote project", func() (int, []byte) { return att("sample-app", "gh", "Octo-Cat/sample-app") }, 409, "static_remote_wins")
 	add("link of a static-remote folder", func() (int, []byte) { return lnk("app-static", "gh", "Octo-Cat/app-static") }, 409, "static_remote_wins")
-	add("attach name mismatch", func() (int, []byte) { return att("plain-one", "gh", "Octo-Cat/another") }, 400, "remote_name_mismatch")
-	add("link name mismatch", func() (int, []byte) { return lnk("app-one", "gh", "Octo-Cat/another") }, 400, "remote_name_mismatch")
 	add("attach to a provider-linked project", func() (int, []byte) { return att("linked-one", "gh", "Octo-Cat/linked-one") }, 409, "already_linked")
 	add("attach to a legacy-mapped project", func() (int, []byte) { return att("legacy-one", "gh", "Octo-Cat/legacy-one") }, 409, "already_linked")
 	add("link over an existing project id", func() (int, []byte) { return lnk("plain-one", "gh", "Octo-Cat/plain-one") }, 409, "project_exists")

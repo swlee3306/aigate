@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"aigate/internal/orch/broker"
-	"aigate/internal/orch/clone"
 	"aigate/internal/orch/keys"
 	"aigate/internal/orch/store"
 	"aigate/internal/registrymsg"
@@ -39,7 +38,6 @@ var (
 	errKeyExpired              = apiErr(http.StatusConflict, "key_expired", "제안할 때 만든 저장소별 배포 키가 만료되었거나(15분) 서버가 다시 시작되어 없습니다. 새로 변경을 만들어 서명하세요. 변경 없음")
 	errKeyStagingFailed        = apiErr(http.StatusServiceUnavailable, "key_staging_failed", "저장소별 배포 키를 준비하지 못했습니다(키 폴더가 없거나 안전하지 않거나, 같은 이름의 키 폴더가 이미 있거나, 임시 키가 너무 많습니다). 관리자가 확인해야 합니다. 변경 없음")
 	errStaticRemoteWins        = apiErr(http.StatusConflict, "static_remote_wins", "이 프로젝트는 서버 설정(--git-remote-for)에 정해진 원격이 있어 그것이 우선합니다. 등록부에 원격을 연결해도 효과가 없으므로 연결하지 않았습니다. 변경 없음")
-	errNameMismatch            = apiErr(http.StatusBadRequest, "remote_name_mismatch", "프로젝트 id는 원격 저장소 이름과 같아야 합니다(GitHub는 대소문자만 달라도 됩니다). 복제와 게시가 이 이름으로 원격을 찾습니다. 변경 없음")
 	errKeyUnavailable          = apiErr(http.StatusServiceUnavailable, "key_unavailable", "이 프로젝트의 저장소별 배포 키 파일을 쓸 수 없습니다(없거나, 권한이 맞지 않거나, 옮기지 못했습니다). 관리자가 확인해야 합니다")
 	errLinkPartial             = apiErr(http.StatusBadGateway, "link_partial", "이미 있던 저장소에 이 서버의 배포 키가 붙었을 수 있습니다. 저장소는 지우지 마세요. 제공자 화면에서 이 서버의 배포 키(제목이 orchd로 시작)만 직접 제거한 뒤 다시 시도하세요")
 	errLinkUnknown             = apiErr(http.StatusGatewayTimeout, "outcome_unknown", "원격 저장소가 연결되었는지 알 수 없습니다. 자동으로 다시 시도하지 않았습니다. 프로젝트 목록(알림 포함)과 제공자 화면의 배포 키를 확인한 뒤 필요하면 다시 시도하세요")
@@ -400,9 +398,8 @@ func (h *handler) remoteChecks(ctx context.Context, c registryChange) (string, e
 	if !registrymsg.ValidRemotePathForKind(prov.Kind, remotePath) {
 		return "", errProjBadBody
 	}
-	if !clone.NameMatches(prov.Kind, remotePath, c.Subject) {
-		return "", errNameMismatch
-	}
+	// The project id (folder, keys/<id>, registry id) is the user's choice and independent of the
+	// repository name (W3f F1b): the remote comes from the registry path, never from the id.
 	var found *broker.Project
 	for i := range rv.Projects {
 		if rv.Projects[i].ID == c.Subject {

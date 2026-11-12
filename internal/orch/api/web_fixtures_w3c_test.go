@@ -288,7 +288,7 @@ func TestWebFixturesW3cVectors(t *testing.T) {
 	}
 	// W3e: the codes the GitHub, link and attach paths add are all found (a scan that missed
 	// link_project.go would let the console ship without a sentence for them).
-	for _, c := range []string{"repo_not_found", "already_linked", "project_exists", "project_unknown", "remote_name_mismatch", "static_remote_wins", "key_expired",
+	for _, c := range []string{"repo_not_found", "already_linked", "project_exists", "project_unknown", "static_remote_wins", "key_expired",
 		"key_staging_failed", "key_unavailable", "github_refused", "provider_rate_limited", "not_supported_for_provider", "visibility_required",
 		"visibility_not_allowed", "link_partial"} {
 		if !seen[c] {

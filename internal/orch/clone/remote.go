@@ -48,7 +48,7 @@ func RemoteForKind(kind, sshURL, path string) (string, bool) {
 }
 
 // NameMatches reports whether the last segment of a remote path is the project
-// id: exactly for GitLab, ignoring case for GitHub (its names are
+// id (what must hold for a project with origin "created"; linked repositories may be named anything): exactly for GitLab, ignoring case for GitHub (its names are
 // case-insensitive; the registry keeps the provider's spelling).
 func NameMatches(kind, remotePath, id string) bool {
 	i := strings.LastIndexByte(remotePath, '/')
@@ -194,7 +194,13 @@ func (r *Resolver) refresh() {
 			continue
 		}
 		pv, known := providers[*p.Provider]
-		if !known || !NameMatches(pv.kind, p.Remote.Path, p.ID) {
+		if !known {
+			continue
+		}
+		// The project id (folder, key folder) is independent of the repository name for a linked
+		// repository (W3f F1b). A repository this tool created is named by its id: a row that says
+		// otherwise is a damaged registry, refused.
+		if p.Origin == broker.OriginCreated && !NameMatches(pv.kind, p.Remote.Path, p.ID) {
 			continue
 		}
 		remote, ok := RemoteForKind(pv.kind, pv.ssh, p.Remote.Path)

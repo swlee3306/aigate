@@ -430,7 +430,6 @@ export const ERROR_TEXT = {
   visibility_not_allowed: 'GitLab 프로젝트에는 공개 여부를 정할 수 없습니다(항상 비공개로 만들어집니다). 변경은 적용되지 않았습니다.',
   repo_not_found: '연결하려는 저장소를 제공자에서 찾지 못했습니다. 경로를 확인하고, 토큰이 그 저장소를 볼 수 있는지 확인하세요. 변경은 적용되지 않았습니다.',
   already_linked: '이미 원격에 연결된 프로젝트이거나, 같은 원격 저장소가 이미 다른 프로젝트에 연결되어 있습니다. 변경은 적용되지 않았습니다.',
-  remote_name_mismatch: '프로젝트 ID와 원격 저장소 이름이 같아야 합니다(글자 그대로). 변경은 적용되지 않았습니다.',
   static_remote_wins: '이 프로젝트는 서버 설정(--git-remote-for)에 원격이 이미 정해져 있어 그것이 우선합니다. 여기서 원격을 연결해도 효과가 없어 연결하지 않았습니다.',
   key_expired: '제안할 때 만든 저장소 전용 배포 키가 만료되었거나(15분) 서버가 다시 시작되어 사라졌습니다. 오래된 내용으로는 서명하지 않습니다: 처음부터 다시 제안하세요. 변경은 적용되지 않았습니다.',
   key_staging_failed: '서버가 이 저장소 전용 배포 키를 준비하지 못했습니다(같은 이름의 키 폴더가 이미 있거나 서버 설정 문제입니다). 관리자가 확인해야 합니다. 변경은 적용되지 않았습니다.',
@@ -442,7 +441,6 @@ export const ERROR_TEXT = {
 // knows the provider is a GitHub one (ERROR_TEXT is the provider-neutral baseline, which is also
 // what GitLab screens show).
 export const GITHUB_TEXT = {
-  remote_name_mismatch: '프로젝트 ID와 원격 저장소 이름이 같아야 합니다(GitHub 이름은 대소문자만 달라도 같은 것으로 봅니다). 변경은 적용되지 않았습니다.',
   provider_in_use: ERROR_TEXT.provider_in_use,
   bad_url: '서버가 이 GitHub API 주소를 허용하지 않았습니다(접속 대상이 허용 범위 밖이거나 주소가 맞지 않습니다). 변경은 적용되지 않았습니다.',
   provider_unreachable: 'GitHub에 연결하지 못했거나 응답이 없었습니다. 잠시 후 다시 시도하세요. 서버의 방화벽이 GitHub을 허용하는지도 확인하세요. 저장소를 만드는 중이었다면 목록의 알림도 확인하세요.',

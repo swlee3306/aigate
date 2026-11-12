@@ -166,7 +166,7 @@ func TestResolverReturnsKeyPathFromRegistryOnly(t *testing.T) {
 		proj("hello", "/r/hello", "gh", "Octo/Hello"),
 		proj("app-one", "/r/app-one", "gl", "team/app-one"),
 		proj("nokey", "/r/nokey", "gh", "Octo/nokey"),
-		proj("odd-name", "/r/odd-name", "gh", "Octo/other"),
+		created(proj("odd-name", "/r/odd-name", "gh", "Octo/other")),
 		proj("elsewhere", "/r/some-other-dir", "gh", "Octo/elsewhere"), // the folder name differs from the id: the key follows the id
 		proj("badpath", "/r/badpath", "gh", "Octo/sub/badpath"),
 	))
