@@ -101,20 +101,16 @@ func (c *c3env) ghProjectArgsRaw(name, vis string) map[string]any {
 	return a
 }
 
-// Until E2 lands the GitHub client, a GitHub provider can be stored and shown
-// but every call that would reach it answers one fixed code and sends nothing.
-func TestGitHubProviderIsNotReachedBeforeE2(t *testing.T) {
+// E3 made the GitHub client reachable for create_project and list_groups; the
+// group-creating op stays unsupported there (github.com has no such API) and is
+// refused before the signature is consumed, with nothing sent anywhere.
+func TestGitHubGroupCreationStaysUnsupportedAfterE3(t *testing.T) {
 	c := newE1(t)
 	nProjects := len(c.s.Registry.Snapshot().Projects)
-	c.wantCode("create_project", c.ghProjectArgs(c3Name, "private", nil), "not_supported_for_provider")
-	c.wantCode("create_project", c.ghProjectArgs("other", "public", nil), "not_supported_for_provider")
 	c.wantCode("create_group", c.signedArgs(c.alice, registrymsg.ActionCreateGroup, "gh", map[string]any{"name": "newg", "path": "newg", "parent_path": ""}), "not_supported_for_provider")
-	c.wantCode("list_groups", map[string]any{"provider": "gh"}, "not_supported_for_provider")
-	// refused before the signature is consumed: the same request answers the same
-	// code again (it would be request_reused if an ID had been burnt)
-	same := c.ghProjectArgs("again", "private", nil)
-	c.wantCode("create_project", same, "not_supported_for_provider")
-	c.wantCode("create_project", same, "not_supported_for_provider")
+	same := c.signedArgs(c.alice, registrymsg.ActionCreateGroup, "gh", map[string]any{"name": "newg2", "path": "newg2", "parent_path": ""})
+	c.wantCode("create_group", same, "not_supported_for_provider")
+	c.wantCode("create_group", same, "not_supported_for_provider") // would be request_reused if an ID had been burnt
 	c.noGLHits("github provider")
 	if len(c.s.Registry.Snapshot().Projects) != nProjects || len(c.orphans()) != 0 {
 		t.Fatalf("state changed: %+v %+v", c.s.Registry.Snapshot().Projects, c.orphans())
@@ -211,9 +207,6 @@ func TestNotSupportedForProviderBurnsNoID(t *testing.T) {
 	g := c.signedArgs(c.alice, registrymsg.ActionCreateGroup, "gh", map[string]any{"name": "newg", "path": "newg", "parent_path": ""})
 	c.wantCode("create_group", g, "not_supported_for_provider")
 	c.wantCode("create_group", g, "not_supported_for_provider") // request_reused if an ID had been burnt
-	p := c.ghProjectArgs(c3Name, "private", nil)
-	c.wantCode("create_project", p, "not_supported_for_provider")
-	c.wantCode("create_project", p, "not_supported_for_provider")
 	c.noGLHits("not supported")
 }
 

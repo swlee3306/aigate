@@ -763,7 +763,10 @@ func TestWriteOpsNeverChangeRegistryOnAnyFailure(t *testing.T) {
 
 var newCodes = []string{"not_signed", "bad_signature", "unknown_signer", "stale_signature", "signers_unavailable",
 	"request_reused", "change_mismatch", "project_exists", "project_unknown", "path_not_allowed",
-	"registry_unavailable", "not_supported"}
+	"registry_unavailable", "not_supported",
+	// W3e: every code the GitHub flows and link/attach raise
+	"not_supported_for_provider", "visibility_required", "visibility_not_allowed", "github_refused", "provider_rate_limited",
+	"repo_not_found", "already_linked"}
 
 func TestFixedMessagesRegisteredForNewCodes(t *testing.T) {
 	seen := map[string]string{}
@@ -794,9 +797,10 @@ func TestOpAllowlistIncludesOnlyNewOps(t *testing.T) {
 		got = append(got, k)
 	}
 	sort.Strings(got)
-	// W3c adds the provider, group and project-creation ops (and nothing else).
-	want := []string{"create_group", "create_mr", "create_project", "delete_provider", "delete_token", "list_groups", "projects", "providers",
-		"refine", "register_project", "set_flag", "set_provider", "set_token", "status", "tokens"}
+	// W3c adds the provider, group and project-creation ops; W3e adds link_project
+	// and attach_remote (and nothing else).
+	want := []string{"attach_remote", "create_group", "create_mr", "create_project", "delete_provider", "delete_token", "link_project",
+		"list_groups", "projects", "providers", "refine", "register_project", "set_flag", "set_provider", "set_token", "status", "tokens"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("ops = %v, want %v", got, want)
 	}

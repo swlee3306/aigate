@@ -114,6 +114,11 @@ var fixedMessages = map[string]string{
 	"github_refused":             "GitHub이 요청을 받아들이지 않았습니다. 토큰 권한과 GitHub 설정을 확인하세요.",
 	"provider_rate_limited":      "제공자가 요청 횟수 한도를 알려 왔습니다. 잠시 후 다시 시도하세요.",
 	"visibility_not_allowed":     "이 제공자에서는 공개 여부를 정할 수 없습니다. GitLab 프로젝트는 항상 비공개로 만들어집니다.",
+
+	// W3e (E3): link_project and attach_remote. Provider-neutral; nothing the
+	// provider says is shown.
+	"repo_not_found": "제공자에서 그 저장소를 찾을 수 없습니다. 이 도구는 이미 있는 저장소만 연결하며, 토큰이 볼 수 있는 저장소여야 합니다.",
+	"already_linked": "이미 제공자에 연결된 프로젝트이거나, 같은 원격 저장소가 다른 프로젝트에 연결되어 있습니다.",
 }
 
 // Default per-op processing time limits (decision D1).
@@ -143,6 +148,12 @@ var defaultOpTimeouts = map[string]time.Duration{
 	"delete_provider": 10 * time.Second,
 	"create_group":    20 * time.Second,
 	"create_project":  60 * time.Second,
+
+	// W3e. link_project/attach_remote read the remote once and add one deploy
+	// key; a `timeout` reply means the outcome is UNKNOWN (re-read `projects`
+	// and the orphan records first).
+	"link_project":  30 * time.Second,
+	"attach_remote": 30 * time.Second,
 }
 
 // State is the broker's mutable limit state.
@@ -154,6 +165,10 @@ type State struct {
 	// Broker-wide caps of the W3c writes (D9; per-actor limits live in orchd).
 	CreateProject *HourlyLimiter
 	CreateGroup   *HourlyLimiter
+
+	// W3e (E-D6): link_project and attach_remote share this one broker-wide
+	// cap (per-actor limits live in orchd).
+	LinkRemote *HourlyLimiter
 }
 
 // Server is the broker socket server. Zero-valued tuning fields take their
@@ -261,6 +276,7 @@ func New(cfg Config, o Options) (*Server, error) {
 
 			CreateProject: NewHourlyLimiter(maxCreateProjectPerHour, o.Clock),
 			CreateGroup:   NewHourlyLimiter(maxCreateGroupPerHour, o.Clock),
+			LinkRemote:    NewHourlyLimiter(maxLinkRemotePerHour, o.Clock),
 		},
 	}
 	s.OpenAI = &OpenAIClient{KeyFn: s.currentOpenAIKey, Model: cfg.OpenAI.Model}
@@ -293,6 +309,9 @@ func New(cfg Config, o Options) (*Server, error) {
 		"delete_provider": s.deleteProviderHandler,
 		"create_group":    s.createGroupHandler,
 		"create_project":  s.createProjectHandler,
+
+		"link_project":  s.linkProjectHandler,
+		"attach_remote": s.attachRemoteHandler,
 	}
 	return s, nil
 }

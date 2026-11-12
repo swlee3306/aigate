@@ -38,12 +38,21 @@ var (
 	listGroupsKeys     = []string{"provider"}
 )
 
-// apiFail maps a provider-layer error to a registered fixed code. Nothing of
-// the error but its code is used (GitLab text is never read into one).
-func apiFail(err error) *OpError {
+// apiFail maps a provider-layer error to a registered fixed code (GitLab
+// wording for the kind-less callers of W3c). Nothing of the error but its code
+// is used (provider text is never read into one).
+func apiFail(err error) *OpError { return apiFailKind("gitlab", err) }
+
+// apiFailKind is apiFail for a provider kind: the refusal codes of a github
+// provider are github_refused (a rule that is weaker than ours and a 404 that a
+// caller did not map are refusals too).
+func apiFailKind(kind string, err error) *OpError {
 	code := WireCode(err)
+	if kind == "github" && ErrCode(err) == CodeProtectionWeaker {
+		code = CodeGitHubRefused
+	}
 	if code == CodeNotFound { // callers that care map 404 themselves
-		code = CodeGitLabRefused
+		code = refusedCode(kind)
 	}
 	if _, ok := fixedMessages[code]; !ok || code == "" {
 		code = "internal_error"
@@ -51,10 +60,60 @@ func apiFail(err error) *OpError {
 	return fail1(code)
 }
 
+// refusedCode is the fixed code of "the provider refused", by kind.
+func refusedCode(kind string) string {
+	if kind == "github" {
+		return CodeGitHubRefused
+	}
+	return CodeGitLabRefused
+}
+
+// providerKind is the configured kind of provider id ("" when unknown).
+func (s *Server) providerKind(id string) string {
+	p, _ := s.Registry.ProviderByID(id)
+	return p.Kind
+}
+
+// providerFor builds ONE RepoProvider of the configured provider id. A flow
+// calls it once and uses that instance for every step (the GitHub client only
+// honours the justCreated handle of the instance that created the repository).
+func (s *Server) providerFor(id string) (RepoProvider, *OpError) {
+	rp, err := s.RepoProviderFor(id)
+	if err != nil {
+		if errors.Is(err, ErrProviderUnknown) {
+			return nil, fail1("provider_unknown")
+		}
+		return nil, apiFailKind(s.providerKind(id), err)
+	}
+	return rp, nil
+}
+
+// refusedBeforeWrite: err is the provider's own refusal of a write request (a
+// refusing status, a rate limit, or an input the client refused to send), so
+// that request changed nothing and the caller must not record an orphan.
+// Anything else (2xx with a bad answer, 3xx, 5xx, transport) leaves the outcome
+// unknown.
+func refusedBeforeWrite(err error) bool {
+	if errors.Is(err, ErrBadInput) && ErrStatus(err) == 0 {
+		return true // nothing was sent
+	}
+	switch ErrCode(err) {
+	case CodeGitHubRefused, CodeGitLabRefused, CodeProviderRateLimited:
+	default:
+		return false
+	}
+	switch ErrStatus(err) {
+	case 400, 401, 403, 404, 422, 429:
+		return true
+	}
+	return false
+}
+
 // apiFor builds the client of provider id. Errors are fixed codes.
 func (s *Server) apiFor(id string) (*GitLabAPI, *OpError) {
-	// Only GitLab has a client in the broker so far (E2 adds GitHub): another
-	// kind answers one fixed code and nothing is sent anywhere.
+	// The group ops (create_group) exist for GitLab only (github.com has no
+	// organization-creation API): another kind answers one fixed code and
+	// nothing is sent anywhere.
 	if p, ok := s.Registry.ProviderByID(id); ok && p.Kind != "gitlab" {
 		return nil, fail1("not_supported_for_provider")
 	}
@@ -94,9 +153,11 @@ type listGroupsArgs struct {
 	Provider string `json:"provider"`
 }
 
-// listGroupsHandler asks GitLab (read-only) for the groups the token is at
-// least Maintainer in. It returns path and name only, plus `truncated` when
-// the 500-group cap or a skipped name made the list incomplete.
+// listGroupsHandler asks the provider (read-only) for the places a project may
+// be created in: GitLab groups the token is at least Maintainer in, or GitHub's
+// owners (the account itself, then its organizations). It returns path and name
+// only (a GitHub owner also carries its kind: user or org), plus `truncated`
+// when a cap or a skipped name made the list incomplete.
 func (s *Server) listGroupsHandler(ctx context.Context, raw json.RawMessage) (any, *OpError) {
 	var a listGroupsArgs
 	if !decodeStrict(raw, &a, listGroupsKeys) || !registrymsg.ValidProviderID(a.Provider) {
@@ -105,17 +166,21 @@ func (s *Server) listGroupsHandler(ctx context.Context, raw json.RawMessage) (an
 	if s.Registry.Err() != nil {
 		return fail("registry_unavailable")
 	}
-	api, oe := s.apiFor(a.Provider)
+	rp, oe := s.providerFor(a.Provider)
 	if oe != nil {
 		return nil, oe
 	}
-	groups, truncated, err := api.GroupsTruncated(ctx)
+	owners, truncated, err := rp.ListOwners(ctx)
 	if err != nil {
-		return nil, apiFail(err)
+		return nil, apiFailKind(rp.Kind(), err)
 	}
-	rows := make([]map[string]any, 0, len(groups))
-	for _, g := range groups {
-		rows = append(rows, map[string]any{"path": g.FullPath, "name": g.Name})
+	rows := make([]map[string]any, 0, len(owners))
+	for _, o := range owners {
+		row := map[string]any{"path": o.Path, "name": o.Name}
+		if o.Kind != "group" {
+			row["kind"] = o.Kind
+		}
+		rows = append(rows, row)
 	}
 	return map[string]any{"groups": rows, "truncated": truncated}, nil
 }

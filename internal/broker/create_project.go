@@ -13,22 +13,31 @@ import (
 	"aigate/internal/registrymsg"
 )
 
-// create_project (decision D4, amended by the C2/C3 rulings):
+// create_project (decision D4, amended by the C2/C3 rulings; W3e E-D4 makes it
+// provider-generic: the flow talks to ONE RepoProvider instance, GitLab or GitHub):
 //
-//  1. signature and shape (name, group path, template, deploy key line and its
-//     signed hash); a registry id or path clash is project_name_taken
-//  2. GET the group (group_unknown); its id is the ONLY namespace_id used
-//  3. GET the project path: it exists -> project_name_taken, never taken over
-//  4. POST /projects          } from here on every error is of UNKNOWN outcome
-//  5. first files, README.md first (non-atomic)    (the result may have been
-//  6. GET the project: default_branch must be main  written even if we got an
-//  7. protect main (Maintainer, no force push)      error): an orphan record is
-//  8. deploy key                                    written, nothing is ever
-//  9. LAST: register the project in the registry    deleted or retried
+//  1. signature and shape (name, group path / owner, template, deploy key line and
+//     its signed hash, visibility: required for github, forbidden for gitlab); a
+//     registry id or path clash is project_name_taken
+//  2. look the group / owner up at the provider (group_unknown); what the
+//     provider returns (GitLab namespace id, GitHub's spelling of the login) is
+//     the ONLY target ever used, never the signed string
+//  3. GET the repository path: it exists -> project_name_taken, never taken over
+//  4. create the repository   } from here on every error is of UNKNOWN outcome
+//  5. first files, README.md first (non-atomic)   (the result may have been
+//  6. default branch must be main (GitLab: GET;    written even if we got an
+//     GitHub: CommitFiles reads it after file 1)   error): an orphan record is
+//  7. protect main (no force push, no deletion)    written, nothing is ever
+//  8. deploy key                                   deleted or retried
+//  9. LAST: register the project in the registry
 //
 // A failure at 4-9 answers create_partial with {provider, project, project_id,
-// step}: the user cleans GitLab by hand (this tool has no delete), and the name
-// stays taken until then. Resume is not built.
+// step}: the user cleans the provider by hand (this tool has no delete), and
+// the name stays taken until then. Resume is not built.
+//
+// One exception (GitHub only): when the create-repository call itself is
+// refused with 400/401/403/404/422/429 (or never sent), GitHub made nothing, so
+// the plain provider code is answered and NO orphan is recorded.
 
 // PartialDetail is the public, value-only detail of create_partial.
 type PartialDetail struct {
@@ -155,15 +164,22 @@ func (s *Server) createProjectHandler(ctx context.Context, raw json.RawMessage) 
 		// answered later, as before). All of this is decidable from the request
 		// and the registry alone, so no ID is burnt.
 		if prov, ok := s.Registry.ProviderByID(a.Provider); ok {
-			switch {
-			case prov.Kind == "gitlab" && a.Visibility != nil:
-				return fail1("visibility_not_allowed")
-			case prov.Kind == "github" && a.Visibility == nil:
-				return fail1("visibility_required")
-			case prov.Kind == "github" && *a.Visibility != "public" && *a.Visibility != "private":
-				return fail1("bad_request")
-			case prov.Kind != "gitlab":
-				return fail1("not_supported_for_provider") // E2 adds the GitHub flow
+			switch prov.Kind {
+			case "gitlab":
+				if a.Visibility != nil {
+					return fail1("visibility_not_allowed")
+				}
+			case "github":
+				switch {
+				case a.Visibility == nil:
+					return fail1("visibility_required")
+				case *a.Visibility != "public" && *a.Visibility != "private":
+					return fail1("bad_request")
+				case !validGHLogin(a.GroupPath): // an owner is ONE login, not a path
+					return fail1("bad_request")
+				}
+			default:
+				return fail1("not_supported_for_provider")
 			}
 		}
 		return nil
@@ -186,43 +202,46 @@ func (s *Server) createProjectHandler(ctx context.Context, raw json.RawMessage) 
 	if files == nil {
 		return fail("template_unknown")
 	}
-	// The provider as it is NOW; the GitLab calls and the final registry write
+	// The provider as it is NOW; the provider calls and the final registry write
 	// must both see exactly this entry.
 	prov, ok := s.Registry.ProviderByID(a.Provider)
 	if !ok {
 		return fail("provider_unknown")
 	}
-	api, oe := s.apiFor(a.Provider)
+	// ONE provider instance for the whole flow (the GitHub client honours the
+	// justCreated handle only for a repository it created itself).
+	rp, oe := s.providerFor(a.Provider)
 	if oe != nil {
 		return nil, oe
 	}
 
-	// (2) the group; its id is the only namespace id ever used
-	grp, err := api.Group(ctx, a.GroupPath)
+	// (2) the owner; what the provider returns is the only target ever used
+	owner, err := rp.GetOwner(ctx, a.GroupPath)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return fail("group_unknown")
 		}
-		return nil, apiFail(err)
+		return nil, apiFailKind(prov.Kind, err)
 	}
-	// (3) a project of that name on GitLab is never taken over
-	full := a.GroupPath + "/" + a.ID
-	if _, err := api.Project(ctx, full); err == nil {
+	// (3) a repository of that name at the provider is never taken over
+	full := owner.Path + "/" + a.ID
+	if _, err := rp.GetRepo(ctx, full); err == nil {
 		return fail("project_name_taken")
 	} else if !errors.Is(err, ErrNotFound) {
-		return nil, apiFail(err)
+		return nil, apiFailKind(prov.Kind, err)
 	}
-	// The quota is spent only now, right before the first GitLab write.
+	// The quota is spent only now, right before the first provider write.
 	if s.State.CreateProject != nil && !s.State.CreateProject.Allow() {
 		return fail("rate_limited")
 	}
-	return s.createWritePhase(ctx, a, api, prov, grp, full, projPath, files)
+	return s.createWritePhase(ctx, a, rp, prov, owner, full, projPath, files)
 }
 
 // createWritePhase is steps 4-9. Every error, and any panic, from here on is
 // of unknown outcome: an orphan record with the CURRENT step is written and
-// create_partial is answered. Nothing is retried or deleted.
-func (s *Server) createWritePhase(ctx context.Context, a createProjectArgs, api *GitLabAPI, prov Provider, grp Group,
+// create_partial is answered. Nothing is retried or deleted. rp is the SAME
+// provider instance that looked the owner up.
+func (s *Server) createWritePhase(ctx context.Context, a createProjectArgs, rp RepoProvider, prov Provider, owner Owner,
 	full, projPath string, files []File) (res any, oe *OpError) {
 	step := stepProject
 	var pid *int64
@@ -245,27 +264,43 @@ func (s *Server) createWritePhase(ctx context.Context, a createProjectArgs, api 
 		}
 	}()
 
-	info, err := api.CreateProject(ctx, a.GroupPath, grp.ID, a.ID, a.Description)
+	req := CreateRepoReq{Owner: owner, Name: a.ID, Description: a.Description, Private: true} // GitLab: always private
+	if prov.Kind == "github" {
+		req.Private = *a.Visibility == "private" // the signed choice; shape guaranteed it is present
+	}
+	info, err := rp.CreateRepo(ctx, req)
 	if err != nil {
+		if prov.Kind == "github" && refusedBeforeWrite(err) {
+			// GitHub refused the create call itself: nothing exists, so there is
+			// no orphan (the W3c rule below stays for GitLab and for any other error).
+			s.logf("create_project: the provider refused the create call")
+			return nil, apiFailKind(prov.Kind, err)
+		}
 		return partial()
 	}
 	id := info.ID
 	pid = &id
 	step = stepFirstCommit
-	if err := api.CommitFiles(ctx, id, files); err != nil {
+	if err := rp.CommitFiles(ctx, info, files); err != nil {
+		if errors.Is(err, ErrDefaultBranchMismatch) { // GitHub: the first file made another branch the default
+			step = stepDefaultBranch
+		}
 		return partial()
 	}
-	// (f) the first commit made main the default branch, or we do not register
-	step = stepDefaultBranch
-	if pi, err := api.Project(ctx, full); err != nil || pi.ID != id || pi.DefaultBranch != apiBranch {
-		return partial()
+	if prov.Kind == "gitlab" {
+		// (f) the first commit made main the default branch, or we do not register
+		// (GitHub reads it inside CommitFiles, right after the first file)
+		step = stepDefaultBranch
+		if pi, err := rp.GetRepo(ctx, full); err != nil || pi.ID != id || pi.DefaultBranch != apiBranch {
+			return partial()
+		}
 	}
 	step = stepProtect
-	if err := api.EnsureProtectedMain(ctx, id); err != nil {
+	if err := rp.EnsureProtectedMain(ctx, info); err != nil {
 		return partial()
 	}
 	step = stepDeployKey
-	if err := api.AddDeployKey(ctx, id, "orchd "+a.ID, a.DeployKey, a.Publish == "write"); err != nil {
+	if err := rp.AddDeployKey(ctx, info, "orchd "+a.ID, a.DeployKey, a.Publish == "write"); err != nil {
 		return partial()
 	}
 	// (g) the registry entry comes LAST; a failure here leaves an orphan record
@@ -277,7 +312,7 @@ func (s *Server) createWritePhase(ctx context.Context, a createProjectArgs, api 
 		if registryHasProject(r, a.ID, projPath) {
 			return opCodeErr("project_name_taken")
 		}
-		// the provider the GitLab calls used must still be the stored one
+		// the provider the calls used must still be the stored one
 		if i := findProvider(r, a.Provider); i < 0 || r.Providers[i] != prov {
 			return opCodeErr("provider_unknown")
 		}

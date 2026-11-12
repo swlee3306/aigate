@@ -449,7 +449,7 @@ func TestOpAllowlist(t *testing.T) {
 	c := newC3(t)
 	want := map[string]bool{"status": true, "tokens": true, "refine": true, "create_mr": true, "projects": true, "register_project": true,
 		"set_flag": true, "set_token": true, "delete_token": true, "providers": true, "list_groups": true, "set_provider": true,
-		"delete_provider": true, "create_group": true, "create_project": true}
+		"delete_provider": true, "create_group": true, "create_project": true, "link_project": true, "attach_remote": true}
 	for op := range c.s.Handlers {
 		if !want[op] {
 			t.Fatalf("unexpected op registered: %s", op)
