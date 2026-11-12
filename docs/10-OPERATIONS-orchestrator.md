@@ -1029,3 +1029,223 @@ journalctl -u orchd -n 40 --no-pager
 | 2 `orchd` 갱신 | 승인 | B(바이너리만, DB 복원 불필요) | 필요(stop/start) |
 | 3 웹 확인 | **사용자 직접**(로그인, 실제 서명, **실제 GitLab 리소스를 만들지 여부와 이름 결정**) | **GitLab의 그룹·프로젝트는 사용자가 GitLab에서 지운다.** 등록부·`/home/orch/repos` 폴더는 남는다 | 불필요(3-7만 broker 재시작) |
 | 4 롤백 | 승인 | — | 필요 |
+
+## 15. W3e 컷오버 런북 (GitHub 제공자·새 저장소 생성·기존 저장소 연결·저장소별 배포 키, `orch-broker`·`orchd` 갱신)
+설계는 `19-DESIGN-webconsole-W3-projects.md`, 계획은 `26-PLAN-webconsole-W3e.md`, 결과·시험·한계는 `27-RESULTS-webconsole-W3e.md`(**배포 현실 표**와 "실서버에서 확인하지 못한 것"은 거기 4·6장). **이 절차는 아직 실제 서버에서 한 번도 실행하지 않았다.** 아래 "예상"은 코드와 이 저장소의 시험(가짜 서명자·가짜 GitHub·가짜 GitLab·가짜 broker·임시 폴더·가짜 `git` 실행 파일)을 읽고 쓴 것이지 서버나 실제 GitHub에서 본 출력이 아니다(11~14장과 같은 원칙). **W3e는 처음으로 GitHub에 실제 쓰기 호출(저장소 생성·파일 올리기·보호 브랜치·배포 키 등록)을 하는 단계이고, 이미 있는 저장소의 설정에 배포 키를 붙이는 단계다.** 순서는 바꾸지 않는다. 다르게 보이면 그 단계에서 멈추고 단계 4(롤백)를 고려한다.
+
+표기: **[사용자]** 사용자 본인의 작업 또는 명시적 승인이 필요, **[컨트롤러]** 읽기 전용 확인(서버 상태를 바꾸지 않음), **[되돌림 가능]** 아래 몇 줄로 원상 복구, **[주의]** 되돌리면 그 사이의 변경을 잃거나 이 도구가 되돌리지 못함. 경로는 11~14장과 같다(바이너리 `/usr/local/lib/aigate`와 `/usr/local/bin/orch-broker`, 설정 `/etc/orch-broker/broker.json`, 상태 `/var/lib/orch-broker`, broker 소켓 `/run/orch-broker/broker.sock`, orchd 설정 `/home/orch/orchd`, 저장소 `/home/orch/repos`). 리다이렉트(`>`·`>>`)가 필요한 명령은 `sudo sh -c '…'`로 쓴다(`sudo cat > 파일`은 리다이렉트가 사용자 권한으로 실행되어 실패한다). **비밀 값(GitHub 토큰, 개인 키)은 이 절의 어떤 명령에도 넣지 않고 출력하지도 않으며, 채팅·터미널에 붙이지 않는다.**
+
+**orchd DB 스키마는 이번에 바뀌지 않는다(v8 그대로)**: 롤백에 DB 복원이 필요 없다. **유닛(`orch-broker.service`, `orchd.service`)·orchd 플래그·`broker.json`은 바뀌지 않는다**(새 설정 키·새 플래그 없음: 저장소별 키 폴더는 `--git-ssh-key`가 있는 폴더 아래 `keys/`·`keys-staging/`로 정해진다). 새로 생기는 것: **등록부 `registry.json`이 버전 3으로 올라간다(프로젝트의 `provider`·`gitlab` 연결이 `remote:{path,id}`가 되고 고아 기록에 `origin`이 붙는다: 아래 ⚠ 2)**, 올리기 전 원본을 **`registry.json.v2.bak`**(0600, broker가 한 번만 쓰고 덮어쓰지 않음)로 남긴다, broker op `link_project`·`attach_remote`와 `create_project`의 `visibility`, orchd의 `/api/v1/projects/link|attach/propose|apply`, 웹의 제공자 종류 선택(`github`)·소유자 선택·공개 여부 선택·"기존 저장소 연결"·"원격 연결", orchd가 `/home/orch/orchd/ssh/keys/<프로젝트 id>/`(저장소별 키 쌍)와 제안 도중에만 `ssh/keys-staging/<무작위>/`(최대 15분)를 만드는 것, `known_hosts_gitlab`에 사용자가 검증해 넣는 `github.com` 항목.
+
+> **⚠ 먼저 읽을 것 (결정과 위험).**
+> 1. **이 도구는 GitHub의 저장소를 지우지 못하고(삭제 코드가 없다), 저장소에 붙인 배포 키도 지우지 못한다.** 새로 만든 저장소와 `link_project`·`attach_remote`로 이미 있던 저장소에 붙인 배포 키(제목 `orchd <이름>`)는 **사용자가 GitHub 화면에서 직접** 지워야 한다(저장소 Settings > Danger Zone, Settings > Deploy keys). 등록부에서 프로젝트를 지우는 op도 없다(W3a~W3e 어디에도): 시험용이라도 등록부 항목, `/home/orch/repos/<이름>` 폴더, `ssh/keys/<이름>/` 키 쌍이 남는다. **실제 저장소를 만들지 여부, 공개/비공개, 이름은 모두 사용자 결정이다(3-6).**
+> 2. **등록부가 버전 3으로 올라간다. W3c 이하 broker는 버전 3 파일을 "깨짐"으로 보고 fail closed 한다(등록부에 의존하는 모든 op가 `registry_unavailable`).** 그래서 **롤백은 바이너리만 되돌려서는 안 되고 `registry.json`을 버전 2 사본(`/root/backup-w3e`의 사본, 또는 broker가 남긴 `registry.json.v2.bak`)으로 되돌려야 한다**(단계 4의 A). 컷오버 뒤에 등록한 프로젝트·제공자·고아 기록은 되돌린 파일에 없다. 새 broker가 첫 시작에서 파일을 올릴 때 **옛 broker가 같은 상태 폴더에서 돌고 있으면 안 되므로**(읽기와 쓰기 사이에 잠금이 없다) **옛 broker를 먼저 멈춘다**(1-3).
+> 3. **broker와 orchd의 버전 차이는 위험하다(실제 서버 기준으로 분석함).** 이번에 broker가 orchd에 주는 `projects` 응답의 연결 필드 이름이 `gitlab`에서 `remote`로 바뀐다. **옛(W3c) orchd + 새 broker:** 옛 해석기는 `gitlab`이 비어 있는 제공자 연결 프로젝트를 "제공자 프로젝트 아님"으로 보고 **기본 원격(`--git-remote`, 실서버에는 `/home/orch/repos/remote.git`이 있다)으로 게시한다(fail open)**. **새 orchd + 옛 broker:** 새 해석기는 제공자 연결이 있으면 원격을 못 읽어도 "거부"로 분류한다(fail closed). 그래서 **순서는 "orchd를 먼저 멈춤 → broker 갱신 → orchd 갱신"이다**(옛 orchd가 새 broker를 만나는 순간이 없다). 이 사이 웹 콘솔은 몇 분 닫힌다. orchd를 멈추지 않고 broker만 먼저 갱신하는 것은 **권장하지 않는다**: 그렇게 한다면 실행 중·대기 작업이 없고 그동안 작업을 제출하지 않으며 곧바로 단계 2를 하는 것이 최소 조건이다. 롤백 순서도 같다(단계 4: orchd를 먼저 멈춤).
+> 4. **GitHub 토큰의 영향 범위.** broker가 GitHub에 보내는 호출은 코드에 고정된 9가지(자기 계정·조직 읽기, 저장소 확인, 개인·조직 저장소 만들기, 파일 만들기, 보호 브랜치 읽기·만들기, 배포 키 등록)뿐이고 삭제·변경(`DELETE`·`PATCH`)·병합·토큰·협업자·`/user/keys` 호출은 코드에 없다(시험으로 고정). 그래도 **토큰 자체는 그 사용자의 권한을 모두 가진 토큰**이다(클래식 `repo` 범위면 모든 비공개 저장소 접근): 한 번 유출되면 위 9가지 밖의 일도 GitHub에서 할 수 있다. **만료일을 두고(사용자 결정), 시험이 끝나면 폐기하거나 권한을 줄이고, 의심되면 GitHub에서 즉시 폐기한다.** 토큰 값은 **사용자가 웹 토큰 화면에 직접 입력한다. 이 대화·채팅·터미널에 붙이지 않는다.**
+> 5. **공개 저장소는 누구나 읽는다. 그리고 무료 요금제에서는 브랜치 보호가 공개 저장소에서만 켜진다.** 이 도구는 새 저장소의 `main`에 보호 규칙(강제 푸시·삭제 금지, 관리자 포함)을 켜야 성공으로 친다. **무료 요금제에서 비공개 저장소를 만들면 보호 단계에서 거부되어 `create_partial`(단계 `protect`)로 끝나고, 파일이 올라간 저장소만 GitHub에 남는다**(배포 키 등록과 등록부 기록은 그 뒤 단계라 일어나지 않는다: 쓸 수 없는 저장소). 요금제는 사용자가 안다: 비공개를 만들려면 유료 요금제(보호 브랜치 지원)여야 한다. 아니면 공개로 만들되 **시험용 이름으로, 템플릿 파일만 들어간다는 것을 알고, 끝난 뒤 지운다**(공개 시험 저장소도 한동안 세상에 보인다).
+> 6. **같은 배포 키를 두 번 쓰지 않는다.** GitHub는 한 공개 키를 저장소 하나에만 등록하게 한다. 그래서 GitHub 프로젝트는 저장소마다 orchd가 새 키 쌍을 만든다(GitLab 프로젝트는 W3c의 공용 키 그대로). **제안(propose)은 키만 만들고 등록부·GitHub에는 아무것도 쓰지 않는다.** 서명 뒤 적용이 성공하면 `ssh/keys/<id>/`로 옮기고, 적용되지 않은 키는 15분 뒤와 orchd 시작 때 지운다(자기가 만든 것만). **orchd를 재시작하면 서명 대기 중이던 제안은 `key_expired`("처음부터 다시 제안")가 된다.**
+> 7. **받아들인 한계:** 프로젝트 id는 원격 저장소 이름과 같아야 한다(대소문자는 GitHub만 무시): 이름에 `_`·`.`·대문자가 있는 GitHub 저장소나 id 규칙(`^[a-z][a-z0-9-]{1,39}$`)에 안 맞는 이름은 연결할 수 없다. GitLab에서 경로에 `_`·대문자·`.`가 있는 프로젝트는 연결할 수 없다. **새 저장소는 소문자 이름만 만든다.** GitHub의 "그룹 만들기"는 없다(조직 생성 API가 없다): 소유자는 내 계정 또는 이미 있는 조직이다.
+> 8. **절차가 요구하는 비밀 취급.** 이 절차의 어디에도 비밀을 채팅으로 보내라는 단계는 없다. GitHub 토큰은 웹 토큰 화면에만, 개인 키는 서버 안에서 `orch` 계정만 읽는다(이 절의 점검 명령도 개인 키를 열지 않는다. 예외는 단계 4의 E "키가 없어졌을 때": 그곳에서만 사람이 새 키를 만든다).
+
+### 15.0 시작 전에 모두 참이어야 하는 것
+- **출발점: W3c 컷오버가 끝난 상태**(14장). **실서버의 현재 상태가 이것이다(2026-11-12 기준 사용자·컨트롤러가 알려 준 사실, 이 저장소에서는 확인하지 못함):** broker·`orchd`가 W3c main `56dfe3e`, 등록부 버전 2, 제공자 `example-group-gitlab`, 웹에서 등록한 토큰 `orch-api-token`, nft는 GitLab `100.64.0.10`(22·18082)만 허용, `git` 2.43·OpenSSH 9.6, orchd에 기본 `--git-remote /home/orch/repos/remote.git`이 있음. 아래 점검 (a)로 이 사실을 서버에서 다시 본다.
+  - **W3c 컷오버가 끝나지 않았다면:** 14장을 먼저 끝까지 한다(정책 클래스 `registered`, GitLab 관리자 토큰, 등록부 버전 2). **14장과 15장을 한 번에 합치지 않는다**: 새 바이너리는 버전 1 등록부를 곧바로 버전 3으로 올릴 수 있지만(`registry.json.v1.bak`을 남김) 그 경로는 서버에서 한 번도 실행하지 않았고, 14장 3단계가 확인하는 것(첫 실제 `set_token` 서명, GitLab 도달, 복제 권한)이 15장의 전제다.
+- **실행 중이거나 대기 중인 작업이 없다**(`orch list`, `orch approvals`): 단계 1은 broker를, 단계 2는 `orchd`를 재시작한다(작업 제출 중단).
+- **웹 서명에 쓸 패스키 서명자가 등록되어 있다**(`sudo orch admin signers list`에 `webauthn` 형식). **15장의 실제 서명(GitHub 제공자 저장, 저장소 생성, 연결)은 아직 한 번도 실제 패스키로 확인하지 않았다.**
+- **백업은 `/root/backup-w3e`(root 소유 0700)에만 둔다.** `orch`가 쓸 수 있는 폴더에는 두지 않는다.
+- **사전 점검 (단계 1 전에, 전부 읽기 전용이고 값·개인 키를 찍지 않는 명령. 컨트롤러가 서버에서 직접 한다).** 하나라도 예상과 다르면 **시작하지 않고** 보고한다.
+  - **(a) W3c 상태와 등록부.** `systemctl is-active orch-broker orchd` → `active` 둘. `sudo sha256sum /usr/local/bin/orch-broker /usr/local/lib/aigate/orchd`(결과를 기록: 롤백 확인에 쓴다). `sudo stat -c '%U:%G %a %n' /var/lib/orch-broker /var/lib/orch-broker/registry.json` → 폴더 **`orch-broker:orch-broker 700`**, 파일 `orch-broker:orch-broker 600`. `sudo grep -o '"version": *[0-9]*' /var/lib/orch-broker/registry.json` → **`"version":2`**(이미 3이면 누군가 새 broker를 먼저 시작한 것: 멈추고 확인). 제공자와 프로젝트: 14장 1-5와 같은 읽기 호출 `providers`·`projects`(값이 없는 읽기)에서 제공자 `example-group-gitlab`과 프로젝트 `toy`·`sample-app`(그리고 W3c에서 만든 프로젝트가 있다면 그것)를 본다. `sudo ls /var/lib/orch-broker`에 `registry.json`, `used-requests.json`, `budget.json`, `secrets`, `tokens.json`이 있고 **`registry.json.v2.bak`는 아직 없다.** 이 두 응답은 컷오버 전후 비교용으로 단계 1-0에서 `/root/backup-w3e`에 저장한다.
+  - **(b) `ssh` 폴더와 키 폴더를 만들 수 있는지(실제 유닛 샌드박스 기준).** `sudo stat -c '%U:%G %a %F %n' /home/orch/orchd/ssh` → 소유자 **`orch:orch`**, 모드 0700 또는 0750 이하, **`directory`(심볼릭 링크가 아님)**. `sudo ls -la /home/orch/orchd/ssh`에 `id_gitlab_deploy`(0600 `orch`), `id_gitlab_deploy.pub`, `known_hosts_gitlab`이 있고 **`keys`·`keys-staging`은 아직 없다**(orchd가 첫 제안 때 만든다). 유닛과 같은 샌드박스에서 쓰기 가능성만 본다(만들지 않는다): `sudo systemd-run --wait --pipe -p User=orch -p ProtectSystem=strict -p ProtectHome=read-only -p 'ReadWritePaths=/home/orch/orchd /home/orch/repos' -p PrivateTmp=yes /bin/sh -c 'test -d /home/orch/orchd/ssh && test -w /home/orch/orchd/ssh && echo writable'`(예상 `writable`). `systemctl show orchd -p User -p ReadWritePaths -p ProtectSystem -p ProtectHome -p PrivateTmp` → `User=orch`, `ReadWritePaths`에 **`/home/orch/orchd`**와 `/home/orch/repos`, `ProtectSystem=strict`, `ProtectHome=read-only`, `PrivateTmp=yes`. **이 점검은 폴더 만들기(`mkdir`)·0700 모드·`umask`를 보증하지 못한다**: 시험은 임시 폴더에서 같은 사용자로만 돌았다. 실제로 만들어지는지는 3-6의 첫 제안에서 처음 드러나고, 못 만들면 `key_staging_failed`(아무것도 쓰지 않는 안전한 실패)다.
+  - **(c) `git`·`ssh` 실행 파일과 OpenSSH 버전.** `sudo ls -l /usr/bin/git /usr/bin/ssh`, `sudo -u orch sh -c 'git --version; ssh -V'`(예상 git 2.43, OpenSSH 9.6). orchd가 만드는 키는 Go 표준 라이브러리의 ed25519 키를 OpenSSH 형식으로 저장한 것이다: **OpenSSH 9.6이 그 개인 키 파일을 받아들이는지는 서버에서 한 번도 확인하지 못했다**(3-6의 첫 복제가 확인한다).
+  - **(d) `known_hosts_gitlab`과 GitHub 호스트 키.** `sudo stat -c '%U:%G %a %n' /home/orch/orchd/ssh/known_hosts_gitlab`(소유자 `orch`, 그룹·기타 쓰기 불가). `sudo ssh-keygen -F github.com -f /home/orch/orchd/ssh/known_hosts_gitlab; echo "exit $?"` → 지금은 **`exit 1`(항목 없음)이 정상**이다. GitHub 항목은 **사용자가 GitHub의 공식 SSH 지문과 대조한 뒤에만** 넣는다(아래 사용자 사전 작업 5). **GitHub 호스트 키를 컨트롤러가 자동으로 받아 넣지 않는다.** 항목이 이미 있다면 누가 언제 넣었는지 확인하고, 사용자 사전 작업 5의 대조를 다시 한다.
+  - **(e) 방화벽 상태(바꾸지 않는다, 있는 것만 보고한다).** `sudo nft list ruleset | grep -n -E '18082|:22|dport (22|443)|140\.82|github'`와 `getent hosts api.github.com github.com`. 현재 규칙은 GitLab만 허용한다고 알려져 있다. **`api.github.com:443`(broker)과 `github.com:22`(orchd)를 어떻게 열지는 사용자 결정이다**(GitHub의 IP는 바뀐다: GitHub가 `https://api.github.com/meta`로 공개하는 IP 대역을 허용하거나 중계 프록시를 쓰는 등). **이 절차는 방화벽을 바꾸지 않는다.** 규칙이 없으면 GitHub 호출은 `provider_unreachable`, 복제·게시는 실패로 끝난다(안전하게 실패, 아무것도 만들어지지 않음). 도달 점검(규칙이 생긴 뒤): broker 샌드박스에서 `sudo systemd-run --wait --pipe -p User=orch-broker -p ProtectSystem=strict -p ProtectHome=yes /usr/bin/curl -s -o /dev/null -w '%{http_code}\n' https://api.github.com/`(예상 `200`: 토큰을 쓰지 않는 읽기). orchd 쪽 ssh 도달(키 없이 `publickey` 거부가 나오면 도달과 호스트 키 고정이 된 것이다): `sudo -u orch ssh -F /dev/null -i /dev/null -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes -o StrictHostKeyChecking=yes -o UpdateHostKeys=no -o UserKnownHostsFile=/home/orch/orchd/ssh/known_hosts_gitlab -o ConnectTimeout=10 -T git@github.com`(예상 `Permission denied (publickey).`; `Host key verification failed`는 (d)의 항목이 없거나 틀림, `timed out`은 방화벽).
+  - **(f) 정책 클래스 `registered`.** `sudo grep -n -B1 -A2 registered /home/orch/orchd/policy.yml` → W3c 컷오버에서 넣었다면 **있어야 한다**(없으면 새 프로젝트 생성·연결 제안이 서명 전에 `policy_class_missing`: 14장 사용자 사전 작업 1). `attach_remote`는 클래스가 필요 없다.
+  - **(g) 저장소 루트와 이름.** `sudo grep -n -A3 repo_roots /etc/orch-broker/broker.json`의 첫 항목이 `/home/orch/repos`, `sudo ls -a /home/orch/repos`에 3-6~3-8에서 쓸 이름이 **없다**(`.clone-*`도 없다).
+  - **(h) 샌드박스 안 `-check` 기준선.** 현재(W3c) 바이너리로 단계 1-4의 `-check` 명령을 한 번 돌려 출력을 기록한다(새 바이너리 비교용).
+  - **(i) 아무것도 돌고 있지 않다.** `orch list`, `orch approvals`.
+  - **서버에서 쓰기 시험을 따로 하지 않는다.** 위 점검으로 알 수 없는 것(GitHub의 실제 응답, 키 폴더 만들기, 복제 권한, 실제 패스키 서명)은 단계 3에서 처음 드러난다.
+
+**사용자 사전 작업 (컨트롤러가 대신할 수 없다).**
+1. **[사용자 결정] GitHub 토큰을 만든다.** 개인 계정의 토큰이고 **만료일을 둔다**(짧을수록 안전하다: 며칠~수십 일, 사용자 결정). 어떤 종류가 이 도구의 호출을 덮는지는 **확인하지 못한 부분이 있다:**
+   - *확인함(GitHub 공식 문서를 구현 중에 읽음, 2026-11-12):* 클래식 토큰은 `repo` 범위가 비공개 저장소 생성을, `public_repo`(또는 `repo`)가 공개 저장소 생성을 덮는다.
+   - *확인하지 못함:* 세분화(fine-grained) 토큰의 권한 이름과 범위. 문서 쪽 페이지가 그 목록을 명시하지 않았다. 기대는 저장소 권한 `Administration`(쓰기: 저장소 만들기·보호 브랜치·배포 키)·`Contents`(쓰기: 첫 파일)·`Metadata`(읽기)이지만, **세분화 토큰이 개인 계정에 새 저장소를 만들 수 있는지**와 아직 없는 저장소를 "선택한 저장소"로 고를 수 없다는 점(새 저장소 생성에는 "모든 저장소"가 필요할 수 있음)은 확인하지 못했다.
+   - *권고:* 먼저 사용자가 각 엔드포인트의 공식 문서(저장소 만들기, 파일 만들기, 보호 브랜치, 배포 키) 페이지의 "세분화 토큰" 부분을 직접 읽고(ego-browser 등) 만들 수 있다고 적혀 있는 권한으로 **세분화 토큰**을 시도한다. 그것이 안 되면 **클래식 토큰의 `public_repo`**(공개만 만들 때) 또는 `repo`(비공개도 만들 때)로 하되 `repo`는 모든 비공개 저장소에 닿는다는 점을 감수한다. **기존 저장소 연결(link·attach)만 할 토큰은 그 저장소들에 접근하고 배포 키(`Administration` 쓰기)를 등록할 수 있으면 된다**(확인하지 못함). 어느 쪽이든 토큰 값은 **웹 `#/tokens`에서 종류 `github`, 이름(예 `github-main`, 소문자·숫자·`-`), 값, 만료일을 사용자가 직접 입력**하고 확인 화면의 마지막 4자를 GitHub 화면과 눈으로 대조한 뒤 패스키로 서명한다. 그 뒤 서버에서 `sudo stat -c '%U:%G %a %n' /var/lib/orch-broker/secrets/<이름> /var/lib/orch-broker/tokens.json` → **`orch-broker:orch-broker 400`과 `600`**.
+2. **소유자: 개인 계정**(2026-11-12 사용자 결정). 소유자 목록에는 내가 속한 조직도 나올 수 있으나 쓰지 않는다. 조직에 만들려면 그 조직이 토큰을 허용해야 한다(확인하지 못함).
+3. **[사용자 결정] 공개/비공개, 요금제, 시험 저장소 이름, 실제로 만들지 여부.** 위 ⚠ 5. 정하지 않았으면 3-6은 하지 않는다. 이름은 `^[a-z][a-z0-9-]{1,39}$`(예 `w3e-smoke-1112`).
+4. **[사용자 결정] 방화벽 규칙**(위 (e)). 이 도구와 컨트롤러는 nft를 바꾸지 않는다.
+5. **GitHub 호스트 키를 GitHub의 공식 지문과 사용자가 대조해서 `known_hosts_gitlab`에 넣는다.** **`ssh-keyscan`의 출력은 그것만으로는 믿지 않는다**(중간자가 줄 수 있다). 절차는 정확히 이렇다:
+   1. 사용자의 브라우저에서 GitHub의 공식 문서 "GitHub's SSH key fingerprints"(docs.github.com, 주소를 직접 쳐서 연다)에 적힌 **ED25519 SHA256 지문**을 읽는다. 가능하면 두 번째 출처로 `https://api.github.com/meta`의 `ssh_key_fingerprints` 항목도 읽어 두 값이 같은지 본다. **값은 이 문서에 적지 않는다**(바뀔 수 있고, 기억이 아니라 그때 공식 페이지에서 읽는다).
+   2. 후보 줄을 만든다: 네트워크가 닿는 곳(사용자의 Mac 등)에서 `ssh-keyscan -t ed25519 github.com > /tmp/gh_host_candidate`. 이 줄은 아직 **믿지 않는다.**
+   3. 지문을 계산한다: `ssh-keygen -lf /tmp/gh_host_candidate` → `256 SHA256:… github.com (ED25519)`. 이 `SHA256:…` 문자열을 1에서 읽은 공식 지문과 **한 글자씩** 대조한다. 한 글자라도 다르면 **넣지 않고 멈춘다**(다른 네트워크에서 3을 다시 해 본다. 계속 다르면 보고).
+   4. 대조가 맞았을 때만 서버에 넣는다. 먼저 백업: `sudo cp -a /home/orch/orchd/ssh/known_hosts_gitlab /root/backup-w3e/known_hosts_gitlab.pre-w3e`. 후보 줄은 공개 정보(호스트 키)라 터미널로 옮겨도 된다. 서버의 임시 파일 `/tmp/gh_host_candidate`에 놓고 `sudo sh -c 'cat /tmp/gh_host_candidate >> /home/orch/orchd/ssh/known_hosts_gitlab'`(소유자·모드 불변이어야 한다: 다음 줄로 확인).
+   5. 서버에서 다시 확인한다: `sudo stat -c '%U:%G %a %n' /home/orch/orchd/ssh/known_hosts_gitlab`(소유자 `orch`, 쓰기 불가 유지), `sudo ssh-keygen -F github.com -f /home/orch/orchd/ssh/known_hosts_gitlab`(첫 열이 정확히 `github.com`인 평문 줄 하나. `*`·`?`·`!`·`@cert-authority`·`@revoked`가 든 줄은 고정으로 치지 않는다), 그리고 그 줄의 지문을 서버에서도 한 번 계산해 공식 지문과 같은지 본다: `sudo ssh-keygen -F github.com -f /home/orch/orchd/ssh/known_hosts_gitlab | grep -v '^#' > /tmp/gh_host_line; ssh-keygen -lf /tmp/gh_host_line`. 임시 파일 `/tmp/gh_host_candidate`와 `/tmp/gh_host_line`은 지운다.
+6. **[사용자 결정] 기존 저장소 연결·원격 연결을 시험할지**(3-7, 3-8): 이미 있는 저장소의 설정에 배포 키가 **등록되고 이 도구는 지우지 못한다.**
+
+**알아둘 것 (코드 읽기와 시험 기준, 실서버·실제 GitHub 미확인).**
+0. **웹에서 만든 모든 변경은 서명이 필요하다.** GitHub 제공자 등록, 저장소 만들기, 기존 저장소 연결, 원격 연결이 각각 패스키 서명 한 번이다. 확인 화면에 변경 전체(소유자, 이름, **공개/비공개(굵게)**, 템플릿, AI 전송, 게시 권한, 이 저장소 하나를 위해 방금 만든 **배포 키의 지문**)가 나오고 **브라우저가 `change` 해시를 다시 계산해 서버의 값과 같을 때만** 서명 단추가 켜진다. 배포 키의 해시가 서명에 들어가므로 서명 뒤에 키가 바뀌면 orchd와 broker가 거부한다.
+1. **공개/비공개는 기본값이 없다**(항상 고르고 서명된다). GitLab 프로젝트는 계속 비공개 고정이고 이 필드를 받지 않는다. 공개 저장소는 서명하지 않은 채 만들어지지 않는다(시험으로 고정).
+2. **GitHub 쪽 순서(`create_project`):** 소유자 확인(내 계정·조직 목록에서 서명된 소유자를 찾음, 서명된 글자는 믿지 않고 GitHub의 철자를 씀) → 같은 이름이 GitHub에 있으면(대소문자 무시) `project_name_taken`(인수 안 함) → 저장소 만들기 → 첫 파일들(`README.md`가 먼저, 첫 파일은 브랜치를 지정하지 않음) → 기본 브랜치가 `main`인지 → `main` 보호(방금 만든 저장소에만 쓴다) → 배포 키 → **마지막에** 등록부. 중간 실패는 지우지 않고 고아 기록 + `create_partial`(저장소 만들기 호출이 4xx로 거부되면 만들어진 것이 없으므로 고아 기록 없이 `github_refused`).
+3. **`link_project`·`attach_remote`는 저장소를 만들거나 지우거나 설정을 바꾸지 않는다**: 저장소가 있는지 읽고(없으면 `repo_not_found`), **배포 키 하나를 등록**하고(같은 키가 이미 있으면 성공으로 보지 않고 거부), 등록부에 쓴다. 키만 붙고 등록이 안 되면 `link_partial`("저장소는 지우지 마세요, 배포 키만 직접 제거하세요")과 `origin: linked` 고아 기록이다(**"만든 것"이라고 말하지 않는다**). `attach_remote`는 provider와 remote만 바꾸고 `ai_context`·경로·종류는 그대로다. **정적 `--git-remote-for` 항목이 있는 프로젝트(예: `sample-app`)는 정적이 우선이라 `static_remote_wins`로 서명 전에 거부된다.** 이미 원격 매핑이 있는 프로젝트는 `already_linked`로 거부된다(조용한 재지정 없음).
+4. **서명이 유효하면 요청 ID가 소모된다**(W3b와 같은 규칙): 서명 뒤의 모든 거부는 같은 서명으로 다시 보낼 수 없고 새로 서명해야 한다. 모양 오류와 서명 전 거부(`visibility_required` 등)는 ID를 소모하지 않는다.
+5. **시간 제한이 겹친다.** 저장소 만들기 + 첫 파일들 + 자동 복제와 link·attach의 broker 호출(제안·적용 모두 broker의 `projects` 읽기가 있다)은 오래 걸릴 수 있어 웹은 생성·연결 적용을 130초 이상, link·attach 제안을 30초 기다린다. 앞단 프록시가 더 짧으면 서버는 끝냈는데 화면은 "결과를 모름"이 될 수 있다(목록을 다시 읽어 확인, **같은 변경을 다시 서명하지 않는다**).
+6. **복제와 게시.** 생성·연결 직후 한 번 자동 복제한다(ssh만, `known_hosts_gitlab`에 고정된 호스트만, **그 프로젝트의 키 하나만**: `-i <keys/<id>/id_ed25519> -o IdentitiesOnly=yes`). 키가 없거나 모드가 느슨하면 `key_unavailable`로 git을 실행하지 않는다. 게시도 등록부에서 만든 원격과 그 프로젝트의 키만 쓴다(정적 `--git-remote-for` 우선, 등록부를 못 읽고 캐시가 낡으면 "알 수 없음 = 거부").
+7. **한도(주체별).** GitHub 쓰기도 `create_project`·`create_group` 계열(시간당 5)에 합산, `link_project`·`attach_remote`는 합쳐 시간당 10. GitHub 응답의 한도 헤더는 한도 계산에 쓰지 않고 오류 응답의 분류(`provider_rate_limited`)에만 쓴다.
+8. **고아 알림.** `#/projects`에 알림 배지: `created`(이 도구가 만든 것: GitHub에서 직접 지우세요)와 `linked`(원래 있던 저장소: 지우지 마세요, 배포 키만 제거하세요), 출처를 모르면 "출처 불명: 지우기 전에 확인하세요". **정리 op가 없다.**
+9. **롤백하면 옛 broker는 등록부 버전 3을 모른다**(⚠ 2). 컷오버 뒤 만든 프로젝트·제공자·고아 기록은 복원한 등록부에 없다(GitHub·`/home/orch/repos`·`ssh/keys/`에는 남는다).
+
+### 컷오버에서만 확인할 수 있는 것 (사전 목록: 결과 문서 27번 6장에 "확인함/못 함"으로 남긴다)
+1. **실제 GitHub에서** 빈 저장소에 콘텐츠 API로 첫 파일(`branch` 없이)이 기본 브랜치 `main`을 만드는지, 보호 브랜치 `PUT`의 본문·응답과 무료 요금제 비공개 저장소의 거부(403 가정), 배포 키 `POST`의 응답(201 가정)·같은 키 중복 거부 응답·`read_only` 응답, 토큰 범위(클래식 `repo`·`public_repo`, 세분화 권한), 한도 응답 헤더, `POST /user/repos`의 응답 모양.
+2. **orchd가 `ssh/keys`·`ssh/keys-staging`을 실제 유닛에서 만들 수 있는지**(소유자·0700·`ReadWritePaths`), **OpenSSH 9.6이 orchd가 만든 개인 키를 받아들이는지**, GitHub가 그 공개 키(주석 `orchd-deploy` 포함)를 받아들이는지.
+3. **`github.com` 호스트 키 고정과 방화벽**(사전 점검 d·e, 사용자 사전 작업 4·5).
+4. **등록부 v2→v3 마이그레이션을 실서버 파일·uid·샌드박스로**(1-4)와 `registry.json.v2.bak`, **broker·orchd 버전 차이 구간의 동작**(이 절차는 그 구간을 없앤다).
+5. **GitLab의 공용 배포 키가 두 번째 프로젝트에 합류하는지**와 GitLab 기본 브랜치 보호 설정(W3c에서 이월, 14장 ⚠ 5·사전 점검 k): GitLab 프로젝트를 더 만들 때만 드러난다.
+6. **실제 패스키로 만든 GitHub `set_provider`·`create_project`·`link_project`·`attach_remote` 서명을 broker가 검증하는지.**
+7. 키보드만·스크린 리더로의 새 화면 사용, 실제 Chrome에서 폼 다시 그리기 때 포커스 유지, 130초 대기.
+
+### 단계 1. broker 갱신·등록부 마이그레이션 [사용자][주의: 등록부가 버전 3으로 올라간다 → 롤백은 단계 4의 A]
+**순서: (orchd 정지) → 백업 → (Mac) 게이트·빌드 → 옛 broker 정지 → 새 바이너리 설치 → 샌드박스 안에서 `-check` → 시작 → 읽기 점검.** `broker.json`은 바뀌지 않는다.
+
+**1-0. 먼저 `orchd`를 멈춘다(⚠ 3, 권장 순서). [사용자]** `orch list`가 비어 있음을 보고: `sudo systemctl stop orchd`. 이 시점부터 단계 2의 시작까지 **웹 콘솔·작업 처리·게시가 멈춘다**(broker는 아직 W3c 그대로다). 멈추지 않고 진행하는 것은 ⚠ 3의 이유로 권장하지 않는다.
+
+**백업(서비스 영향 없음). `/root/backup-w3e`(root 0700).** orch-vm에서:
+```
+B=/root/backup-w3e
+sudo install -d -m 0700 -o root -g root $B $B/bin
+sudo stat -c '%U:%G %a %n' $B          # root:root 700 이어야 한다
+sudo cp -a /usr/local/bin/orch-broker $B/bin/orch-broker
+for f in orchd orch aigate; do sudo cp -a /usr/local/lib/aigate/$f $B/bin/$f; done
+sudo cp -a /etc/orch-broker $B/etc-orch-broker
+sudo cp -a /var/lib/orch-broker $B/var-lib-orch-broker       # registry.json(버전 2)이 여기 있다: 롤백의 핵심
+sudo cp -a /home/orch/orchd/policy.yml $B/policy.yml.pre-w3e
+sudo cp -a /home/orch/orchd/ssh/known_hosts_gitlab $B/known_hosts_gitlab.pre-w3e
+sudo cp -a /etc/systemd/system/orch-broker.service $B/orch-broker.service.pre-w3e
+sudo cp -a /etc/systemd/system/orchd.service $B/orchd.service.pre-w3e; sudo cp -a /etc/systemd/system/orchd.service.d $B/ 2>/dev/null
+sudo grep -o '"version": *[0-9]*' $B/var-lib-orch-broker/registry.json    # "version":2
+# 컷오버 전후 비교용 읽기 응답(값 없음)
+for op in providers projects; do sudo -u orch python3 -c 'import socket,sys;s=socket.socket(socket.AF_UNIX);s.connect("/run/orch-broker/broker.sock");s.sendall(("{\"v\":1,\"op\":\""+sys.argv[1]+"\"}\n").encode());print(s.makefile().readline())' $op | sudo tee $B/$op-before.json >/dev/null; done
+sudo ls -lR $B | head -50
+```
+(소켓은 `orch` 계정만 쓸 수 있어 읽기는 `sudo -u orch`로 하고, root 전용 폴더에는 `sudo tee`로 저장한다. 읽기 응답에는 비밀이 없다.) 백업에는 `openai.key`(0400)와 **토큰 파일 사본(`secrets/`: GitLab 관리자 토큰, 이미 만들었다면 GitHub 토큰)**이 들어간다. 값은 화면에 나오지 않고 폴더는 root만 들어갈 수 있다. **`orch`가 쓸 수 있는 폴더에 두지 않는다.** 컷오버가 안정되면 사용자가 `sudo find /root/backup-w3e -path '*secrets*' -type f -exec shred -u {} +`와 `sudo shred -u /root/backup-w3e/etc-orch-broker/openai.key`로 비밀 사본을 지운다.
+
+**1-1. 빌드 전 게이트 (Mac, 저장소에서). 하나라도 실패하면 빌드하지 않는다.**
+```
+go test -run TestConstantsAgreeWithWeb -v ./internal/orch/api     # --- PASS 이고 SKIP 이 없어야 한다
+go vet ./... ; gofmt -l .                                         # gofmt 출력 없음
+GOOS=darwin go vet ./cmd/... ./internal/... ; GOOS=linux go vet ./cmd/... ./internal/...
+go test ./... -count=1 -race
+node --test "internal/orch/web/test/*.test.js"
+```
+(결과 문서 27번 2장의 숫자와 같은 커밋인지 확인한다.)
+
+**1-2. 새 바이너리.** Mac에서 `GOOS=linux GOARCH=amd64 go build -o /tmp/w3e/<이름> ./cmd/<이름>`을 `orch-broker`, `orchd`, `orch`, `aigate`에 대해 하고(`uname -m`에 맞춘다) `scp`로 VM `/tmp/w3e/`에 보낸다. **아직 설치하지 않는다.**
+
+**1-3. 옛 broker 정지 → 새 바이너리 설치.** **옛 broker를 반드시 먼저 멈춘다**(⚠ 2). (정지한 뒤 1-4가 실패하면 broker는 멈춘 채로 남는다: 곧바로 단계 4의 A.)
+```
+sudo systemctl stop orch-broker
+sudo install -o root -g root -m 0755 /tmp/w3e/orch-broker /usr/local/bin/orch-broker
+```
+**1-4. 샌드박스 안에서 `-check`(시작 전).** 유닛과 같은 샌드박스 옵션(13·14장과 같은 명령):
+```
+sudo systemd-run --wait --pipe -p User=orch-broker -p Group=orch-broker -p SupplementaryGroups=orch -p ProtectSystem=strict -p ProtectHome=yes -p SystemCallFilter=@system-service /usr/local/bin/orch-broker -check -config /etc/orch-broker/broker.json -state-dir /var/lib/orch-broker
+```
+예상: `orch-broker: 점검 통과 (…)` 한 줄과 `Finished with result: success`(종료 코드 0), 사전 점검 (h)의 기준선과 같은 경고만. **`-check`는 등록부를 올리지 않는다**: 끝난 뒤에도 `sudo grep -o '"version": *[0-9]*' /var/lib/orch-broker/registry.json`이 **`"version":2`** 이어야 한다. 실패 문장이 나오면 **시작하지 않고 멈춘다 → 단계 4의 A.**
+
+**1-5. 시작(등록부가 여기서 버전 3으로 올라간다).**
+```
+sudo systemctl start orch-broker
+systemctl status orch-broker --no-pager; sudo journalctl -u orch-broker -n 30 --no-pager
+sudo stat -c '%U:%G %a %n' /var/lib/orch-broker /var/lib/orch-broker/registry.json /var/lib/orch-broker/registry.json.v2.bak
+sudo grep -o '"version": *[0-9]*' /var/lib/orch-broker/registry.json
+sudo sha256sum /var/lib/orch-broker/registry.json.v2.bak /root/backup-w3e/var-lib-orch-broker/registry.json
+sudo ls -a /var/lib/orch-broker | grep -c '^\.state-' || true
+```
+예상: 유닛 `active (running)`, 로그에 오류 없음. 폴더 `orch-broker:orch-broker 700`, `registry.json`은 **`600`이고 `"version":3`**, **`registry.json.v2.bak`가 `orch-broker:orch-broker 600`으로 있고 root 백업의 `registry.json`과 sha256이 같다**, 임시 파일 `.state-*` 없음(0). **파일이 버전 2 그대로이거나 broker가 시작하지 않으면(마이그레이션 쓰기나 백업 쓰기 실패 → broker가 시작을 거부하고 버전 2 파일은 건드리지 않는다) 멈춘다 → 사전 점검 a·b와 유닛 샌드박스를 다시 보고 단계 4의 A.**
+
+**1-6. 읽기 op와 회귀.** `orch` 계정이 소켓으로 호출한다(값을 찍지 않는 읽기, 14장 1-5와 같은 명령):
+```
+for op in providers projects status tokens; do sudo -u orch python3 -c 'import socket,sys;s=socket.socket(socket.AF_UNIX);s.connect("/run/orch-broker/broker.sock");s.sendall(("{\"v\":1,\"op\":\""+sys.argv[1]+"\"}\n").encode());print(s.makefile().readline())' $op; done
+```
+예상: `providers`는 `example-group-gitlab`(내용 불변). `projects`는 1단계 전(`$B/projects-before.json`)과 같은 프로젝트·`ai_context`·`provider`이고 **프로젝트의 연결 필드가 `gitlab:{project,project_id}`가 아니라 `remote:{path,id}`로 보이며(내용은 같은 값)** 고아 기록에는 `"origin":"created"`가 붙는다. `status`·`tokens`는 이전과 같다. **프로젝트 목록·`ai_context`가 바뀌었거나 `remote`의 값이 이전 `gitlab`의 값과 다르면 멈춘다 → 단계 4의 A.**
+
+**검증 체크리스트:** 1-4 통과(등록부 아직 v2), 1-5의 유닛 active·`registry.json` 600·`"version":3`·`.v2.bak` 600과 sha256 일치, 1-6의 읽기 응답. **그래도 안 되면:** 단계 4의 A. orchd는 멈춘 상태다(1-0).
+
+### 단계 2. `orchd` 갱신 [사용자]
+**DB 스키마가 바뀌지 않으므로 DB를 복원할 필요가 없다.** `orchd`는 1-0에서 이미 멈춰 있다.
+```
+sudo systemctl is-active orchd          # inactive
+for f in orchd orch aigate; do sudo install -o root -g root -m 0755 /tmp/w3e/$f /usr/local/lib/aigate/$f; done
+sudo systemctl start orchd
+journalctl -u orchd -n 40 --no-pager
+```
+유닛과 드롭인은 바꾸지 않는다. **검증 체크리스트**
+- 로그: 오류 없이 대기, `approvals: mode signed`, 스키마 오류 없음, 게시 해석기·복제 설정에 대한 오류 없음. 시작 때 `ssh/keys-staging`의 남은 키 정리는 한 일이 없다면 로그에 아무것도 없다(폴더가 아직 없다).
+- `orch list`: 단계 1 이전의 작업이 모두 그대로, 마지막 번호가 같다.
+- 새 엔드포인트가 떠 있고 로그인 없이는 닫혀 있는지: `curl -sk -o /dev/null -w '%{http_code}\n' https://<FQDN>/api/v1/providers` → **401**(같은 방식으로 `/api/v1/providers/x/groups`, `POST /api/v1/projects/link/propose`, `POST /api/v1/projects/attach/propose`, `POST /api/v1/projects/create/propose`도 401). 404면 옛 바이너리다.
+- **W3c 프로젝트가 여전히 목록에 보이고 연결이 이어지는지**: 웹은 3-1에서 본다. 게시 해석기는 `remote` 필드를 읽는다: 14장 3-6의 게시 확인을 W3c에서 했던 프로젝트가 있으면 (사용자 결정) 한 번 더 한다.
+
+**그래도 안 되면:** 단계 4(롤백: orchd를 먼저 멈춘 채 A→B 순서).
+
+### 단계 3. 웹에서 확인 [사용자]
+**전제:** 단계 1·2 통과, 사용자 사전 작업 1(토큰)·4(방화벽)·5(호스트 키)를 마쳤다. Mac 브라우저에서 `https://<FQDN>/`에 패스키로 로그인. "예상"은 코드·시험(`internal/orch/web/test/w3e.test.js`, `internal/orch/api/w3e_e4_test.go`·`adversarial_w3e_test.go`, `internal/broker/create_project_github_test.go`·`link_project_test.go`·`adversarial_w3e_test.go`)에서 읽은 것이다.
+
+| # | 할 일 | 예상(코드·시험 기준) | 다르면 |
+|---|---|---|---|
+| 3-1 | **기존 화면 회귀.** `#/providers`, `#/projects` 열기 | 제공자 목록에 `example-group-gitlab`(종류 열 `gitlab`), 기존 프로젝트와 W3c에서 만든 프로젝트가 이전과 같고 **"기존 저장소 연결" 단추**와(제공자·연결이 없는 행에만) "원격 연결" 단추가 새로 보인다. 제공자 화면에 **비밀 값을 입력하는 칸이 없다**(토큰은 이름만 고른다). 고아 알림은 이전과 같다 | 메뉴·단추가 없으면 브라우저 캐시(강력 새로고침), 목록이 비면 단계 1·2 |
+| 3-2 | **GitHub 토큰 등록**(사용자 사전 작업 1, **값은 웹 토큰 화면에만**) | 목록에 종류 `github`·마지막 4자·만료일, 출처 "저장소". 서버(컨트롤러): `sudo stat -c '%U:%G %a %n' /var/lib/orch-broker/secrets/<이름> /var/lib/orch-broker/tokens.json` → `400`·`600` | 14장 사용자 사전 작업 2와 같음. 안 되면 멈춘다 |
+| 3-3 | **GitHub 제공자 등록(실제 서명).** "제공자 추가": id `github`, 종류 **`github`**(주소 `https://api.github.com`과 ssh 주소 `ssh://git@github.com`이 채워지고 토큰 목록에는 `github` 종류 토큰만 나온다), 토큰 선택 → 확인 화면 → 패스키 서명 | "제공자를 저장했습니다". 목록에 `github` 종류 한 줄. 서버: `providers` 호출에 항목이 있고 `token_ref`는 이름뿐. 원장에 `provider_change`(`ok:true`) 한 줄, 값 없음. **`github.com`·`www.github.com`을 주소로 쓰면 `bad_url`로 거부된다**(API 주소는 `api.github.com`) | `bad_url`, `token_ref_unknown`(토큰 종류), `bad_signature`(**GitHub 종류의 실제 패스키 서명 검증은 처음**: 실패하면 멈추고 보고), `registry_unavailable`(1-5) |
+| 3-4 | **소유자 목록(읽기, GitHub 호출).** "새 프로젝트 만들기"에서 제공자 `github` 선택 | **소유자 선택**에 "내 계정"(첫 줄)과 속한 조직이 나온다. **"새 그룹 만들기"는 없다.** **공개 여부 선택은 "선택하세요(필수)"로 시작하고 기본값이 없으며, 고르기 전에는 "변경 내용 확인" 단추가 꺼져 있다.** 이것이 **토큰과 방화벽이 실제 GitHub에서 통하는 첫 확인**이다 | `provider_unreachable`(방화벽: 사전 점검 e), `github_refused`(토큰 만료·범위: 상태 범주만 알려 준다), `provider_rate_limited`. **소유자 목록이 비거나 오류면 3-6을 하지 않는다** |
+| 3-5 | **[컨트롤러] 도달·고정 확인(읽기 전용).** 사전 점검 (e)의 두 명령을 다시 | `curl`이 `200`, ssh가 `Permission denied (publickey).`(호스트 키 검증 통과) | 방화벽·호스트 키(사용자 사전 작업 4·5) |
+| 3-6 | **[사용자 결정] 실제 저장소 만들기.** ⚠ **GitHub에 실제 저장소가 남고 이 도구는 지우지 못한다**(⚠ 1·5). 선택지 (a) **하지 않는다**(컷오버를 3-5에서 닫는다: 권장 기본), (b) **공개** 시험 저장소(누구나 읽는다, 끝난 뒤 사용자가 지운다), (c) **비공개**(유료 요금제일 때만: 무료면 `create_partial`(`protect`)로 끝나고 파일만 있는 저장소가 남는다). 소유자 "내 계정" → 이름·설명·템플릿 `basic`·**AI 전송 끔(기본)**·게시 권한 → **공개 여부를 직접 고름** → 확인 화면에서 **공개 여부 문구(굵게)와 저장소별 배포 키 지문**을 확인 → 패스키 서명 | (b)/(c)면 약 10~90초(화면: 단계 안내, 닫아도 서버는 계속한다). 성공: "만들었습니다"와 복제 `cloned`. **서버(컨트롤러, 읽기 전용):** `sudo ls -la /home/orch/repos/<이름>`(`orch:orch 700`, `.git`, `README.md`…), `sudo -u orch git -C /home/orch/repos/<이름> log --oneline`(**파일 수만큼 커밋**), `git remote -v`(`ssh://git@github.com/<GitHub 철자의 소유자>/<이름>.git`), `git status`(깨끗함), `sudo stat -c '%U:%G %a %n' /home/orch/orchd/ssh/keys /home/orch/orchd/ssh/keys/<이름> /home/orch/orchd/ssh/keys/<이름>/id_ed25519 /home/orch/orchd/ssh/keys/<이름>/id_ed25519.pub`(**`orch:orch 700`, 700, 600, 644**: 첫 실제 키 폴더 만들기), `sudo ls -A /home/orch/orchd/ssh/keys-staging`(**비어 있음**), `sudo ssh-keygen -l -f /home/orch/orchd/ssh/keys/<이름>/id_ed25519.pub`(**웹 확인 화면의 지문과 같아야 한다**), `.clone-*` 없음. **GitHub 화면(사용자):** 저장소가 고른 공개 여부, 기본 브랜치 `main`, `main` 보호(강제 푸시·삭제 금지, 관리자 포함), 배포 키 `orchd <이름>`이 1개이고 쓰기 여부가 고른 게시 권한과 같음, **계정에 다른 배포 키가 늘지 않음**. 원장에 `project_create`(`ok:true`)와 `project_clone`(`ok:true`) 한 줄씩. 등록부(1-6 호출)에 새 항목: `provider: github`, `remote.path: 소유자/이름`(GitHub 철자), `ai_context: false` | **`create_partial`**: 화면이 **GitHub에 남은 것의 경로와 단계**를 보여 준다("이 도구는 지우지 않습니다"): 경로를 적어 두고 GitHub에서 직접 지운다(같은 이름은 지우기 전까지 `project_name_taken`). 단계: `project`(만들어졌는지 불확실), `first_commit`(일부 파일만), `default_branch`(첫 파일이 `main`을 기본 브랜치로 만들지 않음 → 가정이 틀림, 보고), **`protect`(무료 요금제의 비공개이거나 보호 규칙 호출 실패: 배포 키·등록부는 만들어지지 않았다)**, `deploy_key`, `register`. `key_staging_failed`: `ssh` 폴더에 키 폴더를 만들 수 없음(사전 점검 b, 아무것도 쓰지 않았다). `key_expired`: 제안 뒤 15분이 지났거나 orchd가 재시작됨 → 처음부터 다시. `clone.status: failed`(`host_not_pinned`·`key_unavailable`·`clone_failed`…): 프로젝트는 만들어졌고 화면의 "다시 복제"로 서명 없이 다시 한다. **복제가 키를 못 받아들이면 OpenSSH 9.6과 Go가 만든 키 형식의 문제다: 보고** |
+| 3-7 | **[사용자 결정] 기존 저장소 연결(`link_project`).** ⚠ **이미 있는 저장소의 Deploy keys에 키가 등록되고 이 도구는 지우지 못한다.** 선택지 (a) 하지 않는다(기본), (b) 이름이 `^[a-z][a-z0-9-]{1,39}$`이고 **프로젝트 id와 같은**(대소문자만 달라도 됨) 저장소 하나를 연결. "기존 저장소 연결": 제공자·원격 경로(`소유자/이름`)·게시 권한(**기본 읽기**)·AI 전송(끔) → 확인 화면의 경고문("이미 있는 저장소의 설정에 이 서버의 배포 키가 등록됩니다…")과 키 지문 → 서명 | 성공 후 `/home/orch/repos/<id>` 복제, `keys/<id>/` 키 쌍, 등록부에 `remote.path`가 GitHub 철자, 원장 `project_link`. **GitHub(사용자):** 그 저장소에 `orchd <id>` 키 1개, 저장소의 다른 설정·파일은 그대로. **같은 키가 이미 있으면 성공이 아니라 거부**(`github_refused`) | `repo_not_found`(토큰이 볼 수 없는 저장소), `remote_name_mismatch`(이름이 id와 다름: 서명 전 거부), `already_linked`, **`link_partial`**(키가 붙었을 수 있다: **저장소는 지우지 말고** GitHub Deploy keys에서 `orchd`로 시작하는 키만 제거) |
+| 3-8 | **원격 연결(`attach_remote`).** (a) **[사용자] 정적 원격 거부 확인(GitHub에 아무것도 쓰지 않음):** `sample-app` 행의 "원격 연결"에서 아무 GitHub 저장소 경로를 넣어 확인 | **`static_remote_wins`** 고정 문장이 서명 전에 나온다(`--git-remote-for` 항목이 있어 정적 원격이 우선) | 다르면(제안이 열림) 멈추고 보고 |
+| 3-8b | **[사용자 결정] 실제 연결:** 이미 등록되어 provider·원격이 없는 **새 시험용 로컬 프로젝트**에만(`toy`·`sample-app` 같은 운영 프로젝트의 게시 경로를 바꾸지 않는다) | `ai_context`·경로·종류 불변, `provider`·`remote`만 설정, 배포 키 1개 등록(GitHub), `keys/<id>/` | `already_linked`(원격 매핑이 이미 있음), `link_partial` |
+| 3-9 | **[사용자 결정] 새 GitHub 프로젝트에서 작은 작업 한 번(게시 확인).** 게시 권한을 **쓰기**로 만들었고 `registered`가 L1일 때만 의미가 있다. `orch submit --repo /home/orch/repos/<이름> --base <SHA> --class registered --agent claude --prompt '…'`(문서 한 줄 같은 작은 작업) | 게이트(`basic` 템플릿: **검사 없음**)를 통과하고 `push_branch`가 **해석기가 만든 원격(`ssh://git@github.com/…`)과 그 프로젝트의 키**로 `orch/<작업번호>` 브랜치를 올린다. GitHub 화면에 그 브랜치가 보인다(**PR은 만들지 않는다**: W3d). 보호된 `main`은 건드리지 않는다 | `publish` 고정 오류(해석기가 "알 수 없음 = 거부": 등록부·`known_hosts_gitlab`·키 모드), push 거부(읽기 키이거나 보호 규칙) |
+| 3-10 | **브로커를 멈춘 상태**(선택): `sudo systemctl stop orch-broker` → `#/providers`와 새 프로젝트 화면(GitHub·연결)을 연다 | 고정 오류(브로커에 연결할 수 없음). 작업 제출·취소·**이미 복제된 프로젝트로의 작업 실행**은 그대로(게시는 "알 수 없음 = 거부" 가능). 끝나면 `sudo systemctl start orch-broker` | 기존 기능까지 막히면 단계 4 |
+| 3-11 | **[컨트롤러] 누출 점검(읽기 전용)** | `sudo sh -c 'stat -c "%U:%G %a %n" /var/lib/orch-broker /var/lib/orch-broker/*.json /var/lib/orch-broker/secrets'`: 폴더 700, 파일 600. **원장:** `sudo grep -E 'provider_change\|project_create\|project_clone\|project_link\|project_attach' /home/orch/orchd/gate-home/.aigate/ledger/orchd.jsonl \| tail -10` → 키 **`action,actor,code,ok,subject`뿐**(경로·키·소유자·값이 없음). **로그:** `sudo journalctl -u orch-broker -u orchd --since '1 hour ago' --no-pager \| grep -c -E 'PRIVATE KEY\|ghp_\|github_pat_\|Authorization\|Bearer\|PRIVATE-TOKEN'` → **`0`**. **개인 키 위치:** `sudo grep -rl 'PRIVATE KEY' /home/orch/orchd /var/lib/orch-broker /run/orch-broker 2>/dev/null` → **`/home/orch/orchd/ssh/id_gitlab_deploy`와 `/home/orch/orchd/ssh/keys/<이름>/id_ed25519`뿐**(`keys-staging`·원장·로그·DB·broker 상태에는 없다). `sudo ls -a /home/orch/repos`에 `.clone-*` 없음 | 값이나 토큰, 스테이징 개인 키가 보이면 **멈추고 보고한다.** GitHub에서 그 토큰을 즉시 폐기한다(사용자 결정) |
+| 3-12 | **[사용자] 정리.** 3-6~3-8에서 만든 시험 저장소를 GitHub에서 직접 지우고, 연결한 기존 저장소의 `orchd` 배포 키를 **연결을 계속 쓰지 않을 때만** 지운다(지우면 그 프로젝트의 복제·게시는 실패한다). 토큰은 시험이 끝나면 GitHub에서 폐기하거나 권한을 줄이고 `#/tokens`에서 지운다(**서명 필요**) | 이 도구는 아무것도 지우지 않는다. 등록부·`/home/orch/repos`·`ssh/keys/`는 남는다(⚠ 1) | — |
+
+**검증 체크리스트(요약):** 3-1(기존 화면과 비밀 입력칸 없음), 3-2·3-3(실제 서명으로 토큰·제공자 저장), 3-4(GitHub 소유자 목록, 공개 여부 기본값 없음), 3-5(도달·호스트 키), 3-6~3-9 중 사용자가 한 것이 예상대로(특히 키 폴더 모드, 지문 일치, 복제), 3-10에서 기존 기능이 살아 있고, 3-11의 모드·원장·로그·개인 키 위치. 결과(**확인함/못 함**)는 결과 문서 27번 6장에 남긴다.
+
+**그래도 안 되면:** 화면 문제(표시·문구)만이면 롤백하지 않고 기록한다. **GitHub에 의도하지 않은 것이 만들어졌거나, 원장·로그·화면에 토큰·개인 키가 보이거나, 등록부가 깨졌으면(`registry_unavailable`) 즉시 broker를 멈추고(단계 4의 A) 사용자에게 보고한다.** 의도하지 않은 GitHub 저장소·배포 키는 **자동으로 지워지지 않는다**: 사용자가 GitHub에서 지운다.
+
+### 단계 4. 롤백 [사용자][주의]
+**순서: orchd를 먼저 멈춘다 → A(broker) → B(orchd).** 옛(W3c) orchd와 새 broker가 함께 도는 순간이 없어야 한다(⚠ 3: 그 조합은 W3c에서 만든 프로젝트를 기본 원격으로 게시할 수 있다).
+
+**A. broker를 W3c 상태로 되돌리기(DB는 건드리지 않는다). 바이너리와 등록부를 함께 되돌린다.**
+1. `sudo systemctl stop orchd`, 이어서 `sudo systemctl stop orch-broker`
+2. 바이너리를 **root 전용 백업에서** 복원: `sudo install -o root -g root -m 0755 /root/backup-w3e/bin/orch-broker /usr/local/bin/orch-broker`. `broker.json`은 이번에 바뀌지 않았다.
+3. **등록부를 버전 2 사본으로 되돌린다**(W3c broker는 버전 3을 깨짐으로 본다): `sudo install -o orch-broker -g orch-broker -m 0600 /root/backup-w3e/var-lib-orch-broker/registry.json /var/lib/orch-broker/registry.json`(broker가 남긴 `registry.json.v2.bak`도 같은 내용이다. root 백업을 우선한다), 이어서 `sudo grep -o '"version": *[0-9]*' /var/lib/orch-broker/registry.json`이 `"version":2`인지. **상태 폴더 전체를 되돌리지 않는다**(예산 기록·쓴 요청 ID·웹에서 등록한 토큰이 되돌아간다).
+4. `sudo systemctl start orch-broker`; 14장 1-5의 `providers`·`projects`·`status`·`tokens`가 W3c 상태(제공자 `example-group-gitlab`, `gitlab:{project,project_id}` 필드)를 주는지 본다.
+5. **경고:** 컷오버 뒤 이 도구가 등록한 프로젝트·제공자·고아 기록은 복원한 등록부에 **없다**. GitHub의 저장소·배포 키, `/home/orch/repos/<이름>`, `ssh/keys/<이름>/`은 그대로 남는다(자동 삭제 없음). **고아 기록의 경로를 롤백 전에 화면에서 적어 둔다.** `secrets/`·`tokens.json`은 그대로 둔다: GitHub 토큰이 들어 있다면(옛 broker는 쓰지 않는다) **의심이 있으면 GitHub에서 폐기하고 `#/tokens`로 지운다.**
+
+**B. `orchd`·CLI를 W3c 상태로 되돌리기(DB 복원 불필요).**
+1. (orchd는 A-1에서 멈춰 있다)
+2. `for f in orchd orch aigate; do sudo install -o root -g root -m 0755 /root/backup-w3e/bin/$f /usr/local/lib/aigate/$f; done`(세 개는 항상 같이. **웹은 `orchd`에 들어 있으므로** GitHub 화면과 연결 화면도 함께 사라진다)
+3. `sudo systemctl start orchd`. 브라우저 캐시면 강력 새로고침.
+
+**C. `keys/` 폴더 처리.** `/home/orch/orchd/ssh/keys/`와 `keys-staging/`는 **그대로 둔다**(W3c orchd는 무시한다). 이미 GitHub에 등록된 배포 키의 개인 키가 거기 있다: **지우는 것은 사용자 결정이다**(되돌릴 수 없다). 지울 때는 먼저 GitHub의 Deploy keys에서 해당 키를 제거하고, 그다음 root가 `shred -u`로 개인 키를 지운다(`sudo find /home/orch/orchd/ssh/keys -type f -name id_ed25519 -exec shred -u {} +`). 롤백 직후에 지우면 W3e를 다시 올릴 때 그 프로젝트의 복제·게시가 `key_unavailable`이 된다(아래 E의 복구가 필요). `keys-staging`의 남은 항목은 옛 orchd가 정리하지 않는다: 서명 대기용 임시 키라 시작 때 새 orchd가 지운다.
+
+**D. GitHub 쪽 정리.** 만든 저장소와 붙인 배포 키는 **사용자가 GitHub에서 직접** 지운다(⚠ 1). `known_hosts_gitlab`의 `github.com` 항목은 두어도 해롭지 않다(필요하면 `/root/backup-w3e/known_hosts_gitlab.pre-w3e`와 비교해 사람이 고친다). 정책 클래스는 바뀌지 않았다.
+
+**E. 키가 없어졌을 때(운영자 복구).** GitHub 프로젝트가 등록되어 있는데 `keys/<id>/id_ed25519`가 없거나 쓸 수 없으면(키 옮기기 실패, 재시작이 보관 중이던 키를 잊음, 폴더 삭제 등) 그 프로젝트의 복제·게시는 `key_unavailable`/"안전한 원격 없음"으로 거부된다. 복구는 서버에서 **`orch` 계정으로**:
+1. `mkdir -m 0700 /home/orch/orchd/ssh/keys/<id>`(이미 있고 키가 틀리면 먼저 치운다).
+2. `ssh-keygen -t ed25519 -N '' -C orchd-deploy -f /home/orch/orchd/ssh/keys/<id>/id_ed25519`(손으로 만든 키: orchd의 키는 Go가 만들지만 파일 형식은 같다. **이 단계만 개인 키가 사람의 터미널에서 만들어진다: 출력에 개인 키는 나오지 않는다.**)
+3. `chmod 600 …/id_ed25519`, 소유자 `orch:orch`, 폴더 0700.
+4. GitHub에서 저장소의 Settings > Deploy keys를 열어 그 프로젝트의 옛 `orchd` 키가 보이면 지우고(제목이 `orchd`로 시작), 새 `id_ed25519.pub`을 등록한다(쓰기 권한은 프로젝트의 게시 권한이 `write`일 때만).
+5. 재시작은 필요 없다(키는 사용할 때마다 검사한다). 복제하지 않은 프로젝트면 `POST /api/v1/projects/<id>/clone`(웹의 "다시 복제"), 아니면 작은 시험 작업의 게시로 확인한다. 아직 재시작하지 않았고 `keys-staging`에 승격되지 않은 키가 남아 있으면 그 폴더(가장 최근 시각)의 개인 키를 대신 쓸 수 있다.
+
+**검증:** `journalctl -u orchd`·`journalctl -u orch-broker`에 오류가 없고, `orch list`가 단계 2 이전과 같으며, W3b의 토큰 화면(13장 3-1)·W3c의 제공자·프로젝트 화면(14장 3-1)이 동작한다. **그래도 안 되면:** 아무것도 더 지우지 말고 `journalctl -u orch-broker -n 80`, `ls -l /usr/local/bin /usr/local/lib/aigate /var/lib/orch-broker`와 `sudo ls -lR /root/backup-w3e | head -50`을 사용자에게 보고한다. W3c 이전까지 가야 하면 14장 단계 4(`/root/backup-w3c`).
+
+### 관찰 기록 (컷오버 때 채운다: 결과 문서 27번 9장으로 옮긴다)
+| 항목 | 예상 | 본 것 | 판정 |
+|---|---|---|---|
+| 1-5 등록부 | `"version":3`, 600, `.v2.bak` 600 + sha256 일치 | | |
+| 1-6 `projects` 비교 | 같은 프로젝트·값, 연결 필드가 `remote` | | |
+| 3-3 GitHub 제공자 실제 서명 | 저장됨 | | |
+| 3-4 소유자 목록 | 내 계정 첫 줄, 그룹 만들기 없음, 공개 여부 기본값 없음 | | |
+| 3-6 키 폴더 만들기·모드 | `orch:orch 700`/600/644, `keys-staging` 비어 있음 | | |
+| 3-6 지문 일치(웹·`ssh-keygen -l`·GitHub) | 같음 | | |
+| 3-6 첫 파일·기본 브랜치·보호 | `main`, 보호 켜짐(공개/유료) | | |
+| 3-6 OpenSSH 9.6의 키 수용·복제 | `cloned` | | |
+| 3-7/3-8 키 중복 거부, 연결 범위 | 거부 / `ai_context` 불변 | | |
+| 3-11 원장·로그·개인 키 위치 | 키 5개뿐·0건·예상 두 곳 | | |
