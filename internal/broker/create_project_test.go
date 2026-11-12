@@ -92,7 +92,7 @@ func TestCreateProjectHappyPath(t *testing.T) {
 	// registry entry, last
 	p, ok := c.find(c3Name)
 	if !ok || p.Kind != "registered" || p.Path != filepath.Join(c.root, c3Name) || p.AIContext || p.AutoMerge.Enabled ||
-		p.Provider == nil || *p.Provider != "gl" || p.GitLab == nil || p.GitLab.Project != "team/demo" || p.GitLab.ProjectID == nil || *p.GitLab.ProjectID != 21 {
+		p.Provider == nil || *p.Provider != "gl" || p.Remote == nil || p.Remote.Path != "team/demo" || p.Remote.ID == nil || *p.Remote.ID != 21 {
 		t.Fatalf("registry entry: %+v", p)
 	}
 	if len(c.orphans()) != 0 {
@@ -111,7 +111,7 @@ func TestCreateProjectHappyPath(t *testing.T) {
 	}
 	var pr map[string]json.RawMessage
 	json.Unmarshal(out["project"], &pr)
-	for _, k := range []string{"id", "path", "kind", "ai_context", "provider", "gitlab", "auto_merge"} {
+	for _, k := range []string{"id", "path", "kind", "ai_context", "provider", "remote", "auto_merge"} {
 		if _, ok := pr[k]; !ok {
 			t.Fatalf("project lacks %s: %s", k, out["project"])
 		}
@@ -286,7 +286,7 @@ func TestPartialFailureRecordsOrphan(t *testing.T) {
 			if n != 1 {
 				t.Fatalf("POST /projects sent %d times", n)
 			}
-			// the name stays taken until the user cleans GitLab: the retry is refused
+			// the name stays taken until the user cleans Remote: the retry is refused
 			if x.idKnow { // GitLab has the project now: the name is taken until the user cleans up
 				c.gl.mu.Lock()
 				c.gl.fail = map[string]int{}

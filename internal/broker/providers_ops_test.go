@@ -244,7 +244,7 @@ func (c *c3env) ownProject(provider, id string) {
 	pid := int64(5)
 	err := c.s.Registry.Update(func(r *Registry) error {
 		r.Projects = append(r.Projects, Project{ID: id, Path: c.root + "/" + id, Kind: "registered", Provider: &provider,
-			GitLab: &GitLabLink{Project: "team/" + id, ProjectID: &pid}})
+			Remote: &RemoteLink{Path: "team/" + id, ID: &pid}})
 		return nil
 	})
 	if err != nil {

@@ -14,7 +14,7 @@ import (
 // providerShape checks one provider entry: id, kind, token_ref, base_url and
 // ssh_url shapes plus the address rules (no loopback, link-local, ...).
 func providerShape(p Provider, allow ipPolicy, strictHTTP bool) error {
-	if !registrymsg.ValidProviderID(p.ID) || p.Kind != "gitlab" || !registrymsg.ValidTokenRef(p.TokenRef) {
+	if !registrymsg.ValidProviderID(p.ID) || !registrymsg.ValidProviderKind(p.Kind) || !registrymsg.ValidTokenRef(p.TokenRef) {
 		return ErrBadInput
 	}
 	if err := validateProviderURL(p.BaseURL, allow, strictHTTP); err != nil {
@@ -160,8 +160,8 @@ func ProviderStatus(stateDir string, o RegistryOptions) (refuse error, warnings 
 		if providerShape(p, defaultIPPolicy, true) != nil {
 			return errProviderAddress, warnings
 		}
-		if kinds[p.TokenRef] != "gitlab" {
-			warnings = append(warnings, "경고: 제공자가 가리키는 gitlab 종류 토큰이 저장소에 없어 그 제공자는 token_ref_unknown이 됩니다")
+		if kinds[p.TokenRef] != p.Kind {
+			warnings = append(warnings, "경고: 제공자가 가리키는 "+p.Kind+" 종류 토큰이 저장소에 없어 그 제공자는 token_ref_unknown이 됩니다")
 		} else if sec.Lookup(p.TokenRef) != SecretOK {
 			warnings = append(warnings, "경고: 제공자가 가리키는 토큰의 비밀 파일을 쓸 수 없어 그 제공자는 token_ref_unknown이 됩니다")
 		}

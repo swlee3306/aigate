@@ -531,7 +531,7 @@ func TestRequireWriteAndCSRF(t *testing.T) {
 	}
 	e.wb.mu.Lock()
 	e.wb.projects = []map[string]any{{"id": "app-one", "path": filepath.Join(e.root, "app-one"), "kind": "registered", "ai_context": false, "provider": "gl",
-		"gitlab": map[string]any{"project": "team/app-one", "project_id": 99}, "auto_merge": map[string]any{"enabled": false}}}
+		"remote": map[string]any{"path": "team/app-one", "id": 99}, "auto_merge": map[string]any{"enabled": false}}}
 	e.wb.mu.Unlock()
 	for _, tg := range build() {
 		before, cloneBefore := len(e.wb.allOps()), len(e.cloneCalls())

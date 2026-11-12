@@ -49,7 +49,7 @@ func TestRegistryFreshStartMigratesLegacyConfig(t *testing.T) {
 	l := legacyFor("/srv")
 	st := mustOpen(t, dir, l)
 	reg := st.Snapshot()
-	if reg.Version != 2 || len(reg.Providers) != 0 || reg.AutoMergeGlobal.Enabled || reg.AutoMergeGlobal.MaxPerDay != 5 {
+	if reg.Version != 3 || len(reg.Providers) != 0 || reg.AutoMergeGlobal.Enabled || reg.AutoMergeGlobal.MaxPerDay != 5 {
 		t.Fatalf("shape %+v", reg)
 	}
 	got := st.AIContextPaths()
@@ -67,7 +67,7 @@ func TestRegistryFreshStartMigratesLegacyConfig(t *testing.T) {
 		if p.Path == "/srv/gl-only" && p.AIContext {
 			t.Fatal("gitlab-only project must not get ai_context")
 		}
-		if p.Provider != nil || p.AutoMerge.Enabled || (p.GitLab != nil && p.GitLab.ProjectID != nil) {
+		if p.Provider != nil || p.AutoMerge.Enabled || (p.Remote != nil && p.Remote.ID != nil) {
 			t.Fatalf("placeholders must be empty: %+v", p)
 		}
 	}
@@ -142,8 +142,8 @@ func TestRegistryBrokenIsFailClosedNotMigrated(t *testing.T) {
 	}{
 		"broken json":      {content: `{"version":1,`, mode: 0o600},
 		"empty file":       {content: ``, mode: 0o600},
-		"unknown key":      {content: strings.Replace(good, `"version":2`, `"version":2,"extra":true`, 1), mode: 0o600},
-		"version mismatch": {content: strings.Replace(good, `"version":2`, `"version":3`, 1), mode: 0o600},
+		"unknown key":      {content: strings.Replace(good, `"version":3`, `"version":3,"extra":true`, 1), mode: 0o600},
+		"version mismatch": {content: strings.Replace(good, `"version":3`, `"version":4`, 1), mode: 0o600},
 		"trailing data":    {content: good + `{}`, mode: 0o600},
 		"duplicate id":     {content: `{"version":1,"providers":[],"projects":[{"id":"a","path":"/x/a","kind":"k"},{"id":"a","path":"/x/b","kind":"k"}],"auto_merge_global":{"enabled":false,"max_per_day":5}}`, mode: 0o600},
 		"auto merge on":    {content: `{"version":1,"providers":[],"projects":[{"id":"a","path":"/x/a","kind":"k","auto_merge":{"enabled":true}}],"auto_merge_global":{"enabled":false,"max_per_day":5}}`, mode: 0o600},
@@ -272,7 +272,7 @@ func TestRegistryUpdateErrorKeepsStateAndFile(t *testing.T) {
 
 func TestRegistryRejectsInvalidProjects(t *testing.T) {
 	base := Project{ID: "ok", Path: "/srv/ok", Kind: "k"}
-	gl := func(p string) *GitLabLink { return &GitLabLink{Project: p} }
+	gl := func(p string) *RemoteLink { return &RemoteLink{Path: p} }
 	id := int64(1)
 	cases := map[string]Project{
 		"empty id":          {ID: "", Path: "/srv/x", Kind: "k"},
@@ -292,9 +292,9 @@ func TestRegistryRejectsInvalidProjects(t *testing.T) {
 		"empty kind":        {ID: "x", Path: "/srv/x"},
 		"auto merge on":     {ID: "x", Path: "/srv/x", Kind: "k", AutoMerge: AutoMerge{Enabled: true}},
 		"provider set":      {ID: "x", Path: "/srv/x", Kind: "k", Provider: strp("gl")}, // no such provider in the registry
-		"gitlab dotdot":     {ID: "x", Path: "/srv/x", Kind: "k", GitLab: gl("a/../b")},
-		"gitlab one part":   {ID: "x", Path: "/srv/x", Kind: "k", GitLab: gl("solo")},
-		"gitlab project id": {ID: "x", Path: "/srv/x", Kind: "k", GitLab: &GitLabLink{Project: "a/b", ProjectID: &id}},
+		"gitlab dotdot":     {ID: "x", Path: "/srv/x", Kind: "k", Remote: gl("a/../b")},
+		"gitlab one part":   {ID: "x", Path: "/srv/x", Kind: "k", Remote: gl("solo")},
+		"gitlab project id": {ID: "x", Path: "/srv/x", Kind: "k", Remote: &RemoteLink{Path: "a/b", ID: &id}},
 	}
 	for name, p := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -327,7 +327,7 @@ func TestRegistryRejectsInvalidProjects(t *testing.T) {
 	t.Run("valid project with gitlab", func(t *testing.T) {
 		st := mustOpen(t, stateDirFor(t), LegacySource{})
 		if err := st.Update(func(r *Registry) error {
-			r.Projects = append(r.Projects, Project{ID: "good-1", Path: "/srv/good", Kind: "registered", AIContext: true, GitLab: gl("grp/sub/proj")})
+			r.Projects = append(r.Projects, Project{ID: "good-1", Path: "/srv/good", Kind: "registered", AIContext: true, Remote: gl("grp/sub/proj")})
 			return nil
 		}); err != nil {
 			t.Fatal(err)
@@ -384,7 +384,7 @@ func TestSnapshotIsACopy(t *testing.T) {
 	st := mustOpen(t, stateDirFor(t), LegacySource{ContextRepos: []string{"/srv/a"}, GitLabProjects: map[string]string{"/srv/a": "g/p"}})
 	s := st.Snapshot()
 	s.Projects[0].AIContext = false
-	s.Projects[0].GitLab.Project = "evil/x"
+	s.Projects[0].Remote.Path = "evil/x"
 	if len(st.AIContextPaths()) != 1 {
 		t.Fatal("snapshot mutation reached the store")
 	}
@@ -449,7 +449,7 @@ func TestCreateMRUsesRegistryGitLabProject(t *testing.T) {
 		t.Fatalf("posts %+v", ps)
 	}
 	// the registry's GitLab name is the one used
-	m.srv.Registry.Update(func(g *Registry) error { g.Projects[0].GitLab.Project = "other/name"; return nil })
+	m.srv.Registry.Update(func(g *Registry) error { g.Projects[0].Remote.Path = "other/name"; return nil })
 	m.srv.Config.GitLab.Projects = map[string]string{m.repo: "grp/proj"} // legacy value must be ignored
 	m.gl.mu.Lock()
 	m.gl.reqs = nil
@@ -463,7 +463,7 @@ func TestCreateMRUsesRegistryGitLabProject(t *testing.T) {
 		}
 	}
 	// no mapping in the registry: repo_not_mapped, nothing sent
-	m.srv.Registry.Update(func(g *Registry) error { g.Projects[0].GitLab = nil; return nil })
+	m.srv.Registry.Update(func(g *Registry) error { g.Projects[0].Remote = nil; return nil })
 	n := len(m.gl.Reqs())
 	_, oerr := m.call(t, m.args())
 	wantCode(t, oerr, "repo_not_mapped")

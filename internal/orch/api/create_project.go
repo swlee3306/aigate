@@ -264,7 +264,7 @@ func (h *handler) cloneProject(ctx context.Context, id string, timeout time.Dura
 	if !ok {
 		return fail(errProjBrokerBad)
 	}
-	if entry.Provider == nil || entry.GitLab == nil {
+	if entry.Provider == nil || entry.Remote == nil {
 		return fail(errNotClonable)
 	}
 	var sshURL string
@@ -273,8 +273,8 @@ func (h *handler) cloneProject(ctx context.Context, id string, timeout time.Dura
 			sshURL = p.SSHURL
 		}
 	}
-	remote, ok := clone.RemoteFor(sshURL, entry.GitLab.Project)
-	if !ok || !projectNameIs(entry.GitLab.Project, id) || filepath.Base(entry.Path) != id {
+	remote, ok := clone.RemoteFor(sshURL, entry.Remote.Path)
+	if !ok || !projectNameIs(entry.Remote.Path, id) || filepath.Base(entry.Path) != id {
 		return fail(errNotClonable)
 	}
 	if !h.directUnderRoot(entry.Path) || !safeProjectPath(entry.Path) {

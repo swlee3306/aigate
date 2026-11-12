@@ -408,11 +408,12 @@ func projectView(p broker.Project) (ProjectView, bool) {
 		pr := *p.Provider
 		v.Provider = &pr
 	}
-	if p.GitLab != nil {
-		if p.GitLab.Project == "" || len(p.GitLab.Project) > 200 || hostileText(p.GitLab.Project) {
+	if p.Remote != nil {
+		// The console's view keeps its field names (gitlab.project/project_id).
+		if p.Remote.Path == "" || len(p.Remote.Path) > 200 || hostileText(p.Remote.Path) {
 			return ProjectView{}, false
 		}
-		v.GitLab = &projectGitLab{Project: p.GitLab.Project, ProjectID: p.GitLab.ProjectID}
+		v.GitLab = &projectGitLab{Project: p.Remote.Path, ProjectID: p.Remote.ID}
 	}
 	return v, true
 }

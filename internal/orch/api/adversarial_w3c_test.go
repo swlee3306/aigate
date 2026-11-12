@@ -224,7 +224,7 @@ func TestCloneOptionInjectionRefused(t *testing.T) {
 	for _, proj := range []string{"team/-oProxyCommand=x", "team/app-one --upload-pack=x", "team/app-one\n", "../app-one", "ext::sh -c x", "team/app-one.git",
 		"team/app%2Fone", "-team/app-one", "team/app-one/", "/team/app-one", "team//app-one", "team/./app-one", "a/b/c/d/e/app-one", "app-one"} {
 		proj := proj
-		rows = append(rows, row{"project " + proj, func(p, _ map[string]any) { p["gitlab"] = map[string]any{"project": proj, "project_id": 1} }})
+		rows = append(rows, row{"project " + proj, func(p, _ map[string]any) { p["remote"] = map[string]any{"path": proj, "id": 1} }})
 	}
 	for _, ssh := range []string{"ssh://git@gitlab.example -oProxyCommand=x", "ssh://-oProxyCommand=x@gitlab.example", "ssh://git@-oProxyCommand=x", "ext::sh -c x",
 		"file:///etc", "ssh://git@gitlab.example/x", "ssh://git@gitlab.example:22:22", "https://gitlab.example", "ssh://root@gitlab.example", "", "--upload-pack=x"} {
@@ -263,7 +263,7 @@ func TestResolverNeverTrustsRequestData(t *testing.T) {
 	unpinned := e.linked("app-two")
 	unpinned["provider"] = "evil"
 	badName := e.linked("app-three")
-	badName["gitlab"] = map[string]any{"project": "team/other-name", "project_id": 3}
+	badName["remote"] = map[string]any{"path": "team/other-name", "id": 3}
 	e.wb.mu.Lock()
 	e.wb.providers = append(e.wb.providers, map[string]any{"id": "evil", "kind": "gitlab", "base_url": "http://evil.example", "ssh_url": "ssh://git@evil.example", "token_ref": "gl-admin"})
 	e.wb.mu.Unlock()

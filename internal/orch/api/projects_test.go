@@ -167,7 +167,7 @@ func (b *regBroker) serve(c net.Conn) {
 			a.AIContext, a.Path, a.Kind = a.Value, "/srv/x/"+a.ID, "docs"
 		}
 		ok(map[string]any{"id": a.ID, "path": a.Path, "kind": a.Kind, "ai_context": a.AIContext,
-			"provider": nil, "gitlab": nil, "auto_merge": map[string]any{"enabled": false}})
+			"provider": nil, "remote": nil, "auto_merge": map[string]any{"enabled": false}})
 	default:
 		c.Write([]byte("{\"ok\":false,\"code\":\"unknown_op\"}\n"))
 	}
@@ -202,7 +202,7 @@ func newProjEnv(t *testing.T) *projEnv {
 	mkRepo(t, pe.reg)
 	mkRepo(t, pe.outside)
 	rb.projects = []map[string]any{{"id": "reg", "path": pe.reg, "kind": "docs", "ai_context": false,
-		"provider": nil, "gitlab": nil, "auto_merge": map[string]any{"enabled": false}}}
+		"provider": nil, "remote": nil, "auto_merge": map[string]any{"enabled": false}}}
 	return pe
 }
 
@@ -366,7 +366,7 @@ func TestCandidatesExcludeRegisteredAndOutsideRoots(t *testing.T) {
 	// Registering one removes it from the candidates.
 	e.rb.mu.Lock()
 	e.rb.projects = append(e.rb.projects, map[string]any{"id": "other", "path": e.other, "kind": "docs", "ai_context": false,
-		"provider": nil, "gitlab": nil, "auto_merge": map[string]any{"enabled": false}})
+		"provider": nil, "remote": nil, "auto_merge": map[string]any{"enabled": false}})
 	e.rb.mu.Unlock()
 	_, b = e.sock(t, "GET", "/api/v1/projects/candidates", "")
 	if strings.Contains(string(b), e.other) || !strings.Contains(string(b), e.repo) {
@@ -1278,6 +1278,7 @@ func TestConstantsAgreeWithWeb(t *testing.T) {
 	t.Run("tokens", checkTokenConstants)
 	// The provider and project-creation constants (W3c): see checkProviderConstants.
 	t.Run("providers", checkProviderConstants)
+	t.Run("w3e", checkW3eConstants)
 
 }
 
@@ -1468,7 +1469,7 @@ func TestRegistryListFailsClosedOnOneBadEntry(t *testing.T) {
 	e := newProjEnv(t)
 	e.rb.mu.Lock()
 	e.rb.projects = append(e.rb.projects, map[string]any{"id": "BAD ID", "path": "/x", "kind": "docs", "ai_context": true,
-		"provider": nil, "gitlab": nil, "auto_merge": map[string]any{"enabled": false}})
+		"provider": nil, "remote": nil, "auto_merge": map[string]any{"enabled": false}})
 	e.rb.mu.Unlock()
 	for _, path := range []string{"/api/v1/projects/registry", "/api/v1/projects/candidates"} {
 		code, b := e.sock(t, "GET", path, "")

@@ -19,7 +19,7 @@ func (e *w3cEnv) setProjects(ps ...map[string]any) {
 
 func (e *w3cEnv) linked(id string) map[string]any {
 	return map[string]any{"id": id, "path": filepath.Join(e.root, id), "kind": "registered", "ai_context": false, "provider": "gl",
-		"gitlab": map[string]any{"project": "team/" + id, "project_id": 99}, "auto_merge": map[string]any{"enabled": false}}
+		"remote": map[string]any{"path": "team/" + id, "id": 99}, "auto_merge": map[string]any{"enabled": false}}
 }
 
 type cloneOut struct {
@@ -90,12 +90,12 @@ func TestCloneRemoteOnlyFromRegistry(t *testing.T) {
 		hostile[name] = m
 	}
 	mk("no provider", func(m map[string]any) { m["provider"] = nil })
-	mk("no gitlab link", func(m map[string]any) { m["gitlab"] = nil })
+	mk("no gitlab link", func(m map[string]any) { m["remote"] = nil })
 	mk("unknown provider", func(m map[string]any) { m["provider"] = "evil" })
 	mk("project name differs from id", func(m map[string]any) {
-		m["gitlab"] = map[string]any{"project": "team/other-name", "project_id": 1}
+		m["remote"] = map[string]any{"path": "team/other-name", "id": 1}
 	})
-	mk("traversal in project", func(m map[string]any) { m["gitlab"] = map[string]any{"project": "team/../x", "project_id": 1} })
+	mk("traversal in project", func(m map[string]any) { m["remote"] = map[string]any{"path": "team/../x", "id": 1} })
 	mk("path outside roots", func(m map[string]any) { m["path"] = "/etc/app-one" })
 	mk("path two levels deep", func(m map[string]any) { m["path"] = filepath.Join(e.root, "x", "app-one") })
 	mk("folder differs from id", func(m map[string]any) { m["path"] = filepath.Join(e.root, "other-folder") })
@@ -190,7 +190,7 @@ func TestListResponsesCarryClonedAndOrphans(t *testing.T) {
 	os.MkdirAll(filepath.Join(linkTarget, ".git"), 0o755) // a real clone behind a symlink must not count
 	os.Symlink(linkTarget, filepath.Join(e.root, "is-link"))
 	e.setProjects(e.linked("has-git"), e.linked("no-git"), e.linked("is-link"), e.linked("absent"), map[string]any{"id": "legacy", "path": e.repo, "kind": "docs", "ai_context": false,
-		"provider": nil, "gitlab": nil, "auto_merge": map[string]any{"enabled": false}})
+		"provider": nil, "remote": nil, "auto_merge": map[string]any{"enabled": false}})
 	e.wb.mu.Lock()
 	e.wb.orphans = []map[string]any{{"provider": "gl", "project": "team/lost-app", "project_id": 7, "step": "deploy_key", "at": "2026-11-09T12:00:00Z"},
 		{"provider": "gl", "project": "team/lost-two", "project_id": nil, "step": "project", "at": "2026-11-09T13:00:00Z"}}
@@ -365,7 +365,7 @@ func TestCreateApplySuccessAutoCloneFromRegistry(t *testing.T) {
 	e5 := newW3cEnv(t)
 	e5.wb.setReply(func(op string, _ json.RawMessage) string {
 		if op == "create_project" {
-			return `{"ok":true,"result":{"project":{"id":"someone-else","path":"/x/y","kind":"registered","ai_context":false,"provider":"gl","gitlab":{"project":"team/someone-else","project_id":1},"auto_merge":{"enabled":false}}}}`
+			return `{"ok":true,"result":{"project":{"id":"someone-else","path":"/x/y","kind":"registered","ai_context":false,"provider":"gl","remote":{"path":"team/someone-else","id":1},"auto_merge":{"enabled":false}}}}`
 		}
 		return ""
 	})

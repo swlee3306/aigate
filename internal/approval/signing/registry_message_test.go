@@ -368,3 +368,29 @@ func TestSigningW3cSubjectRulesAreSeparate(t *testing.T) {
 		t.Fatal("project name rule must govern only create_project")
 	}
 }
+
+func TestSigningAcceptsW3eActions(t *testing.T) {
+	accepts := func(action, subject string) bool {
+		m := regMsg(testNow)
+		m.Action, m.Subject = action, subject
+		return m.Validate() == nil
+	}
+	// link_project: a NEW local project (name rule); attach_remote: an EXISTING project id.
+	if !accepts(RegistryActionLinkProject, "my-app") || accepts(RegistryActionLinkProject, "a") || accepts(RegistryActionLinkProject, "A1") || accepts(RegistryActionLinkProject, "") {
+		t.Error("link_project: project name rule not applied")
+	}
+	if !accepts(RegistryActionAttachRemote, "my-app") || !accepts(RegistryActionAttachRemote, "a") || accepts(RegistryActionAttachRemote, "A1") || accepts(RegistryActionAttachRemote, "a/b") {
+		t.Error("attach_remote: project id rule not applied")
+	}
+	for _, a := range []string{RegistryActionLinkProject, RegistryActionAttachRemote} {
+		m := regMsg(testNow)
+		m.Action, m.Subject = a, "my-app"
+		back, err := ParseRegistryMessage(m.Text())
+		if err != nil || back != m || !strings.Contains(m.Text(), "action: "+a+"\n") {
+			t.Fatalf("%s round trip: %v", a, err)
+		}
+	}
+	if RegistryActionLinkProject != "link_project" || RegistryActionAttachRemote != "attach_remote" {
+		t.Error("constants")
+	}
+}

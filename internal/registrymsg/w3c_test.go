@@ -118,7 +118,7 @@ func TestNewActionsInSchema(t *testing.T) {
 	}
 	// the three provider fields are validated by their own rules
 	for field, bad := range map[string]string{
-		"kind": "github", "base_url": "http://u:p@h", "ssh_url": "ssh://root@h", "token_ref": "Bad_Ref",
+		"kind": "bitbucket", "base_url": "http://u:p@h", "ssh_url": "ssh://root@h", "token_ref": "Bad_Ref",
 	} {
 		f := providerFields()
 		f[field] = bad

@@ -175,7 +175,7 @@ func (b *w3cBroker) serve(c net.Conn) {
 		prov, _ := a["provider"].(string)
 		full := a["group_path"].(string) + "/" + name
 		entry := map[string]any{"id": name, "path": "/repos/" + name, "kind": "registered", "ai_context": a["ai_context"], "provider": prov,
-			"gitlab": map[string]any{"project": full, "project_id": 99}, "auto_merge": map[string]any{"enabled": false}}
+			"remote": map[string]any{"path": full, "id": 99}, "auto_merge": map[string]any{"enabled": false}}
 		b.mu.Lock()
 		if p, ok := b.createPathOverride(name); ok {
 			entry["path"] = p

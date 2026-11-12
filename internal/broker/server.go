@@ -106,6 +106,12 @@ var fixedMessages = map[string]string{
 	"create_partial":       "GitLab에 일부만 만들어졌습니다. 이 도구는 삭제하지 않으니 GitLab에서 직접 정리한 뒤 다시 만드세요.",
 	"deploy_key_mismatch":  "서명한 배포 키와 보낸 배포 키가 다릅니다.",
 	"template_unknown":     "알 수 없는 템플릿입니다.",
+
+	// W3e (E1): the codes the registry-v3 / visibility rules need. The rest of
+	// the E-D3 list arrives with the broker flows that raise it (E2, E3).
+	"not_supported_for_provider": "이 종류의 제공자에서는 지원하지 않는 작업입니다.",
+	"visibility_required":        "공개 여부(public 또는 private)를 반드시 골라야 합니다.",
+	"visibility_not_allowed":     "이 제공자에서는 공개 여부를 정할 수 없습니다. GitLab 프로젝트는 항상 비공개로 만들어집니다.",
 }
 
 // Default per-op processing time limits (decision D1).

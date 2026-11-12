@@ -651,15 +651,15 @@ func TestStatusAndProjectsNeverContainSecrets(t *testing.T) {
 		if len(keys) != 7 {
 			t.Fatalf("project keys %v", keys)
 		}
-		for _, k := range []string{"id", "path", "kind", "ai_context", "provider", "gitlab", "auto_merge"} {
+		for _, k := range []string{"id", "path", "kind", "ai_context", "provider", "remote", "auto_merge"} {
 			if _, ok := p[k]; !ok {
 				t.Fatalf("project lacks %s: %v", k, keys)
 			}
 		}
-		if g := string(p["gitlab"]); g != "null" {
+		if g := string(p["remote"]); g != "null" {
 			var gm map[string]json.RawMessage
-			if json.Unmarshal(p["gitlab"], &gm) != nil || len(gm) != 2 {
-				t.Fatalf("gitlab object %s", g)
+			if json.Unmarshal(p["remote"], &gm) != nil || len(gm) != 2 {
+				t.Fatalf("remote object %s", g)
 			}
 		}
 	}

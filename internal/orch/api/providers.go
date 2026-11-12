@@ -87,7 +87,7 @@ type ProviderView struct {
 // providerView re-bounds a provider the broker reported; false when it is not
 // a plausible one (the shapes are registrymsg's, the authority).
 func providerView(id, kind, baseURL, sshURL, tokenRef string) (ProviderView, bool) {
-	if !registrymsg.ValidProviderID(id) || kind != "gitlab" || !registrymsg.ValidBaseURL(baseURL) ||
+	if !registrymsg.ValidProviderID(id) || !registrymsg.ValidProviderKind(kind) || !registrymsg.ValidBaseURL(baseURL) ||
 		!registrymsg.ValidSSHURL(sshURL) || !registrymsg.ValidTokenRef(tokenRef) {
 		return ProviderView{}, false
 	}
@@ -307,6 +307,15 @@ func parseW3cChange(rawAction, rawSubject, rawFields json.RawMessage, allowed []
 		check["deploy_key_sha256"] = "0000000000000000000000000000000000000000000000000000000000000000"
 	}
 	if _, err := registrymsg.CanonicalChange(action, subject, check); err != nil {
+		return registryChange{}, errProjBadBody
+	}
+	// W3e E1: the schema now knows github and visibility, but this console has
+	// no GitHub flow, preview text or key handling yet (E3/E4): refuse them
+	// here so nothing is proposed with a GitLab-worded preview.
+	if k, _ := fields["kind"].(string); action == registrymsg.ActionSetProvider && k != "gitlab" {
+		return registryChange{}, errProjBadBody
+	}
+	if _, has := fields["visibility"]; has {
 		return registryChange{}, errProjBadBody
 	}
 	return registryChange{Action: action, Subject: subject, Fields: fields}, nil

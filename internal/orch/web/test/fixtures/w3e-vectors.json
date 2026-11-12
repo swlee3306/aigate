@@ -1,0 +1,284 @@
+{
+  "good": [
+    {
+      "name": "github set_provider",
+      "action": "set_provider",
+      "subject": "gh",
+      "fields": {
+        "base_url": "https://api.github.com",
+        "kind": "github",
+        "ssh_url": "ssh://git@github.com",
+        "token_ref": "github-main"
+      },
+      "canonical": "{\"action\":\"set_provider\",\"fields\":{\"base_url\":\"https://api.github.com\",\"kind\":\"github\",\"ssh_url\":\"ssh://git@github.com\",\"token_ref\":\"github-main\"},\"subject\":\"gh\"}",
+      "change": "7f9db52a7a37186f5413f36181781ee482a9d56b6127a5a692b28c63d38010fb"
+    },
+    {
+      "name": "create_project private",
+      "action": "create_project",
+      "subject": "hello",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "",
+        "group_path": "octo",
+        "provider": "gh",
+        "publish": "write",
+        "template": "go",
+        "visibility": "private"
+      },
+      "canonical": "{\"action\":\"create_project\",\"fields\":{\"ai_context\":false,\"deploy_key_sha256\":\"abababababababababababababababababababababababababababababababab\",\"description\":\"\",\"group_path\":\"octo\",\"provider\":\"gh\",\"publish\":\"write\",\"template\":\"go\",\"visibility\":\"private\"},\"subject\":\"hello\"}",
+      "change": "9e0d693d2913df6874e282aaf574427ba3c95314120d2c6e3df6866f2cc50306"
+    },
+    {
+      "name": "create_project public",
+      "action": "create_project",
+      "subject": "hello",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "",
+        "group_path": "octo",
+        "provider": "gh",
+        "publish": "write",
+        "template": "go",
+        "visibility": "public"
+      },
+      "canonical": "{\"action\":\"create_project\",\"fields\":{\"ai_context\":false,\"deploy_key_sha256\":\"abababababababababababababababababababababababababababababababab\",\"description\":\"\",\"group_path\":\"octo\",\"provider\":\"gh\",\"publish\":\"write\",\"template\":\"go\",\"visibility\":\"public\"},\"subject\":\"hello\"}",
+      "change": "2c009545b46e9fc376b2e92ca92f6999b0aa6f0f99d48424ecd8f76f47c9887b"
+    },
+    {
+      "name": "link_project github",
+      "action": "link_project",
+      "subject": "hello",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "provider": "gh",
+        "publish": "read",
+        "remote_path": "octo/Hello-World"
+      },
+      "canonical": "{\"action\":\"link_project\",\"fields\":{\"ai_context\":false,\"deploy_key_sha256\":\"abababababababababababababababababababababababababababababababab\",\"provider\":\"gh\",\"publish\":\"read\",\"remote_path\":\"octo/Hello-World\"},\"subject\":\"hello\"}",
+      "change": "8e58b469022b5eaf48fb202e7896a84c1251892ca1515126e9239813fc78c095"
+    },
+    {
+      "name": "link_project gitlab nested",
+      "action": "link_project",
+      "subject": "hello",
+      "fields": {
+        "ai_context": true,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "provider": "gl",
+        "publish": "read",
+        "remote_path": "team/sub/app.v2"
+      },
+      "canonical": "{\"action\":\"link_project\",\"fields\":{\"ai_context\":true,\"deploy_key_sha256\":\"abababababababababababababababababababababababababababababababab\",\"provider\":\"gl\",\"publish\":\"read\",\"remote_path\":\"team/sub/app.v2\"},\"subject\":\"hello\"}",
+      "change": "1fe2963737ae07c0a300012c58bd458166df7f3c0c8b68fe650fe29a95cc9c58"
+    },
+    {
+      "name": "attach_remote",
+      "action": "attach_remote",
+      "subject": "a",
+      "fields": {
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "provider": "gh",
+        "publish": "write",
+        "remote_path": "octo/Hello-World"
+      },
+      "canonical": "{\"action\":\"attach_remote\",\"fields\":{\"deploy_key_sha256\":\"abababababababababababababababababababababababababababababababab\",\"provider\":\"gh\",\"publish\":\"write\",\"remote_path\":\"octo/Hello-World\"},\"subject\":\"a\"}",
+      "change": "9ac98e4b46b7929259494eb88e6b8c7e6160cd315b29120f49f8758c71e9d4cf"
+    }
+  ],
+  "refused": [
+    {
+      "name": "visibility empty",
+      "action": "create_project",
+      "subject": "hello",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "",
+        "group_path": "octo",
+        "provider": "gh",
+        "publish": "write",
+        "template": "go",
+        "visibility": ""
+      }
+    },
+    {
+      "name": "visibility upper",
+      "action": "create_project",
+      "subject": "hello",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "",
+        "group_path": "octo",
+        "provider": "gh",
+        "publish": "write",
+        "template": "go",
+        "visibility": "Public"
+      }
+    },
+    {
+      "name": "visibility internal",
+      "action": "create_project",
+      "subject": "hello",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "",
+        "group_path": "octo",
+        "provider": "gh",
+        "publish": "write",
+        "template": "go",
+        "visibility": "internal"
+      }
+    },
+    {
+      "name": "visibility bool",
+      "action": "create_project",
+      "subject": "hello",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "",
+        "group_path": "octo",
+        "provider": "gh",
+        "publish": "write",
+        "template": "go",
+        "visibility": true
+      }
+    },
+    {
+      "name": "link remote_path one segment",
+      "action": "link_project",
+      "subject": "hello",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "provider": "gh",
+        "publish": "read",
+        "remote_path": "solo"
+      }
+    },
+    {
+      "name": "link remote_path dotdot",
+      "action": "link_project",
+      "subject": "hello",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "provider": "gh",
+        "publish": "read",
+        "remote_path": "a/../b"
+      }
+    },
+    {
+      "name": "link remote_path dot git",
+      "action": "link_project",
+      "subject": "hello",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "provider": "gh",
+        "publish": "read",
+        "remote_path": "octo/repo.git"
+      }
+    },
+    {
+      "name": "link remote_path percent",
+      "action": "link_project",
+      "subject": "hello",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "provider": "gh",
+        "publish": "read",
+        "remote_path": "octo/re%2fpo"
+      }
+    },
+    {
+      "name": "link remote_path unicode",
+      "action": "link_project",
+      "subject": "hello",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "provider": "gh",
+        "publish": "read",
+        "remote_path": "octo/저장소"
+      }
+    },
+    {
+      "name": "link remote_path five segments",
+      "action": "link_project",
+      "subject": "hello",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "provider": "gh",
+        "publish": "read",
+        "remote_path": "a/b/c/d/e"
+      }
+    },
+    {
+      "name": "link subject one letter",
+      "action": "link_project",
+      "subject": "a",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "provider": "gh",
+        "publish": "read",
+        "remote_path": "octo/Hello-World"
+      }
+    },
+    {
+      "name": "link without ai_context",
+      "action": "link_project",
+      "subject": "hello",
+      "fields": {
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "provider": "gh",
+        "publish": "read",
+        "remote_path": "octo/Hello-World"
+      }
+    },
+    {
+      "name": "attach with ai_context",
+      "action": "attach_remote",
+      "subject": "hello",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "provider": "gh",
+        "publish": "write",
+        "remote_path": "octo/Hello-World"
+      }
+    },
+    {
+      "name": "attach with visibility",
+      "action": "attach_remote",
+      "subject": "hello",
+      "fields": {
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "provider": "gh",
+        "publish": "write",
+        "remote_path": "octo/Hello-World",
+        "visibility": "private"
+      }
+    },
+    {
+      "name": "set_provider kind GitHub",
+      "action": "set_provider",
+      "subject": "gh",
+      "fields": {
+        "base_url": "https://api.github.com",
+        "kind": "GitHub",
+        "ssh_url": "ssh://git@github.com",
+        "token_ref": "github-main"
+      }
+    }
+  ]
+}

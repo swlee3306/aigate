@@ -90,7 +90,7 @@ func TestW3cDefaultTimeouts(t *testing.T) {
 
 func TestRegistryViewDecodesProvidersAndOrphans(t *testing.T) {
 	sock := serve(t, func(c net.Conn, _ string) {
-		c.Write([]byte(`{"ok":true,"result":{"projects":[{"id":"a-app","path":"/r/a-app","kind":"registered","ai_context":false,"provider":"gl","gitlab":{"project":"team/a-app","project_id":5},"auto_merge":{"enabled":false}}],` +
+		c.Write([]byte(`{"ok":true,"result":{"projects":[{"id":"a-app","path":"/r/a-app","kind":"registered","ai_context":false,"provider":"gl","remote":{"path":"team/a-app","id":5},"auto_merge":{"enabled":false}}],` +
 			`"providers":[{"id":"gl","kind":"gitlab","base_url":"http://h:1","ssh_url":"ssh://git@h","token_ref":"gl-admin"}],` +
 			`"auto_merge_global":{"enabled":false,"max_per_day":5},` +
 			`"orphans":[{"provider":"gl","project":"team/x","project_id":null,"step":"project","at":"2026-11-09T12:00:00Z"}]}}` + "\n"))

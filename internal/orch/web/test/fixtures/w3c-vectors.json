@@ -1013,12 +1013,12 @@
       }
     },
     {
-      "name": "provider kind github",
+      "name": "provider kind bitbucket",
       "action": "set_provider",
       "subject": "gl",
       "fields": {
         "base_url": "http://100.64.0.10:18082",
-        "kind": "github",
+        "kind": "bitbucket",
         "ssh_url": "ssh://git@100.64.0.10",
         "token_ref": "gitlab-main"
       }

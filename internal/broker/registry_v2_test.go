@@ -59,15 +59,15 @@ func TestRegistryV1MigratesToV2Atomically(t *testing.T) {
 		// legacy source must be ignored
 		st := mustOpen(t, dir, LegacySource{ContextRepos: []string{"/srv/ignored"}})
 		reg := st.Snapshot()
-		if reg.Version != 2 || len(reg.Providers) != 0 || len(reg.Orphans) != 0 || reg.AutoMergeGlobal.MaxPerDay != 7 || len(reg.Projects) != 2 {
+		if reg.Version != 3 || len(reg.Providers) != 0 || len(reg.Orphans) != 0 || reg.AutoMergeGlobal.MaxPerDay != 7 || len(reg.Projects) != 2 {
 			t.Fatalf("shape %+v", reg)
 		}
 		a, b := reg.Projects[0], reg.Projects[1]
 		if a.ID != "repo-a" || a.Path != "/srv/repo-a" || a.Kind != "legacy" || !a.AIContext || a.Provider != nil ||
-			a.GitLab == nil || a.GitLab.Project != "grp/proj" || a.GitLab.ProjectID != nil || a.AutoMerge.Enabled {
+			a.Remote == nil || a.Remote.Path != "grp/proj" || a.Remote.ID != nil || a.AutoMerge.Enabled {
 			t.Fatalf("project a changed: %+v", a)
 		}
-		if b.ID != "plain" || b.Kind != "registered" || b.AIContext || b.GitLab != nil || b.Provider != nil {
+		if b.ID != "plain" || b.Kind != "registered" || b.AIContext || b.Remote != nil || b.Provider != nil {
 			t.Fatalf("project b changed: %+v", b)
 		}
 		fi, err := os.Stat(p)
@@ -79,14 +79,16 @@ func TestRegistryV1MigratesToV2Atomically(t *testing.T) {
 		if err := json.Unmarshal(data, &raw); err != nil {
 			t.Fatal(err)
 		}
-		if string(raw["version"]) != "2" || string(raw["providers"]) != "[]" || string(raw["orphans"]) != "[]" {
+		if string(raw["version"]) != "3" || string(raw["providers"]) != "[]" || string(raw["orphans"]) != "[]" {
 			t.Fatalf("file not v2: %s", data)
 		}
-		// the project entries serialize exactly as they were in v1
+		// the project entries carry the same values; only the link key is the v3 one
 		var v1raw map[string]json.RawMessage
 		json.Unmarshal([]byte(v1Sample), &v1raw)
-		if string(raw["projects"]) != string(v1raw["projects"]) || string(raw["auto_merge_global"]) != string(v1raw["auto_merge_global"]) {
-			t.Fatalf("content changed:\n%s\n%s", raw["projects"], v1raw["projects"])
+		wantProjects := strings.NewReplacer(`"gitlab":{"project":"grp/proj","project_id":null}`, `"remote":{"path":"grp/proj","id":null}`,
+			`"gitlab":null`, `"remote":null`).Replace(string(v1raw["projects"]))
+		if string(raw["projects"]) != wantProjects || string(raw["auto_merge_global"]) != string(v1raw["auto_merge_global"]) {
+			t.Fatalf("content changed:\n%s\n%s", raw["projects"], wantProjects)
 		}
 		if left := tempLeftovers(t, dir); len(left) != 0 {
 			t.Fatalf("temp files left: %v", left)
@@ -115,11 +117,11 @@ func TestRegistryV1MigratesToV2Atomically(t *testing.T) {
 			if stage == "dir-synced" {
 				// the rename already happened: the file is v2 now, and a retry must see the same content
 				after := readFile(t, p)
-				if !bytes.Contains(after, []byte(`"version":2`)) {
-					t.Fatalf("dir-synced: file not v2: %s", after)
+				if !bytes.Contains(after, []byte(`"version":3`)) {
+					t.Fatalf("dir-synced: file not v3: %s", after)
 				}
 				st2 := mustOpen(t, dir, LegacySource{})
-				if !bytes.Equal(after, readFile(t, p)) || st2.Snapshot().Version != 2 || len(st2.Snapshot().Projects) != 2 {
+				if !bytes.Equal(after, readFile(t, p)) || st2.Snapshot().Version != 3 || len(st2.Snapshot().Projects) != 2 {
 					t.Fatal("dir-synced: retry changed or misread the file")
 				}
 				continue
@@ -131,7 +133,7 @@ func TestRegistryV1MigratesToV2Atomically(t *testing.T) {
 				t.Fatalf("%s: temp files left: %v", stage, left)
 			}
 			// a later run without the fault migrates normally
-			if st := mustOpen(t, dir, LegacySource{}); st.Snapshot().Version != 2 {
+			if st := mustOpen(t, dir, LegacySource{}); st.Snapshot().Version != 3 {
 				t.Fatalf("%s: retry did not migrate", stage)
 			}
 		}
@@ -148,7 +150,7 @@ func TestRegistryV1MigratesToV2Atomically(t *testing.T) {
 			"v1 duplicate id":       `{"version":1,"providers":[],"projects":[{"id":"a","path":"/x/a","kind":"k"},{"id":"a","path":"/x/b","kind":"k"}],"auto_merge_global":{"enabled":false,"max_per_day":5}}`,
 			"v1 truncated":          `{"version":1,"providers":[],"proj`,
 			"version 0":             `{"version":0,` + good + `,"orphans":[]}`,
-			"version 3":             `{"version":3,` + good + `,"orphans":[]}`,
+			"version 4":             `{"version":4,` + good + `,"orphans":[]}`,
 			"version -1":            `{"version":-1,` + good + `,"orphans":[]}`,
 			"version missing":       `{` + good + `,"orphans":[]}`,
 			"version string":        `{"version":"2",` + good + `,"orphans":[]}`,
@@ -210,10 +212,10 @@ func TestRegistryV2ValidationRules(t *testing.T) {
 	zero := int64(0)
 	neg := int64(-3)
 	base := func() []Provider { return []Provider{testProvider("gl")} }
-	proj := func(gl *GitLabLink, prov *string) Project {
-		return Project{ID: "app", Path: "/srv/app", Kind: "registered", Provider: prov, GitLab: gl}
+	proj := func(gl *RemoteLink, prov *string) Project {
+		return Project{ID: "app", Path: "/srv/app", Kind: "registered", Provider: prov, Remote: gl}
 	}
-	linked := &GitLabLink{Project: "team/app", ProjectID: &id}
+	linked := &RemoteLink{Path: "team/app", ID: &id}
 	mut := func(f func(*Provider)) []Provider { p := testProvider("gl"); f(&p); return []Provider{p} }
 	many := func(n int) []Provider {
 		var out []Provider
@@ -227,7 +229,7 @@ func TestRegistryV2ValidationRules(t *testing.T) {
 		"uppercase provider id":     func(r *Registry) { r.Providers = mut(func(p *Provider) { p.ID = "GL" }) },
 		"41-char provider id":       func(r *Registry) { r.Providers = mut(func(p *Provider) { p.ID = "a" + strings.Repeat("b", 40) }) },
 		"slash in provider id":      func(r *Registry) { r.Providers = mut(func(p *Provider) { p.ID = "a/b" }) },
-		"kind github":               func(r *Registry) { r.Providers = mut(func(p *Provider) { p.Kind = "github" }) },
+		"kind bitbucket":            func(r *Registry) { r.Providers = mut(func(p *Provider) { p.Kind = "bitbucket" }) },
 		"kind empty":                func(r *Registry) { r.Providers = mut(func(p *Provider) { p.Kind = "" }) },
 		"base_url userinfo":         func(r *Registry) { r.Providers = mut(func(p *Provider) { p.BaseURL = "http://u:p@h" }) },
 		"base_url path":             func(r *Registry) { r.Providers = mut(func(p *Provider) { p.BaseURL = "http://h/api/v4" }) },
@@ -251,15 +253,15 @@ func TestRegistryV2ValidationRules(t *testing.T) {
 		"project_id without prov":   func(r *Registry) { r.Projects = []Project{proj(linked, nil)} },
 		"project_id zero": func(r *Registry) {
 			r.Providers = base()
-			r.Projects = []Project{proj(&GitLabLink{Project: "team/app", ProjectID: &zero}, strp("gl"))}
+			r.Projects = []Project{proj(&RemoteLink{Path: "team/app", ID: &zero}, strp("gl"))}
 		},
 		"project_id negative": func(r *Registry) {
 			r.Providers = base()
-			r.Projects = []Project{proj(&GitLabLink{Project: "team/app", ProjectID: &neg}, strp("gl"))}
+			r.Projects = []Project{proj(&RemoteLink{Path: "team/app", ID: &neg}, strp("gl"))}
 		},
 		"gitlab dotdot": func(r *Registry) {
 			r.Providers = base()
-			r.Projects = []Project{proj(&GitLabLink{Project: "a/../b"}, strp("gl"))}
+			r.Projects = []Project{proj(&RemoteLink{Path: "a/../b"}, strp("gl"))}
 		},
 		"auto merge on w/ provider": func(r *Registry) {
 			r.Providers = base()
@@ -312,7 +314,7 @@ func TestRegistryV2ValidationRules(t *testing.T) {
 			r.Providers = []Provider{testProvider("gl"), testProvider("gl-two")}
 			r.Projects = []Project{
 				proj(linked, strp("gl")),
-				{ID: "legacy-one", Path: "/srv/legacy-one", Kind: "legacy", GitLab: &GitLabLink{Project: "grp/legacy"}}, // legacy link: no provider, no project_id
+				{ID: "legacy-one", Path: "/srv/legacy-one", Kind: "legacy", Remote: &RemoteLink{Path: "grp/legacy"}}, // legacy link: no provider, no project_id
 				{ID: "plain", Path: "/srv/plain", Kind: "registered"},
 			}
 			r.AddOrphan(Orphan{Provider: "gone", Project: "team/xx", Step: "commit", At: "2026-11-10T00:00:00Z"}) // provider may be deleted later
@@ -327,16 +329,16 @@ func TestRegistryV2ValidationRules(t *testing.T) {
 			t.Fatalf("reloaded %+v", got)
 		}
 		p0 := got.Projects[0]
-		if p0.Provider == nil || *p0.Provider != "gl" || p0.GitLab == nil || p0.GitLab.ProjectID == nil || *p0.GitLab.ProjectID != 7 {
+		if p0.Provider == nil || *p0.Provider != "gl" || p0.Remote == nil || p0.Remote.ID == nil || *p0.Remote.ID != 7 {
 			t.Fatalf("project link %+v", p0)
 		}
 		// the snapshot is a deep copy
 		*got.Projects[0].Provider = "zz"
-		*got.Projects[0].GitLab.ProjectID = 99
+		*got.Projects[0].Remote.ID = 99
 		got.Providers[0].ID = "zz"
 		got.Orphans[0].Step = "zz"
 		again := st2.Snapshot()
-		if *again.Projects[0].Provider != "gl" || *again.Projects[0].GitLab.ProjectID != 7 || again.Providers[0].ID != "gl" || again.Orphans[0].Step != "commit" {
+		if *again.Projects[0].Provider != "gl" || *again.Projects[0].Remote.ID != 7 || again.Providers[0].ID != "gl" || again.Orphans[0].Step != "commit" {
 			t.Fatal("snapshot aliases live state")
 		}
 		// removing a referenced provider is refused (delete_provider's provider_in_use rests on this)
@@ -460,15 +462,15 @@ func TestOrphansBounded(t *testing.T) {
 }
 
 // W3b and older brokers only accept "version":1 and refuse unknown keys. This
-// test pins the version constants and replays the W3b load rules on a v2 file,
+// test pins the version constants and replays the W3b load rules on a v3 file,
 // so the "roll back the registry together with the broker" runbook warning
 // stays true: changing registryVersion back to 1, or letting v2 look like v1,
 // fails here.
 func TestOldBrokerVersionRefusesV2(t *testing.T) {
-	if registryVersion != 2 || registryVersionV1 != 1 {
-		t.Fatalf("version constants moved: current=%d previous=%d", registryVersion, registryVersionV1)
+	if registryVersion != 3 || registryVersionV2 != 2 || registryVersionV1 != 1 {
+		t.Fatalf("version constants moved: current=%d v2=%d v1=%d", registryVersion, registryVersionV2, registryVersionV1)
 	}
-	if got := emptyRegistry().Version; got != 2 {
+	if got := emptyRegistry().Version; got != 3 {
 		t.Fatalf("fresh registry version %d", got)
 	}
 	dir := stateDirFor(t)
@@ -505,7 +507,7 @@ func TestOldBrokerVersionRefusesV2(t *testing.T) {
 	}
 	var f map[string]any
 	json.Unmarshal(data, &f)
-	if f["version"] != float64(2) {
+	if f["version"] != float64(3) {
 		t.Fatalf("file version %v", f["version"])
 	}
 	// the replica does accept a genuine v1 file (so the check above is meaningful)

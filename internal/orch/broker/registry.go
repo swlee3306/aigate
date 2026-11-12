@@ -27,10 +27,12 @@ func init() {
 	defaultTimeouts[OpSetFlag] = 15 * time.Second
 }
 
-// GitLabLink is a project's GitLab name (a read-only placeholder in W3a).
-type GitLabLink struct {
-	Project   string `json:"project"`
-	ProjectID *int64 `json:"project_id"`
+// RemoteLink is a project's remote repository (registry v3): Path is
+// group/…/name (GitLab) or owner/repo (GitHub), ID the provider's numeric id
+// when it confirmed one.
+type RemoteLink struct {
+	Path string `json:"path"`
+	ID   *int64 `json:"id"`
 }
 
 // AutoMerge is a project's auto-merge setting (always off in W3a).
@@ -46,7 +48,7 @@ type Project struct {
 	Kind      string      `json:"kind"`
 	AIContext bool        `json:"ai_context"`
 	Provider  *string     `json:"provider"`
-	GitLab    *GitLabLink `json:"gitlab"`
+	Remote    *RemoteLink `json:"remote"`
 	AutoMerge AutoMerge   `json:"auto_merge"`
 }
 

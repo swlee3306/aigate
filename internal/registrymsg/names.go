@@ -34,6 +34,52 @@ const (
 	maxURLBytes         = 200
 )
 
+// providerKinds is the closed set of provider kinds (set_provider.kind).
+var providerKinds = map[string]bool{"gitlab": true, "github": true}
+
+// ValidProviderKind reports whether s is gitlab or github.
+func ValidProviderKind(s string) bool { return providerKinds[s] }
+
+const (
+	// MaxRemoteSegments is the most segments a remote path may have
+	// (owner/repo for GitHub, group/…/name for GitLab).
+	MaxRemoteSegments = 4
+	// MaxRemoteSegmentLen caps one segment, MaxRemotePathLen the whole path.
+	MaxRemoteSegmentLen = 100
+	MaxRemotePathLen    = 255
+)
+
+// ValidRemotePath reports whether s names a remote repository: 2 to
+// MaxRemoteSegments segments of [A-Za-z0-9._-], no empty segment, no "." or
+// ".." segment, no ".git" suffix on the last segment, each at most
+// MaxRemoteSegmentLen bytes and the whole at most MaxRemotePathLen. Case is
+// accepted as written: folding it (GitHub names are case-insensitive) is the
+// broker's call, per provider.
+func ValidRemotePath(s string) bool {
+	if len(s) > MaxRemotePathLen {
+		return false
+	}
+	segs := strings.Split(s, "/")
+	if len(segs) < 2 || len(segs) > MaxRemoteSegments {
+		return false
+	}
+	for i, seg := range segs {
+		if seg == "" || seg == "." || seg == ".." || len(seg) > MaxRemoteSegmentLen {
+			return false
+		}
+		for j := 0; j < len(seg); j++ {
+			c := seg[j]
+			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '.' || c == '_' || c == '-') {
+				return false
+			}
+		}
+		if i == len(segs)-1 && len(seg) >= 4 && strings.EqualFold(seg[len(seg)-4:], ".git") {
+			return false
+		}
+	}
+	return true
+}
+
 // ValidProviderID reports whether s is a provider id.
 func ValidProviderID(s string) bool { return providerIDRE.MatchString(s) }
 

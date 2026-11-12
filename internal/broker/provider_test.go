@@ -42,7 +42,7 @@ func TestProviderStoreRoundTrip(t *testing.T) {
 		func(p *Provider) { p.SSHURL = "ssh://git@127.0.0.1" },
 		func(p *Provider) { p.SSHURL = "ssh://git@x.example.com/grp" },
 		func(p *Provider) { p.TokenRef = "Bad Ref" },
-		func(p *Provider) { p.Kind = "github" },
+		func(p *Provider) { p.Kind = "bitbucket" },
 		func(p *Provider) { p.ID = "Bad" },
 	} {
 		p := goodProvider("other")
@@ -69,7 +69,7 @@ func TestProviderStoreRoundTrip(t *testing.T) {
 	// delete refused while a project references it
 	if err := st.Update(func(r *Registry) error {
 		r.Projects = append(r.Projects, Project{ID: "demo", Path: "/home/orch/repos/demo", Kind: "registered", Provider: strp("corp"),
-			GitLab: &GitLabLink{Project: "team/demo"}})
+			Remote: &RemoteLink{Path: "team/demo"}})
 		return nil
 	}); err != nil {
 		t.Fatal(err)

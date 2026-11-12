@@ -31,6 +31,11 @@ const (
 	ActionDeleteProvider = "delete_provider"
 	ActionCreateGroup    = "create_group"
 	ActionCreateProject  = "create_project"
+
+	// W3e: link an existing remote repository as a NEW local project, or
+	// attach a remote to an ALREADY registered project.
+	ActionLinkProject  = "link_project"
+	ActionAttachRemote = "attach_remote"
 )
 
 var (
@@ -70,6 +75,20 @@ var schema = map[string]map[string]fieldKind{
 	ActionCreateGroup:    {"name": kindString, "path": kindString, "parent_path": kindString},
 	ActionCreateProject: {"provider": kindString, "group_path": kindString, "template": kindString, "description": kindString,
 		"ai_context": kindBool, "publish": kindString, "deploy_key_sha256": kindString},
+	// W3e (E-D2). Subjects: the NEW local project id for link_project, the
+	// EXISTING project id for attach_remote.
+	ActionLinkProject: {"provider": kindString, "remote_path": kindString, "ai_context": kindBool, "publish": kindString,
+		"deploy_key_sha256": kindString},
+	ActionAttachRemote: {"provider": kindString, "remote_path": kindString, "publish": kindString, "deploy_key_sha256": kindString},
+}
+
+// optionalFields lists, per action, fields a change MAY carry on top of its
+// schema row. The schema layer does not know the provider's kind, so it cannot
+// say whether visibility is required (github) or forbidden (gitlab): the
+// broker op enforces that. Here it is only an optional enum. There is no
+// default: absent stays absent in the canonical text.
+var optionalFields = map[string]map[string]fieldKind{
+	ActionCreateProject: {"visibility": kindString},
 }
 
 // emptyOK lists the only string fields that may be "": a token's expires (no
@@ -83,7 +102,7 @@ var emptyOK = map[string]map[string]bool{
 
 func isNewAction(action string) bool {
 	switch action {
-	case ActionSetProvider, ActionDeleteProvider, ActionCreateGroup, ActionCreateProject:
+	case ActionSetProvider, ActionDeleteProvider, ActionCreateGroup, ActionCreateProject, ActionLinkProject, ActionAttachRemote:
 		return true
 	}
 	return false
@@ -98,7 +117,7 @@ func validSubject(action, subject string) bool {
 		return tokenRefRE.MatchString(subject)
 	case ActionSetProvider, ActionDeleteProvider, ActionCreateGroup:
 		return providerIDRE.MatchString(subject)
-	case ActionCreateProject:
+	case ActionCreateProject, ActionLinkProject:
 		return ValidName(subject)
 	default:
 		return subjectRE.MatchString(subject)
@@ -110,7 +129,7 @@ func validateNewField(action, name, s string) error {
 	ok := false
 	switch action + "." + name {
 	case ActionSetProvider + ".kind":
-		ok = s == "gitlab"
+		ok = ValidProviderKind(s)
 	case ActionSetProvider + ".base_url":
 		ok = ValidBaseURL(s)
 	case ActionSetProvider + ".ssh_url":
@@ -122,7 +141,7 @@ func validateNewField(action, name, s string) error {
 	case ActionCreateGroup + ".parent_path":
 		// "" is the top level; otherwise the new group must still fit the depth limit.
 		ok = s == "" || (ValidGroupPath(s) && strings.Count(s, "/")+1 < MaxGroupDepth)
-	case ActionCreateProject + ".provider":
+	case ActionCreateProject + ".provider", ActionLinkProject + ".provider", ActionAttachRemote + ".provider":
 		ok = providerIDRE.MatchString(s)
 	case ActionCreateProject + ".group_path":
 		ok = ValidGroupPath(s)
@@ -130,10 +149,14 @@ func validateNewField(action, name, s string) error {
 		ok = s == "basic" || s == "go"
 	case ActionCreateProject + ".description":
 		ok = ValidDescription(s)
-	case ActionCreateProject + ".publish":
+	case ActionCreateProject + ".publish", ActionLinkProject + ".publish", ActionAttachRemote + ".publish":
 		ok = s == "write" || s == "read"
-	case ActionCreateProject + ".deploy_key_sha256":
+	case ActionCreateProject + ".deploy_key_sha256", ActionLinkProject + ".deploy_key_sha256", ActionAttachRemote + ".deploy_key_sha256":
 		ok = hashRE.MatchString(s)
+	case ActionCreateProject + ".visibility":
+		ok = s == "public" || s == "private"
+	case ActionLinkProject + ".remote_path", ActionAttachRemote + ".remote_path":
+		ok = ValidRemotePath(s)
 	}
 	if !ok {
 		return errors.New("registrymsg: bad " + name)
@@ -214,10 +237,24 @@ func validate(action, subject string, fields map[string]any) error {
 	if !validSubject(action, subject) {
 		return errors.New("registrymsg: bad subject")
 	}
-	if len(fields) != len(spec) {
-		return errors.New("registrymsg: fields do not match the action")
+	opt := optionalFields[action]
+	for name := range fields {
+		if _, req := spec[name]; !req {
+			if _, ok := opt[name]; !ok {
+				return errors.New("registrymsg: fields do not match the action")
+			}
+		}
 	}
+	all := make(map[string]fieldKind, len(spec)+len(opt))
 	for name, kind := range spec {
+		all[name] = kind
+	}
+	for name, kind := range opt {
+		if _, present := fields[name]; present { // optional: checked only when carried
+			all[name] = kind
+		}
+	}
+	for name, kind := range all {
 		v, present := fields[name]
 		if !present {
 			return errors.New("registrymsg: missing field")

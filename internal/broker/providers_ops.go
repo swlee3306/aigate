@@ -53,6 +53,11 @@ func apiFail(err error) *OpError {
 
 // apiFor builds the client of provider id. Errors are fixed codes.
 func (s *Server) apiFor(id string) (*GitLabAPI, *OpError) {
+	// Only GitLab has a client in the broker so far (E2 adds GitHub): another
+	// kind answers one fixed code and nothing is sent anywhere.
+	if p, ok := s.Registry.ProviderByID(id); ok && p.Kind != "gitlab" {
+		return nil, fail1("not_supported_for_provider")
+	}
 	api, err := s.GitLabAPIFor(id)
 	if err != nil {
 		if errors.Is(err, ErrProviderUnknown) {
@@ -157,12 +162,12 @@ func (s *Server) setProviderHandler(ctx context.Context, raw json.RawMessage) (a
 		return nil, oe
 	}
 	// From here on the request ID is consumed.
-	// (c) the token must exist, be of kind gitlab and be usable: the store's
+	// (c) the token must exist, be of the provider's kind and be usable: the store's
 	// own provider storage does not check that.
 	if s.Tokens.Err() != nil {
 		return fail("tokens_unavailable")
 	}
-	if !s.gitlabTokenUsable(p.TokenRef) {
+	if !s.tokenUsableOfKind(p.TokenRef, p.Kind) {
 		return fail("token_ref_unknown")
 	}
 	// A host NAME must resolve to at least one allowed address (the connection
@@ -204,16 +209,17 @@ func providerReferenced(r *Registry, id string) bool {
 	return false
 }
 
-// gitlabTokenUsable: the store has a usable token of kind gitlab under ref.
+// tokenUsableOfKind: the store has a usable token of the given kind (the
+// provider's kind: gitlab or github) under ref.
 // Only metadata is read, never the value.
-func (s *Server) gitlabTokenUsable(ref string) bool {
+func (s *Server) tokenUsableOfKind(ref, kind string) bool {
 	list, err := s.Tokens.List(s.now())
 	if err != nil {
 		return false
 	}
 	for _, t := range list {
 		if t.Ref == ref {
-			return t.Kind == "gitlab" && t.Usable
+			return t.Kind == kind && t.Usable
 		}
 	}
 	return false

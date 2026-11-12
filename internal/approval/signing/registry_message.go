@@ -25,6 +25,8 @@ const (
 	RegistryActionDeleteProvider  = "delete_provider"
 	RegistryActionCreateGroup     = "create_group"
 	RegistryActionCreateProject   = "create_project"
+	RegistryActionLinkProject     = "link_project"
+	RegistryActionAttachRemote    = "attach_remote"
 )
 
 const registryMagic = "aigate-registry-v1"
@@ -41,7 +43,7 @@ var (
 
 // RegistryMessage is the content signed to change the project registry.
 type RegistryMessage struct {
-	Action  string // register_project, set_flag, set_token, delete_token, set_provider, delete_provider, create_group or create_project
+	Action  string // register_project, set_flag, set_token, delete_token, set_provider, delete_provider, create_group, create_project, link_project or attach_remote
 	Subject string // project id, token ref, provider id or new project name, by action
 	Change  string // 64 lowercase hex: SHA-256 of the canonical change JSON
 	Request string // 32 lowercase hex: one-time request id
@@ -58,8 +60,12 @@ func (m RegistryMessage) Validate() error {
 		subjectRE = registryTokenRefRE
 	case RegistryActionSetProvider, RegistryActionDeleteProvider, RegistryActionCreateGroup:
 		subjectRE = registryProviderIDRE
-	case RegistryActionCreateProject:
+	case RegistryActionCreateProject, RegistryActionLinkProject:
+		// link_project names a NEW local project (name rule, 2..40).
 		subjectRE = registryProjectNameRE
+	case RegistryActionAttachRemote:
+		// attach_remote names an EXISTING project id (the old project id rule).
+		subjectRE = registrySubjectRE
 	}
 	switch {
 	case subjectRE == nil:

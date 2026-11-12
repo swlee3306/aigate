@@ -116,7 +116,7 @@ func TestWebFixturesW3cVectors(t *testing.T) {
 		{Name: "group parent four segments", Action: "create_group", Subject: "gl", Fields: cg(map[string]any{"parent_path": "aa/bb/cc/dd"})},
 		{Name: "group parent upper", Action: "create_group", Subject: "gl", Fields: cg(map[string]any{"parent_path": "Team"})},
 		{Name: "group subject upper", Action: "create_group", Subject: "GL", Fields: cg(nil)},
-		{Name: "provider kind github", Action: "set_provider", Subject: "gl", Fields: sp(map[string]any{"kind": "github"})},
+		{Name: "provider kind bitbucket", Action: "set_provider", Subject: "gl", Fields: sp(map[string]any{"kind": "bitbucket"})},
 		{Name: "base_url with path", Action: "set_provider", Subject: "gl", Fields: sp(map[string]any{"base_url": "http://gitlab.example/x"})},
 		{Name: "base_url trailing slash", Action: "set_provider", Subject: "gl", Fields: sp(map[string]any{"base_url": "http://gitlab.example/"})},
 		{Name: "base_url ftp", Action: "set_provider", Subject: "gl", Fields: sp(map[string]any{"base_url": "ftp://gitlab.example"})},
@@ -572,4 +572,125 @@ func checkProviderConstants(t *testing.T) {
 			t.Errorf("%s does not wire the providers view (%q)", f.file, f.needle)
 		}
 	}
+}
+
+// checkW3eConstants is the "w3e" subtest of TestConstantsAgreeWithWeb. The
+// console has no GitHub flow yet (E5), so the page may only offer what Go
+// accepts: every provider kind the page's set_provider rule allows must be a
+// registrymsg kind; and if the page already declares a W3e action constant it
+// must equal registrymsg's. The Go side pins the facts the page will copy.
+func checkW3eConstants(t *testing.T) {
+	src, err := os.ReadFile("../web/static/views/providers.js")
+	if err != nil {
+		t.Fatalf("views/providers.js must exist and be readable: %v", err)
+	}
+	js := string(src)
+	m := regexp.MustCompile(`ACTION_SET_PROVIDER \+ '\.kind': return ok\((.*)\);`).FindStringSubmatch(js)
+	if m == nil {
+		t.Fatal("the page's set_provider kind rule was not found")
+	}
+	kinds := regexp.MustCompile(`'([a-z]+)'`).FindAllStringSubmatch(m[1], -1)
+	if len(kinds) == 0 {
+		t.Fatalf("no provider kind in the page rule %q", m[1])
+	}
+	for _, k := range kinds {
+		if !registrymsg.ValidProviderKind(k[1]) {
+			t.Errorf("the page offers provider kind %q that registrymsg refuses", k[1])
+		}
+	}
+	for name, want := range map[string]string{"ACTION_LINK_PROJECT": registrymsg.ActionLinkProject, "ACTION_ATTACH_REMOTE": registrymsg.ActionAttachRemote} {
+		if mm := regexp.MustCompile(`(?m)^(?:export )?const ` + name + ` = '([^']*)';\s*$`).FindStringSubmatch(js); mm != nil && mm[1] != want {
+			t.Errorf("%s %q != %q", name, mm[1], want)
+		}
+	}
+	// Facts the page will copy (E5): kinds, the visibility enum and the remote path bounds.
+	if !registrymsg.ValidProviderKind("gitlab") || !registrymsg.ValidProviderKind("github") || registrymsg.ValidProviderKind("bitbucket") {
+		t.Error("provider kinds")
+	}
+	if registrymsg.MaxRemoteSegments != 4 || registrymsg.MaxRemoteSegmentLen != 100 || registrymsg.MaxRemotePathLen != 255 {
+		t.Errorf("remote path bounds moved: %d %d %d", registrymsg.MaxRemoteSegments, registrymsg.MaxRemoteSegmentLen, registrymsg.MaxRemotePathLen)
+	}
+}
+
+// TestWebFixturesW3eVectors writes the golden vectors for the W3e schema
+// additions (github provider, visibility, link_project, attach_remote, remote
+// paths) from the real Go code. Nothing in the page reads this file yet: it is
+// the contract E5's JS must reproduce.
+func TestWebFixturesW3eVectors(t *testing.T) {
+	type vec struct {
+		Name      string         `json:"name"`
+		Action    string         `json:"action"`
+		Subject   string         `json:"subject"`
+		Fields    map[string]any `json:"fields"`
+		Canonical string         `json:"canonical,omitempty"`
+		Change    string         `json:"change,omitempty"`
+	}
+	hash64 := strings.Repeat("ab", 32)
+	link := func(over map[string]any) map[string]any {
+		m := map[string]any{"provider": "gh", "remote_path": "octo/Hello-World", "ai_context": false, "publish": "read", "deploy_key_sha256": hash64}
+		for k, v := range over {
+			m[k] = v
+		}
+		return m
+	}
+	attach := func(over map[string]any) map[string]any {
+		m := map[string]any{"provider": "gh", "remote_path": "octo/Hello-World", "publish": "write", "deploy_key_sha256": hash64}
+		for k, v := range over {
+			m[k] = v
+		}
+		return m
+	}
+	cp := func(over map[string]any) map[string]any {
+		m := map[string]any{"provider": "gh", "group_path": "octo", "template": "go", "description": "", "ai_context": false, "publish": "write", "deploy_key_sha256": hash64}
+		for k, v := range over {
+			m[k] = v
+		}
+		return m
+	}
+	gh := map[string]any{"kind": "github", "base_url": "https://api.github.com", "ssh_url": "ssh://git@github.com", "token_ref": "github-main"}
+	good := []vec{
+		{Name: "github set_provider", Action: "set_provider", Subject: "gh", Fields: gh},
+		{Name: "create_project private", Action: "create_project", Subject: "hello", Fields: cp(map[string]any{"visibility": "private"})},
+		{Name: "create_project public", Action: "create_project", Subject: "hello", Fields: cp(map[string]any{"visibility": "public"})},
+		{Name: "link_project github", Action: "link_project", Subject: "hello", Fields: link(nil)},
+		{Name: "link_project gitlab nested", Action: "link_project", Subject: "hello", Fields: link(map[string]any{"provider": "gl", "remote_path": "team/sub/app.v2", "ai_context": true})},
+		{Name: "attach_remote", Action: "attach_remote", Subject: "a", Fields: attach(nil)},
+	}
+	for i := range good {
+		c, err := registrymsg.CanonicalChange(good[i].Action, good[i].Subject, good[i].Fields)
+		if err != nil {
+			t.Fatalf("%s: %v", good[i].Name, err)
+		}
+		h, _ := registrymsg.ChangeHash(good[i].Action, good[i].Subject, good[i].Fields)
+		good[i].Canonical, good[i].Change = string(c), h
+	}
+	refused := []vec{
+		{Name: "visibility empty", Action: "create_project", Subject: "hello", Fields: cp(map[string]any{"visibility": ""})},
+		{Name: "visibility upper", Action: "create_project", Subject: "hello", Fields: cp(map[string]any{"visibility": "Public"})},
+		{Name: "visibility internal", Action: "create_project", Subject: "hello", Fields: cp(map[string]any{"visibility": "internal"})},
+		{Name: "visibility bool", Action: "create_project", Subject: "hello", Fields: cp(map[string]any{"visibility": true})},
+		{Name: "link remote_path one segment", Action: "link_project", Subject: "hello", Fields: link(map[string]any{"remote_path": "solo"})},
+		{Name: "link remote_path dotdot", Action: "link_project", Subject: "hello", Fields: link(map[string]any{"remote_path": "a/../b"})},
+		{Name: "link remote_path dot git", Action: "link_project", Subject: "hello", Fields: link(map[string]any{"remote_path": "octo/repo.git"})},
+		{Name: "link remote_path percent", Action: "link_project", Subject: "hello", Fields: link(map[string]any{"remote_path": "octo/re%2fpo"})},
+		{Name: "link remote_path unicode", Action: "link_project", Subject: "hello", Fields: link(map[string]any{"remote_path": "octo/저장소"})},
+		{Name: "link remote_path five segments", Action: "link_project", Subject: "hello", Fields: link(map[string]any{"remote_path": "a/b/c/d/e"})},
+		{Name: "link subject one letter", Action: "link_project", Subject: "a", Fields: link(nil)},
+		{Name: "link without ai_context", Action: "link_project", Subject: "hello", Fields: link(map[string]any{"ai_context": nil})},
+		{Name: "attach with ai_context", Action: "attach_remote", Subject: "hello", Fields: attach(map[string]any{"ai_context": false})},
+		{Name: "attach with visibility", Action: "attach_remote", Subject: "hello", Fields: attach(map[string]any{"visibility": "private"})},
+		{Name: "set_provider kind GitHub", Action: "set_provider", Subject: "gh", Fields: map[string]any{"kind": "GitHub", "base_url": "https://api.github.com", "ssh_url": "ssh://git@github.com", "token_ref": "github-main"}},
+	}
+	for i := range refused {
+		if _, err := registrymsg.CanonicalChange(refused[i].Action, refused[i].Subject, refused[i].Fields); err == nil {
+			t.Fatalf("Go accepts %q", refused[i].Name)
+		}
+		// nil entries in the override maps mean "absent"
+		for k, v := range refused[i].Fields {
+			if v == nil {
+				delete(refused[i].Fields, k)
+			}
+		}
+	}
+	checkFixture(t, "w3e-vectors.json", map[string]any{"good": good, "refused": refused})
 }

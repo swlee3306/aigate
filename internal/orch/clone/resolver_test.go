@@ -82,9 +82,9 @@ func proj(id, path, provider, gl string) map[string]any {
 		p["provider"] = provider
 	}
 	if gl == "" {
-		p["gitlab"] = nil
+		p["remote"] = nil
 	} else {
-		p["gitlab"] = map[string]any{"project": gl, "project_id": 7}
+		p["remote"] = map[string]any{"path": gl, "id": 7}
 	}
 	return p
 }

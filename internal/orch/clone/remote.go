@@ -117,15 +117,15 @@ func (r *Resolver) refresh() {
 	}
 	table := map[string]string{}
 	for _, p := range view.Projects {
-		if p.Provider == nil || p.GitLab == nil {
+		if p.Provider == nil || p.Remote == nil {
 			continue // not a provider-linked project
 		}
 		table[p.Path] = ""
 		ssh, known := providers[*p.Provider]
-		if !known || !lastSegmentIs(p.GitLab.Project, p.ID) {
+		if !known || !lastSegmentIs(p.Remote.Path, p.ID) {
 			continue
 		}
-		remote, ok := RemoteFor(ssh, p.GitLab.Project)
+		remote, ok := RemoteFor(ssh, p.Remote.Path)
 		if !ok || !knownhosts.RemotePinned(r.KnownHosts, remote) {
 			continue
 		}

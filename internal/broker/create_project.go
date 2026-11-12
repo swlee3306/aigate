@@ -51,22 +51,37 @@ const (
 )
 
 var createProjectKeys = []string{"id", "provider", "group_path", "template", "description", "ai_context", "publish",
-	"deploy_key_sha256", "deploy_key", "change", "request", "issued", "signature"}
+	"deploy_key_sha256", "visibility", "deploy_key", "change", "request", "issued", "signature"}
 
 type createProjectArgs struct {
-	ID              string             `json:"id"` // the new project's name (the subject of the signed change)
-	Provider        string             `json:"provider"`
-	GroupPath       string             `json:"group_path"`
-	Template        string             `json:"template"`
-	Description     string             `json:"description"`
-	AIContext       *bool              `json:"ai_context"`
-	Publish         string             `json:"publish"`
-	DeployKeySHA256 string             `json:"deploy_key_sha256"`
-	DeployKey       string             `json:"deploy_key"` // the public key LINE; only its hash is signed
-	Change          string             `json:"change"`
-	Request         string             `json:"request"`
-	Issued          string             `json:"issued"`
-	Signature       *signing.Signature `json:"signature"`
+	ID              string `json:"id"` // the new project's name (the subject of the signed change)
+	Provider        string `json:"provider"`
+	GroupPath       string `json:"group_path"`
+	Template        string `json:"template"`
+	Description     string `json:"description"`
+	AIContext       *bool  `json:"ai_context"`
+	Publish         string `json:"publish"`
+	DeployKeySHA256 string `json:"deploy_key_sha256"`
+	// Visibility is optional in the signed schema; whether it is required
+	// (github) or forbidden (gitlab) depends on the provider kind, which only
+	// this op knows. No default: absent stays absent.
+	Visibility *string            `json:"visibility"`
+	DeployKey  string             `json:"deploy_key"` // the public key LINE; only its hash is signed
+	Change     string             `json:"change"`
+	Request    string             `json:"request"`
+	Issued     string             `json:"issued"`
+	Signature  *signing.Signature `json:"signature"`
+}
+
+// signedFields is the change the signature covers. visibility is part of it
+// only when the request carries it (no default is ever filled in).
+func (a createProjectArgs) signedFields() map[string]any {
+	f := map[string]any{"provider": a.Provider, "group_path": a.GroupPath, "template": a.Template,
+		"description": a.Description, "ai_context": *a.AIContext, "publish": a.Publish, "deploy_key_sha256": a.DeployKeySHA256}
+	if a.Visibility != nil {
+		f["visibility"] = *a.Visibility
+	}
+	return f
 }
 
 // lockName reserves name for one create at a time (same-name creates are
@@ -118,8 +133,7 @@ func (s *Server) createProjectHandler(ctx context.Context, raw json.RawMessage) 
 	if s.Registry.Err() != nil {
 		return fail("registry_unavailable")
 	}
-	fields := map[string]any{"provider": a.Provider, "group_path": a.GroupPath, "template": a.Template,
-		"description": a.Description, "ai_context": *a.AIContext, "publish": a.Publish, "deploy_key_sha256": a.DeployKeySHA256}
+	fields := a.signedFields()
 	shape := func() *OpError { // everything decidable from the request alone: no ID burnt
 		if !registrymsg.ValidName(a.ID) {
 			return fail1("bad_request")
@@ -136,6 +150,21 @@ func (s *Server) createProjectHandler(ctx context.Context, raw json.RawMessage) 
 		}
 		if _, ok := s.projectPath(a.ID); !ok {
 			return fail1("path_not_allowed")
+		}
+		// Visibility rules need the provider's kind (an unknown provider is
+		// answered later, as before). All of this is decidable from the request
+		// and the registry alone, so no ID is burnt.
+		if prov, ok := s.Registry.ProviderByID(a.Provider); ok {
+			switch {
+			case prov.Kind == "gitlab" && a.Visibility != nil:
+				return fail1("visibility_not_allowed")
+			case prov.Kind == "github" && a.Visibility == nil:
+				return fail1("visibility_required")
+			case prov.Kind == "github" && *a.Visibility != "public" && *a.Visibility != "private":
+				return fail1("bad_request")
+			case prov.Kind != "gitlab":
+				return fail1("not_supported_for_provider") // E2 adds the GitHub flow
+			}
 		}
 		return nil
 	}
@@ -243,7 +272,7 @@ func (s *Server) createWritePhase(ctx context.Context, a createProjectArgs, api 
 	step = stepRegister
 	provID := a.Provider
 	entry := Project{ID: a.ID, Path: projPath, Kind: "registered", AIContext: *a.AIContext, Provider: &provID,
-		GitLab: &GitLabLink{Project: full, ProjectID: &id}}
+		Remote: &RemoteLink{Path: full, ID: &id}}
 	err = s.Registry.Update(func(r *Registry) error {
 		if registryHasProject(r, a.ID, projPath) {
 			return opCodeErr("project_name_taken")
@@ -260,7 +289,7 @@ func (s *Server) createWritePhase(ctx context.Context, a createProjectArgs, api 
 		// the entry is there, the project IS registered.
 		snap := s.Registry.Snapshot()
 		for _, p := range snap.Projects {
-			if p.ID == a.ID && p.Path == projPath && p.GitLab != nil && p.GitLab.ProjectID != nil && *p.GitLab.ProjectID == id {
+			if p.ID == a.ID && p.Path == projPath && p.Remote != nil && p.Remote.ID != nil && *p.Remote.ID == id {
 				s.logf("create_project: the registry file was written but its directory fsync failed")
 				err = nil
 			}
