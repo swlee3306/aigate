@@ -1177,7 +1177,7 @@ func TestProjectsReadListsOrphans(t *testing.T) {
 		t.Fatalf("%v %s", err, raw)
 	}
 	o := res.Orphans[0]
-	if len(o) != 5 || o["provider"] != "gl" || o["project"] != "team/x-app" || o["project_id"] != float64(77) || o["step"] != "deploy_key" || o["at"] != "2026-11-09T12:00:00Z" {
+	if len(o) != 6 || o["origin"] != "created" || o["provider"] != "gl" || o["project"] != "team/x-app" || o["project_id"] != float64(77) || o["step"] != "deploy_key" || o["at"] != "2026-11-09T12:00:00Z" {
 		t.Fatalf("orphan row %v", o)
 	}
 }

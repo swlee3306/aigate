@@ -102,17 +102,22 @@ type OrphanView struct {
 	ProjectID *int64 `json:"project_id"`
 	Step      string `json:"step"`
 	At        string `json:"at"`
+	Origin    string `json:"origin"` // created | linked
 }
 
 func orphanView(o broker.OrphanRow) (OrphanView, bool) {
-	if !registrymsg.ValidProviderID(o.Provider) || !broker.ValidGitLabProjectPath(o.Project) || !broker.ValidOrphanStep(o.Step) ||
-		(o.ProjectID != nil && *o.ProjectID <= 0) {
+	if !registrymsg.ValidProviderID(o.Provider) || !(broker.ValidGitLabProjectPath(o.Project) || registrymsg.ValidRemotePath(o.Project)) || !broker.ValidOrphanStep(o.Step) ||
+		!broker.ValidOrphanOrigin(o.Origin) || (o.ProjectID != nil && *o.ProjectID <= 0) {
 		return OrphanView{}, false
 	}
 	if t, err := time.Parse(registryTimeFormat, o.At); err != nil || t.Location() != time.UTC || t.Format(registryTimeFormat) != o.At {
 		return OrphanView{}, false
 	}
-	return OrphanView{Provider: o.Provider, Project: o.Project, ProjectID: o.ProjectID, Step: o.Step, At: o.At}, true
+	origin := o.Origin
+	if origin == "" {
+		origin = broker.OriginCreated
+	}
+	return OrphanView{Provider: o.Provider, Project: o.Project, ProjectID: o.ProjectID, Step: o.Step, At: o.At, Origin: origin}, true
 }
 
 // GroupView is one GitLab group the token can create projects in.
@@ -182,8 +187,12 @@ func w3cBrokerError(action string, e *broker.OpError, write bool) *httpError {
 func partialError(d *broker.PartialDetail) *httpError {
 	he := *errCreatePartial
 	if d != nil {
+		origin := d.Origin
+		if origin == "" {
+			origin = broker.OriginCreated
+		}
 		he.detail = map[string]any{"provider": d.Provider, "project": d.Project, "project_id": d.ProjectID, "step": d.Step,
-			"orphan_recorded": d.Recorded, "orphan_dropped": d.Dropped}
+			"orphan_recorded": d.Recorded, "orphan_dropped": d.Dropped, "origin": origin}
 	}
 	return &he
 }
@@ -256,7 +265,7 @@ func (h *handler) providerGroups(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]GroupView, 0, len(reply.Groups))
 	for _, g := range reply.Groups {
-		if !registrymsg.ValidGroupPath(g.Path) || g.Name == "" || len(g.Name) > maxNameBytes || hostileText(g.Name) {
+		if !registrymsg.ValidOwnerField(g.Path) || g.Name == "" || len(g.Name) > maxNameBytes || hostileText(g.Name) {
 			writeErr(w, errProjBrokerBad)
 			return
 		}
@@ -316,6 +325,12 @@ func parseW3cChange(rawAction, rawSubject, rawFields json.RawMessage, allowed []
 		return registryChange{}, errProjBadBody
 	}
 	if _, has := fields["visibility"]; has {
+		return registryChange{}, errProjBadBody
+	}
+	// The signed owner field is a superset of both providers' rules (W3e E3 fix
+	// round A); until E4 gives this console a kind-aware check it stays a GitLab
+	// group path here, exactly as before.
+	if g, _ := fields["group_path"].(string); action == registrymsg.ActionCreateProject && !registrymsg.ValidGroupPath(g) {
 		return registryChange{}, errProjBadBody
 	}
 	return registryChange{Action: action, Subject: subject, Fields: fields}, nil

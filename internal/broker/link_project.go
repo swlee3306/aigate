@@ -40,10 +40,10 @@ import (
 // the provider's own refusal of the key request (400/401/403/404/422/429) means
 // nothing was attached: the plain provider code, no orphan. Any other error at
 // the key step (5xx, 3xx, transport, a bad 2xx answer, a panic) is of UNKNOWN
-// outcome: orphan record with step deploy_key + create_partial. A registry
-// failure after the key was accepted: orphan with step register + create_partial.
+// outcome: orphan record (origin "linked") with step deploy_key + link_partial. A registry
+// failure after the key was accepted: orphan with step register + link_partial.
 // Nothing is deleted or retried. The orphan's project is the remote path and its
-// id the repository's; the create_partial sentence is reused ("partly made").
+// id the repository's; link_partial has its own sentence: the repository existed before, only the key may be on it.
 //
 // The static --git-remote-for entries of orchd are unknown to the broker:
 // static_remote_wins is orchd's refusal, never raised here.
@@ -158,9 +158,9 @@ func remotePathShape(kind, p string) bool {
 //   - link: the id must be new; an id that is already provider-linked is
 //     already_linked, any other id or path clash is project_exists (use
 //     attach_remote for a registered project)
-//   - attach: the project must exist (project_unknown) and have no provider link
-//     (already_linked). A legacy remote (broker.json mapping, no provider) may be
-//     adopted only when it names the same repository; a different one stays.
+//   - attach: the project must exist (project_unknown) and have neither a
+//     provider link nor any remote (already_linked; a legacy broker.json mapping
+//     is not adopted)
 //   - both: the same remote (same provider id; GitHub case-insensitively) must
 //     not be linked by another project (already_linked)
 func remoteRegistryCode(reg *Registry, r remoteReq, prov Provider, remote, projPath string) string {
@@ -176,7 +176,10 @@ func remoteRegistryCode(reg *Registry, r remoteReq, prov Provider, remote, projP
 			return "project_unknown"
 		case found.Provider != nil:
 			return "already_linked"
-		case found.Remote != nil && !SameRepoPath(prov.Kind, found.Remote.Path, remote):
+		case found.Remote != nil:
+			// A project with a legacy remote mapping (broker.json: create_mr uses it)
+			// is never adopted: attaching would redirect create_mr and could re-point
+			// it at another kind or host.
 			return "already_linked"
 		}
 	} else {
@@ -254,6 +257,15 @@ func (s *Server) linkOrAttach(ctx context.Context, r remoteReq) (res any, oe *Op
 	if !ok {
 		return fail("provider_unknown")
 	}
+	// One link/attach per remote at a time, whatever the project id: taken in
+	// ADDITION to the id lock, always in that order (id, then remote), and both
+	// are try-locks, so neither order can deadlock. Without it two ids could
+	// each pass the registry rule and attach their own key to the same repository.
+	rkey := "remote|" + prov.Kind + "|" + r.provider + "|" + strings.ToLower(r.remotePath)
+	if !s.lockName(rkey) {
+		return fail("already_linked")
+	}
+	defer s.unlockName(rkey)
 	snap := s.Registry.Snapshot()
 	if code := remoteRegistryCode(&snap, r, prov, r.remotePath, projPath); code != "" {
 		return fail(code)
@@ -264,7 +276,7 @@ func (s *Server) linkOrAttach(ctx context.Context, r remoteReq) (res any, oe *Op
 			before = p
 		}
 	}
-	rp, oe := s.providerFor(r.provider) // ONE instance
+	rp, oe := s.providerForEntry(prov) // ONE instance, built from the entry read above
 	if oe != nil {
 		return nil, oe
 	}
@@ -293,16 +305,16 @@ func (s *Server) linkOrAttach(ctx context.Context, r remoteReq) (res any, oe *Op
 	step := stepDeployKey
 	id := info.ID
 	partial := func() (any, *OpError) {
-		d := PartialDetail{Provider: r.provider, Project: remote, ProjectID: &id, Step: step}
+		d := PartialDetail{Provider: r.provider, Project: remote, ProjectID: &id, Step: step, Origin: OriginLinked}
 		dropped, oerr := s.Registry.AddOrphan(Orphan{Provider: r.provider, Project: remote, ProjectID: &id, Step: step,
-			At: s.now().UTC().Format(orphanTimeLayout)})
+			At: s.now().UTC().Format(orphanTimeLayout), Origin: OriginLinked})
 		d.OrphanRecorded = oerr == nil
 		d.OrphanDropped = dropped
 		if oerr != nil {
 			s.logf("%s: the orphan record could not be saved (step=%s)", r.action(), step)
 		}
 		s.logf("%s: partial result at step=%s", r.action(), step)
-		return nil, &OpError{Code: "create_partial", Data: d}
+		return nil, &OpError{Code: "link_partial", Data: d}
 	}
 	defer func() {
 		if rec := recover(); rec != nil {

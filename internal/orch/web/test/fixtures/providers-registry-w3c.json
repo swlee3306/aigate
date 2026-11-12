@@ -9,14 +9,16 @@
       "project": "team/lost-app",
       "project_id": 99,
       "step": "deploy_key",
-      "at": "2026-11-09T12:00:00Z"
+      "at": "2026-11-09T12:00:00Z",
+      "origin": "created"
     },
     {
       "provider": "gl",
       "project": "team/lost-two",
       "project_id": null,
       "step": "project",
-      "at": "2026-11-09T13:00:00Z"
+      "at": "2026-11-09T13:00:00Z",
+      "origin": "linked"
     }
   ],
   "projects": [

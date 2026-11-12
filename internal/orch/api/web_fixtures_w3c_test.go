@@ -78,6 +78,11 @@ func TestWebFixturesW3cVectors(t *testing.T) {
 		{Name: "create_project empty description", Action: "create_project", Subject: "app-one", Fields: cp(map[string]any{"description": ""})},
 		{Name: "create_project special description", Action: "create_project", Subject: "ab", Fields: cp(map[string]any{
 			"description": "say \"hi\" \\ <b>&</b> / 한글😀", "ai_context": true, "publish": "read", "template": "basic", "group_path": "team"})},
+		// W3e E3 fix round: the signed owner field is a superset of both providers' rules
+		{Name: "create_project owner mixed case", Action: "create_project", Subject: "app-one", Fields: cp(map[string]any{"group_path": "SampleUser"})},
+		{Name: "create_project owner underscore", Action: "create_project", Subject: "app-one", Fields: cp(map[string]any{"group_path": "corp_user"})},
+		{Name: "create_project owner one char", Action: "create_project", Subject: "app-one", Fields: cp(map[string]any{"group_path": "a"})},
+		{Name: "create_project owner five segments", Action: "create_project", Subject: "app-one", Fields: cp(map[string]any{"group_path": "aa/bb/cc/dd/ee"})},
 	}
 	for i := range good {
 		c, err := registrymsg.CanonicalChange(good[i].Action, good[i].Subject, good[i].Fields)
@@ -103,8 +108,9 @@ func TestWebFixturesW3cVectors(t *testing.T) {
 		{Name: "template unknown", Action: "create_project", Subject: "app-one", Fields: cp(map[string]any{"template": "rust"})},
 		{Name: "publish unknown", Action: "create_project", Subject: "app-one", Fields: cp(map[string]any{"publish": "admin"})},
 		{Name: "ai_context string", Action: "create_project", Subject: "app-one", Fields: cp(map[string]any{"ai_context": "false"})},
-		{Name: "group path upper", Action: "create_project", Subject: "app-one", Fields: cp(map[string]any{"group_path": "Team"})},
-		{Name: "group path five segments", Action: "create_project", Subject: "app-one", Fields: cp(map[string]any{"group_path": "aa/bb/cc/dd/ee"})},
+		{Name: "group path six segments", Action: "create_project", Subject: "app-one", Fields: cp(map[string]any{"group_path": "aa/bb/cc/dd/ee/ff"})},
+		{Name: "group path space", Action: "create_project", Subject: "app-one", Fields: cp(map[string]any{"group_path": "a b"})},
+		{Name: "group path over 100 bytes", Action: "create_project", Subject: "app-one", Fields: cp(map[string]any{"group_path": strings.Repeat("a", 101)})},
 		{Name: "group path trailing slash", Action: "create_project", Subject: "app-one", Fields: cp(map[string]any{"group_path": "team/"})},
 		{Name: "group path double slash", Action: "create_project", Subject: "app-one", Fields: cp(map[string]any{"group_path": "aa//bb"})},
 		{Name: "group path dot dot", Action: "create_project", Subject: "app-one", Fields: cp(map[string]any{"group_path": "aa/../bb"})},

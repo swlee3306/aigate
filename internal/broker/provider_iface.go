@@ -176,6 +176,13 @@ func (s *Server) RepoProviderFor(providerID string) (RepoProvider, error) {
 	if !ok {
 		return nil, ErrProviderUnknown
 	}
+	return s.repoProviderForEntry(p)
+}
+
+// repoProviderForEntry builds the client of an entry the caller already read
+// (a flow reads the provider ONCE and builds its client from that very value,
+// so no registry change can slip in between).
+func (s *Server) repoProviderForEntry(p Provider) (RepoProvider, error) {
 	switch p.Kind {
 	case "gitlab":
 		a, err := newGitLabAPI(p, s.Tokens, s.apiSeams)

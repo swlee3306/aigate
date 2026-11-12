@@ -876,12 +876,12 @@ func TestProductionCannotEnableSeams(t *testing.T) {
 		"provider.go|GitLabAPIFor|newGitLabAPI":  true,
 		// W3e (E2): additions for the second client and the kind-aware factory;
 		// nothing existing is loosened (TestSeamsNotReachableFromProduction pins the rest).
-		"githubapi.go|(type/var)|apiSeams":               true,
-		"githubapi.go|newGitHubAPI|apiSeams":             true,
-		"githubapi.go|NewGitHubAPI|newGitHubAPI":         true,
-		"githubapi.go|newGitHubAPI|newGitHubAPI":         true,
-		"provider_iface.go|RepoProviderFor|newGitLabAPI": true,
-		"provider_iface.go|RepoProviderFor|newGitHubAPI": true,
+		"githubapi.go|(type/var)|apiSeams":                    true,
+		"githubapi.go|newGitHubAPI|apiSeams":                  true,
+		"githubapi.go|NewGitHubAPI|newGitHubAPI":              true,
+		"githubapi.go|newGitHubAPI|newGitHubAPI":              true,
+		"provider_iface.go|repoProviderForEntry|newGitLabAPI": true, // E3 fix round: the kind switch moved into the entry-based builder
+		"provider_iface.go|repoProviderForEntry|newGitHubAPI": true,
 	}
 	for _, u := range uses {
 		if !allowedUse[u.file+"|"+u.fn+"|"+u.what] {

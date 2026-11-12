@@ -357,6 +357,14 @@ var (
 
 func validGHLogin(s string) bool { return ghLoginRE.MatchString(s) }
 
+// validGHOwnerLogin is the rule for the SIGNED owner of a GitHub create: one
+// login of 1-39 characters [A-Za-z0-9-] (plus `_`, which Enterprise Managed
+// Users logins have), case kept, no leading or trailing hyphen. The login the
+// provider returns is what is used; this only decides what may be signed.
+func validGHOwnerLogin(s string) bool {
+	return validGHLogin(s) && !strings.HasPrefix(s, "-") && !strings.HasSuffix(s, "-")
+}
+
 func validGHRepoName(s string) bool {
 	if !ghRepoRE.MatchString(s) || s == "." || s == ".." {
 		return false

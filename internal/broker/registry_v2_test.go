@@ -437,10 +437,10 @@ func TestOrphansBounded(t *testing.T) {
 	b, _ := json.Marshal(Orphan{Provider: "gl", Project: "team/xx", Step: "commit", At: "2026-11-10T00:00:00Z"})
 	var keys map[string]any
 	json.Unmarshal(b, &keys)
-	if len(keys) != 5 {
+	if len(keys) != 6 {
 		t.Fatalf("orphan keys %v", keys)
 	}
-	for _, k := range []string{"provider", "project", "project_id", "step", "at"} {
+	for _, k := range []string{"provider", "project", "project_id", "step", "at", "origin"} {
 		if _, ok := keys[k]; !ok {
 			t.Fatalf("missing key %s", k)
 		}

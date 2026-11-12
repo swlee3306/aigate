@@ -40,7 +40,7 @@ type OpError struct {
 	Code    string
 	Message string
 	// Data is optional machine-readable detail sent as "detail" with the
-	// failure. Only create_partial carries one (PartialDetail: public values,
+	// failure. Only create_partial and link_partial carry one (PartialDetail: public values,
 	// never a token or provider text); the server drops it for every other code.
 	Data any
 }
@@ -118,6 +118,7 @@ var fixedMessages = map[string]string{
 	// W3e (E3): link_project and attach_remote. Provider-neutral; nothing the
 	// provider says is shown.
 	"repo_not_found": "제공자에서 그 저장소를 찾을 수 없습니다. 이 도구는 이미 있는 저장소만 연결하며, 토큰이 볼 수 있는 저장소여야 합니다.",
+	"link_partial":   "이미 있던 저장소에 이 서버의 배포 키가 붙었을 수 있습니다. 저장소는 지우지 마세요. 제공자 화면에서 이 서버의 배포 키(제목이 orchd로 시작)만 직접 제거한 뒤 다시 시도하세요.",
 	"already_linked": "이미 제공자에 연결된 프로젝트이거나, 같은 원격 저장소가 다른 프로젝트에 연결되어 있습니다.",
 }
 
@@ -152,8 +153,8 @@ var defaultOpTimeouts = map[string]time.Duration{
 	// W3e. link_project/attach_remote read the remote once and add one deploy
 	// key; a `timeout` reply means the outcome is UNKNOWN (re-read `projects`
 	// and the orphan records first).
-	"link_project":  30 * time.Second,
-	"attach_remote": 30 * time.Second,
+	"link_project":  45 * time.Second,
+	"attach_remote": 45 * time.Second,
 }
 
 // State is the broker's mutable limit state.
@@ -645,7 +646,7 @@ func (s *Server) replyDetail(c net.Conn, result any, code, msg string, detail an
 		}
 		msg = fixed
 		out := map[string]any{"ok": false, "code": code, "message": msg}
-		if detail != nil && code == "create_partial" {
+		if detail != nil && (code == "create_partial" || code == "link_partial") {
 			out["detail"] = detail
 		}
 		body, _ = json.Marshal(out)

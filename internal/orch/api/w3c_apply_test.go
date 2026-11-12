@@ -228,7 +228,7 @@ func TestApplyMapsAllNewBrokerCodes(t *testing.T) {
 	if err := json.Unmarshal(b, &env); err != nil || code != 502 || env.Error.Code != "create_partial" {
 		t.Fatalf("create_partial: %d %s", code, b)
 	}
-	if ledgerKeys(env.Error.Detail) != "orphan_dropped,orphan_recorded,project,project_id,provider,step" || env.Error.Detail["project"] != "team/app-one" ||
+	if ledgerKeys(env.Error.Detail) != "origin,orphan_dropped,orphan_recorded,project,project_id,provider,step" || env.Error.Detail["project"] != "team/app-one" ||
 		env.Error.Detail["step"] != "deploy_key" || env.Error.Detail["project_id"] != float64(99) || env.Error.Detail["orphan_recorded"] != true {
 		t.Fatalf("detail %v", env.Error.Detail)
 	}

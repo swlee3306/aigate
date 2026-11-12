@@ -316,7 +316,7 @@ func TestPartialDetailOnWire(t *testing.T) {
 	if err := json.Unmarshal(out, &r); err != nil || r.Code != "create_partial" {
 		t.Fatalf("%s", out)
 	}
-	if string(r.Detail) != `{"provider":"gl","project":"team/demo","project_id":21,"step":"deploy_key","orphan_recorded":true,"orphan_dropped":false}` {
+	if string(r.Detail) != `{"provider":"gl","project":"team/demo","project_id":21,"step":"deploy_key","orphan_recorded":true,"orphan_dropped":false,"origin":"created"}` {
 		t.Fatalf("detail: %s", r.Detail)
 	}
 	if strings.Contains(string(out), c3Canary) || strings.Contains(string(out), "REFLECT") {

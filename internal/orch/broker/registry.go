@@ -84,6 +84,7 @@ type OrphanRow struct {
 	ProjectID *int64 `json:"project_id"`
 	Step      string `json:"step"`
 	At        string `json:"at"`
+	Origin    string `json:"origin"` // "created" or "linked" ("" from an older broker: created)
 }
 
 // Projects reads the registry (no signature, no side effect).

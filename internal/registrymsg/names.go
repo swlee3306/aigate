@@ -107,6 +107,38 @@ func ValidGroupPath(s string) bool {
 	return true
 }
 
+// ValidOwnerField reports whether s is acceptable as the SIGNED owner field of
+// create_project (`group_path`): a superset of what both providers can name,
+// at most MaxOwnerFieldLen bytes of
+// [A-Za-z0-9._-] segments joined by "/", 1 to MaxRemoteSegments segments, none
+// empty, "." or "..". The provider-specific rule (GitLab: ValidGroupPath;
+// GitHub: one login) is enforced by the broker op in its shape stage, before
+// the signature is checked.
+func ValidOwnerField(s string) bool {
+	if len(s) < 1 || len(s) > MaxOwnerFieldLen {
+		return false
+	}
+	segs := strings.Split(s, "/")
+	if len(segs) > MaxRemoteSegments {
+		return false
+	}
+	for _, seg := range segs {
+		if seg == "" || seg == "." || seg == ".." {
+			return false
+		}
+		for j := 0; j < len(seg); j++ {
+			c := seg[j]
+			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '.' || c == '_' || c == '-') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// MaxOwnerFieldLen caps the signed owner field.
+const MaxOwnerFieldLen = 100
+
 // ValidDescription reports whether s is "" or text of at most
 // MaxDescriptionRunes code points without control, format (including bidi
 // controls and zero-width characters), line/paragraph separator or

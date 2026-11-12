@@ -228,7 +228,7 @@ func TestListResponsesCarryClonedAndOrphans(t *testing.T) {
 		Orphans []map[string]any `json:"orphans"`
 	}
 	json.Unmarshal(b, &raw)
-	if ledgerKeys(raw.Orphans[0]) != "at,project,project_id,provider,step" {
+	if ledgerKeys(raw.Orphans[0]) != "at,origin,project,project_id,provider,step" {
 		t.Fatalf("orphan keys %v", raw.Orphans[0])
 	}
 	// No orphans and no providers are empty arrays, never null.

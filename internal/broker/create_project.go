@@ -47,6 +47,7 @@ type PartialDetail struct {
 	Step           string `json:"step"`
 	OrphanRecorded bool   `json:"orphan_recorded"`
 	OrphanDropped  bool   `json:"orphan_dropped"`
+	Origin         string `json:"origin"` // OriginCreated (create_partial) or OriginLinked (link_partial)
 }
 
 // Step names of the orphan record and of create_partial.
@@ -169,13 +170,16 @@ func (s *Server) createProjectHandler(ctx context.Context, raw json.RawMessage) 
 				if a.Visibility != nil {
 					return fail1("visibility_not_allowed")
 				}
+				if !registrymsg.ValidGroupPath(a.GroupPath) { // the signed field is a superset: GitLab keeps the W3c rule
+					return fail1("bad_request")
+				}
 			case "github":
 				switch {
 				case a.Visibility == nil:
 					return fail1("visibility_required")
 				case *a.Visibility != "public" && *a.Visibility != "private":
 					return fail1("bad_request")
-				case !validGHLogin(a.GroupPath): // an owner is ONE login, not a path
+				case !validGHOwnerLogin(a.GroupPath): // an owner is ONE login (case kept), not a path
 					return fail1("bad_request")
 				}
 			default:
@@ -210,7 +214,7 @@ func (s *Server) createProjectHandler(ctx context.Context, raw json.RawMessage) 
 	}
 	// ONE provider instance for the whole flow (the GitHub client honours the
 	// justCreated handle only for a repository it created itself).
-	rp, oe := s.providerFor(a.Provider)
+	rp, oe := s.providerForEntry(prov)
 	if oe != nil {
 		return nil, oe
 	}
@@ -246,9 +250,9 @@ func (s *Server) createWritePhase(ctx context.Context, a createProjectArgs, rp R
 	step := stepProject
 	var pid *int64
 	partial := func() (any, *OpError) {
-		d := PartialDetail{Provider: a.Provider, Project: full, ProjectID: pid, Step: step}
+		d := PartialDetail{Provider: a.Provider, Project: full, ProjectID: pid, Step: step, Origin: OriginCreated}
 		dropped, oerr := s.Registry.AddOrphan(Orphan{Provider: a.Provider, Project: full, ProjectID: pid, Step: step,
-			At: s.now().UTC().Format(orphanTimeLayout)})
+			At: s.now().UTC().Format(orphanTimeLayout), Origin: OriginCreated})
 		d.OrphanRecorded = oerr == nil
 		d.OrphanDropped = dropped
 		if oerr != nil {

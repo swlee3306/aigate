@@ -56,7 +56,7 @@ type OpError struct {
 	// request was already (completely or partly) written: no answer came in
 	// time. A broker `timeout` reply is Code "timeout" instead.
 	TimedOut bool
-	// Partial is set only for a create_partial reply whose detail passed
+	// Partial is set only for a create_partial or link_partial reply whose detail passed
 	// validation (see PartialDetail); nothing else of a reply is kept.
 	Partial *PartialDetail
 }
@@ -176,7 +176,7 @@ func (c *Client) Do(ctx context.Context, op string, args any) (json.RawMessage, 
 			return nil, unavailable()
 		}
 		e := &OpError{Code: r.Code}
-		if r.Code == CodeCreatePartial {
+		if r.Code == CodeCreatePartial || r.Code == CodeLinkPartial {
 			e.Partial = parsePartialDetail(r.Detail)
 		}
 		return nil, e

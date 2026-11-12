@@ -24,7 +24,7 @@ import {
   signRegistryChange, checkRegistryMessage, sha256Hex, activeSigners, rememberedPasskey, supported, waText,
 } from '../webauthn.js';
 import {
-  PROVIDER_ID_RE, TEMPLATES, PUBLISH_MODES, MAX_GROUP_DEPTH, PARTIAL_STEPS, ACTION_CREATE_GROUP, ACTION_CREATE_PROJECT,
+  PROVIDER_ID_RE, TEMPLATES, PUBLISH_MODES, MAX_GROUP_DEPTH, PARTIAL_STEPS, ORPHAN_ORIGINS, ACTION_CREATE_GROUP, ACTION_CREATE_PROJECT,
   validName, validGroupPath, validDescription, validProjectPath, validBaseUrl, makeFlow, confirmPanel, li as factItem, stepStates, stepList, stepLabel,
   partialInfo, orphanBlock, ORPHAN_NOTICE, ERROR_TEXT as W3C_ERROR_TEXT, failureText as w3cFailureText, isUnknown, cloneText, CLONE_TEXT,
   CLONE_TIMEOUT_MS, PROVIDER_TIMEOUT_MS, FLOW_TEXT, GROUP_SETTLE_MS,
@@ -274,7 +274,7 @@ const ORPHAN_AT_RE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/;
 function validOrphan(o) {
   return isObj(o) && typeof o.provider === 'string' && PROVIDER_ID_RE.test(o.provider) && validProjectPath(o.project) &&
     (o.project_id === null || (Number.isSafeInteger(o.project_id) && o.project_id > 0)) && PARTIAL_STEPS.includes(o.step) &&
-    typeof o.at === 'string' && ORPHAN_AT_RE.test(o.at);
+    (o.origin === undefined || ORPHAN_ORIGINS.includes(o.origin)) && typeof o.at === 'string' && ORPHAN_AT_RE.test(o.at);
 }
 
 // validCloneResult: the `clone` member of a create answer.

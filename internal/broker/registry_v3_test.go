@@ -30,8 +30,8 @@ const v3Want = `{"version":3,"providers":[` +
 	`{"id":"plain","path":"/srv/plain","kind":"registered","ai_context":false,"provider":null,"remote":null,"auto_merge":{"enabled":false}},` +
 	`{"id":"nolink","path":"/srv/nolink","kind":"registered","ai_context":false,"provider":"gl","remote":null,"auto_merge":{"enabled":false}}` +
 	`],"auto_merge_global":{"enabled":false,"max_per_day":9},"orphans":[` +
-	`{"provider":"gl","project":"team/half","project_id":33,"step":"protect","at":"2026-11-10T00:00:00Z"},` +
-	`{"provider":"gone","project":"team/x","project_id":null,"step":"project","at":"2026-11-11T01:02:03Z"}]}` + "\n"
+	`{"provider":"gl","project":"team/half","project_id":33,"step":"protect","at":"2026-11-10T00:00:00Z","origin":"created"},` +
+	`{"provider":"gone","project":"team/x","project_id":null,"step":"project","at":"2026-11-11T01:02:03Z","origin":"created"}]}` + "\n"
 
 func TestRegistryV2MigratesToV3Atomically(t *testing.T) {
 	t.Run("content unchanged, mode 0600, idempotent", func(t *testing.T) {
@@ -67,6 +67,8 @@ func TestRegistryV2MigratesToV3Atomically(t *testing.T) {
 		var o2, o3 map[string]json.RawMessage
 		json.Unmarshal([]byte(v2Sample), &o2)
 		json.Unmarshal(data, &o3)
+		// (orphan records gain only the origin "created", the meaning of every older record)
+		o3["orphans"] = json.RawMessage(strings.ReplaceAll(string(o3["orphans"]), `,"origin":"created"`, ""))
 		for _, k := range []string{"providers", "orphans", "auto_merge_global"} {
 			if string(o2[k]) != string(o3[k]) {
 				t.Fatalf("%s changed: %s vs %s", k, o2[k], o3[k])

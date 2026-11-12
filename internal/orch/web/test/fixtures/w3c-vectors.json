@@ -275,6 +275,70 @@
       },
       "canonical": "{\"action\":\"create_project\",\"fields\":{\"ai_context\":true,\"deploy_key_sha256\":\"abababababababababababababababababababababababababababababababab\",\"description\":\"say \\\"hi\\\" \\\\ \u003cb\u003e\u0026\u003c/b\u003e / 한글😀\",\"group_path\":\"team\",\"provider\":\"gl\",\"publish\":\"read\",\"template\":\"basic\"},\"subject\":\"ab\"}",
       "change": "63a505d62063fcfe229c5eb3eb465b953e2fde682741b37395a91a7a86dd625b"
+    },
+    {
+      "name": "create_project owner mixed case",
+      "action": "create_project",
+      "subject": "app-one",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "첫 프로젝트",
+        "group_path": "SampleUser",
+        "provider": "gl",
+        "publish": "write",
+        "template": "go"
+      },
+      "canonical": "{\"action\":\"create_project\",\"fields\":{\"ai_context\":false,\"deploy_key_sha256\":\"abababababababababababababababababababababababababababababababab\",\"description\":\"첫 프로젝트\",\"group_path\":\"SampleUser\",\"provider\":\"gl\",\"publish\":\"write\",\"template\":\"go\"},\"subject\":\"app-one\"}",
+      "change": "6df0531c43c988ffed86c65d71fbe30dad0ec3198408567757b7438a0f8566d5"
+    },
+    {
+      "name": "create_project owner underscore",
+      "action": "create_project",
+      "subject": "app-one",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "첫 프로젝트",
+        "group_path": "corp_user",
+        "provider": "gl",
+        "publish": "write",
+        "template": "go"
+      },
+      "canonical": "{\"action\":\"create_project\",\"fields\":{\"ai_context\":false,\"deploy_key_sha256\":\"abababababababababababababababababababababababababababababababab\",\"description\":\"첫 프로젝트\",\"group_path\":\"corp_user\",\"provider\":\"gl\",\"publish\":\"write\",\"template\":\"go\"},\"subject\":\"app-one\"}",
+      "change": "2794d1fbb4e1f0829bcc720c91a3048fcb735c972d651708ee3117917ff88e9c"
+    },
+    {
+      "name": "create_project owner one char",
+      "action": "create_project",
+      "subject": "app-one",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "첫 프로젝트",
+        "group_path": "a",
+        "provider": "gl",
+        "publish": "write",
+        "template": "go"
+      },
+      "canonical": "{\"action\":\"create_project\",\"fields\":{\"ai_context\":false,\"deploy_key_sha256\":\"abababababababababababababababababababababababababababababababab\",\"description\":\"첫 프로젝트\",\"group_path\":\"a\",\"provider\":\"gl\",\"publish\":\"write\",\"template\":\"go\"},\"subject\":\"app-one\"}",
+      "change": "34ca4fb6bb60039929be7344fa30df429dcff83ef75e15e11ea4e70fec372a63"
+    },
+    {
+      "name": "create_project owner five segments",
+      "action": "create_project",
+      "subject": "app-one",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "첫 프로젝트",
+        "group_path": "aa/bb/cc/dd/ee",
+        "provider": "gl",
+        "publish": "write",
+        "template": "go"
+      },
+      "canonical": "{\"action\":\"create_project\",\"fields\":{\"ai_context\":false,\"deploy_key_sha256\":\"abababababababababababababababababababababababababababababababab\",\"description\":\"첫 프로젝트\",\"group_path\":\"aa/bb/cc/dd/ee\",\"provider\":\"gl\",\"publish\":\"write\",\"template\":\"go\"},\"subject\":\"app-one\"}",
+      "change": "386fca11ee19d58a0297088f1f0a1b0178846ae1dad329b17097f3bb68a51b73"
     }
   ],
   "deploy_keys": [
@@ -594,6 +658,54 @@
       "만든 뒤 이 서버에 자동으로 한 번 복제합니다",
       "서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다"
     ],
+    "create_project owner five segments": [
+      "GitLab 제공자 'gl'의 그룹 'aa/bb/cc/dd/ee'에 새 프로젝트 'app-one'를 만듭니다",
+      "템플릿: go (코드에 고정된 파일들이 첫 커밋으로 들어갑니다)",
+      "설명: 첫 프로젝트",
+      "이 프로젝트의 파일 내용은 AI 서비스로 전송되지 않습니다(전송 허용 꺼짐)",
+      "게시 권한 — 쓰기: 이 서버가 브랜치를 올릴 수 있는 배포 키로 등록합니다",
+      "배포 키 지문(SHA-256): SHA256:z/fSv0Z0RZS+Lccbc6ZoOWwt/fbj1VFJGSBKQbo4icE (이 서버의 배포 키 공개 키 파일 기준)",
+      "등록 후 정책 종류(kind)는 registered 입니다",
+      "GitLab 프로젝트는 비공개로 만들어지고, 만든 뒤 이 도구는 삭제하지 않습니다",
+      "만든 뒤 이 서버에 자동으로 한 번 복제합니다",
+      "서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다"
+    ],
+    "create_project owner mixed case": [
+      "GitLab 제공자 'gl'의 그룹 'SampleUser'에 새 프로젝트 'app-one'를 만듭니다",
+      "템플릿: go (코드에 고정된 파일들이 첫 커밋으로 들어갑니다)",
+      "설명: 첫 프로젝트",
+      "이 프로젝트의 파일 내용은 AI 서비스로 전송되지 않습니다(전송 허용 꺼짐)",
+      "게시 권한 — 쓰기: 이 서버가 브랜치를 올릴 수 있는 배포 키로 등록합니다",
+      "배포 키 지문(SHA-256): SHA256:z/fSv0Z0RZS+Lccbc6ZoOWwt/fbj1VFJGSBKQbo4icE (이 서버의 배포 키 공개 키 파일 기준)",
+      "등록 후 정책 종류(kind)는 registered 입니다",
+      "GitLab 프로젝트는 비공개로 만들어지고, 만든 뒤 이 도구는 삭제하지 않습니다",
+      "만든 뒤 이 서버에 자동으로 한 번 복제합니다",
+      "서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다"
+    ],
+    "create_project owner one char": [
+      "GitLab 제공자 'gl'의 그룹 'a'에 새 프로젝트 'app-one'를 만듭니다",
+      "템플릿: go (코드에 고정된 파일들이 첫 커밋으로 들어갑니다)",
+      "설명: 첫 프로젝트",
+      "이 프로젝트의 파일 내용은 AI 서비스로 전송되지 않습니다(전송 허용 꺼짐)",
+      "게시 권한 — 쓰기: 이 서버가 브랜치를 올릴 수 있는 배포 키로 등록합니다",
+      "배포 키 지문(SHA-256): SHA256:z/fSv0Z0RZS+Lccbc6ZoOWwt/fbj1VFJGSBKQbo4icE (이 서버의 배포 키 공개 키 파일 기준)",
+      "등록 후 정책 종류(kind)는 registered 입니다",
+      "GitLab 프로젝트는 비공개로 만들어지고, 만든 뒤 이 도구는 삭제하지 않습니다",
+      "만든 뒤 이 서버에 자동으로 한 번 복제합니다",
+      "서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다"
+    ],
+    "create_project owner underscore": [
+      "GitLab 제공자 'gl'의 그룹 'corp_user'에 새 프로젝트 'app-one'를 만듭니다",
+      "템플릿: go (코드에 고정된 파일들이 첫 커밋으로 들어갑니다)",
+      "설명: 첫 프로젝트",
+      "이 프로젝트의 파일 내용은 AI 서비스로 전송되지 않습니다(전송 허용 꺼짐)",
+      "게시 권한 — 쓰기: 이 서버가 브랜치를 올릴 수 있는 배포 키로 등록합니다",
+      "배포 키 지문(SHA-256): SHA256:z/fSv0Z0RZS+Lccbc6ZoOWwt/fbj1VFJGSBKQbo4icE (이 서버의 배포 키 공개 키 파일 기준)",
+      "등록 후 정책 종류(kind)는 registered 입니다",
+      "GitLab 프로젝트는 비공개로 만들어지고, 만든 뒤 이 도구는 삭제하지 않습니다",
+      "만든 뒤 이 서버에 자동으로 한 번 복제합니다",
+      "서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다"
+    ],
     "create_project plain": [
       "GitLab 제공자 'gl'의 그룹 'team/sub'에 새 프로젝트 'app-one'를 만듭니다",
       "템플릿: go (코드에 고정된 파일들이 첫 커밋으로 들어갑니다)",
@@ -855,28 +967,42 @@
       }
     },
     {
-      "name": "group path upper",
+      "name": "group path six segments",
       "action": "create_project",
       "subject": "app-one",
       "fields": {
         "ai_context": false,
         "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
         "description": "첫 프로젝트",
-        "group_path": "Team",
+        "group_path": "aa/bb/cc/dd/ee/ff",
         "provider": "gl",
         "publish": "write",
         "template": "go"
       }
     },
     {
-      "name": "group path five segments",
+      "name": "group path space",
       "action": "create_project",
       "subject": "app-one",
       "fields": {
         "ai_context": false,
         "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
         "description": "첫 프로젝트",
-        "group_path": "aa/bb/cc/dd/ee",
+        "group_path": "a b",
+        "provider": "gl",
+        "publish": "write",
+        "template": "go"
+      }
+    },
+    {
+      "name": "group path over 100 bytes",
+      "action": "create_project",
+      "subject": "app-one",
+      "fields": {
+        "ai_context": false,
+        "deploy_key_sha256": "abababababababababababababababababababababababababababababababab",
+        "description": "첫 프로젝트",
+        "group_path": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "provider": "gl",
         "publish": "write",
         "template": "go"

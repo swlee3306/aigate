@@ -44,6 +44,20 @@ func init() {
 // project behind.
 const CodeCreatePartial = "create_partial"
 
+// CodeLinkPartial is the reply code of a link_project/attach_remote that
+// stopped after the repository was read: an existing repository may hold a
+// deploy key of this server (never a thing to delete).
+const CodeLinkPartial = "link_partial"
+
+// Orphan origins of the broker's records.
+const (
+	OriginCreated = "created"
+	OriginLinked  = "linked"
+)
+
+// ValidOrphanOrigin: "" (a broker that predates the field: read as created) or one of the two origins.
+func ValidOrphanOrigin(s string) bool { return s == "" || s == OriginCreated || s == OriginLinked }
+
 // Orphan steps (the broker's fixed list).
 var partialSteps = map[string]bool{"project": true, "first_commit": true, "default_branch": true, "protect": true, "deploy_key": true, "register": true}
 
@@ -60,6 +74,8 @@ type PartialDetail struct {
 	Step      string
 	Recorded  bool
 	Dropped   bool
+	// Origin: OriginCreated or OriginLinked ("created" when an older broker sent none).
+	Origin string
 }
 
 // ValidGitLabProjectPath reports whether s is a GitLab project path as the
@@ -109,7 +125,12 @@ func parsePartialDetail(raw json.RawMessage) *PartialDetail {
 	if _, err := dec.Token(); err != io.EOF {
 		return nil
 	}
-	if len(vals) != 6 {
+	// the six documented members, plus `origin` (additive: an older broker has none)
+	want := 6
+	if _, hasOrigin := vals["origin"]; hasOrigin {
+		want = 7
+	}
+	if len(vals) != want {
 		return nil
 	}
 	d := &PartialDetail{}
@@ -124,6 +145,14 @@ func parsePartialDetail(raw json.RawMessage) *PartialDetail {
 	if !str("provider", &d.Provider) || !str("project", &d.Project) || !str("step", &d.Step) ||
 		!boolean("orphan_recorded", &d.Recorded) || !boolean("orphan_dropped", &d.Dropped) {
 		return nil
+	}
+	d.Origin = OriginCreated
+	if raw, ok := vals["origin"]; ok {
+		var o string
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &o) != nil || o == "" || !ValidOrphanOrigin(o) {
+			return nil
+		}
+		d.Origin = o
 	}
 	idRaw, ok := vals["project_id"]
 	if !ok {
@@ -145,7 +174,7 @@ func parsePartialDetail(raw json.RawMessage) *PartialDetail {
 		}
 		d.ProjectID = &id
 	}
-	if !registrymsg.ValidProviderID(d.Provider) || !ValidGitLabProjectPath(d.Project) || !partialSteps[d.Step] {
+	if !registrymsg.ValidProviderID(d.Provider) || !(ValidGitLabProjectPath(d.Project) || registrymsg.ValidRemotePath(d.Project)) || !partialSteps[d.Step] {
 		return nil
 	}
 	return d

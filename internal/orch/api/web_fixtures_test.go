@@ -638,7 +638,7 @@ func TestWebFixturesW3c(t *testing.T) {
 		"projects": []ProjectView{{ID: "app-one", Path: "/home/orch/repos/app-one", Kind: "registered", Provider: &gl.ID,
 			GitLab: &projectGitLab{Project: "team/app-one", ProjectID: &pid}, Cloned: true}},
 		"providers":         []ProviderView{glUsed},
-		"orphans":           []OrphanView{{Provider: "gl", Project: "team/lost-app", ProjectID: &pid, Step: "deploy_key", At: "2026-11-09T12:00:00Z"}, {Provider: "gl", Project: "team/lost-two", Step: "project", At: "2026-11-09T13:00:00Z"}},
+		"orphans":           []OrphanView{{Provider: "gl", Project: "team/lost-app", ProjectID: &pid, Step: "deploy_key", At: "2026-11-09T12:00:00Z", Origin: "created"}, {Provider: "gl", Project: "team/lost-two", Step: "project", At: "2026-11-09T13:00:00Z", Origin: "linked"}},
 		"auto_merge_global": map[string]any{"enabled": false, "max_per_day": 5},
 	})
 	checkFixture(t, "provider-set-ok.json", map[string]any{"provider": glFree.withoutInUse()})

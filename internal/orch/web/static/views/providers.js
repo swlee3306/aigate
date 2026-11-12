@@ -42,6 +42,9 @@ export const MAX_DESCRIPTION_RUNES = 200;
 export const URL_MAX = 200;
 export const TEMPLATES = ['basic', 'go'];
 export const PUBLISH_MODES = ['write', 'read'];
+// How an orphan record came to be: a half-made repository ('created') or an existing
+// one that may hold this server's deploy key ('linked'). Absent = created (older server).
+export const ORPHAN_ORIGINS = ['created', 'linked'];
 export const PARTIAL_STEPS = ['project', 'first_commit', 'default_branch', 'protect', 'deploy_key', 'register'];
 // The only string fields that may be "" (registrymsg's emptyOK).
 export const EMPTY_OK = ['create_group.parent_path', 'create_project.description'];
@@ -97,6 +100,15 @@ export function validGroupPath(s) {
   if (typeof s !== 'string') return false;
   const segs = s.split('/');
   return segs.length >= 1 && segs.length <= MAX_GROUP_DEPTH && segs.every(validName);
+}
+
+// validOwnerField: the SIGNED owner field of create_project (port of registrymsg.ValidOwnerField):
+// a superset of a GitLab group path and a GitHub login. Which of them a provider
+// accepts is the server's call (the broker op checks it before the signature).
+export function validOwnerField(s) {
+  if (typeof s !== 'string' || s.length < 1 || s.length > 100) return false;
+  const segs = s.split('/');
+  return segs.length <= MAX_GROUP_DEPTH + 1 && segs.every((g) => g !== '' && g !== '.' && g !== '..' && /^[A-Za-z0-9._-]+$/.test(g));
 }
 
 // A project path as the registry holds it: 2 to 5 names (a group path and the project name).
@@ -197,7 +209,7 @@ function checkField(action, name, v) {
     case ACTION_CREATE_GROUP + '.name': case ACTION_CREATE_GROUP + '.path': return ok(validName(v));
     case ACTION_CREATE_GROUP + '.parent_path': return ok(v === '' || (validGroupPath(v) && v.split('/').length < MAX_GROUP_DEPTH));
     case ACTION_CREATE_PROJECT + '.provider': return ok(PROVIDER_ID_RE.test(v));
-    case ACTION_CREATE_PROJECT + '.group_path': return ok(validGroupPath(v));
+    case ACTION_CREATE_PROJECT + '.group_path': return ok(validOwnerField(v));
     case ACTION_CREATE_PROJECT + '.template': return ok(TEMPLATES.includes(v));
     case ACTION_CREATE_PROJECT + '.description': return ok(validDescription(v));
     case ACTION_CREATE_PROJECT + '.publish': return ok(PUBLISH_MODES.includes(v));
@@ -430,10 +442,11 @@ export function partialInfo(err, sent) {
   if (!isObj(d)) return fallback;
   const idOk = d.project_id === null || (Number.isSafeInteger(d.project_id) && d.project_id > 0);
   if (typeof d.provider !== 'string' || !PROVIDER_ID_RE.test(d.provider) || typeof d.project !== 'string' || !validProjectPath(d.project) ||
-      !idOk || typeof d.step !== 'string' || !PARTIAL_STEPS.includes(d.step) || typeof d.orphan_recorded !== 'boolean' || typeof d.orphan_dropped !== 'boolean') {
+      !idOk || typeof d.step !== 'string' || !PARTIAL_STEPS.includes(d.step) || typeof d.orphan_recorded !== 'boolean' || typeof d.orphan_dropped !== 'boolean' ||
+      (d.origin !== undefined && !ORPHAN_ORIGINS.includes(d.origin))) {
     return fallback;
   }
-  return { provider: d.provider, project: d.project, projectId: d.project_id, step: d.step, recorded: d.orphan_recorded, dropped: d.orphan_dropped, valid: true };
+  return { provider: d.provider, project: d.project, projectId: d.project_id, step: d.step, recorded: d.orphan_recorded, dropped: d.orphan_dropped, origin: d.origin === undefined ? 'created' : d.origin, valid: true };
 }
 
 export const ORPHAN_NOTICE = 'GitLab에서 직접 지우세요. 이 도구는 삭제하지 않습니다. 같은 이름으로 다시 만들려면 먼저 GitLab에서 그 프로젝트를 정리해야 합니다.';

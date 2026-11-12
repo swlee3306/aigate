@@ -157,19 +157,35 @@ func TestAttachRemoteSetsProviderAndRemoteOnly(t *testing.T) {
 	// an unknown project is refused before the signature is consumed
 	e.wantCode("attach_remote", e.attachArgs("ghost-app", "gh", "alice/existing", nil), "project_unknown")
 	e.mustEqual(before, "attach unknown project")
-	// a legacy remote (no provider) may be adopted only when it is the same repository
+	// a project with a legacy remote mapping (broker.json) is never adopted: same
+	// repository, another repository, another kind or provider, all refused in the shape stage
 	e.ownLocal("mapped", true, &RemoteLink{Path: "team/exist"})
-	e.wantCode("attach_remote", e.attachArgs("mapped", "gl", "team/other", nil), "already_linked")
-	if _, oe := e.do("attach_remote", e.attachArgs("mapped", "gl", "team/exist", nil)); oe != nil {
-		t.Fatalf("adopt the same legacy remote: %v", oe.Code)
+	before = e.snap()
+	for _, a := range [][2]string{{"gl", "team/exist"}, {"gl", "team/other"}, {"gh", "alice/existing"}, {"gh", "team/exist"}} {
+		args := e.attachArgs("mapped", a[0], a[1], nil)
+		e.wantCode("attach_remote", args, "already_linked")
+		e.wantCode("attach_remote", args, "already_linked") // never request_reused
 	}
-	if p, _ := e.find("mapped"); p.Provider == nil || *p.Provider != "gl" || !p.AIContext || p.Remote.ID == nil || *p.Remote.ID != 21 {
-		t.Fatalf("adopted: %+v", p)
+	e.mustEqual(before, "attach to a mapped project")
+	if g, ok := e.s.Registry.GitLabProject(e.root + "/mapped"); !ok || g != "team/exist" {
+		t.Fatalf("the create_mr mapping changed: %q %v", g, ok)
 	}
 }
 
 // The static --git-remote-for entries are orchd's: the broker knows only the
 // registry rule (a project without a provider link can be attached).
+func linkPartialOf(t *testing.T, e *OpError) PartialDetail {
+	t.Helper()
+	if e == nil || e.Code != "link_partial" {
+		t.Fatalf("want link_partial, got %v", e)
+	}
+	d, ok := e.Data.(PartialDetail)
+	if !ok || d.Origin != OriginLinked {
+		t.Fatalf("link_partial detail: %T %+v", e.Data, e.Data)
+	}
+	return d
+}
+
 func TestAttachRemoteStaticWins(t *testing.T) {
 	if _, known := fixedMessages["static_remote_wins"]; known {
 		t.Fatal("the broker must not know static_remote_wins (orchd's refusal)")
@@ -305,7 +321,7 @@ func TestLinkKeyAlreadyInUseNotSuccess(t *testing.T) {
 		return false
 	}
 	_, oe := e4.do("link_project", e4.linkArgs("linked", "gh", "alice/existing", true, nil))
-	if d := partialOf(t, oe); d.Step != "deploy_key" || !d.OrphanRecorded {
+	if d := linkPartialOf(t, oe); d.Step != "deploy_key" || !d.OrphanRecorded {
 		t.Fatalf("%+v", d)
 	}
 	if _, ok := e4.find("linked"); ok {
@@ -327,7 +343,7 @@ func TestLinkAttachKeyStepUncertainIsOrphan(t *testing.T) {
 				args = e.attachArgs("plain", "gh", "alice/existing", nil)
 			}
 			_, oe := e.do(op, args)
-			d := partialOf(t, oe)
+			d := linkPartialOf(t, oe)
 			if d.Step != "deploy_key" || !d.OrphanRecorded || d.ProjectID == nil || *d.ProjectID != 31 || d.Project != "alice/Existing" || d.Provider != "gh" {
 				t.Fatalf("%s %d: %+v", op, st, d)
 			}
@@ -376,7 +392,7 @@ func TestLinkAttachRegistryFailureIsOrphan(t *testing.T) {
 			return nil
 		}
 		_, oe := e.do(op, args)
-		d := partialOf(t, oe)
+		d := linkPartialOf(t, oe)
 		if d.Step != "register" || d.ProjectID == nil || *d.ProjectID != 31 || !d.OrphanRecorded {
 			t.Fatalf("%s: %+v", op, d)
 		}
@@ -422,7 +438,7 @@ func TestLinkAttachRegistryFailureIsOrphan(t *testing.T) {
 			return false
 		}
 		_, oe = e3.do(op, args)
-		if d := partialOf(t, oe); d.Step != "register" {
+		if d := linkPartialOf(t, oe); d.Step != "register" {
 			t.Fatalf("%s: %+v", op, d)
 		}
 		if linked(e3) {
@@ -447,7 +463,7 @@ func TestLinkAttachRegistryFailureIsOrphan(t *testing.T) {
 				return false
 			}
 			_, oe = e4.do(op, args)
-			if d := partialOf(t, oe); d.Step != "register" {
+			if d := linkPartialOf(t, oe); d.Step != "register" {
 				t.Fatalf("%+v", d)
 			}
 			if p, _ := e4.find("plain"); p.Provider != nil {
@@ -468,7 +484,7 @@ func TestLinkAttachRegistryFailureIsOrphan(t *testing.T) {
 			return nil
 		}
 		r := e5.wire(op, args)
-		if r.Code != "create_partial" {
+		if r.Code != "link_partial" {
 			t.Fatalf("%s panic reply: %+v", op, r)
 		}
 		if o := e5.orphans(); len(o) != 1 || o[0].Step != "register" {

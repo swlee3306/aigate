@@ -213,7 +213,7 @@ func TestGroupAndProjectNameRules(t *testing.T) {
 	}
 	// the rules are applied inside the actions too
 	f := projectFields()
-	for _, bad := range []string{"", "a", "Team", "a/../b", "ab/", "x/%2e%2e", "a.b/cd"} {
+	for _, bad := range []string{"", "a/../b", "ab/", "x/%2e%2e", "a//b", "a b", "ab/cd/ef/gh/ij/kl", strings.Repeat("a", 101)} {
 		f["group_path"] = bad
 		if _, err := CanonicalChange(ActionCreateProject, "my-app", f); err == nil {
 			t.Errorf("group_path %q accepted", bad)

@@ -106,7 +106,20 @@ type Orphan struct {
 	ProjectID *int64 `json:"project_id"`
 	Step      string `json:"step"`
 	At        string `json:"at"`
+	// Origin says how the repository came to be: "created" (a create_project
+	// that stopped part way: the repository is ours to be cleaned by hand) or
+	// "linked" (link_project/attach_remote: the repository existed before and
+	// only a deploy key may have been added: remove the key, NEVER the
+	// repository). Records written before W3e's fix round have none: they are
+	// read as "created".
+	Origin string `json:"origin"`
 }
+
+// Orphan origins.
+const (
+	OriginCreated = "created"
+	OriginLinked  = "linked"
+)
 
 // orphanDroppedLog is the fixed log line written when the oldest orphan record
 // is dropped to stay within maxOrphans (no values).
@@ -116,6 +129,9 @@ const orphanDroppedLog = "orphan record dropped: the list is at its limit of 100
 // records: when the list overflows, the OLDEST records are dropped and dropped
 // is true (callers tell the user).
 func (r *Registry) AddOrphan(o Orphan) (dropped bool) {
+	if o.Origin == "" {
+		o.Origin = OriginCreated
+	}
 	if o.ProjectID != nil {
 		id := *o.ProjectID
 		o.ProjectID = &id
@@ -708,6 +724,12 @@ func parseRegistry(data []byte) (r Registry, migrated bool, err error) {
 	default:
 		return Registry{}, false, ErrRegistryBroken
 	}
+	// orphan records of older files have no origin: they are "created" ones
+	for i := range r.Orphans {
+		if r.Orphans[i].Origin == "" {
+			r.Orphans[i].Origin = OriginCreated
+		}
+	}
 	if err := validateRegistry(&r); err != nil {
 		return Registry{}, false, ErrRegistryBroken
 	}
@@ -800,7 +822,7 @@ func validateRegistry(r *Registry) error {
 // validOrphan: values only, every field in a fixed shape. The provider id need
 // not be configured any more (the record outlives set_provider/delete_provider).
 func validOrphan(o Orphan) bool {
-	if !registrymsg.ValidProviderID(o.Provider) || !orphanStepRE.MatchString(o.Step) {
+	if !registrymsg.ValidProviderID(o.Provider) || !orphanStepRE.MatchString(o.Step) || (o.Origin != OriginCreated && o.Origin != OriginLinked) {
 		return false
 	}
 	// A GitLab project (group path + lowercase name, up to five segments) or a

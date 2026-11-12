@@ -88,6 +88,15 @@ func (s *Server) providerFor(id string) (RepoProvider, *OpError) {
 	return rp, nil
 }
 
+// providerForEntry is providerFor for an entry the flow already read.
+func (s *Server) providerForEntry(p Provider) (RepoProvider, *OpError) {
+	rp, err := s.repoProviderForEntry(p)
+	if err != nil {
+		return nil, apiFailKind(p.Kind, err)
+	}
+	return rp, nil
+}
+
 // refusedBeforeWrite: err is the provider's own refusal of a write request (a
 // refusing status, a rate limit, or an input the client refused to send), so
 // that request changed nothing and the caller must not record an orphan.

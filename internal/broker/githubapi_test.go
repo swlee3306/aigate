@@ -39,6 +39,7 @@ type fakeGH struct {
 	protection string            // JSON of an existing protection ("" = none)
 	defBranch  string            // default branch GitHub reports ("" = main)
 	orgPages   int               // when >0: GET /user/orgs answers 100 entries for every page
+	login      string            // the authenticated account's login ("" = alice)
 }
 
 func newFakeGH(t *testing.T) *fakeGH {
@@ -86,7 +87,7 @@ func (f *fakeGH) serve(w http.ResponseWriter, r *http.Request) {
 	_ = json.Unmarshal(b, &req)
 	switch {
 	case r.Method == "GET" && p == "/user":
-		fmt.Fprint(w, `{"login":"alice","id":1,"type":"User","extra":1}`)
+		fmt.Fprintf(w, `{"login":%q,"id":1,"type":"User","extra":1}`, f.userLogin())
 	case r.Method == "GET" && p == "/user/orgs":
 		if f.orgPages > 0 {
 			var parts []string
@@ -112,7 +113,7 @@ func (f *fakeGH) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		fmt.Fprintf(w, `{"id":31,"full_name":%q,"default_branch":%q,"private":true}`, real, db)
 	case r.Method == "POST" && (p == "/user/repos" || (len(segs) == 3 && segs[0] == "orgs" && segs[2] == "repos")):
-		owner := "alice"
+		owner := f.userLogin()
 		if segs[0] == "orgs" {
 			owner = segs[1]
 		}
@@ -147,6 +148,15 @@ func (f *fakeGH) serve(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(404)
 	}
+}
+
+func (f *fakeGH) userLogin() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.login == "" {
+		return "alice"
+	}
+	return f.login
 }
 
 func (f *fakeGH) recorded() []string {

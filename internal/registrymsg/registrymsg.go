@@ -144,7 +144,7 @@ func validateNewField(action, name, s string) error {
 	case ActionCreateProject + ".provider", ActionLinkProject + ".provider", ActionAttachRemote + ".provider":
 		ok = providerIDRE.MatchString(s)
 	case ActionCreateProject + ".group_path":
-		ok = ValidGroupPath(s)
+		ok = ValidOwnerField(s) // superset; the broker op applies the provider's own rule before the signature
 	case ActionCreateProject + ".template":
 		ok = s == "basic" || s == "go"
 	case ActionCreateProject + ".description":
