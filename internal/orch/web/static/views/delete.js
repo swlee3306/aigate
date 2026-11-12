@@ -58,13 +58,16 @@ export const DEL_TEXT = {
     none: '연결된 원격 저장소가 없습니다.',
     id: '원격 저장소 번호를 알 수 없어(이 프로젝트의 등록 정보에 없음) 원격 저장소는 지울 수 없습니다.',
   },
+  alsoWarn: '[중요] 같은 서명으로 원격 저장소 삭제와 이 서버의 복제본 삭제가 모두 일어납니다. 원격이 지워지면 이 서버의 복제본이 그 코드의 유일한 사본일 수 있고, 그 복제본도 함께 사라져 복구할 수 없습니다.',
+  remoteMaybeGone: '[중요] 이 프로젝트의 원격 저장소 삭제가 방금 결과를 알 수 없는 상태로 끝났습니다. 원격 저장소는 이미 지워졌을 수 있고, 그러면 이 서버의 복제본이 그 코드의 유일한 사본일 수 있습니다. 지우기 전에 꼭 필요한 것을 다른 곳에 옮겨 두세요.',
+  createdLocalOnly: '이 프로젝트의 원격 저장소는 이 도구가 만든 것입니다. 등록을 지우면 이 도구는 더 이상 그 원격 저장소를 지울 수 없게 됩니다. 원격 저장소도 지우려면 먼저 "원격 저장소 지우기"를 하세요.',
   keyHint: '이 프로젝트에는 원격 저장소 연결이 있어, 서버의 복제본과 등록을 지워도 이 서버의 배포 키는 제공자 저장소에 남을 수 있습니다. 배포 키를 먼저 뗄까요?',
   ackLabel: '원격에 올라가지 않은 커밋이나 변경이 있을 수 있고, 그것이 함께 사라지는 것을 알고 지웁니다.',
   ackNeeded: '위 항목을 체크해야 다음으로 갈 수 있습니다.',
   typedLabel: '저장소 이름을 직접 입력하세요(대소문자까지 같아야 합니다)',
   typedHint: '입력한 이름이 저장소 이름과 글자 그대로 같을 때만 다음 단계로 갈 수 있습니다. 붙여넣어도 됩니다.',
   alsoLabel: '원격 저장소를 지운 뒤 이 서버의 복제본과 배포 키 폴더도 이어서 지웁니다(같은 서명 한 번)',
-  alsoHint: '프로젝트 등록은 "원격 없음" 상태로 남습니다. 등록까지 지우려면 별도로 서명하는 "등록 지우기"가 한 번 더 필요하며 자동으로 하지 않습니다.',
+  alsoHint: '프로젝트 등록은 "원격 없음" 상태로 남습니다. 등록까지 지우려면 별도로 서명하는 "복제본과 등록 지우기"가 한 번 더 필요하며 자동으로 하지 않습니다.',
   legacyBody: '이것은 처음부터 있던 프로젝트입니다. 서버의 복제본과 등록이 지워지고, 이 서버의 작업 기록은 남지만 이 저장소로는 더 작업을 낼 수 없습니다. 원격 저장소는 이 도구가 지우지 않고 그대로 남습니다.',
   legacyTyped: '프로젝트 이름을 한 번 더 직접 입력하세요',
   legacyStatic: '이 프로젝트에는 서버 설정(--git-remote-for)에 정해진 원격이 있습니다. 그 설정은 바뀌지 않으니 관리자가 따로 정리해야 합니다.',
@@ -78,12 +81,76 @@ export const DEL_TEXT = {
     [ACTION_CLEAR_ORPHAN]: '고아 기록이 지워졌는지 알 수 없습니다. 자동으로 다시 시도하지 않았습니다. 목록(알림 포함)을 다시 읽었으니 확인하세요.',
   },
   partialRemote: '원격 저장소 삭제가 일부만 처리되었거나 결과를 알 수 없습니다. 저장소가 지워졌을 수도, 아닐 수도 있습니다.',
-  partialRemoteDo: 'GitHub·GitLab 화면에서 저장소가 남아 있는지 확인하세요. 서버의 복제본과 등록은 지우지 않았습니다. 확인한 뒤 서버의 항목은 "복제본과 등록 지우기"로 정리하세요(원격이 이미 지워진 경우 그 복제본이 유일한 사본일 수 있습니다). 자동으로 다시 시도하지 않았습니다.',
-  noResult: '결과를 읽지 못했습니다. 목록을 다시 확인하세요.',
-  orphanCreated: '이 도구가 만든 저장소가 제공자에 남아 있을 수 있습니다. 이 도구는 원격 저장소를 지우지 않습니다: 먼저 GitHub·GitLab에서 직접 지운 뒤에 이 기록을 지우세요. 이 기록만 지우고 저장소를 그대로 두면 같은 이름으로 다시 만들 수 없습니다.',
+  partialRemoteDo: '아래 단추: 저장소가 아직 있으면 "원격 저장소 다시 지우기"(새 서명이 필요하고 서버가 번호와 이름을 다시 확인합니다), 이미 없으면 "복제본과 등록 지우기"(그 복제본이 유일한 사본일 수 있습니다). 어느 쪽도 눌러야 시작하며 눌러도 서명 전에는 아무것도 지워지지 않습니다.',
+  noResult: '서버의 답이 요청한 내용과 맞지 않아 결과를 확인하지 못했습니다. 목록을 다시 읽었으니 확인하세요. 자동으로 다시 시도하지 않았습니다.',
+  orphanCreated: '이 도구가 만든 저장소가 제공자에 남아 있을 수 있습니다. 이 기록에 대해서는 이 도구가 원격 저장소를 지우지 않습니다: 먼저 GitHub·GitLab에서 직접 지운 뒤에 이 기록을 지우세요. 이 기록만 지우고 저장소를 그대로 두면 같은 이름으로 다시 만들 수 없습니다.',
   orphanLinked: '원래 있던 저장소입니다. 절대 지우지 마세요. 이 도구는 제공자에서 아무것도 지우지 않고 이 서버의 기록 한 줄만 지웁니다. 이 서버의 배포 키가 붙어 있을 수 있으니 필요하면 제공자 저장소 설정(Deploy keys)에서 제목이 orchd로 시작하는 키를 직접 제거하세요.',
   orphanUnknown: '출처를 알 수 없는 기록입니다. 지우기 전에 제공자 화면에서 저장소가 있는지, 이 도구가 만든 것인지 먼저 확인하세요. 이 도구는 제공자에서 아무것도 지우지 않고 이 서버의 기록 한 줄만 지웁니다.',
 };
+
+// The deletion screens' own sentences for the codes whose shared text talks about creating things: each says
+// that nothing was deleted (true for every one of them: a refusal before the one DELETE request).
+export const DEL_FAIL = {
+  github_refused: '제공자(GitHub)가 요청을 받아들이지 않았습니다. 토큰 권한과 제공자 설정을 확인하세요. 아무것도 지우지 않았습니다.',
+  gitlab_refused: '제공자(GitLab)가 요청을 받아들이지 않았습니다. 토큰 권한과 제공자 설정을 확인하세요. 아무것도 지우지 않았습니다.',
+  provider_unreachable: '제공자(GitHub·GitLab)에 연결하지 못했거나 응답이 없었습니다. 삭제 요청이 나가기 전의 실패이므로 아무것도 지우지 않았습니다. 잠시 후 다시 시도하세요.',
+  bad_url: '제공자 주소가 허용되지 않아 아무것도 지우지 않았습니다. 제공자 화면에서 주소와 접속 대상을 확인하세요.',
+  token_ref_unknown: '제공자가 쓸 토큰이 없거나 쓸 수 없어 아무것도 지우지 않았습니다. 토큰 화면에서 확인하세요.',
+  provider_rate_limited: '제공자가 요청 한도를 넘었다고 응답했습니다. 아무것도 지우지 않았습니다. 한참 뒤에 다시 시도하세요. 자동으로 다시 시도하지 않았습니다.',
+  remove_refused: '제공자가 삭제 요청을 받아들이지 않았거나 지울 대상이 하나로 정해지지 않아 아무것도 지우지 않았습니다. 토큰 권한과 제공자 화면을 확인하세요.',
+};
+const failText = (err) => (err && typeof err.code === 'string' && has(DEL_FAIL, err.code) ? DEL_FAIL[err.code] : null);
+
+// The server's fixed preview lines (internal/orch/api deletePreview), as templates: {id} {path} {remote} {name} {fp}
+// {provider} {project}. This page rebuilds the whole preview from its own values and a proposal is signable only
+// when the server's list is exactly that (TestConstantsAgreeWithWeb pins every template against the real lines).
+export const DEL_LINES = {
+  stamp: '서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다',
+  rp1: "프로젝트 '{id}'를 이 서버에서 지웁니다: 프로젝트 등록, 서버의 복제본 폴더({path}), 이 프로젝트의 배포 키 폴더",
+  rp2: '원격 저장소는 지워지지 않고 그대로 남습니다',
+  rp3: '[중요] 되돌릴 수 없습니다. 원격에 올라가지 않은 커밋과 저장하지 않은 변경은 이 서버의 복제본에만 있으므로 함께 사라집니다',
+  rp4: '이 서버의 작업 기록은 남습니다',
+  rpLegacy: '[중요] 처음부터 있던(legacy) 프로젝트입니다. 지우면 이 저장소로는 더 작업을 낼 수 없습니다(두 번째 확인을 했습니다)',
+  rpStatic: '이 프로젝트에는 서버 설정(--git-remote-for)에 정해진 원격이 있습니다. 그 설정은 바뀌지 않으니 관리자가 따로 정리해야 합니다',
+  dr1: "[중요] 원격 저장소 '{remote}'를 제공자에서 삭제합니다. 되돌릴 수 없습니다(제공자 설정에 따라 복구 가능 기간이 있을 수 있으나 이 도구는 복구하지 않습니다)",
+  dr2: "이 도구가 만든 저장소만 지울 수 있으며, 저장소 이름 '{name}'을 직접 입력해 확인했습니다",
+  dr3: '삭제가 확실히 끝난 뒤에만 다음 단계를 합니다. 결과를 알 수 없으면 아무것도 더 하지 않고 자동으로 다시 시도하지 않습니다',
+  drAlso1: '원격 삭제가 끝나면 이 서버의 복제본 폴더({path})와 이 프로젝트의 배포 키 폴더도 지웁니다',
+  drAlso2: '[중요] 원격이 지워지면 이 서버의 복제본이 유일한 사본일 수 있습니다. 원격에 올라가지 않은 커밋과 변경은 복제본과 함께 사라집니다',
+  drAlso3: "프로젝트 등록은 '원격 없음' 상태로 남습니다. 등록까지 지우려면 별도로 서명하는 프로젝트 삭제가 한 번 더 필요합니다",
+  drKeep: "이 서버의 복제본과 프로젝트 등록은 그대로 남습니다(등록은 '원격 없음' 상태가 됩니다)",
+  dk1: "프로젝트 '{id}'의 저장소 '{remote}'에서 이 서버의 배포 키만 뗍니다(지문 {fp})",
+  dk2: '저장소와 다른 키는 지워지지 않습니다. 프로젝트 등록과 서버의 복제본은 그대로입니다',
+  dk3: '[중요] 키를 떼면 이 서버는 그 저장소를 복제하거나 게시하지 못합니다',
+  co1: "제공자 '{provider}'의 고아 기록 하나('{project}')를 지웁니다",
+  co2: '외부에는 아무것도 보내지 않습니다. 제공자에 남아 있을 수 있는 프로젝트는 지워지지 않으니 제공자 화면에서 직접 정리하세요',
+};
+const FP_RE = /^SHA256:[A-Za-z0-9+/]{43}$/;
+const fill = (t, v) => t.replace(/\{([a-z]+)\}/g, (_, k) => v[k]);
+
+// expectedLines: the whole preview of a proposal, from the values this page sent and knows (null when a value is missing).
+export function expectedLines(sent, row, pv, resp) {
+  const L = DEL_LINES;
+  const f = sent.fields;
+  const path = isObj(row) ? row.path : null;
+  let out;
+  if (sent.action === ACTION_REMOVE_PROJECT) {
+    out = [fill(L.rp1, { id: sent.subject, path }), L.rp2, L.rp3, L.rp4];
+    if (f.legacy_ack) out.push(L.rpLegacy);
+    if (pv && pv.static_remote) out.push(L.rpStatic);
+  } else if (sent.action === ACTION_DELETE_REMOTE_REPO) {
+    out = [fill(L.dr1, { remote: f.remote_path }), fill(L.dr2, { name: f.confirm_name }), L.dr3];
+    out.push(...(f.also_local ? [fill(L.drAlso1, { path }), L.drAlso2, L.drAlso3] : [L.drKeep]));
+  } else if (sent.action === ACTION_REMOVE_DEPLOY_KEY) {
+    const fp = isObj(resp) ? resp.deploy_key_fingerprint : null;
+    if (typeof fp !== 'string' || !FP_RE.test(fp)) return null;
+    out = [fill(L.dk1, { id: sent.subject, remote: f.remote_path, fp }), L.dk2, L.dk3];
+  } else {
+    out = [fill(L.co1, { provider: sent.subject, project: f.project }), L.co2];
+  }
+  if (out.some((x) => typeof x !== 'string' || x.includes('{'))) return null;
+  return [...out, L.stamp];
+}
 
 const CLONE_STATE_TEXT = {
   removed: '지웠습니다', already_gone: '이미 없었습니다', not_managed: '이 도구가 관리하는 폴더가 아니라 건드리지 않았습니다',
@@ -120,7 +187,7 @@ export function deleteOptions(row) {
   else if (gone) remoteWhy = 'gone';
   else if (remote === null) remoteWhy = 'none';
   else if (remote.id === null) remoteWhy = 'id';
-  return { origin, remote, gone, local: true, remoteOffered: remoteWhy === null, remoteWhy, key: remote !== null && !gone };
+  return { origin, remote, gone, local: true, remoteOffered: remoteWhy === null, remoteWhy, key: remote !== null && remote.id !== null && !gone };
 }
 
 // checkPreview: the removal-preview body, every member checked; null when anything is off or when it
@@ -163,14 +230,17 @@ export function partialDetail(err) {
 // host: {paint(), rows(), providers(), reload(): Promise, toList()}
 export function makeDelete(ctx, host) {
   const d = {
+    prevStep: null,
     step: 'idle', // idle | choose | loading | preview | legacy | flow | orphan | fail
     row: null, opts: null, choice: null, pv: null, note: null, followUp: false, orphan: null, seq: 0,
     typed: null, ack: null, also: null, legacyTyped: null, blocked: null,
   };
   const gone = () => !!(ctx.signal && ctx.signal.aborted);
   let resultErr = null;
+  // ids whose remote deletion ended 'maybe done' in THIS page visit (memory only, never stored)
+  const partialIds = new Set();
 
-  const flow = makeFlow(ctx, { onChange: () => { if (!gone() && d.step === 'flow') host.paint(); }, onResult, kindOf: () => undefined });
+  const flow = makeFlow(ctx, { onChange: () => { if (!gone() && d.step === 'flow') host.paint(); }, onResult, kindOf: () => undefined, failText });
 
   const api = {
     get active() { return d.step !== 'idle'; },
@@ -182,7 +252,7 @@ export function makeDelete(ctx, host) {
   function reset() {
     d.seq++;
     flow.reset();
-    Object.assign(d, { step: 'idle', row: null, opts: null, choice: null, pv: null, note: null, followUp: false, orphan: null, typed: null, ack: null, also: null, legacyTyped: null, blocked: null });
+    Object.assign(d, { step: 'idle', prevStep: null, row: null, opts: null, choice: null, pv: null, note: null, followUp: false, orphan: null, typed: null, ack: null, also: null, legacyTyped: null, blocked: null });
     resultErr = null;
   }
   api.reset = reset;
@@ -216,6 +286,12 @@ export function makeDelete(ctx, host) {
   // pickChoice: the person chose what to delete; the preview is read once (and reused when going back and forth).
   async function pickChoice(choice, followUp) {
     if (api.busy || !d.row) return;
+    if (choice === ACTION_DELETE_REMOTE_REPO && !d.opts.remoteOffered) {
+      d.step = 'fail';
+      d.note = { error: false, text: DEL_TEXT.noRemoteDelete[d.opts.remoteWhy] };
+      host.paint();
+      return;
+    }
     d.choice = choice;
     d.followUp = !!followUp;
     d.note = null;
@@ -238,7 +314,7 @@ export function makeDelete(ctx, host) {
     } catch (err) {
       if (gone() || my !== d.seq) return;
       d.step = 'fail';
-      d.note = { error: true, text: err && err.status === 0 ? '서버에 연결하지 못했습니다. 아무것도 서명하거나 보내지 않았습니다.' : failureText(err) };
+      d.note = { error: true, text: err && err.status === 0 ? '서버에 연결하지 못했습니다. 아무것도 서명하거나 보내지 않았습니다.' : (failText(err) || failureText(err)) };
       host.paint();
       return;
     }
@@ -309,11 +385,18 @@ export function makeDelete(ctx, host) {
   const alsoLocal = () => d.choice === ACTION_DELETE_REMOTE_REPO && !!d.also && d.also.checked === true;
   const touchesLocal = () => d.choice === ACTION_REMOVE_PROJECT || alsoLocal();
 
-  // ackNeeded: files may be lost with the local clone (something unpushed, changed, unknown, or the remote is gone).
+  // maybeGone: the remote is already deleted, or its deletion ended "maybe done" in this page visit
+  const maybeGone = () => d.opts.gone || (!!d.row && partialIds.has(d.row.id));
+
+  // ackNeeded: files may be lost with the local clone: always with also_local (the same signature deletes the
+  // remote and then the clone may be the only copy), when the remote is (maybe) gone, or when anything is
+  // unpushed, changed or unknown.
   function ackNeeded() {
     const pv = d.pv;
-    if (!pv || !touchesLocal() || !pv.folder_exists) return false;
-    return pv.unpushed_commits > 0 || !pv.unpushed_known || pv.changed_files > 0 || !pv.changed_known || d.opts.gone;
+    if (!pv || !touchesLocal()) return false;
+    if (alsoLocal() || maybeGone()) return true;
+    if (!pv.folder_exists) return false;
+    return pv.unpushed_commits > 0 || !pv.unpushed_known || pv.changed_files > 0 || !pv.changed_known;
   }
 
   // gate: may the propose button be on? {ok, why}
@@ -323,7 +406,7 @@ export function makeDelete(ctx, host) {
     if (pv.busy) return { ok: false, why: 'busy' };
     if (pv.busy_unknown) return { ok: false, why: 'busy_unknown' };
     const needAck = ackNeeded();
-    if (touchesLocal() && pv.folder_exists && !pv.local_removable) return { ok: false, why: 'local_unsafe', needAck };
+    if (touchesLocal() && !pv.local_removable) return { ok: false, why: 'local_unsafe', needAck };
     if (d.choice === ACTION_DELETE_REMOTE_REPO) {
       if (!d.opts.remoteOffered || pv.remote_deleted_at !== null) return { ok: false, why: 'not_offered', needAck };
       const name = d.opts.remote.name;
@@ -369,11 +452,14 @@ export function makeDelete(ctx, host) {
   }
 
   async function startFlow(sent) {
+    const my = d.seq;
     d.prevStep = d.step;
     d.step = 'flow';
     host.paint();
-    await flow.propose(sent);
-    if (gone()) return;
+    const pv = d.pv;
+    const row = d.row;
+    await flow.propose(sent, (resp) => expectedLines(sent, row, pv, resp));
+    if (gone() || my !== d.seq) return;
     if (flow.phase === 'idle') {
       // the proposal was refused before anything was signed: back to the screen it came from, with the fixed sentence
       d.step = d.prevStep;
@@ -393,6 +479,7 @@ export function makeDelete(ctx, host) {
 
   async function onResult(result, sent) {
     resultErr = result.ok ? null : result.err;
+    if (!result.ok && result.err && result.err.code === 'delete_partial' && sent && sent.action === ACTION_DELETE_REMOTE_REPO) partialIds.add(sent.subject);
     // the lists are read again whatever the answer (an unknown outcome certainly changed what they say)
     try {
       await host.reload();
@@ -404,10 +491,17 @@ export function makeDelete(ctx, host) {
   }
 
   // followUp: the second, separately signed removal of a project whose remote is gone. Never started by itself.
-  async function startFollowUp() {
+  // resume: the person pressed a button on a result screen: read the list again, then show the preview of the next change.
+  async function resume(choice, followUp) {
     if (api.busy || !d.row) return;
     const id = d.row.id;
     flow.reset();
+    try {
+      await host.reload();
+    } catch {
+      // the row lookup below says it
+    }
+    if (gone()) return;
     const row = rowFor(id);
     if (row === null) {
       d.step = 'fail';
@@ -418,8 +512,9 @@ export function makeDelete(ctx, host) {
     d.row = row;
     d.opts = deleteOptions(row);
     d.pv = null;
-    await pickChoice(ACTION_REMOVE_PROJECT, true);
+    await pickChoice(choice, followUp);
   }
+  const startFollowUp = () => resume(ACTION_REMOVE_PROJECT, true);
 
   // ---- rendering ----
   const panel = (kids) => el('div', { class: ['panel', 'canvas'] }, kids);
@@ -486,7 +581,7 @@ export function makeDelete(ctx, host) {
     const items = [];
     if (d.choice === ACTION_REMOVE_PROJECT || alsoLocal()) {
       if (d.choice === ACTION_REMOVE_PROJECT) items.push(['등록', '프로젝트 등록(' + inline(row.id, 64) + ')을 등록부에서 지웁니다']);
-      items.push(['복제본', '서버의 복제본 폴더: ' + (pv.folder_exists ? inline(row.path, 200) : inline(row.path, 200) + ' (이미 없음)')]);
+      items.push(['복제본', '서버의 복제본 폴더: ' + inline(row.path, 200) + (pv.folder_exists ? '' : pv.local_removable ? ' (이미 없음)' : ' (확인하지 못함)')]);
       items.push(['키 폴더', '이 프로젝트의 배포 키 폴더(서버): ' + (pv.key_dir_exists ? '있음, 지웁니다' : '없음')]);
     }
     if (d.choice === ACTION_DELETE_REMOTE_REPO && r) {
@@ -534,15 +629,17 @@ export function makeDelete(ctx, host) {
     return panel([
       el('h1', { id: 'h-projects' }, title),
       el('p', { class: 'lead' }, ['프로젝트 ', el('span', { class: 'mono' }, inline(row.id, 64)), '. 아래 내용이 지워지거나 그대로 남습니다. 이 화면에서는 아직 아무것도 지워지지 않습니다.']),
-      d.followUp ? el('p', { class: 'note', 'data-note': 'follow-up' }, '원격 저장소 삭제는 이미 끝났습니다. 이것은 서버의 복제본과 등록을 지우는 별도의 변경이며 다시 서명해야 합니다.') : null,
+      d.followUp ? el('p', { class: 'note', 'data-note': 'follow-up' }, o.gone ? '원격 저장소 삭제는 이미 끝났습니다. 이것은 서버의 복제본과 등록을 지우는 별도의 변경이며 다시 서명해야 합니다.' : '원격 저장소가 지워졌는지 알 수 없는 상태입니다. 이것은 서버의 복제본과 등록을 지우는 별도의 변경이며 다시 서명해야 합니다.') : null,
       blockText ? el('p', { class: ['note', 'err'], role: 'alert', 'data-block': g.why }, blockText) : null,
       el('section', { class: 'sec' }, [el('h2', {}, '지울 대상'), targetList()]),
       el('section', { class: 'sec' }, [el('h2', {}, '그대로 남는 것'), keptList()]),
       touchesLocal() || isRemote ? el('section', { class: 'sec' }, [el('h2', {}, '지우면 사라질 수 있는 것'), countsList()]) : null,
       pv.static_remote && !isKey ? el('p', { class: 'note', 'data-note': 'static' }, DEL_TEXT.staticRemote) : null,
-      o.origin !== 'legacy' && !isRemote && !isKey ? el('p', { class: 'note' }, o.origin === 'created' ? '이 도구가 만든 프로젝트입니다.' : '') : null,
       isRemote ? warnBox(DEL_TEXT.irreversibleRemote, 'remote-irreversible') : isKey ? null : warnBox(DEL_TEXT.irreversible, 'irreversible'),
-      touchesLocal() && o.gone ? warnBox(DEL_TEXT.remoteAlreadyGone, 'remote-gone') : null,
+      touchesLocal() && maybeGone() ? warnBox(o.gone ? DEL_TEXT.remoteAlreadyGone : DEL_TEXT.remoteMaybeGone, 'remote-gone') : null,
+      alsoLocal() ? warnBox(DEL_TEXT.alsoWarn, 'also-local') : null,
+      alsoLocal() ? warnBox(DEL_TEXT.irreversible, 'irreversible') : null,
+      d.choice === ACTION_REMOVE_PROJECT && o.origin === 'created' && o.remote !== null && !o.gone && !d.followUp ? el('p', { class: 'note', 'data-note': 'created-local-only' }, DEL_TEXT.createdLocalOnly) : null,
       isRemote ? el('div', { class: 'form' }, [
         el('div', { class: 'field' }, [el('div', { class: 'row' }, [d.also, ' ', el('label', { for: 'del-also' }, DEL_TEXT.alsoLabel)]), el('span', { class: 'hint' }, DEL_TEXT.alsoHint)]),
         el('div', { class: 'field' }, [el('label', { for: 'del-typed' }, DEL_TEXT.typedLabel + ': ' + o.remote.name), d.typed, el('span', { class: 'hint', id: 'del-gate-hint' }, DEL_TEXT.typedHint)]),
@@ -627,7 +724,8 @@ export function makeDelete(ctx, host) {
       warn = warnBox(DEL_TEXT.irreversibleRemote, 'remote-irreversible');
     } else if (s.action === ACTION_REMOVE_DEPLOY_KEY) {
       lead = '아래 내용이 전부입니다. 서명하면 제공자 저장소에서 이 서버의 배포 키만 떼어집니다. 저장소와 다른 키는 그대로입니다.';
-      facts.push(factItem('프로젝트', s.subject, { 'data-field': 'id' }), factItem('원격 저장소', f.remote_path, { 'data-field': 'remote_path' }));
+      facts.push(factItem('프로젝트', s.subject, { 'data-field': 'id' }), factItem('원격 저장소', f.remote_path, { 'data-field': 'remote_path' }),
+        factItem('떼는 배포 키 지문(서버가 알린 값)', inline(flow.resp.deploy_key_fingerprint, 80), { 'data-field': 'fingerprint' }));
       warn = el('div', { class: 'trunc', role: 'note', 'data-emph': 'key-detach' }, [el('strong', {}, '[중요] 키를 떼면 이 서버는 이 저장소를 복제하거나 게시하지 못합니다.')]);
     } else {
       lead = '아래 내용이 전부입니다. 서명하면 이 서버의 고아 기록 한 줄이 지워집니다. 제공자에서는 아무것도 지워지지 않습니다.';
@@ -653,14 +751,18 @@ export function makeDelete(ctx, host) {
     if (code === 'delete_partial') {
       return panel([el('h1', { id: 'h-projects' }, '원격 저장소 삭제 결과를 알 수 없습니다'),
         el('p', { class: ['note', 'err'], role: 'alert', 'data-result': 'unknown' }, ERROR_TEXT.delete_partial),
-        el('p', { class: 'note', 'data-note': 'partial-remote' }, DEL_TEXT.partialRemoteDo), back]);
+        el('p', { class: 'note', 'data-note': 'partial-remote' }, DEL_TEXT.partialRemoteDo),
+        el('div', { class: 'row' }, [
+          el('button', { type: 'button', class: 'btn', 'data-focus-key': 'again-remote', on: { click: () => resume(ACTION_DELETE_REMOTE_REPO, false) } }, '원격 저장소 다시 지우기…'), ' ',
+          el('button', { type: 'button', class: 'btn', 'data-focus-key': 'again-local', on: { click: () => resume(ACTION_REMOVE_PROJECT, true) } }, '복제본과 등록 지우기…'),
+        ]), back]);
     }
     if (unknown) {
       return panel([el('h1', { id: 'h-projects' }, '결과를 알 수 없습니다'),
         el('p', { class: ['note', 'err'], role: 'alert', 'data-result': 'unknown' }, has(DEL_TEXT.unknown, s.action) ? DEL_TEXT.unknown[s.action] : ERROR_TEXT.outcome_unknown), back]);
     }
     return panel([el('h1', { id: 'h-projects' }, '지우지 못했습니다'),
-      el('p', { class: ['note', 'err'], role: 'alert', 'data-result': 'error' }, failureText(err)), back]);
+      el('p', { class: ['note', 'err'], role: 'alert', 'data-result': 'error' }, failText(err) || failureText(err)), back]);
   }
 
   function localRows(local, also) {
@@ -673,14 +775,26 @@ export function makeDelete(ctx, host) {
     ];
   }
 
+  // okShape: the success answer describes what was asked (the same project, the expected state)
+  function okShape(data, s) {
+    if (!isObj(data)) return false;
+    if (s.action === ACTION_REMOVE_PROJECT) return data.id === s.subject && data.removed === true;
+    if (s.action === ACTION_DELETE_REMOTE_REPO) return data.id === s.subject && (data.remote_state === 'deleted' || data.remote_state === 'requested');
+    if (s.action === ACTION_REMOVE_DEPLOY_KEY) return data.id === s.subject && data.key_removed === true;
+    return data.provider === s.subject && data.project === s.fields.project && data.cleared === true;
+  }
+
   function renderOk(data, s, back) {
+    if (!okShape(data, s)) {
+      return panel([el('h1', { id: 'h-projects' }, '결과를 확인하세요'), el('p', { class: ['note', 'err'], role: 'alert', 'data-result': 'check' }, DEL_TEXT.noResult), back]);
+    }
     const kids = [el('h1', { id: 'h-projects' }, '완료')];
     if (s.action === ACTION_REMOVE_PROJECT) {
       kids.push(el('p', { class: ['note', 'ok'], role: 'status', 'data-result': 'ok' }, '프로젝트 ' + inline(s.subject, 64) + '를 이 서버에서 지웠습니다. 원격 저장소는 그대로입니다.'),
         stepList([['registry', '프로젝트 등록', 'removed', '지웠습니다'], ...localRows(isObj(data) ? data.local : null)]));
     } else if (s.action === ACTION_DELETE_REMOTE_REPO) {
       const requested = isObj(data) && data.remote_state === 'requested';
-      const known = isObj(data) && (data.remote_state === 'deleted' || requested);
+      const known = true;
       kids.push(el('p', { class: ['note', 'ok'], role: 'status', 'data-result': 'ok' }, '원격 저장소 삭제를 요청했습니다' + (requested ? '(제공자가 지연 삭제로 처리할 수 있습니다).' : '.')));
       const rows = [['remote', '원격 저장소 삭제', known ? 'done' : 'unknown', known ? (requested ? '요청됨' : '완료') : '결과를 알 수 없음']];
       if (s.fields.also_local) rows.push(...localRows(isObj(data) ? data.local : null, true));
@@ -689,7 +803,7 @@ export function makeDelete(ctx, host) {
       kids.push(el('div', { class: 'trunc', role: 'note', 'data-followup': 'remove' }, [
         el('p', {}, s.fields.also_local ? '프로젝트 등록은 남아 있습니다. 등록까지 지우려면 별도의 서명이 한 번 더 필요하며 자동으로 하지 않습니다.'
           : '서버의 복제본과 등록은 그대로 남아 있습니다. 지우려면 별도의 서명이 필요하며 자동으로 하지 않습니다.'),
-        el('button', { type: 'button', class: 'btn', 'data-focus-key': 'follow-up', on: { click: startFollowUp } }, '등록 지우기…')]));
+        el('button', { type: 'button', class: 'btn', 'data-focus-key': 'follow-up', on: { click: startFollowUp } }, '복제본과 등록 지우기…')]));
     } else if (s.action === ACTION_REMOVE_DEPLOY_KEY) {
       kids.push(el('p', { class: ['note', 'ok'], role: 'status', 'data-result': 'ok' }, '이 서버의 배포 키를 제공자 저장소에서 뗐습니다. 저장소와 프로젝트는 그대로입니다.'),
         stepList([['key', '제공자 저장소의 배포 키', 'removed', '뗐습니다']]));

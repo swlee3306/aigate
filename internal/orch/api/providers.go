@@ -62,7 +62,7 @@ var (
 	errGroupUnknown   = apiErr(http.StatusNotFound, "group_unknown", "GitLab에 그런 그룹이 없습니다. 변경 없음")
 	errGroupExists    = apiErr(http.StatusConflict, "group_exists", "같은 경로의 그룹이 이미 있습니다. 변경 없음")
 	errNameTaken      = apiErr(http.StatusConflict, "project_name_taken", "같은 이름의 프로젝트가 이미 등록되어 있거나 GitLab에 있습니다. 기존 프로젝트는 가져오지 않습니다. 변경 없음")
-	errCreatePartial  = apiErr(http.StatusBadGateway, "create_partial", "GitLab에 일부만 만들어졌습니다. 이 도구는 삭제하지 않으니 GitLab에서 직접 정리한 뒤 다시 만드세요")
+	errCreatePartial  = apiErr(http.StatusBadGateway, "create_partial", "GitLab에 일부만 만들어졌습니다. 일부만 만들어진 프로젝트는 등록되지 않아 삭제 화면으로 지울 수 없고 이 도구는 삭제하지 않으니 GitLab에서 직접 정리한 뒤 다시 만드세요")
 	errKeyMismatch    = apiErr(http.StatusConflict, "deploy_key_mismatch", "서명한 배포 키와 지금의 배포 키가 다릅니다. 새로 변경을 만들어 서명하세요. 변경 없음")
 	errTemplateGone   = apiErr(http.StatusBadRequest, "template_unknown", "알 수 없는 템플릿입니다. 변경 없음")
 	errBrokerLimited  = apiErr(http.StatusTooManyRequests, "broker_rate_limited", "서버 전체의 시간당 생성 한도를 초과했습니다. 잠시 후 다시 시도하세요")

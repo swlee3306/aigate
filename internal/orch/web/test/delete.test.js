@@ -22,6 +22,7 @@ const NAMES = fx('w3f-names.json');
 const CODES = fx('w3c-error-codes.json').codes;
 const SECRET = '<img src=x onerror=alert(1)> javascript:alert(1) SERVER-WORDS';
 const SESSION = { principal: 'phone', kind: 'session', expires: '2026-11-11T00:00:00Z' };
+const FP = 'SHA256:' + 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ'.slice(0, 43);
 const STAMP = '서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다';
 
 // ---- helpers ------------------------------------------------------------------
@@ -112,7 +113,7 @@ function previewFor(action, subject, f) {
     return [...out, STAMP];
   }
   if (action === 'remove_deploy_key') {
-    return ["프로젝트 '" + subject + "'의 저장소 '" + f.remote_path + "'에서 이 서버의 배포 키만 뗍니다(지문 SHA256:x)", '저장소와 다른 키는 지워지지 않습니다. 프로젝트 등록과 서버의 복제본은 그대로입니다',
+    return ["프로젝트 '" + subject + "'의 저장소 '" + f.remote_path + "'에서 이 서버의 배포 키만 뗍니다(지문 " + FP + ")", '저장소와 다른 키는 지워지지 않습니다. 프로젝트 등록과 서버의 복제본은 그대로입니다',
       '[중요] 키를 떼면 이 서버는 그 저장소를 복제하거나 게시하지 못합니다', STAMP];
   }
   return ["제공자 '" + subject + "'의 고아 기록 하나('" + f.project + "')를 지웁니다", '외부에는 아무것도 보내지 않습니다. 제공자에 남아 있을 수 있는 프로젝트는 지워지지 않으니 제공자 화면에서 직접 정리하세요', STAMP];
@@ -139,10 +140,10 @@ function routesFor(over) {
     '/api/v1/auth/signers': SIGNERS,
     '/api/v1/projects/registry': REG(),
     'POST /api/v1/projects/remove/propose': rec('rp', (b) => proposeFor(b)),
-    'POST /api/v1/projects/remove/apply': rec('ra', () => ({ id: 'x', removed: true, local: { clone: 'removed', key: 'removed' } })),
+    'POST /api/v1/projects/remove/apply': rec('ra', (b) => ({ id: b.subject, removed: true, local: { clone: 'removed', key: 'removed' } })),
     'POST /api/v1/projects/delete-remote/propose': rec('dp', (b) => proposeFor(b)),
     'POST /api/v1/projects/delete-remote/apply': rec('da', (b) => ({ id: b.subject, remote_state: 'deleted', remote_deleted_at: '2026-11-13T01:02:03Z', also_local: b.fields.also_local, registry: 'kept', ...(b.fields.also_local ? { local: { clone: 'removed', key: 'removed' } } : {}) })),
-    'POST /api/v1/projects/remove-key/propose': rec('kp', (b) => proposeFor(b)),
+    'POST /api/v1/projects/remove-key/propose': rec('kp', (b) => proposeFor(b, { deploy_key_fingerprint: FP })),
     'POST /api/v1/projects/remove-key/apply': rec('ka', (b) => ({ id: b.subject, key_removed: true })),
     'POST /api/v1/orphans/clear/propose': rec('op', (b) => proposeFor(b)),
     'POST /api/v1/orphans/clear/apply': rec('oa', (b) => ({ provider: b.subject, project: b.fields.project, cleared: true })),
@@ -180,6 +181,15 @@ async function pick(ctx, key) {
 }
 const typeInto = (inp, v) => { inp.value = v; fire(inp, 'input'); };
 const typed = (ctx) => byId(ctx.root, 'del-typed');
+async function alsoAndAck(ctx) {
+  byId(ctx.root, 'del-also').checked = true;
+  fire(byId(ctx.root, 'del-also'), 'change');
+  await until(() => !!byId(ctx.root, 'del-ack'), 'the acknowledgement appears with also_local');
+  assert.equal(proposeBtn(ctx).hasAttribute('disabled'), true, 'off until the acknowledgement');
+  byId(ctx.root, 'del-ack').checked = true;
+  fire(byId(ctx.root, 'del-ack'), 'change');
+  await until(() => !proposeBtn(ctx).hasAttribute('disabled'), 'enabled');
+}
 async function sign(ctx) {
   await waitSignable(ctx);
   click(signBtn(ctx));
@@ -244,8 +254,8 @@ test('TestDeleteMenuDisabledForBusy', async () => {
   click(byLabel(rowOf(ctx2, 'mine'), '다시 복제')[0]);
   await until(() => byLabel(rowOf(ctx2, 'toy'), '삭제…')[0].hasAttribute('disabled'), 'disabled while cloning');
   const b2 = byLabel(rowOf(ctx2, 'toy'), '삭제…')[0];
-  assert.equal(b2.getAttribute('aria-describedby'), 'del-busy-hint');
-  assert.equal(text(byId(ctx2.root, 'del-busy-hint')), D.DEL_TEXT.menuBusy);
+  assert.equal(b2.getAttribute('aria-describedby'), 'del-busy-hint-toy', 'one hint per row');
+  assert.equal(text(byId(ctx2.root, 'del-busy-hint-toy')), D.DEL_TEXT.menuBusy);
   click(b2);
   assert.equal(byData(ctx2.root, 'choice').length, 0, 'a click on a disabled button opens nothing');
   release();
@@ -449,9 +459,7 @@ test('TestRemoteDeleteSignedFieldsAndAlsoLocalSingleSignature', async () => {
   const ctx = await mountProjects();
   await toConfirm(ctx, 'mine', 'remote', async () => {
     typeInto(typed(ctx), 'Hello-World');
-    byId(ctx.root, 'del-also').checked = true;
-    fire(byId(ctx.root, 'del-also'), 'change');
-    await until(() => !proposeBtn(ctx).hasAttribute('disabled'), 'enabled');
+    await alsoAndAck(ctx);
   });
   const prop = JSON.parse(posts(ctx, '/api/v1/projects/delete-remote/propose')[0].body ? JSON.stringify(posts(ctx, '/api/v1/projects/delete-remote/propose')[0].body) : '{}');
   assert.deepEqual(prop, { action: 'delete_remote_repo', subject: 'mine', fields: { remote_path: 'octo/Hello-World', remote_id: '123456789', confirm_name: 'Hello-World', also_local: true } });
@@ -483,14 +491,13 @@ test('TestFollowUpRemoveRegistryIsSecondSignedChange', async () => {
   });
   await toConfirm(ctx, 'mine', 'remote', async () => {
     typeInto(typed(ctx), 'Hello-World');
-    byId(ctx.root, 'del-also').checked = true;
-    fire(byId(ctx.root, 'del-also'), 'change');
-    await until(() => !proposeBtn(ctx).hasAttribute('disabled'), 'enabled');
+    await alsoAndAck(ctx);
   });
   // after the delete the registry row is: remote null, remote_deleted_at set
   regAfter = REG({ projects: ROWS.map((r) => (r.id === 'mine' ? { ...r, gitlab: null, remote_deleted_at: '2026-11-13T01:02:03Z' } : r)) });
   await sign(ctx);
   await until(() => byData(ctx.root, 'followup', 'remove').length === 1, 'result');
+  assert.equal(text(fkey(ctx, 'follow-up')), '복제본과 등록 지우기…');
   click(fkey(ctx, 'follow-up'));
   await until(() => !!proposeBtn(ctx), 'follow-up preview');
   assert.equal(byData(ctx.root, 'note', 'follow-up').length, 1);
@@ -654,7 +661,7 @@ test('TestDeletePartialScreen', async () => {
   // the other shapes: moved aside, registry kept
   const d2 = { remaining: ['clone', 'key'], clone: 'moved_aside', key: 'kept_in_place', registry_removed: false, remote_deleted: true, reason: 'project_busy' };
   const c2 = await mountProjects({ 'POST /api/v1/projects/delete-remote/apply': () => { throw apiError(502, 'delete_partial_local', SECRET, { detail: d2 }); } });
-  await toConfirm(c2, 'mine', 'remote', async () => { typeInto(typed(c2), 'Hello-World'); byId(c2.root, 'del-also').checked = true; fire(byId(c2.root, 'del-also'), 'change'); await until(() => !proposeBtn(c2).hasAttribute('disabled'), 'en'); });
+  await toConfirm(c2, 'mine', 'remote', async () => { typeInto(typed(c2), 'Hello-World'); await alsoAndAck(c2); });
   await sign(c2);
   await until(() => byData(c2.root, 'result', 'partial-local').length === 1, 'partial 2');
   assert.ok(text(c2.root).includes('.deleting-'));
@@ -746,7 +753,9 @@ test('TestAllNewErrorCodesFixedTextsW3f', async () => {
     await toConfirm(c2, 'plain', 'local');
     await sign(c2);
     await until(() => byData(c2.root, 'result', 'error').length === 1 || byData(c2.root, 'result', 'unknown').length === 1, code + ' at apply');
-    assert.ok(text(c2.root).includes(P.ERROR_TEXT[code]) || code === 'busy_check_failed', code);
+    assert.equal(byData(c2.root, 'result', 'error').length, 1, code + ': a refusal, not an unknown outcome');
+    assert.equal(byData(c2.root, 'result', 'unknown').length, 0, code);
+    assert.ok(text(byData(c2.root, 'result', 'error')[0]).includes(P.ERROR_TEXT[code]), code);
     assert.ok(!text(c2.root).includes('SERVER-WORDS'));
     assert.equal(signBtn(c2), undefined, 'a refused change is never signed again');
   }
@@ -841,6 +850,32 @@ test('TestSubmitOnceAndNoRetry429', async () => {
 
 // ---- static rules ---------------------------------------------------------------------------------
 
+test('TestNoEmptyNotesAndUniqueDescribedByIds', async () => {
+  const ctx = await mountProjects();
+  await openDelete(ctx, 'plain');
+  click(fkey(ctx, 'choice-local'));
+  await until(() => !!proposeBtn(ctx), 'preview');
+  for (const e of byTag(ctx.root, 'p')) assert.ok(text(e).trim() !== '', 'an empty <p>: ' + e.className);
+  // every aria-describedby of the list points at an element that exists, and ids are unique
+  const c2 = await mountProjects();
+  const ids = findAll(c2.root, (e) => e.hasAttribute('id')).map((e) => e.getAttribute('id'));
+  assert.equal(new Set(ids).size, ids.length, 'ids are unique');
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const c3 = await mountProjects({ '/api/v1/projects/registry': REG({ projects: ROWS.map((r) => (r.id === 'mine' ? { ...r, cloned: false } : r)) }), 'POST /api/v1/projects/mine/clone': async () => { await gate; return { cloned: true }; } });
+  click(byLabel(rowOf(c3, 'mine'), '다시 복제')[0]);
+  await until(() => byLabel(rowOf(c3, 'toy'), '삭제…')[0].hasAttribute('disabled'), 'disabled');
+  const all = findAll(c3.root, (e) => e.hasAttribute('id')).map((e) => e.getAttribute('id'));
+  assert.equal(new Set(all).size, all.length, 'one hint per row, unique ids even while busy');
+  for (const b of byLabel(c3.root, '삭제…')) {
+    const d = b.getAttribute('aria-describedby');
+    assert.ok(d && all.includes(d), 'describedby ' + d + ' exists');
+  }
+  // the orphan button is off as well while a clone runs
+  for (const b of byLabel(c3.root, '기록 지우기')) assert.equal(b.hasAttribute('disabled'), true);
+  release();
+});
+
 test('TestNoStorageNoNavigateTrapW3f', async () => {
   for (const name of ['views/delete.js', 'views/providers.js', 'views/projects.js', 'api.js']) {
     const c = src(name);
@@ -899,3 +934,260 @@ test('TestHostileServerTextNeverRenderedAsMarkupW3f', async () => {
   assert.ok(!text(ctx.root).includes('‮'));
   for (const e of findAll(ctx.root, () => true)) for (const [k, v] of e.attrs) assert.ok(!v.includes('<img') && !v.includes('SERVER-WORDS'), k);
 });
+
+// ===== F4 review round 1 (red first) =====================================================
+
+test('TestAlsoLocalNeedsAckAndSingleSignatureWarning', async () => {
+  // clean counts, nothing at risk by the numbers: also_local still needs the acknowledgement
+  const ctx = await mountProjects();
+  await openDelete(ctx, 'mine');
+  click(fkey(ctx, 'choice-remote'));
+  await until(() => !!typed(ctx), 'remote preview');
+  assert.equal(byId(ctx.root, 'del-ack'), undefined, 'no acknowledgement for a remote-only deletion with clean counts');
+  assert.equal(byData(ctx.root, 'emph', 'also-local').length, 0);
+  typeInto(typed(ctx), 'Hello-World');
+  await until(() => !proposeBtn(ctx).hasAttribute('disabled'), 'remote only enabled');
+  byId(ctx.root, 'del-also').checked = true;
+  fire(byId(ctx.root, 'del-also'), 'change');
+  await until(() => !!byId(ctx.root, 'del-ack'), 'ack appears');
+  assert.equal(proposeBtn(ctx).hasAttribute('disabled'), true, 'off until acknowledged');
+  const w = byData(ctx.root, 'emph', 'also-local');
+  assert.equal(w.length, 1);
+  assert.ok(text(w[0]).includes('같은 서명으로') && text(w[0]).includes('유일한 사본일 수 있') && text(w[0]).includes('복제본'), text(w[0]));
+  assert.equal(byTag(w[0], 'strong').length, 1, 'bold');
+  assert.equal(byData(ctx.root, 'emph', 'irreversible').length, 1);
+  click(proposeBtn(ctx));
+  await sleep(10);
+  assert.equal(posts(ctx, '/api/v1/projects/delete-remote/propose').length, 0);
+  // unchecking also_local drops the requirement again
+  byId(ctx.root, 'del-also').checked = false;
+  fire(byId(ctx.root, 'del-also'), 'change');
+  await until(() => !proposeBtn(ctx).hasAttribute('disabled') && !byId(ctx.root, 'del-ack'), 'back to remote only');
+});
+
+test('TestUnverifiableFolderIsNeverAlreadyGone', async () => {
+  const unsafe = { folder_exists: false, local_removable: false };
+  const ctx = await mountProjects({ '/api/v1/projects/plain/removal-preview': () => pvBody('plain', unsafe) });
+  await openDelete(ctx, 'plain');
+  click(fkey(ctx, 'choice-local'));
+  await until(() => byData(ctx.root, 'block', 'local_unsafe').length === 1, 'local_unsafe gate');
+  assert.equal(text(byData(ctx.root, 'block', 'local_unsafe')[0]), D.DEL_TEXT.localUnsafe);
+  assert.equal(proposeBtn(ctx).hasAttribute('disabled'), true);
+  const t = text(byData(ctx.root, 'targets', 'list')[0]);
+  assert.ok(t.includes('확인하지 못함') && !t.includes('이미 없음'), t);
+  // really absent (and removable): "이미 없음" and no gate
+  const c2 = await mountProjects({ '/api/v1/projects/plain/removal-preview': () => pvBody('plain', { folder_exists: false, local_removable: true }) });
+  await openDelete(c2, 'plain');
+  click(fkey(c2, 'choice-local'));
+  await until(() => !!proposeBtn(c2), 'absent preview');
+  assert.ok(text(byData(c2.root, 'targets', 'list')[0]).includes('이미 없음'));
+  assert.equal(byData(c2.root, 'block', 'local_unsafe').length, 0);
+  assert.equal(proposeBtn(c2).hasAttribute('disabled'), false);
+  // also_local on an unverifiable folder is gated the same way
+  const c3 = await mountProjects({ '/api/v1/projects/mine/removal-preview': () => pvBody('mine', { local_removable: false }) });
+  await openDelete(c3, 'mine');
+  click(fkey(c3, 'choice-remote'));
+  await until(() => !!typed(c3), 'remote');
+  typeInto(typed(c3), 'Hello-World');
+  byId(c3.root, 'del-also').checked = true;
+  fire(byId(c3.root, 'del-also'), 'change');
+  await until(() => byData(c3.root, 'block', 'local_unsafe').length === 1, 'also_local gated');
+  assert.equal(proposeBtn(c3).hasAttribute('disabled'), true);
+});
+
+test('TestDeletePartialGuidanceTwoPathsAndSessionMemory', async () => {
+  assert.ok(/아직 있으면/.test(P.ERROR_TEXT.delete_partial) && /원격 저장소 지우기/.test(P.ERROR_TEXT.delete_partial) && /이미 없으면/.test(P.ERROR_TEXT.delete_partial) && /복제본과 등록 지우기/.test(P.ERROR_TEXT.delete_partial));
+  const ctx = await mountProjects({ 'POST /api/v1/projects/delete-remote/apply': () => { throw apiError(504, 'delete_partial', SECRET); } });
+  await toConfirm(ctx, 'mine', 'remote', async () => { typeInto(typed(ctx), 'Hello-World'); await until(() => !proposeBtn(ctx).hasAttribute('disabled'), 'en'); });
+  await sign(ctx);
+  await until(() => byData(ctx.root, 'note', 'partial-remote').length === 1, 'partial');
+  const guide = text(byData(ctx.root, 'note', 'partial-remote')[0]);
+  assert.ok(guide.includes('아직 있으면') && guide.includes('새 서명') && guide.includes('이미 없으면'), guide);
+  assert.ok(fkey(ctx, 'again-remote') && fkey(ctx, 'again-local'));
+  assert.equal(text(fkey(ctx, 'again-remote')), '원격 저장소 다시 지우기…');
+  assert.equal(text(fkey(ctx, 'again-local')), '복제본과 등록 지우기…');
+  await sleep(40);
+  assert.equal(posts(ctx, '/api/v1/projects/delete-remote/apply').length, 1, 'nothing was retried by itself');
+  assert.equal(auth.gets.length, 1);
+  // path 1: the repository still exists: delete it again, with a NEW proposal and a new signature
+  click(fkey(ctx, 'again-remote'));
+  await until(() => !!typed(ctx), 'remote preview again');
+  assert.equal(posts(ctx, '/api/v1/projects/delete-remote/propose').length, 1, 'no proposal until the person presses the button');
+  typeInto(typed(ctx), 'Hello-World');
+  await until(() => !proposeBtn(ctx).hasAttribute('disabled'), 'enabled');
+  click(proposeBtn(ctx));
+  await waitSignable(ctx);
+  assert.equal(posts(ctx, '/api/v1/projects/delete-remote/propose').length, 2);
+  assert.equal(auth.gets.length, 1, 'a new signature is still to come');
+  click(fkey(ctx, 'cancel'));
+  await until(() => !signBtn(ctx), 'left');
+  // path 2 (same view, same session): the project is treated like "remote possibly deleted": strong warning, forced ack even with clean counts
+  click(fkey(ctx, 'back-choose'));
+  await until(() => !!fkey(ctx, 'choice-local'), 'choose');
+  click(fkey(ctx, 'choice-local'));
+  await until(() => !!proposeBtn(ctx), 'local preview');
+  assert.equal(byData(ctx.root, 'emph', 'remote-gone').length, 1);
+  assert.ok(text(byData(ctx.root, 'emph', 'remote-gone')[0]).includes('이미 지워졌을 수 있'), text(byData(ctx.root, 'emph', 'remote-gone')[0]));
+  assert.equal(proposeBtn(ctx).hasAttribute('disabled'), true, 'forced acknowledgement');
+  // a fresh view (new page visit) does not remember: nothing is stored
+  const fresh = await mountProjects();
+  await openDelete(fresh, 'mine');
+  click(fkey(fresh, 'choice-local'));
+  await until(() => !!proposeBtn(fresh), 'fresh preview');
+  assert.equal(byData(fresh.root, 'emph', 'remote-gone').length, 0);
+  assert.equal(proposeBtn(fresh).hasAttribute('disabled'), false);
+});
+
+test('TestDeletePartialLocalButtonGoesStraightToLocalPreview', async () => {
+  const ctx = await mountProjects({ 'POST /api/v1/projects/delete-remote/apply': () => { throw apiError(504, 'delete_partial', SECRET); } });
+  await toConfirm(ctx, 'mine', 'remote', async () => { typeInto(typed(ctx), 'Hello-World'); await until(() => !proposeBtn(ctx).hasAttribute('disabled'), 'en'); });
+  await sign(ctx);
+  await until(() => !!fkey(ctx, 'again-local'), 'partial');
+  click(fkey(ctx, 'again-local'));
+  await until(() => !!proposeBtn(ctx), 'local preview');
+  assert.equal(byData(ctx.root, 'emph', 'remote-gone').length, 1);
+  assert.equal(proposeBtn(ctx).hasAttribute('disabled'), true);
+  assert.equal(posts(ctx, '/api/v1/projects/remove/propose').length, 0);
+  // the note must not claim the remote deletion finished: after a delete_partial it is unknown
+  const note = text(byData(ctx.root, 'note', 'follow-up')[0]);
+  assert.ok(!note.includes('이미 끝났습니다') && note.includes('알 수 없'), note);
+});
+
+test('TestCreatedWithRemoteLocalOnlyWarnsTheToolLosesTheRemote', async () => {
+  for (const [id, expect] of [['mine', true], ['lab', true], ['linked-app', false], ['plain', false], ['toy', false]]) {
+    const ctx = await mountProjects();
+    await openDelete(ctx, id);
+    click(fkey(ctx, 'choice-local'));
+    await until(() => !!proposeBtn(ctx) || byLabel(ctx.root, '다음: 두 번째 확인').length === 1, 'preview ' + id);
+    assert.equal(byData(ctx.root, 'note', 'created-local-only').length, expect ? 1 : 0, id);
+    if (expect) {
+      const t = text(byData(ctx.root, 'note', 'created-local-only')[0]);
+      assert.ok(t.includes('더 이상 그 원격 저장소를 지울 수 없게') && t.includes('"원격 저장소 지우기"를 하세요'), t);
+    }
+  }
+});
+
+test('TestPreviewLinesAreVerifiedExactly', async () => {
+  const extra = '원격 저장소는 지워지지 않고 그대로 남습니다(이 줄은 서버가 덧붙인 것)';
+  const cases = [
+    ['remove_project', 'plain', 'local', 'POST /api/v1/projects/remove/propose', async () => {}],
+    ['delete_remote_repo', 'mine', 'remote', 'POST /api/v1/projects/delete-remote/propose', async (ctx) => { typeInto(typed(ctx), 'Hello-World'); await until(() => !proposeBtn(ctx).hasAttribute('disabled'), 'en'); }],
+    ['remove_deploy_key', 'linked-app', 'key', 'POST /api/v1/projects/remove-key/propose', async () => {}],
+  ];
+  const tamper = {
+    'an extra misleading line': (pv) => [pv[0], extra, ...pv.slice(1)],
+    'a line appended after the stamp': (pv) => [...pv, extra],
+    'a line dropped': (pv) => pv.filter((_, i) => i !== 1),
+    'two lines swapped': (pv) => [pv[1], pv[0], ...pv.slice(2)],
+    'a word changed': (pv) => pv.map((x, i) => (i === 0 ? x + '.' : x)),
+    'the stamp changed': (pv) => pv.map((x) => (x === STAMP ? x + '.' : x)),
+  };
+  for (const [action, id, key, route, setup] of cases) {
+    for (const [name, fn] of Object.entries(tamper)) {
+      const ctx = await mountProjects({ [route]: async (b) => { const r = await proposeFor(b, action === 'remove_deploy_key' ? { deploy_key_fingerprint: FP } : {}); r.preview = fn(r.preview); return r; } });
+      await toConfirm(ctx, id, key, () => setup(ctx));
+      assert.equal(byData(ctx.root, 'warn', 'mismatch').length, 1, action + ': ' + name);
+      assert.equal(signBtn(ctx), undefined, action + ': ' + name);
+    }
+    // the honest answer passes
+    const ok = await mountProjects();
+    await toConfirm(ok, id, key, () => setup(ok));
+    assert.ok(signBtn(ok), action + ': honest');
+  }
+  // the key fingerprint line takes its value from the server's own field, which must be a SHA256 fingerprint
+  for (const bad of [undefined, 'SHA256:x', 'MD5:aa', SECRET]) {
+    const ctx = await mountProjects({ 'POST /api/v1/projects/remove-key/propose': async (b) => ({ ...(await proposeFor(b, bad === undefined ? {} : { deploy_key_fingerprint: bad })) }) });
+    await toConfirm(ctx, 'linked-app', 'key');
+    assert.equal(byData(ctx.root, 'warn', 'mismatch').length, 1, String(bad));
+  }
+  // legacy and static lines come from what the browser knows (ack, the preview's static_remote)
+  const st = await mountProjects({ '/api/v1/projects/plain/removal-preview': () => pvBody('plain', { static_remote: true }) });
+  await toConfirm(st, 'plain', 'local');
+  assert.equal(byData(st.root, 'warn', 'mismatch').length, 1, 'a static remote the proposal does not mention');
+  const st2 = await mountProjects({ '/api/v1/projects/plain/removal-preview': () => pvBody('plain', { static_remote: true }),
+    'POST /api/v1/projects/remove/propose': async (b) => { const r = await proposeFor(b); r.preview = [...r.preview.slice(0, -1), '이 프로젝트에는 서버 설정(--git-remote-for)에 정해진 원격이 있습니다. 그 설정은 바뀌지 않으니 관리자가 따로 정리해야 합니다', STAMP]; return r; } });
+  await toConfirm(st2, 'plain', 'local');
+  assert.ok(signBtn(st2), 'the static line is accepted when the preview said static_remote');
+});
+
+test('TestDeleteSpecificFailureTextsNeverTalkAboutCreating', async () => {
+  const codes = ['github_refused', 'gitlab_refused', 'provider_unreachable', 'bad_url', 'token_ref_unknown', 'provider_rate_limited', 'remove_refused'];
+  for (const code of codes) {
+    const t = D.DEL_FAIL[code];
+    assert.ok(typeof t === 'string' && t.includes('아무것도 지우지 않았습니다'), code);
+    assert.ok(!/만들|생성|만드는/.test(t), code + ': ' + t);
+    const status = code === 'provider_rate_limited' ? 429 : code === 'bad_url' ? 400 : 502;
+    const c2 = await mountProjects({ 'POST /api/v1/projects/delete-remote/apply': () => { throw apiError(status, code, SECRET); } });
+    await toConfirm(c2, 'mine', 'remote', async () => { typeInto(typed(c2), 'Hello-World'); await until(() => !proposeBtn(c2).hasAttribute('disabled'), 'en'); });
+    await sign(c2);
+    await until(() => byData(c2.root, 'result', 'error').length === 1, code + ' at apply');
+    assert.equal(text(byData(c2.root, 'result', 'error')[0]), t, code);
+    const c1 = await mountProjects({ 'POST /api/v1/projects/remove/propose': () => { throw apiError(status, code, SECRET); } });
+    await openDelete(c1, 'plain');
+    click(fkey(c1, 'choice-local'));
+    await until(() => !!proposeBtn(c1), 'preview');
+    click(proposeBtn(c1));
+    await until(() => byData(c1.root, 'note', 'del').length === 1, code + ' at propose');
+    assert.equal(text(byData(c1.root, 'note', 'del')[0]), t, code + ' at propose');
+  }
+});
+
+test('TestMinorFixesF4Round1', async () => {
+  // the key option needs a verifiable repository number
+  assert.equal(D.deleteOptions(ROWS.find((r) => r.id === 'noid')).key, false);
+  assert.equal(D.deleteOptions(ROWS.find((r) => r.id === 'mine')).key, true);
+  // the follow-up waits for a fresh list before it looks the row up
+  let reads = 0;
+  let afterDelete = false;
+  const ctx = await mountProjects({
+    '/api/v1/projects/registry': () => { reads++; return afterDelete ? REG({ projects: ROWS.map((r) => (r.id === 'mine' ? { ...r, gitlab: null, remote_deleted_at: '2026-11-13T01:02:03Z' } : r)) }) : REG(); },
+    '/api/v1/projects/mine/removal-preview': () => pvBody('mine', {}, afterDelete ? { ...ROWS[0], gitlab: null, remote_deleted_at: '2026-11-13T01:02:03Z' } : ROWS[0]),
+  });
+  await toConfirm(ctx, 'mine', 'remote', async () => { typeInto(typed(ctx), 'Hello-World'); await until(() => !proposeBtn(ctx).hasAttribute('disabled'), 'en'); });
+  afterDelete = true;
+  await sign(ctx);
+  await until(() => !!fkey(ctx, 'follow-up'), 'result');
+  const before = reads;
+  click(fkey(ctx, 'follow-up'));
+  await until(() => !!proposeBtn(ctx), 'follow-up preview');
+  assert.ok(reads > before, 'the list was read again before the follow-up');
+  // an apply answer that does not describe what was asked is shown neutrally, not as a success
+  for (const [route, bad, key, id] of [
+    ['POST /api/v1/projects/remove/apply', { id: 'someone-else', removed: true, local: { clone: 'removed', key: 'removed' } }, 'local', 'plain'],
+    ['POST /api/v1/projects/remove/apply', { id: 'plain', removed: false }, 'local', 'plain'],
+    ['POST /api/v1/projects/remove-key/apply', { id: 'linked-app', key_removed: false }, 'key', 'linked-app'],
+    ['POST /api/v1/orphans/clear/apply', { provider: 'gh', project: 'x/y', cleared: true }, null, null],
+  ]) {
+    const c = await mountProjects({ [route]: () => bad });
+    if (key) await toConfirm(c, id, key);
+    else { click(byLabel(c.root, '기록 지우기')[0]); await until(() => !!proposeBtn(c), 'orphan'); click(proposeBtn(c)); await waitSignable(c); }
+    click(signBtn(c));
+    await until(() => byData(c.root, 'result', 'check').length === 1, 'neutral result for ' + route);
+    assert.equal(byData(c.root, 'result', 'ok').length, 0);
+    assert.equal(text(byData(c.root, 'result', 'check')[0]), D.DEL_TEXT.noResult);
+  }
+  // a remote deletion with an unknown remote_state is neutral too
+  const cd = await mountProjects({ 'POST /api/v1/projects/delete-remote/apply': () => ({ id: 'mine', remote_state: 'weird' }) });
+  await toConfirm(cd, 'mine', 'remote', async () => { typeInto(typed(cd), 'Hello-World'); await until(() => !proposeBtn(cd).hasAttribute('disabled'), 'en'); });
+  await sign(cd);
+  await until(() => byData(cd.root, 'result', 'check').length === 1, 'neutral remote result');
+  // cancelling while a proposal is out: the late answer does not bring the confirmation back
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const cc = await mountProjects({ 'POST /api/v1/projects/remove/propose': async (b) => { await gate; return proposeFor(b); } });
+  await openDelete(cc, 'plain');
+  click(fkey(cc, 'choice-local'));
+  await until(() => !!proposeBtn(cc), 'preview');
+  click(proposeBtn(cc));
+  await sleep(10);
+  const g0 = auth.gets.length;
+  PRcancel(cc);
+  release();
+  await sleep(60);
+  assert.equal(signBtn(cc), undefined, 'a cancelled proposal never reaches the confirmation');
+  assert.equal(auth.gets.length, g0, 'nothing signed');
+});
+function PRcancel(ctx) {
+  // the flow screen has no cancel button while proposing: leaving the page is the cancel
+  ctx.leave();
+}

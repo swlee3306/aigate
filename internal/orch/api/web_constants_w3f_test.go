@@ -167,6 +167,51 @@ func checkW3fConstants(t *testing.T) {
 			t.Errorf("%s: mark %q appears %d times, the page expects %d", c.name, c.mark, got, c.n)
 		}
 	}
+	// the page rebuilds the WHOLE preview from templates (DEL_LINES) and signs only an exact match: every template,
+	// filled with sample values, must be exactly the real server line, in the real order and count
+	tpl := map[string]string{}
+	block := one(del, `(?s)export const DEL_LINES = \{(.*?)\n\};`, "DEL_LINES")[1]
+	for _, m := range regexp.MustCompile(`(?m)^\s+([A-Za-z0-9]+): ("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'),?$`).FindAllStringSubmatch(block, -1) {
+		raw := m[2]
+		raw = raw[1 : len(raw)-1]
+		tpl[m[1]] = raw
+	}
+	if len(tpl) != 19 {
+		t.Fatalf("DEL_LINES has %d templates, want 19: %v", len(tpl), tpl)
+	}
+	fp := "SHA256:" + strings.Repeat("a", 43)
+	fill := func(k string, v map[string]string) string {
+		out := tpl[k]
+		for name, val := range v {
+			out = strings.ReplaceAll(out, "{"+name+"}", val)
+		}
+		return out
+	}
+	eq := func(name string, got []string, want []string) {
+		t.Helper()
+		if strings.Join(got, "\n") != strings.Join(want, "\n") {
+			t.Errorf("%s: the page's lines\n%q\n!= the server's\n%q", name, want, got)
+		}
+	}
+	idp := map[string]string{"id": "my-app", "path": "/r/my-app"}
+	eq("remove_project", rp(false), []string{fill("rp1", idp), tpl["rp2"], tpl["rp3"], tpl["rp4"], tpl["stamp"]})
+	eq("remove_project legacy", rp(true), []string{fill("rp1", idp), tpl["rp2"], tpl["rp3"], tpl["rp4"], tpl["rpLegacy"], tpl["stamp"]})
+	eq("remove_project static", deletePreview(registryChange{Action: "remove_project", Subject: "my-app", Fields: rpFields(false)}, &delInfo{path: "/r/my-app", static: true}),
+		[]string{fill("rp1", idp), tpl["rp2"], tpl["rp3"], tpl["rp4"], tpl["rpStatic"], tpl["stamp"]})
+	drv := map[string]string{"remote": "octo/hello", "name": "hello", "path": "/r/my-app"}
+	eq("delete_remote_repo", dr(false), []string{fill("dr1", drv), fill("dr2", drv), tpl["dr3"], tpl["drKeep"], tpl["stamp"]})
+	eq("delete_remote_repo also_local", dr(true), []string{fill("dr1", drv), fill("dr2", drv), tpl["dr3"], fill("drAlso1", drv), tpl["drAlso2"], tpl["drAlso3"], tpl["stamp"]})
+	eq("remove_deploy_key", deletePreview(registryChange{Action: "remove_deploy_key", Subject: "my-app", Fields: map[string]any{"remote_path": "octo/hello"}}, &delInfo{keyFP: fp}),
+		[]string{fill("dk1", map[string]string{"id": "my-app", "remote": "octo/hello", "fp": fp}), tpl["dk2"], tpl["dk3"], tpl["stamp"]})
+	eq("clear_orphan", deletePreview(registryChange{Action: "clear_orphan", Subject: "gh", Fields: map[string]any{"project": "octo/half"}}, &delInfo{}),
+		[]string{fill("co1", map[string]string{"provider": "gh", "project": "octo/half"}), tpl["co2"], tpl["stamp"]})
+	if tpl["stamp"] != deleteStamp {
+		t.Errorf("stamp %q != %q", tpl["stamp"], deleteStamp)
+	}
+	// the fingerprint shape the page accepts is the one ssh.FingerprintSHA256 produces (SHA256: + 43 base64 characters)
+	if got := one(del, `const FP_RE = /(.*)/;`, "FP_RE")[1]; got != `^SHA256:[A-Za-z0-9+/]{43}$` {
+		t.Errorf("FP_RE %q", got)
+	}
 	// the preview answer: the page's key list is the members of removalPreview's body
 	src := read("delete_project.go")
 	i := strings.Index(src, "func (h *handler) removalPreview(")

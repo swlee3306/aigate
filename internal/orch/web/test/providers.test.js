@@ -103,7 +103,7 @@ function previewFor(action, subject, f, fingerprint) {
   return ["GitLab 제공자 '" + f.provider + "'의 그룹 '" + f.group_path + "'에 새 프로젝트 '" + subject + "'를 만듭니다",
     '템플릿: ' + f.template + ' (코드에 고정된 파일들이 첫 커밋으로 들어갑니다)', '설명: ' + (f.description === '' ? '(없음)' : f.description),
     f.ai_context ? aiOn : aiOff, '게시 권한 — ' + pub, '배포 키 지문(SHA-256): ' + fingerprint + ' (이 서버의 배포 키 공개 키 파일 기준)',
-    '등록 후 정책 종류(kind)는 registered 입니다', 'GitLab 프로젝트는 비공개로 만들어지고, 만든 뒤 이 도구는 삭제하지 않습니다', '만든 뒤 이 서버에 자동으로 한 번 복제합니다', STAMP];
+    '등록 후 정책 종류(kind)는 registered 입니다', 'GitLab 프로젝트는 비공개로 만들어지고, 만든 뒤 삭제 화면에서 서명하면 이 도구가 지울 수 있습니다(되돌릴 수 없습니다)', '만든 뒤 이 서버에 자동으로 한 번 복제합니다', STAMP];
 }
 
 let seq = 0;

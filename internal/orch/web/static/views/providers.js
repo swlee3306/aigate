@@ -119,7 +119,7 @@ export const GROUP_SETTLE_MS = 400;
 export const PREVIEW_VIS_PUBLIC = '[중요] 공개 저장소로 만듭니다: 인터넷의 누구나 이 저장소의 코드를 읽을 수 있습니다';
 export const PREVIEW_VIS_PRIVATE = '비공개 저장소로 만듭니다: 초대받은 사람만 볼 수 있습니다';
 export const PREVIEW_ATTACH_PUSH_WARN = '[중요] 게시 권한이 쓰기입니다: 이 프로젝트의 로컬 저장소 기록(커밋 이력)이 이 원격으로 올라갈 수 있습니다. 원격이 공개 저장소라면 누구나 그 기록을 읽을 수 있습니다';
-export const PREVIEW_KEY_WARN = '[중요] 이미 있는 저장소의 설정에 이 서버의 배포 키가 등록됩니다. 이 도구는 저장소를 만들거나 지우거나 다른 설정을 바꾸지 않으며, 등록한 키도 지우지 않습니다';
+export const PREVIEW_KEY_WARN = '[중요] 이미 있는 저장소의 설정에 이 서버의 배포 키가 등록됩니다. 이 도구는 저장소를 만들거나 지우거나 다른 설정을 바꾸지 않습니다. 연결한 저장소는 이 도구로 지울 수 없고, 등록한 키는 삭제 화면의 "배포 키만 떼기"로 뗄 수 있습니다';
 
 // W3f: marks of the server's fixed deletion lines (internal/orch/api deletePreview; TestConstantsAgreeWithWeb pins them).
 export const PREVIEW_DEL_LEGACY_MARK = '처음부터 있던(legacy) 프로젝트입니다';
@@ -453,7 +453,7 @@ export const ERROR_TEXT = {
   deploy_key_mismatch: '서명한 배포 키와 지금 서버의 배포 키가 다릅니다. 처음부터 다시 시작해 새로 서명하세요. 변경은 적용되지 않았습니다.',
   deploy_key_unavailable: '서버의 배포 키 공개 키 파일(.pub)을 읽을 수 없습니다. 관리자가 확인해야 합니다. 변경은 적용되지 않았습니다.',
   policy_class_missing: '서버 정책에 registered 클래스가 없어 새 프로젝트를 만들 수 없습니다. 관리자가 정책에 한 번 추가해야 합니다. 변경은 적용되지 않았습니다.',
-  create_partial: '제공자(GitLab/GitHub)에 일부만 만들어졌습니다. 이 도구는 삭제하지 않습니다. 제공자 사이트에서 직접 정리한 뒤 다시 만드세요.',
+  create_partial: '제공자(GitLab/GitHub)에 일부만 만들어졌습니다. 일부만 만들어진 것은 등록되지 않아 삭제 화면으로 지울 수 없고 이 도구는 삭제하지 않습니다. 제공자 사이트에서 직접 정리한 뒤 다시 만드세요.',
   outcome_unknown: '변경이 적용되었는지 알 수 없습니다. 자동으로 다시 시도하지 않았습니다. 목록을 다시 읽어 확인하고, 프로젝트라면 제공자 사이트(GitLab/GitHub)와 알림도 확인한 뒤 필요하면 다시 변경하세요.',
   not_clonable: '이 프로젝트는 제공자 연결이 없어 복제할 주소를 만들 수 없습니다.',
   host_not_pinned: '이 제공자 서버의 호스트 키가 서버에 고정되어 있지 않아(known_hosts) 복제하지 않았습니다. 관리자가 확인해야 합니다.',
@@ -493,7 +493,7 @@ export const ERROR_TEXT = {
   not_created_by_tool: '이 도구가 만들지 않고 연결만 한 저장소라 원격 저장소는 지울 수 없습니다. 연결한 저장소에서는 이 서버의 배포 키만 뗄 수 있습니다. 변경은 적용되지 않았습니다.',
   remote_changed: '등록된 원격 저장소 정보와 요청이 다르거나, 제공자의 저장소가 바뀌었거나, 이미 원격이 없습니다. 목록을 다시 읽어 확인하세요. 변경은 적용되지 않았습니다.',
   confirm_mismatch: '입력한 저장소 이름이 등록된 저장소 이름과 글자 그대로(대소문자 포함) 같지 않습니다. 변경은 적용되지 않았습니다.',
-  delete_partial: '원격 저장소 삭제가 일부만 처리되었거나 결과를 알 수 없습니다. 저장소가 지워졌을 수도, 아닐 수도 있습니다. 자동으로 다시 시도하지 않았고 서버의 복제본도 지우지 않았습니다. GitHub·GitLab 화면에서 확인한 뒤, 서버의 항목은 "복제본과 등록 지우기"로 정리하세요.',
+  delete_partial: '원격 저장소 삭제가 일부만 처리되었거나 결과를 알 수 없습니다. 저장소가 지워졌을 수도, 아닐 수도 있습니다. 자동으로 다시 시도하지 않았고 서버의 복제본도 지우지 않았습니다. GitHub·GitLab 화면에서 확인하세요: 저장소가 아직 있으면 "원격 저장소 지우기"를 새로 서명해 다시 하고(서버가 저장소 번호와 이름을 다시 확인합니다), 이미 없으면 "복제본과 등록 지우기"로 서버의 항목을 정리하세요.',
   key_not_found: '제공자의 저장소에서 이 서버의 배포 키(제목이 orchd로 시작하고 공개 키가 같은 것)를 찾지 못했습니다. 이미 제거되었을 수 있습니다. 변경은 적용되지 않았습니다.',
   remove_refused: '제공자가 삭제 요청을 받아들이지 않았거나 대상이 하나로 정해지지 않아 아무것도 지우지 않았습니다. 토큰 권한과 제공자 화면을 확인하세요.',
   link_partial: '이미 있던 저장소에 이 서버의 배포 키가 붙었을 수 있습니다. 저장소는 지우지 마세요. 제공자 사이트에서 이 서버의 배포 키(제목이 orchd로 시작)만 직접 제거한 뒤 다시 시도하세요.',
@@ -508,7 +508,7 @@ export const GITHUB_TEXT = {
   provider_unreachable: 'GitHub에 연결하지 못했거나 응답이 없었습니다. 잠시 후 다시 시도하세요. 서버의 방화벽이 GitHub을 허용하는지도 확인하세요. 저장소를 만드는 중이었다면 목록의 알림도 확인하세요.',
   group_unknown: 'GitHub에 그런 소유자(계정 또는 조직)가 없습니다. 소유자 목록을 다시 읽어 고르세요. 변경은 적용되지 않았습니다.',
   project_name_taken: '같은 이름의 저장소가 이미 등록되어 있거나 GitHub에 있습니다. 기존 저장소는 이 화면에서 가져오지 않습니다("기존 저장소 연결"을 쓰세요). 변경은 적용되지 않았습니다.',
-  create_partial: 'GitHub에 일부만 만들어졌습니다. 이 도구는 삭제하지 않습니다. GitHub에서 직접 정리한 뒤 다시 만드세요.',
+  create_partial: 'GitHub에 일부만 만들어졌습니다. 일부만 만들어진 저장소는 등록되지 않아 삭제 화면으로 지울 수 없고 이 도구는 삭제하지 않습니다. GitHub에서 직접 정리한 뒤 다시 만드세요.',
   host_not_pinned: 'github.com 서버의 호스트 키가 서버에 고정되어 있지 않아(known_hosts) 복제하지 않았습니다. 관리자가 GitHub의 공식 지문과 비교해 넣어야 합니다.',
   clone_failed: '복제에 실패했습니다. 만들다 만 폴더는 지웠습니다. 저장소 전용 배포 키와 GitHub 연결(방화벽 포함)을 확인한 뒤 다시 복제하세요.',
 };
@@ -663,14 +663,14 @@ export function partialInfo(err, sent) {
 // orphanNotice: what to do with a half-made or half-linked repository, by where it came from.
 // `created`: this tool made it, the person removes it. `linked`: it was there before; only the
 // deploy key of this server may sit in it, and only that is removed.
-export const ORPHAN_UNKNOWN_NOTICE = '출처 불명: 지우기 전에 확인하세요 — 이 도구는 아무것도 지우지 않습니다';
+export const ORPHAN_UNKNOWN_NOTICE = '출처 불명: 지우기 전에 확인하세요 — 이 도구는 제공자에서 아무것도 지우지 않습니다';
 export function orphanNotice(origin, kind) {
   const host = hostName(kind);
   if (origin !== 'linked' && origin !== 'created') return ORPHAN_UNKNOWN_NOTICE;
   if (origin === 'linked') {
-    return '원래 있던 저장소입니다. 지우지 마세요. 배포 키만 직접 제거하세요: ' + host + ' 저장소 설정의 배포 키(Deploy keys)에서 제목이 orchd로 시작하는 이 서버의 키를 지우면 됩니다. 이 도구는 아무것도 지우지 않습니다.';
+    return '원래 있던 저장소입니다. 지우지 마세요. 배포 키만 직접 제거하세요: ' + host + ' 저장소 설정의 배포 키(Deploy keys)에서 제목이 orchd로 시작하는 이 서버의 키를 지우면 됩니다. 이 도구는 이 저장소를 지우지 않습니다.';
   }
-  return '이 도구가 만든 것: ' + host + '에서 직접 지우세요. 이 도구는 삭제하지 않습니다. 같은 이름으로 다시 만들려면 먼저 ' + host + '에서 그 ' + (kind === 'github' ? '저장소' : '프로젝트') + '를 정리해야 합니다.';
+  return '이 도구가 만든 것: ' + host + '에서 직접 지우세요. 이 기록의 저장소는 등록되지 않아 이 도구가 삭제하지 않습니다(삭제 화면은 등록이 끝난 프로젝트만 지웁니다). 같은 이름으로 다시 만들려면 먼저 ' + host + '에서 그 ' + (kind === 'github' ? '저장소' : '프로젝트') + '를 정리해야 합니다.';
 }
 export const ORPHAN_NOTICE = orphanNotice('created', 'gitlab');
 
@@ -721,7 +721,7 @@ const KEY_ACTIONS = [ACTION_CREATE_PROJECT, ACTION_LINK_PROJECT, ACTION_ATTACH_R
 // screen says. `full` are the exact fields to send with the apply (for a new
 // project they carry the deploy key hash the BROWSER computed), `key` the
 // deploy key as verified. `sent` is {action, subject, fields}: the page's own values.
-async function analyze(sent, resp) {
+async function analyze(sent, resp, expect) {
   const problems = [];
   if (!isObj(resp)) return { problems: ['shape'] };
   let full = sent.fields;
@@ -792,6 +792,12 @@ async function analyze(sent, resp) {
       const priv = count(PREVIEW_VIS_PRIVATE);
       const want = !has(full, 'visibility') ? [0, 0] : full.visibility === 'public' ? [1, 0] : [0, 1];
       if (pub !== want[0] || priv !== want[1]) problems.push('preview_visibility');
+    }
+    // W3f: a deletion proposal's preview is EXACTLY the lines this page rebuilt from its own values
+    // (expect(resp) -> the lines, or null when the answer lacks what the lines need): nothing added, dropped or reordered.
+    if (typeof expect === 'function') {
+      const want = expect(resp);
+      if (!Array.isArray(want) || want.length !== pv.length || want.some((x, i) => x !== pv[i])) problems.push('preview_exact');
     }
     // W3f: the fixed lines that say what a deletion does, exactly once or never (never the server's word for it)
     if (sent.action === ACTION_REMOVE_PROJECT) {
@@ -888,7 +894,7 @@ export function makeFlow(ctx, cfg) {
 
   // propose: false when a proposal is already out (a double click); the view
   // shows f.note (a fixed text) when the phase is back to idle.
-  f.propose = async (sent) => {
+  f.propose = async (sent, expect) => {
     if (f.busy) return;
     f.busy = true;
     f.note = null;
@@ -904,12 +910,13 @@ export function makeFlow(ctx, cfg) {
       f.phase = 'idle';
       const code = err && typeof err.code === 'string' ? err.code : '';
       const kind = cfg.kindOf ? cfg.kindOf(sent) : undefined;
-      f.note = { error: true, text: err && err.status === 0 ? TEXT.connect : has(ERROR_TEXT, code) ? failureText(err, kind) : TEXT.proposeFailed };
+      const custom = cfg.failText ? cfg.failText(err, sent) : null;
+      f.note = { error: true, text: custom || (err && err.status === 0 ? TEXT.connect : has(ERROR_TEXT, code) ? failureText(err, kind) : TEXT.proposeFailed) };
       changed();
       return;
     }
     if (gone() || my !== propSeq) return;
-    const a = await analyze(sent, resp);
+    const a = await analyze(sent, resp, expect);
     if (gone() || my !== propSeq) return;
     f.problems = a.problems;
     f.full = a.full || null;

@@ -47,7 +47,7 @@ var (
 	errGHBadURL         = apiErr(http.StatusBadRequest, "bad_url", "GitHub API 주소가 허용되지 않습니다. 주소 모양과 접속 대상을 확인하세요. 변경 없음")
 	errGHOwnerUnknown   = apiErr(http.StatusNotFound, "group_unknown", "GitHub에 그런 소유자(내 계정 또는 내가 속한 조직)가 없습니다. 변경 없음")
 	errGHNameTaken      = apiErr(http.StatusConflict, "project_name_taken", "같은 이름의 프로젝트가 이미 등록되어 있거나 GitHub에 같은 이름의 저장소가 있습니다. 기존 저장소는 가져오지 않습니다(연결 기능을 쓰세요). 변경 없음")
-	errGHCreatePartial  = apiErr(http.StatusBadGateway, "create_partial", "GitHub에 일부만 만들어졌습니다. 이 도구는 삭제하지 않으니 GitHub에서 직접 정리한 뒤 다시 만드세요")
+	errGHCreatePartial  = apiErr(http.StatusBadGateway, "create_partial", "GitHub에 일부만 만들어졌습니다. 일부만 만들어진 저장소는 등록되지 않아 삭제 화면으로 지울 수 없고 이 도구는 삭제하지 않으니 GitHub에서 직접 정리한 뒤 다시 만드세요")
 	errGHCreateUnknown  = apiErr(http.StatusGatewayTimeout, "outcome_unknown", "저장소가 만들어졌는지 알 수 없습니다. 자동으로 다시 시도하지 않았습니다. GitHub와 프로젝트 목록(알림 포함)을 확인한 뒤 필요하면 다시 만드세요")
 	errGHProvUnknownRes = apiErr(http.StatusGatewayTimeout, "outcome_unknown", "변경이 적용되었는지 알 수 없습니다. 자동으로 다시 시도하지 않았습니다. 제공자 목록을 다시 읽어 확인한 뒤 필요하면 다시 변경하세요")
 
@@ -447,7 +447,7 @@ func remotePreview(c registryChange, kind, fp string) []string {
 	if kind == "github" {
 		keyLine = "저장소 전용 배포 키 지문(SHA-256): " + fp + " (이 저장소 하나를 위해 지금 새로 만든 키입니다)"
 	}
-	keyWarn := "[중요] 이미 있는 저장소의 설정에 이 서버의 배포 키가 등록됩니다. 이 도구는 저장소를 만들거나 지우거나 다른 설정을 바꾸지 않으며, 등록한 키도 지우지 않습니다"
+	keyWarn := "[중요] 이미 있는 저장소의 설정에 이 서버의 배포 키가 등록됩니다. 이 도구는 저장소를 만들거나 지우거나 다른 설정을 바꾸지 않습니다. 연결한 저장소는 이 도구로 지울 수 없고, 등록한 키는 삭제 화면의 \"배포 키만 떼기\"로 뗄 수 있습니다"
 	if c.Action == registrymsg.ActionAttachRemote {
 		out := []string{
 			"등록된 프로젝트 '" + c.Subject + "'에 제공자 '" + str("provider") + "'의 저장소 '" + str("remote_path") + "'를 연결합니다",

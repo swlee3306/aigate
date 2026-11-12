@@ -95,7 +95,7 @@ const AI_OFF = '이 프로젝트의 파일 내용은 AI 서비스로 전송되�
 const VIS_PUBLIC = '[중요] 공개 저장소로 만듭니다: 인터넷의 누구나 이 저장소의 코드를 읽을 수 있습니다';
 const VIS_PRIVATE = '비공개 저장소로 만듭니다: 초대받은 사람만 볼 수 있습니다';
 const ATTACH_PUSH_WARN = P.PREVIEW_ATTACH_PUSH_WARN;
-const KEY_WARN = '[중요] 이미 있는 저장소의 설정에 이 서버의 배포 키가 등록됩니다. 이 도구는 저장소를 만들거나 지우거나 다른 설정을 바꾸지 않으며, 등록한 키도 지우지 않습니다';
+const KEY_WARN = '[중요] 이미 있는 저장소의 설정에 이 서버의 배포 키가 등록됩니다. 이 도구는 저장소를 만들거나 지우거나 다른 설정을 바꾸지 않습니다. 연결한 저장소는 이 도구로 지울 수 없고, 등록한 키는 삭제 화면의 "배포 키만 떼기"로 뗄 수 있습니다';
 const kindOfProvider = (id) => (id === 'gh' ? 'github' : 'gitlab');
 function previewFor(action, subject, f, fingerprint) {
   const str = (k) => f[k];
@@ -129,12 +129,12 @@ function previewFor(action, subject, f, fingerprint) {
     return ["GitHub 제공자 '" + f.provider + "'의 소유자 '" + str('group_path') + "'에 새 저장소 '" + subject + "'를 만듭니다", f.visibility === 'public' ? VIS_PUBLIC : VIS_PRIVATE,
       '템플릿: ' + f.template + ' (코드에 고정된 파일들이 첫 커밋으로 들어갑니다)', '설명: ' + desc, f.ai_context ? AI_ON : AI_OFF, '게시 권한 — ' + pub, keyLine,
       '등록 후 정책 종류(kind)는 registered 입니다',
-      '브랜치 보호는 공개 저장소이거나 유료 요금제일 때만 켜집니다(안 되면 일부만 만들어진 것으로 알려 줍니다). 만든 뒤 이 도구는 저장소를 삭제하지 않습니다',
+      '브랜치 보호는 공개 저장소이거나 유료 요금제일 때만 켜집니다(안 되면 일부만 만들어진 것으로 알려 줍니다). 만든 뒤 이 도구로 이 저장소를 지울 수 있지만(삭제 화면에서 서명, 되돌릴 수 없습니다) 연결한 저장소와 달리 만든 저장소만 대상입니다',
       '만든 뒤 이 서버에 자동으로 한 번 복제합니다', STAMP];
   }
   return ["GitLab 제공자 '" + f.provider + "'의 그룹 '" + f.group_path + "'에 새 프로젝트 '" + subject + "'를 만듭니다",
     '템플릿: ' + f.template + ' (코드에 고정된 파일들이 첫 커밋으로 들어갑니다)', '설명: ' + desc, f.ai_context ? AI_ON : AI_OFF, '게시 권한 — ' + pub, keyLine,
-    '등록 후 정책 종류(kind)는 registered 입니다', 'GitLab 프로젝트는 비공개로 만들어지고, 만든 뒤 이 도구는 삭제하지 않습니다', '만든 뒤 이 서버에 자동으로 한 번 복제합니다', STAMP];
+    '등록 후 정책 종류(kind)는 registered 입니다', 'GitLab 프로젝트는 비공개로 만들어지고, 만든 뒤 삭제 화면에서 서명하면 이 도구가 지울 수 있습니다(되돌릴 수 없습니다)', '만든 뒤 이 서버에 자동으로 한 번 복제합니다', STAMP];
 }
 const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 
@@ -1227,7 +1227,7 @@ test('TestOrphanOriginSafeDefaultsW3e', async () => {
   const li = (n) => findAll(byData(ctx.root, 'orphans', 'list')[0], (e) => e.tagName === 'LI' && text(e).includes(n))[0];
   for (const n of ['octo/no-origin', 'octo/odd-origin']) {
     assert.ok(li(n), n + ' is kept');
-    assert.ok(text(li(n)).includes('출처 불명: 지우기 전에 확인하세요 — 이 도구는 아무것도 지우지 않습니다'), n);
+    assert.ok(text(li(n)).includes('출처 불명: 지우기 전에 확인하세요 — 이 도구는 제공자에서 아무것도 지우지 않습니다'), n);
     assert.ok(!/직접 지우세요/.test(text(li(n))), n);
   }
   assert.match(text(li('octo/made-here')), /GitHub에서 직접 지우세요/);
@@ -1527,4 +1527,18 @@ test('TestRemoteNameMismatchCodeGone', () => {
   assert.equal(has(P.GITHUB_TEXT, 'remote_name_mismatch'), false);
   for (const f of ['views/projects.js', 'views/providers.js']) assert.ok(!src(f).includes('remote_name_mismatch'), f);
   assert.ok(!/같아야 합니다/.test(src('views/projects.js')), 'no sentence that demands equal names');
+});
+
+test('TestNameDiffersNoteIsCaseInsensitiveBehaviourW3f', async () => {
+  // a GitHub repository whose name differs from the project name only by case gets no "names differ" note;
+  // a real difference (the suggestion for Repo.js is repo-js) does
+  const ctx = await mountProjects();
+  await toLinkConfirm(ctx, { provider: 'gh', remote: 'octo/Hello-World', publish: 'read', ai: false });
+  await waitSignable(ctx);
+  assert.equal(byId(ctx.root, 'lk-name'), undefined, 'on the confirmation screen');
+  assert.equal(byData(ctx.root, 'note', 'name-differs').length, 0, 'Hello-World vs hello-world is the same name');
+  const c2 = await mountProjects();
+  await toLinkConfirm(c2, { provider: 'gh', remote: 'octo/Repo.js', publish: 'read', ai: false });
+  await waitSignable(c2);
+  assert.equal(byData(c2.root, 'note', 'name-differs').length, 1, 'Repo.js vs repo-js differs');
 });

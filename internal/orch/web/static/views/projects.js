@@ -970,7 +970,7 @@ export function projectsView(ctx) {
           el('span', { class: 'mono' }, o.project),
           ' (프로젝트 ID ' + (o.project_id === null ? '알 수 없음' : String(o.project_id)) + ', 멈춘 단계: ' + stepLabel(o.step, kind) + ', ' + o.at + ')',
           el('div', { class: 'note' }, orphanNotice(origin, kind)),
-          el('button', { type: 'button', class: 'btn', 'data-focus-key': 'orphan-' + o.provider + '-' + o.project.replace(/[^A-Za-z0-9_-]/g, '-'), 'data-action': 'clear-orphan', disabled: st.busy || flow.busy || del.busy, on: { click: () => del.startOrphan(o, kind) } }, ['기록 지우기', el('span', { class: 'sr' }, ' (' + inline(o.project, 120) + ')')]),
+          el('button', { type: 'button', class: 'btn', 'data-focus-key': 'orphan-' + o.provider + '-' + o.project.replace(/[^A-Za-z0-9_-]/g, '-'), 'data-action': 'clear-orphan', disabled: st.busy || flow.busy || cp.cloneBusy || del.busy, on: { click: () => del.startOrphan(o, kind) } }, ['기록 지우기', el('span', { class: 'sr' }, ' (' + inline(o.project, 120) + ')')]),
         ]);
       })),
     ]);
@@ -1514,10 +1514,10 @@ export function projectsView(ctx) {
   function deleteButton(p) {
     const off = st.busy || flow.busy || cp.cloneBusy || del.busy;
     return [' ', el('button', {
-      type: 'button', class: 'btn', 'data-focus-key': 'delete-' + p.id, 'data-action': 'delete', disabled: off, 'aria-describedby': off ? 'del-busy-hint' : null,
+      type: 'button', class: 'btn', 'data-focus-key': 'delete-' + p.id, 'data-action': 'delete', disabled: off, 'aria-describedby': off ? 'del-busy-hint-' + p.id : null,
       on: { click: () => { if (!(st.busy || flow.busy || cp.cloneBusy || del.busy)) del.start(p); } },
     }, [DEL_TEXT.menu, el('span', { class: 'sr' }, ' (' + inline(p.id, 64) + ')')]),
-    off ? el('span', { class: ['hint', 'sr'], id: 'del-busy-hint' }, DEL_TEXT.menuBusy) : null];
+    off ? el('span', { class: ['hint', 'sr'], id: 'del-busy-hint-' + p.id }, DEL_TEXT.menuBusy) : null];
   }
 
   function renderForm() {

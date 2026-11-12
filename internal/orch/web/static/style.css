@@ -268,3 +268,8 @@ pre.block-pre { font-family: var(--mono); font-size: 13px; background: var(--bg)
 .form select { max-width: 100%; }
 li[data-preview] { overflow-wrap: anywhere; min-width: 0; }
 .field, .field .mono, .field .hint, .field [data-field] { overflow-wrap: anywhere; min-width: 0; }
+
+/* W3f F4: deletion screens (one block, appended; keep it together when merging console-polish) */
+[data-targets] li, [data-kept] li, [data-counts] li, [data-choice] p, [data-choice] .mono, [data-choice-note], .pfacts .mono, .trunc strong, .trunc .mono, .steps li b { overflow-wrap: anywhere; min-width: 0; }
+.field .row input[type="checkbox"] { width: 20px; height: 20px; flex: none; accent-color: var(--accent); }
+.field .row label[for="del-ack"], .field .row label[for="del-also"] { min-height: 44px; display: inline-flex; align-items: center; }

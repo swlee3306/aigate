@@ -103,7 +103,7 @@ var fixedMessages = map[string]string{
 	"group_unknown":        "제공자에 그런 그룹(소유자)이 없습니다.",
 	"group_exists":         "같은 경로의 그룹이 이미 있습니다.",
 	"project_name_taken":   "같은 이름의 프로젝트가 이미 등록되어 있거나 제공자에 있습니다. 기존 프로젝트는 가져오지 않습니다.",
-	"create_partial":       "제공자에 일부만 만들어졌습니다. 이 도구는 삭제하지 않으니 제공자(GitLab 또는 GitHub)에서 직접 정리한 뒤 다시 만드세요.",
+	"create_partial":       "제공자에 일부만 만들어졌습니다. 일부만 만들어진 것은 등록되지 않아 삭제 화면으로 지울 수 없고 이 도구는 삭제하지 않으니 제공자(GitLab 또는 GitHub)에서 직접 정리한 뒤 다시 만드세요.",
 	"deploy_key_mismatch":  "서명한 배포 키와 보낸 배포 키가 다릅니다.",
 	"template_unknown":     "알 수 없는 템플릿입니다.",
 

@@ -11,10 +11,12 @@ const DEFAULT_RETRY_WAIT_S = 2;
 // not be sent anywhere else.
 const PATH_RE = /^\/api\/v1\/[A-Za-z0-9._~\/?=&%-]*$/;
 
+// The one GET that may carry the CSRF header (opts.csrf, see once()): the removal preview of a project.
+const PREVIEW_PATH_RE = /^\/api\/v1\/projects\/[a-z][a-z0-9-]{0,39}\/removal-preview$/;
+
 // Request headers a caller may add through opts.headers: ONLY the idempotency
 // key of a POST (a fixed shape). Everything else, the CSRF header included, is
 // api.js's own business and is refused here, not silently dropped.
-const PREVIEW_PATH_RE = /^\/api\/v1\/projects\/[a-z][a-z0-9-]{0,39}\/removal-preview$/;
 const IDEMPOTENCY_HEADER = 'Idempotency-Key';
 const IDEMPOTENCY_RE = /^[A-Za-z0-9]{16,64}$/;
 

@@ -597,7 +597,7 @@ func TestDevServer(t *testing.T) {
 		if v, _ := fields["ai_context"].(bool); v {
 			aiLine = "[중요] 이 프로젝트의 파일 내용이 외부 AI 서비스(OpenAI)로 전송될 수 있게 허용합니다. AI 계획 기능을 쓰면 요구사항과 저장소의 일부 파일 내용이 서비스 밖으로 나갑니다"
 		}
-		keyWarn := "[중요] 이미 있는 저장소의 설정에 이 서버의 배포 키가 등록됩니다. 이 도구는 저장소를 만들거나 지우거나 다른 설정을 바꾸지 않으며, 등록한 키도 지우지 않습니다"
+		keyWarn := "[중요] 이미 있는 저장소의 설정에 이 서버의 배포 키가 등록됩니다. 이 도구는 저장소를 만들거나 지우거나 다른 설정을 바꾸지 않습니다. 연결한 저장소는 이 도구로 지울 수 없고, 등록한 키는 삭제 화면의 \"배포 키만 떼기\"로 뗄 수 있습니다"
 		keyLine := "저장소 전용 배포 키 지문(SHA-256): " + repoFP + " (이 저장소 하나를 위해 지금 새로 만든 키입니다)"
 		switch {
 		case in.Action == "set_provider" && str(fields, "kind") == "github":
@@ -628,7 +628,7 @@ func TestDevServer(t *testing.T) {
 			}
 			pv = []string{"GitHub 제공자 '" + str(fields, "provider") + "'의 소유자 '" + str(fields, "group_path") + "'에 새 저장소 '" + in.Subject + "'를 만듭니다", visLine,
 				"템플릿: " + str(fields, "template") + " (코드에 고정된 파일들이 첫 커밋으로 들어갑니다)", "설명: " + desc, aiLine, "게시 권한 — " + pubLine, keyLine, "등록 후 정책 종류(kind)는 registered 입니다",
-				"브랜치 보호는 공개 저장소이거나 유료 요금제일 때만 켜집니다(안 되면 일부만 만들어진 것으로 알려 줍니다). 만든 뒤 이 도구는 저장소를 삭제하지 않습니다",
+				"브랜치 보호는 공개 저장소이거나 유료 요금제일 때만 켜집니다(안 되면 일부만 만들어진 것으로 알려 줍니다). 만든 뒤 이 도구로 이 저장소를 지울 수 있지만(삭제 화면에서 서명, 되돌릴 수 없습니다) 연결한 저장소와 달리 만든 저장소만 대상입니다",
 				"만든 뒤 이 서버에 자동으로 한 번 복제합니다", stamp}
 		case in.Action == "set_provider":
 			pv = []string{"제공자 '" + in.Subject + "'를 저장합니다(종류: gitlab). 같은 id가 있으면 이 값으로 바뀝니다", "GitLab 주소: " + str(fields, "base_url"), "ssh 주소: " + str(fields, "ssh_url"),
@@ -659,7 +659,7 @@ func TestDevServer(t *testing.T) {
 			pv = []string{"GitLab 제공자 '" + str(fields, "provider") + "'의 그룹 '" + str(fields, "group_path") + "'에 새 프로젝트 '" + in.Subject + "'를 만듭니다",
 				"템플릿: " + str(fields, "template") + " (코드에 고정된 파일들이 첫 커밋으로 들어갑니다)", "설명: " + desc, ai, "게시 권한 — " + pub,
 				"배포 키 지문(SHA-256): " + devFP + " (이 서버의 배포 키 공개 키 파일 기준)", "등록 후 정책 종류(kind)는 registered 입니다",
-				"GitLab 프로젝트는 비공개로 만들어지고, 만든 뒤 이 도구는 삭제하지 않습니다", "만든 뒤 이 서버에 자동으로 한 번 복제합니다", stamp}
+				"GitLab 프로젝트는 비공개로 만들어지고, 만든 뒤 삭제 화면에서 서명하면 이 도구가 지울 수 있습니다(되돌릴 수 없습니다)", "만든 뒤 이 서버에 자동으로 한 번 복제합니다", stamp}
 		}
 		out := map[string]any{"action": in.Action, "subject": in.Subject, "fields": fields, "message": msg.Text(), "change": change,
 			"request": msg.Request, "issued": issued.Format("2006-01-02T15:04:05Z"), "preview": pv}
@@ -960,6 +960,9 @@ func TestDevServer(t *testing.T) {
 			if ack, _ := in.Fields["legacy_ack"].(bool); ack {
 				pv = append(pv, "[중요] 처음부터 있던(legacy) 프로젝트입니다. 지우면 이 저장소로는 더 작업을 낼 수 없습니다(두 번째 확인을 했습니다)")
 			}
+			if in.Subject == "toy" { // the preview of toy says static_remote
+				pv = append(pv, "이 프로젝트에는 서버 설정(--git-remote-for)에 정해진 원격이 있습니다. 그 설정은 바뀌지 않으니 관리자가 따로 정리해야 합니다")
+			}
 		case "delete_remote_repo":
 			pv = []string{"[중요] 원격 저장소 '" + str(in.Fields, "remote_path") + "'를 제공자에서 삭제합니다. 되돌릴 수 없습니다(제공자 설정에 따라 복구 가능 기간이 있을 수 있으나 이 도구는 복구하지 않습니다)",
 				"이 도구가 만든 저장소만 지울 수 있으며, 저장소 이름 '" + str(in.Fields, "confirm_name") + "'을 직접 입력해 확인했습니다",
@@ -982,6 +985,9 @@ func TestDevServer(t *testing.T) {
 		time.Sleep(400 * time.Millisecond)
 		out := map[string]any{"action": in.Action, "subject": in.Subject, "fields": in.Fields, "message": msg.Text(), "change": change,
 			"request": msg.Request, "issued": issued.Format("2006-01-02T15:04:05Z"), "preview": pv}
+		if in.Action == "remove_deploy_key" {
+			out["deploy_key_fingerprint"] = repoFP
+		}
 		b, _ := stdjson.Marshal(out)
 		serve(w, b)
 	}
