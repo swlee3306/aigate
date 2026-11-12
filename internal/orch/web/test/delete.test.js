@@ -1191,3 +1191,85 @@ function PRcancel(ctx) {
   // the flow screen has no cancel button while proposing: leaving the page is the cancel
   ctx.leave();
 }
+
+// ---- F5 adversarial ----------------------------------------------------------------------------
+
+// A hostile or buggy server answers with a proposal that is INTERNALLY CONSISTENT (its change hash
+// and message belong to the values it echoes) but for a different change than the one the person
+// asked for: another remote id or confirm name, also_local flipped, legacy_ack downgraded, another
+// subject, another key path, another orphan. The browser compares what the server echoes with its
+// own values, so none of these can be signed: no sign button, no passkey prompt, no apply.
+test('TestAdversarialSelfConsistentForgedProposalIsNeverSignableW3f', async () => {
+  const forge = (alter) => async (b) => {
+    const a = alter(b);
+    return proposeFor({ action: b.action, subject: a.subject ?? b.subject, fields: a.fields ?? b.fields });
+  };
+  const cases = [
+    ['remote: another remote id', 'POST /api/v1/projects/delete-remote/propose', 'mine', 'remote', (b) => ({ fields: { ...b.fields, remote_id: '999' } })],
+    ['remote: another confirm name', 'POST /api/v1/projects/delete-remote/propose', 'mine', 'remote', (b) => ({ fields: { ...b.fields, confirm_name: 'Other' } })],
+    ['remote: another repository path', 'POST /api/v1/projects/delete-remote/propose', 'mine', 'remote', (b) => ({ fields: { ...b.fields, remote_path: 'octo/Other' } })],
+    ['remote: also_local flipped on', 'POST /api/v1/projects/delete-remote/propose', 'mine', 'remote', (b) => ({ fields: { ...b.fields, also_local: !b.fields.also_local } })],
+    ['remote: another subject', 'POST /api/v1/projects/delete-remote/propose', 'mine', 'remote', () => ({ subject: 'lab', fields: { remote_path: 'team/lab', remote_id: '21', confirm_name: 'lab', also_local: false } })],
+    ['local: legacy_ack forced on', 'POST /api/v1/projects/remove/propose', 'plain', 'local', (b) => ({ fields: { ...b.fields, legacy_ack: true } })],
+    ['local: another subject', 'POST /api/v1/projects/remove/propose', 'plain', 'local', (b) => ({ subject: 'mine', fields: b.fields })],
+    ['key: another repository path', 'POST /api/v1/projects/remove-key/propose', 'mine', 'key', () => ({ fields: { remote_path: 'octo/Other' } })],
+    ['key: another subject', 'POST /api/v1/projects/remove-key/propose', 'mine', 'key', (b) => ({ subject: 'lab', fields: { remote_path: 'team/lab' } })],
+  ];
+  for (const [name, route, id, key, alter] of cases) {
+    const ctx = await mountProjects({ [route]: forge(alter) });
+    await toConfirm(ctx, id, key, key === 'remote' ? async () => { typeInto(typed(ctx), 'Hello-World'); await until(() => !proposeBtn(ctx).hasAttribute('disabled'), 'enabled'); } : undefined);
+    assert.equal(byData(ctx.root, 'warn', 'mismatch').length, 1, name + ': the fixed warning');
+    assert.equal(signBtn(ctx), undefined, name + ': no sign button');
+    assert.equal(auth.gets.length, 0, name + ': the passkey was never asked');
+    assert.equal(posts(ctx, route.replace('POST ', '').replace('/propose', '/apply')).length, 0, name + ': nothing applied');
+  }
+  // a legacy project: the server downgrades legacy_ack to false after the second confirmation
+  const lg = await mountProjects({ '/api/v1/projects/toy/removal-preview': () => pvBody('toy', { unpushed_commits: 2, changed_files: 5 }), 'POST /api/v1/projects/remove/propose': forge((b) => ({ fields: { ...b.fields, legacy_ack: false } })) });
+  await openDelete(lg, 'toy');
+  click(fkey(lg, 'choice-local'));
+  await until(() => byLabel(lg.root, '다음: 두 번째 확인').length === 1, 'legacy preview');
+  byId(lg.root, 'del-ack').checked = true;
+  fire(byId(lg.root, 'del-ack'), 'change');
+  await until(() => !byLabel(lg.root, '다음: 두 번째 확인')[0].hasAttribute('disabled'), 'next');
+  click(byLabel(lg.root, '다음: 두 번째 확인')[0]);
+  await until(() => !!byId(lg.root, 'del-legacy-typed'), 'second screen');
+  typeInto(byId(lg.root, 'del-legacy-typed'), 'toy');
+  await until(() => !proposeBtn(lg).hasAttribute('disabled'), 'on');
+  click(proposeBtn(lg));
+  await until(() => byData(lg.root, 'warn', 'mismatch').length === 1, 'legacy downgrade refused');
+  assert.equal(signBtn(lg), undefined);
+  assert.equal(auth.gets.length, 0);
+  // a forged orphan proposal for another record
+  const co = await mountProjects({ 'POST /api/v1/orphans/clear/propose': forge((b) => ({ fields: { project: 'octo/Another-Record' } })) });
+  click(byLabel(co.root, '기록 지우기')[0]);
+  await until(() => byData(co.root, 'orphan-origin').length === 1, 'orphan screen');
+  click(proposeBtn(co));
+  await until(() => byData(co.root, 'warn', 'mismatch').length === 1, 'orphan forged');
+  assert.equal(signBtn(co), undefined);
+  assert.equal(auth.gets.length, 0);
+});
+
+// Each unknown count alone is enough to demand the "delete anyway" acknowledgement: an unknown
+// number is never read as zero (the mutation run found the changed-count half unguarded).
+test('TestEachUnknownCountAloneForcesTheAcknowledgementW3f', async () => {
+  for (const [what, over] of [['changed count', { changed_known: false }], ['unpushed count', { unpushed_known: false }]]) {
+    const ctx = await mountProjects({ '/api/v1/projects/plain/removal-preview': () => pvBody('plain', over) });
+    await openDelete(ctx, 'plain');
+    await pick(ctx, 'local');
+    assert.ok(byId(ctx.root, 'del-ack'), what + ': the acknowledgement is offered');
+    assert.equal(proposeBtn(ctx).hasAttribute('disabled'), true, what + ': propose is off until it is ticked');
+    click(proposeBtn(ctx));
+    await sleep(5);
+    assert.equal(posts(ctx, '/api/v1/projects/remove/propose').length, 0, what + ': nothing proposed without it');
+    assert.ok(text(ctx.root).includes('알 수 없음'), what + ': shown as unknown, not as a number');
+    byId(ctx.root, 'del-ack').checked = true;
+    fire(byId(ctx.root, 'del-ack'), 'change');
+    await until(() => !proposeBtn(ctx).hasAttribute('disabled'), what + ': enabled after the tick');
+  }
+  // control: both known and zero asks for nothing
+  const ok = await mountProjects();
+  await openDelete(ok, 'plain');
+  await pick(ok, 'local');
+  assert.equal(byId(ok.root, 'del-ack'), undefined);
+  assert.equal(proposeBtn(ok).hasAttribute('disabled'), false);
+});
