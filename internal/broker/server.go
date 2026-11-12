@@ -236,6 +236,8 @@ type Server struct {
 	sem         chan struct{}
 	mrLock      chan struct{} // serialises create_mr find+create
 
+	delLimitMu sync.Mutex // check-then-consume of the two remote-delete caps
+
 	creatingMu sync.Mutex
 	creating   map[string]bool // project names being created (one create per name at a time)
 }

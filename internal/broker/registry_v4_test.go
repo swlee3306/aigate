@@ -393,12 +393,18 @@ func TestRegistryV4StrictParser(t *testing.T) {
 	file := func(rows ...string) string {
 		return `{"version":4,"providers":[],"projects":[` + strings.Join(rows, ",") + `],` + tail
 	}
+	// origin created now requires a provider (F2 fix round): those rows carry one
+	provJSON := `{"id":"gl","kind":"gitlab","base_url":"http://h","ssh_url":"ssh://git@h","token_ref":"t"}`
+	fileP := func(rows ...string) string {
+		return strings.Replace(file(rows...), `"providers":[]`, `"providers":[`+provJSON+`]`, 1)
+	}
+	withProv := func(r string) string { return strings.Replace(r, `"provider":null`, `"provider":"gl"`, 1) }
 	ok := map[string]string{
-		"created":         file(row("registered", `"created"`, ``)),
+		"created":         fileP(withProv(row("registered", `"created"`, ``))),
 		"linked":          file(row("registered", `"linked"`, ``)),
 		"unknown":         file(row("registered", `"unknown"`, ``)),
 		"legacy":          file(row("legacy", `"legacy"`, ``)),
-		"remote_deleted":  file(row("registered", `"created"`, `,"remote_deleted_at":"2026-11-12T01:02:03Z"`)),
+		"remote_deleted":  fileP(withProv(row("registered", `"created"`, `,"remote_deleted_at":"2026-11-12T01:02:03Z"`))),
 		"no projects":     file(),
 		"empty origin ok": "", // placeholder replaced below
 	}
@@ -484,7 +490,9 @@ func TestRegistryV4StrictParser(t *testing.T) {
 		}
 	}
 	if err := st.Update(func(r *Registry) error {
-		r.Projects = []Project{{ID: "a", Path: "/srv/a", Kind: "k", Origin: OriginCreated, RemoteDeletedAt: &stamp}}
+		prov := "gl"
+		r.Providers = []Provider{{ID: "gl", Kind: "gitlab", BaseURL: "http://h", SSHURL: "ssh://git@h", TokenRef: "t"}}
+		r.Projects = []Project{{ID: "a", Path: "/srv/a", Kind: "k", Origin: OriginCreated, Provider: &prov, RemoteDeletedAt: &stamp}}
 		return nil
 	}); err != nil {
 		t.Fatalf("valid remote_deleted_at refused: %v", err)

@@ -161,7 +161,7 @@ func remoteRegistryCode(reg *Registry, r remoteReq, prov Provider, remote, projP
 		switch {
 		case found == nil:
 			return "project_unknown"
-		case found.Provider != nil:
+		case found.Provider != nil || found.Origin == OriginCreated:
 			return "already_linked"
 		case found.Remote != nil:
 			// A project with a legacy remote mapping (broker.json: create_mr uses it)

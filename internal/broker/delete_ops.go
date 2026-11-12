@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"reflect"
 	"strconv"
 	"strings"
 
@@ -53,7 +52,7 @@ import (
 
 const (
 	maxDeleteRepoPerDay   = 3 // broker-wide, rolling 24 hours (F-D5)
-	maxDeleteRepoPerHour  = 3 // broker-wide; per-actor limits are orchd's (the broker does not know the actor)
+	maxDeleteRepoPerHour  = 2 // broker-wide burst cap below the daily one; per-actor limits are orchd's (the broker does not know the actor)
 	maxLocalDeletePerHour = 10
 )
 
@@ -75,6 +74,24 @@ func findProject(reg *Registry, id string) (Project, bool) {
 
 func remoteLockKey(kind, provider, path string) string {
 	return "remote|" + kind + "|" + provider + "|" + strings.ToLower(path)
+}
+
+// sameRowCore compares the fields a deletion depends on. Other fields (such as
+// ai_context, flipped by set_flag at any time) must not turn a completed delete
+// into a failure.
+func sameRowCore(a, b Project) bool {
+	eqStr := func(x, y *string) bool { return (x == nil) == (y == nil) && (x == nil || *x == *y) }
+	eqRemote := func(x, y *RemoteLink) bool {
+		if (x == nil) != (y == nil) {
+			return false
+		}
+		if x == nil {
+			return true
+		}
+		return x.Path == y.Path && (x.ID == nil) == (y.ID == nil) && (x.ID == nil || *x.ID == *y.ID)
+	}
+	return a.ID == b.ID && a.Path == b.Path && a.Kind == b.Kind && a.Origin == b.Origin &&
+		eqStr(a.Provider, b.Provider) && eqRemote(a.Remote, b.Remote) && eqStr(a.RemoteDeletedAt, b.RemoteDeletedAt)
 }
 
 // ---------- remove_project ----------
@@ -143,7 +160,7 @@ func (s *Server) removeProjectHandler(_ context.Context, raw json.RawMessage) (a
 	}
 	err := s.Registry.Update(func(reg *Registry) error {
 		got, ok := findProject(reg, a.ID)
-		if !ok || !reflect.DeepEqual(got, before) { // exactly the row that was checked
+		if !ok || !sameRowCore(got, before) { // the row that was checked (flags may change meanwhile)
 			return opCodeErr("project_unknown")
 		}
 		kept := make([]Project, 0, len(reg.Projects))
@@ -211,7 +228,9 @@ func deleteRepoCode(reg *Registry, a deleteRemoteRepoArgs) (Project, Provider, s
 	if p.Remote.ID == nil || strconv.FormatInt(*p.Remote.ID, 10) != a.RemoteID {
 		return p, prov, "remote_changed"
 	}
-	if name, ok := registrymsg.RemoteLastSegment(a.RemotePath); !ok || name != a.ConfirmName {
+	// the typed name is compared with the REGISTRY's repository name (what the
+	// user was shown), exact case
+	if name, ok := registrymsg.RemoteLastSegment(p.Remote.Path); !ok || name != a.ConfirmName {
 		return p, prov, "confirm_mismatch"
 	}
 	return p, prov, ""
@@ -251,6 +270,8 @@ func (s *Server) deleteFailure(op, kind string, err error) *OpError {
 // allowDeleteRepo spends one slot of the daily and the hourly cap, or none.
 func (s *Server) allowDeleteRepo() bool {
 	d, h := s.State.DeleteRepoDay, s.State.DeleteRepoHour
+	s.delLimitMu.Lock() // check both, then consume both: never one without the other
+	defer s.delLimitMu.Unlock()
 	if d == nil || h == nil || d.Remaining() < 1 || h.Remaining() < 1 { // fail closed
 		return false
 	}
@@ -356,7 +377,7 @@ func (s *Server) deleteRemoteRepoHandler(ctx context.Context, raw json.RawMessag
 			if p.ID != a.ID {
 				continue
 			}
-			if !reflect.DeepEqual(*p, before) { // exactly the row that was checked
+			if !sameRowCore(*p, before) { // the row that was checked (flags may change meanwhile)
 				return opCodeErr("remote_changed")
 			}
 			p.Remote = nil
@@ -388,7 +409,7 @@ func (s *Server) deleteRemoteRepoHandler(ctx context.Context, raw json.RawMessag
 type removeDeployKeyArgs struct {
 	ID         string             `json:"id"`
 	RemotePath string             `json:"remote_path"`
-	DeployKey  *string            `json:"deploy_key"` // optional, NOT signed: can only narrow the match
+	DeployKey  *string            `json:"deploy_key"` // REQUIRED, NOT signed: the key must match it too (never widens)
 	Change     string             `json:"change"`
 	Request    string             `json:"request"`
 	Issued     string             `json:"issued"`
@@ -419,7 +440,9 @@ func removeKeyCode(reg *Registry, a removeDeployKeyArgs) (Project, Provider, str
 
 func (s *Server) removeDeployKeyHandler(ctx context.Context, raw json.RawMessage) (res any, oe *OpError) {
 	var a removeDeployKeyArgs
-	if !decodeStrict(raw, &a, removeDeployKeyKeys) {
+	// The key line is required: without it nothing identifies the key but its
+	// title, so nothing is sent (no ID burnt, no provider contact).
+	if !decodeStrict(raw, &a, removeDeployKeyKeys) || a.DeployKey == nil {
 		return fail("bad_request")
 	}
 	if s.Registry.Err() != nil {
@@ -431,13 +454,11 @@ func (s *Server) removeDeployKeyHandler(ctx context.Context, raw json.RawMessage
 		if !registrymsg.ValidSubject(a.ID) || !registrymsg.ValidRemotePath(a.RemotePath) {
 			return fail1("bad_request")
 		}
-		if a.DeployKey != nil {
-			b, ok := keyBody(*a.DeployKey)
-			if !deployKeyRE.MatchString(*a.DeployKey) || !ok {
-				return fail1("bad_request")
-			}
-			wantBody = b
+		b, ok := keyBody(*a.DeployKey)
+		if !deployKeyRE.MatchString(*a.DeployKey) || !ok {
+			return fail1("bad_request")
 		}
+		wantBody = b
 		reg := s.Registry.Snapshot()
 		if _, _, code := removeKeyCode(&reg, a); code != "" {
 			return fail1(code)
@@ -476,7 +497,7 @@ func (s *Server) removeDeployKeyHandler(ctx context.Context, raw json.RawMessage
 	title := "orchd " + a.ID
 	var match []DeployKeyInfo
 	for _, k := range keys {
-		if k.Title == title && (wantBody == "" || k.Body == wantBody) {
+		if k.Title == title && k.Body == wantBody {
 			match = append(match, k)
 		}
 	}

@@ -865,6 +865,9 @@ func validateRegistry(r *Registry) error {
 		if !validProjectOrigin(p.Origin) || (p.Origin == OriginLegacy) != (p.Kind == legacyKind) {
 			return errRegProject
 		}
+		if p.Origin == OriginCreated && p.Provider == nil {
+			return errRegProject // a project this tool created always has its provider
+		}
 		if p.RemoteDeletedAt != nil {
 			// only the tool's own remote delete writes it: origin created, no remote left
 			t, terr := time.Parse(orphanTimeLayout, *p.RemoteDeletedAt)

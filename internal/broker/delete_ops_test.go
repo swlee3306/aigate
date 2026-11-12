@@ -28,6 +28,7 @@ const (
 	delOtherGH = "ghp_OTHER-token-must-never-be-used-0123456789abcdef"
 	delOtherGL = "glpat-OTHER-token-must-never-be-used-0123456789"
 	delKeyB    = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyB"
+	delKeyC    = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyCKeyCKeyCKeyCKeyCKeyCKeyCKeyCKeyCKeyC"
 	delKeyA    = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyAKeyAKeyAKeyAKeyAKeyAKeyAKeyAKeyAKeyA"
 )
 
@@ -291,9 +292,10 @@ func (d *delEnv) keyArgs(id string, key string) map[string]any {
 		path = "team/demo"
 	}
 	a := d.signedArgs(d.alice, registrymsg.ActionRemoveDeployKey, id, map[string]any{"remote_path": path})
-	if key != "" {
-		a["deploy_key"] = key
+	if key == "" {
+		key = delKeyB // the project's key line (REQUIRED by the op)
 	}
+	a["deploy_key"] = key
 	return a
 }
 
@@ -579,7 +581,9 @@ func TestDeleteChecksRemoteIdAndName(t *testing.T) {
 	}
 	// GitHub names are case-insensitive: a signed path in another case is the same repo
 	d = newDel(t)
-	d.wantCode("delete_remote_repo", d.delArgs("demo-gh", func(f map[string]any) { f["remote_path"] = "ALICE/demo"; f["confirm_name"] = "demo" }), "")
+	// ... but the typed name is compared with the REGISTRY's name (Demo), not the signed path's
+	d.refusedNoBurn("delete_remote_repo", d.delArgs("demo-gh", func(f map[string]any) { f["remote_path"] = "ALICE/demo"; f["confirm_name"] = "demo" }), "confirm_mismatch")
+	d.wantCode("delete_remote_repo", d.delArgs("demo-gh", func(f map[string]any) { f["remote_path"] = "ALICE/demo"; f["confirm_name"] = "Demo" }), "")
 	// GitLab paths are compared as written
 	d = newDel(t)
 	d.refusedNoBurn("delete_remote_repo", d.delArgs("demo-gl", func(f map[string]any) { f["remote_path"] = "team/Demo"; f["confirm_name"] = "Demo" }), "bad_request")
@@ -700,8 +704,14 @@ func TestRemoveProjectLegacyAckBothDirections(t *testing.T) {
 
 func TestDeleteKeyOnlyMatchingTitleAndFingerprint(t *testing.T) {
 	list := keysJSON([3]string{"1", "orchd other", delKeyA}, [3]string{"2", "orchd demo-gh", delKeyB + " orchd@host"}, [3]string{"3", "my laptop", delKeyB}, [3]string{"4", "orchd demo-gh2", delKeyA})
-	// title alone (no key line): the one titled key goes, nothing else
+	// no key line: bad_request in the decode/shape stage, nothing sent, no ID burnt
 	d := newDel(t)
+	d.gh.keyPages[1] = list
+	nokey := d.keyArgs("demo-gh", "")
+	delete(nokey, "deploy_key")
+	d.refusedNoBurn("remove_deploy_key", nokey, "bad_request")
+	// the title AND the key body match: that one key goes, nothing else
+	d = newDel(t)
 	d.gh.keyPages[1] = list
 	if _, oe := d.do("remove_deploy_key", d.keyArgs("demo-gh", "")); oe != nil {
 		t.Fatal(oe.Code)
@@ -709,7 +719,8 @@ func TestDeleteKeyOnlyMatchingTitleAndFingerprint(t *testing.T) {
 	if got := d.gh.all(); !reflect.DeepEqual(got, []string{"GET /repos/alice/Demo", "GET /repos/alice/Demo/keys?page=1&per_page=100", "DELETE /repos/alice/Demo/keys/2"}) {
 		t.Fatalf("trace %v", got)
 	}
-	// narrowing key line: matching passes, a different one is key_not_found and nothing is deleted
+	// the key line decides: matching passes (a comment on the line is ignored); the same title with a
+	// DIFFERENT body is key_not_found and nothing is deleted
 	d = newDel(t)
 	d.gh.keyPages[1] = list
 	if _, oe := d.do("remove_deploy_key", d.keyArgs("demo-gh", delKeyB+" orchd")); oe != nil {
@@ -735,14 +746,14 @@ func TestDeleteKeyOnlyMatchingTitleAndFingerprint(t *testing.T) {
 	d = newDel(t)
 	d.gh.keyPages[1] = keysJSON([3]string{"1", "ORCHD demo-gh", delKeyB}, [3]string{"2", "orchd demo-gh ", delKeyB}, [3]string{"3", "orchd  demo-gh", delKeyB}, [3]string{"4", "xorchd demo-gh", delKeyB})
 	d.wantCode("remove_deploy_key", d.keyArgs("demo-gh", ""), "key_not_found")
-	// two keys with the title: refuse, delete nothing
+	// two keys with the title AND the body: refuse, delete nothing
 	d = newDel(t)
-	d.gh.keyPages[1] = keysJSON([3]string{"1", "orchd demo-gh", delKeyA}, [3]string{"2", "orchd demo-gh", delKeyB})
+	d.gh.keyPages[1] = keysJSON([3]string{"1", "orchd demo-gh", delKeyB}, [3]string{"2", "orchd demo-gh", delKeyB})
 	d.wantCode("remove_deploy_key", d.keyArgs("demo-gh", ""), "remove_refused")
 	if d.gh.deletes() != 0 {
 		t.Fatal("deleted with an ambiguous match")
 	}
-	// ... unless the key line tells them apart (it only narrows)
+	// ... same title, different bodies: the key line tells them apart
 	d = newDel(t)
 	d.gh.keyPages[1] = keysJSON([3]string{"1", "orchd demo-gh", delKeyA}, [3]string{"2", "orchd demo-gh", delKeyB})
 	d.wantCode("remove_deploy_key", d.keyArgs("demo-gh", delKeyB), "")
@@ -809,9 +820,12 @@ func TestDeleteKeyOnlyMatchingTitleAndFingerprint(t *testing.T) {
 	}
 }
 
-func TestGitLabSharedKeyNeverDeleted(t *testing.T) {
+// What this proves: removing a key on GitLab sends exactly ONE per-project
+// DELETE for the key whose title AND body match, never another listed key, and
+// there is no global /deploy_keys delete row anywhere.
+func TestGitLabKeyRemovalOnlyThisProjectsKeyId(t *testing.T) {
 	d := newDel(t)
-	list := keysJSON([3]string{"8", "orchd demo-gl2", delKeyA}, [3]string{"9", "orchd demo-gl", delKeyB}, [3]string{"10", "shared deploy", delKeyB})
+	list := keysJSON([3]string{"8", "orchd demo-gl2", delKeyA}, [3]string{"9", "orchd demo-gl", delKeyB}, [3]string{"10", "shared deploy", delKeyC})
 	d.gl.keyPages[1] = list
 	if _, oe := d.do("remove_deploy_key", d.keyArgs("demo-gl", delKeyB)); oe != nil {
 		t.Fatal(oe.Code)
@@ -828,6 +842,14 @@ func TestGitLabSharedKeyNeverDeleted(t *testing.T) {
 	// the project's registry row and the repository are untouched
 	if p := d.proj("demo-gl"); p.Remote == nil || p.RemoteDeletedAt != nil {
 		t.Fatalf("%+v", p)
+	}
+	// the right title with another key body, and the right body under another title: nothing sent
+	d2 := newDel(t)
+	d2.gl.keyPages[1] = list
+	d2.wantCode("remove_deploy_key", d2.keyArgs("demo-gl", delKeyC), "key_not_found") // 9 has the title, body B
+	d2.wantCode("remove_deploy_key", d2.keyArgs("demo-gl", delKeyA), "key_not_found") // 8 has body A, title demo-gl2
+	if d2.gl.deletes() != 0 {
+		t.Fatal("a key that does not match both was deleted")
 	}
 	// the key itself is never deleted by a direct call either (no global row)
 	la, _ := newGitLabAPI(Provider{ID: "dgl", Kind: "gitlab", BaseURL: d.gl.URL, SSHURL: "ssh://git@10.0.0.3", TokenRef: "gl-admin"}, d.s.Tokens, d.s.apiSeams)
@@ -1017,13 +1039,27 @@ func TestDailyLimit(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		d.put("h"+strconv.Itoa(i), "dgh", "alice/Demo", 77, OriginCreated)
 	}
-	for i := 0; i < 3; i++ {
+	if maxDeleteRepoPerHour >= maxDeleteRepoPerDay {
+		t.Fatal("the hourly cap must be tighter than the daily one")
+	}
+	for i := 0; i < maxDeleteRepoPerHour; i++ {
 		d.wantCode("delete_remote_repo", d.delArgs("h"+strconv.Itoa(i), nil), "")
 	}
 	dayLeft := d.s.State.DeleteRepoDay.Remaining()
-	d.wantCode("delete_remote_repo", d.delArgs("h3", nil), "rate_limited")
+	d.wantCode("delete_remote_repo", d.delArgs("h"+strconv.Itoa(maxDeleteRepoPerHour), nil), "rate_limited")
 	if d.s.State.DeleteRepoDay.Remaining() != dayLeft {
 		t.Fatal("the daily cap was spent by a request the hourly cap refused")
+	}
+	// and the other way: the daily cap refuses, the hourly slot is not consumed
+	d = newDel(t)
+	d.s.State.DeleteRepoDay = NewWindowLimiter(1, 24*time.Hour, hnow)
+	d.s.State.DeleteRepoHour = NewHourlyLimiter(5, hnow)
+	d.put("x1", "dgh", "alice/Demo", 77, OriginCreated)
+	d.wantCode("delete_remote_repo", d.delArgs("demo-gh", nil), "")
+	hourLeft := d.s.State.DeleteRepoHour.Remaining()
+	d.wantCode("delete_remote_repo", d.delArgs("x1", nil), "rate_limited")
+	if d.s.State.DeleteRepoHour.Remaining() != hourLeft {
+		t.Fatal("the hourly cap was spent by a request the daily cap refused")
 	}
 	// shape refusals spend nothing
 	d = newDel(t)
@@ -1137,6 +1173,9 @@ func TestSignedFieldsCoverEveryDeleteInput(t *testing.T) {
 		}
 		sort.Strings(keys)
 		want := append([]string{"id", "change", "request", "issued", "signature"}, o.sig...)
+		if o.name == "remove_deploy_key" {
+			want = append(want, "deploy_key") // required, unsigned
+		}
 		sort.Strings(want)
 		if !reflect.DeepEqual(keys, want) {
 			t.Fatalf("%s: args %v, want %v", o.name, keys, want)
@@ -1144,12 +1183,7 @@ func TestSignedFieldsCoverEveryDeleteInput(t *testing.T) {
 		// every handler key list is the schema fields plus the envelope (and the optional key line)
 		handlerKeys := map[string][]string{"remove_project": removeProjectKeys, "delete_remote_repo": deleteRemoteRepoKeys, "remove_deploy_key": removeDeployKeyKeys, "clear_orphan": clearOrphanKeys}[o.name]
 		hk := append([]string(nil), handlerKeys...)
-		hk2 := hk[:0]
-		for _, k := range hk {
-			if k != "deploy_key" {
-				hk2 = append(hk2, k)
-			}
-		}
+		hk2 := hk
 		sort.Strings(hk2)
 		if !reflect.DeepEqual(hk2, want) {
 			t.Fatalf("%s: handler accepts %v, want %v", o.name, hk2, want)
@@ -1405,5 +1439,104 @@ func TestDeleteCanaryTokenNeverInAnyOutput(t *testing.T) {
 				t.Fatalf("%q leaked into %q", bad, o)
 			}
 		}
+	}
+}
+
+// ---------- fix round 1 ----------
+
+// A concurrent set_flag (ai_context) between the live check and the registry
+// write must not turn a completed delete into delete_partial.
+func TestRemoteDeleteSurvivesConcurrentFlagFlip(t *testing.T) {
+	d := newDel(t)
+	d.gh.delHold = make(chan struct{})
+	d.gh.delSeen = make(chan struct{}, 1)
+	done := make(chan string, 1)
+	go func() {
+		_, oe := d.do("delete_remote_repo", d.delArgs("demo-gh", nil))
+		done <- codeOf(oe)
+	}()
+	select {
+	case <-d.gh.delSeen:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the delete did not reach the provider")
+	}
+	if err := d.s.Registry.Update(func(r *Registry) error {
+		for i := range r.Projects {
+			if r.Projects[i].ID == "demo-gh" {
+				r.Projects[i].AIContext = !r.Projects[i].AIContext
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	close(d.gh.delHold)
+	if code := <-done; code != "" {
+		t.Fatalf("a flag flip turned the finished delete into %q", code)
+	}
+	if p := d.proj("demo-gh"); p.Remote != nil || p.RemoteDeletedAt == nil {
+		t.Fatalf("registry not updated: %+v", p)
+	}
+}
+
+func TestSameRowCoreComparesOnlyMeaningfulFields(t *testing.T) {
+	prov, rid := "dgh", int64(7)
+	base := Project{ID: "a", Path: "/r/a", Kind: "registered", Origin: OriginCreated, Provider: &prov, Remote: &RemoteLink{Path: "o/a", ID: &rid}}
+	flip := base
+	flip.AIContext = true
+	if !sameRowCore(base, flip) {
+		t.Fatal("ai_context must not matter")
+	}
+	mods := map[string]func(p *Project){
+		"path":     func(p *Project) { p.Path = "/r/b" },
+		"kind":     func(p *Project) { p.Kind = "x" },
+		"origin":   func(p *Project) { p.Origin = OriginLinked },
+		"provider": func(p *Project) { o := "other"; p.Provider = &o },
+		"remote":   func(p *Project) { p.Remote = &RemoteLink{Path: "o/b", ID: &rid} },
+		"id":       func(p *Project) { r2 := int64(8); p.Remote = &RemoteLink{Path: "o/a", ID: &r2} },
+		"gone":     func(p *Project) { p.Remote = nil },
+		"deleted":  func(p *Project) { p.RemoteDeletedAt = strp("2026-11-10T01:02:03Z") },
+	}
+	for n, m := range mods {
+		c := base
+		m(&c)
+		if sameRowCore(base, c) {
+			t.Errorf("%s change not noticed", n)
+		}
+	}
+}
+
+func TestGitLabDeleteRateLimitAnswerIsUncertain(t *testing.T) {
+	d := newDel(t)
+	d.gl.delStatus = 429
+	d.wantCode("delete_remote_repo", d.delArgs("demo-gl", nil), "delete_partial")
+	if d.gl.deletes() != 1 || d.proj("demo-gl").Remote == nil {
+		t.Fatal("429 handling")
+	}
+}
+
+func TestCreatedOriginNeedsProviderAndIsNeverAttached(t *testing.T) {
+	d := newDel(t)
+	err := d.s.Registry.Update(func(r *Registry) error {
+		r.Projects = append(r.Projects, Project{ID: "orphan-created", Path: d.root + "/orphan-created", Kind: "registered", Origin: OriginCreated})
+		return nil
+	})
+	if err == nil {
+		t.Fatal("a created project without a provider was accepted")
+	}
+	// after a remote delete the row keeps its provider, so the invariant holds and attach is refused
+	d.wantCode("delete_remote_repo", d.delArgs("demo-gh", nil), "")
+	d.wantCode("attach_remote", d.attachArgs("demo-gh", "dgh", "alice/existing", nil), "already_linked")
+	// the attach rule refuses origin created by itself, even for a row without provider (defence in depth)
+	reg := &Registry{Projects: []Project{{ID: "c1", Path: "/r/c1", Kind: "registered", Origin: OriginCreated}}}
+	prov := Provider{ID: "dgh", Kind: "github"}
+	if code := remoteRegistryCode(reg, remoteReq{attach: true, id: "c1", provider: "dgh", remotePath: "alice/x"}, prov, "alice/x", ""); code != "already_linked" {
+		t.Fatalf("attach on a created row: %q", code)
+	}
+	// loading a registry file with such a row fails closed (validateRegistry)
+	bad := emptyRegistry()
+	bad.Projects = []Project{{ID: "c1", Path: "/r/c1", Kind: "registered", Origin: OriginCreated}}
+	if validateRegistry(&bad) == nil {
+		t.Fatal("validateRegistry accepted created without provider")
 	}
 }
