@@ -394,6 +394,10 @@ type ProjectView struct {
 	// (registry v4). Additive: the console may ignore it. projectView always
 	// sets it; omitempty only keeps hand-built fixtures that do not care stable.
 	Origin string `json:"origin,omitempty"`
+	// RemoteDeletedAt (registry v4) is when this tool deleted the project's
+	// remote repository (GitLab/GitHub variant of the view keeps `gitlab: null`
+	// then). Absent otherwise.
+	RemoteDeletedAt *string `json:"remote_deleted_at,omitempty"`
 	// Cloned is what orchd sees on the file system right now (a directory,
 	// not a symlink, with a .git entry): the registry does not know it.
 	Cloned bool `json:"cloned"`
@@ -413,6 +417,15 @@ func projectView(p broker.Project) (ProjectView, bool) {
 		return ProjectView{}, false
 	}
 	v := ProjectView{ID: p.ID, Path: p.Path, Kind: p.Kind, AIContext: p.AIContext, AutoMerge: projectAutoMerge{Enabled: p.AutoMerge.Enabled}, Origin: origin}
+	if p.RemoteDeletedAt != nil {
+		// the exact stamp the broker writes: UTC, whole seconds
+		t, err := time.Parse(registryTimeFormat, *p.RemoteDeletedAt)
+		if err != nil || t.Location() != time.UTC || t.Format(registryTimeFormat) != *p.RemoteDeletedAt {
+			return ProjectView{}, false
+		}
+		at := *p.RemoteDeletedAt
+		v.RemoteDeletedAt = &at
+	}
 	if p.Provider != nil {
 		if !registrymsg.ValidProviderID(*p.Provider) {
 			return ProjectView{}, false

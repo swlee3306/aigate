@@ -35,6 +35,7 @@ import (
 
 	"aigate/internal/orch/fsx"
 	"aigate/internal/orch/knownhosts"
+	"aigate/internal/orch/remove"
 	"aigate/internal/registrymsg"
 )
 
@@ -318,8 +319,12 @@ func SweepStale(roots []string) int {
 	return n
 }
 
-// IsStaging reports whether a directory name is a clone staging name.
-func IsStaging(name string) bool { return strings.HasPrefix(name, tempPrefix) }
+// IsStaging reports whether a directory name is a staging name of orchd: a
+// clone being made (.clone-*) or a project folder being deleted (.deleting-*).
+// Neither is ever a project or a clone.
+func IsStaging(name string) bool {
+	return strings.HasPrefix(name, tempPrefix) || strings.HasPrefix(name, remove.StagePrefix)
+}
 
 // toolDirs are the only directories git and ssh are looked for in.
 func toolDirs() []string {

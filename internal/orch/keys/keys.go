@@ -533,3 +533,17 @@ func PrivatePath(keysDir, id string) (string, error) {
 	}
 	return p, nil
 }
+
+// ProjectPublic reads the public key of a project's own key folder,
+// keysDir/<id>/id_ed25519.pub, after checking the chain by metadata (keysDir
+// and keysDir/<id> are real private directories of this user). The private
+// key is never opened. It is how a deploy key is identified for removal.
+func ProjectPublic(keysDir, id string) (Key, error) {
+	if !registrymsg.ValidSubject(id) || keysDir == "" || !filepath.IsAbs(keysDir) || filepath.Clean(keysDir) != keysDir {
+		return Key{}, ErrBadID
+	}
+	if privateDir(keysDir) != nil || privateDir(filepath.Join(keysDir, id)) != nil {
+		return Key{}, ErrUnusable
+	}
+	return ReadPublic(filepath.Join(keysDir, id, PublicName))
+}

@@ -15,6 +15,11 @@ const (
 	OpProjects        = "projects"
 	OpRegisterProject = "register_project"
 	OpSetFlag         = "set_flag"
+	// W3f deletion ops (all signed).
+	OpRemoveProject    = "remove_project"
+	OpDeleteRemoteRepo = "delete_remote_repo"
+	OpRemoveDeployKey  = "remove_deploy_key"
+	OpClearOrphan      = "clear_orphan"
 )
 
 // Timeout is the broker's `timeout` reply code.
@@ -25,6 +30,13 @@ func init() {
 	defaultTimeouts[OpProjects] = 15 * time.Second
 	defaultTimeouts[OpRegisterProject] = 15 * time.Second
 	defaultTimeouts[OpSetFlag] = 15 * time.Second
+	// The broker gives these 10 s, 45 s, 60 s and 10 s: the client waits a
+	// little longer, so a slow but successful delete is not reported as an
+	// unknown outcome by orchd's own clock.
+	defaultTimeouts[OpRemoveProject] = 15 * time.Second
+	defaultTimeouts[OpDeleteRemoteRepo] = 55 * time.Second
+	defaultTimeouts[OpRemoveDeployKey] = 70 * time.Second
+	defaultTimeouts[OpClearOrphan] = 15 * time.Second
 }
 
 // RemoteLink is a project's remote repository (registry v3): Path is
@@ -53,6 +65,9 @@ type Project struct {
 	// Origin (registry v4): created, linked, unknown or legacy. A broker that
 	// does not send it is read as unknown.
 	Origin string `json:"origin"`
+	// RemoteDeletedAt (registry v4): set (UTC "2006-01-02T15:04:05Z") only when
+	// this tool deleted the project's remote repository; Remote is then null.
+	RemoteDeletedAt *string `json:"remote_deleted_at"`
 }
 
 // AutoMergeGlobal is the registry-wide switch.

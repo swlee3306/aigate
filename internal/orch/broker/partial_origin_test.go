@@ -3,6 +3,7 @@ package broker
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 // W3e E3 fix round C: the create_partial/link_partial detail gains `origin`
@@ -29,5 +30,23 @@ func TestParsePartialDetailOrigin(t *testing.T) {
 	}
 	if !ValidOrphanOrigin("") || !ValidOrphanOrigin("created") || !ValidOrphanOrigin("linked") || ValidOrphanOrigin("x") {
 		t.Fatal("ValidOrphanOrigin")
+	}
+}
+
+// W3f: the deletion ops have client time limits a little above the broker's own
+// (10, 45, 60, 10 s), so a slow but successful delete is not an unknown outcome
+// by orchd's clock; and the registry view carries remote_deleted_at.
+func TestDeleteOpTimeoutsExceedTheBrokersAndViewCarriesStamp(t *testing.T) {
+	for op, brokerLimit := range map[string]time.Duration{OpRemoveProject: 10 * time.Second, OpDeleteRemoteRepo: 45 * time.Second,
+		OpRemoveDeployKey: 60 * time.Second, OpClearOrphan: 10 * time.Second} {
+		d := defaultTimeouts[op]
+		if d <= brokerLimit || d > brokerLimit+30*time.Second {
+			t.Errorf("%s: client limit %v vs broker %v", op, d, brokerLimit)
+		}
+	}
+	var p Project
+	if err := json.Unmarshal([]byte(`{"id":"a","path":"/r/a","kind":"registered","origin":"created","remote_deleted_at":"2026-11-13T01:02:03Z","remote":null}`), &p); err != nil ||
+		p.RemoteDeletedAt == nil || *p.RemoteDeletedAt != "2026-11-13T01:02:03Z" || p.Remote != nil {
+		t.Fatalf("%+v %v", p, err)
 	}
 }

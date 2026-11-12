@@ -20,6 +20,7 @@ import (
 	"aigate/internal/orch/clone"
 	"aigate/internal/orch/keys"
 	"aigate/internal/orch/machine"
+	"aigate/internal/orch/remove"
 	"aigate/internal/orch/store"
 	"aigate/internal/orch/web"
 )
@@ -228,6 +229,15 @@ func NewDaemon(cfg Config, st *store.Store, p StepProvider) (*Daemon, error) {
 	h.gitPath, h.sshPath = clone.FindTool("git"), clone.FindTool("ssh")
 	if n := clone.SweepStale(h.roots); n > 0 {
 		log.Printf("orchd: removed %d stale clone staging directories", n)
+	}
+	// Folders a crashed project removal had moved aside (.deleting-*): under the
+	// roots and in the key area, real own directories only.
+	sweepDirs := append([]string{}, h.roots...)
+	if h.keys != nil {
+		sweepDirs = append(sweepDirs, h.keys.KeysDir())
+	}
+	if n := remove.Sweep(sweepDirs); n > 0 {
+		log.Printf("orchd: removed %d half-deleted project directories", n)
 	}
 	h.reportDir = cfg.ReportDir
 	h.policy, h.ops, h.cloud = cfg.Policy, cfg.Ops, cfg.CloudStatus

@@ -546,3 +546,54 @@ func TestHoldIsBoundedAndRetainedKeysSurviveExpiry(t *testing.T) {
 		t.Fatalf("promoted a swapped directory: %v", err)
 	}
 }
+
+// W3f: ProjectPublic reads the project's own public key after checking the
+// directory chain by metadata; the private key is never opened.
+func TestProjectPublicChecksTheChain(t *testing.T) {
+	root, _ := filepath.EvalSymlinks(t.TempDir())
+	s := &Store{Root: root}
+	k, err := s.Stage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Promote(k.SHA256, "app-one"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ProjectPublic(s.KeysDir(), "app-one")
+	if err != nil || got.Public != k.Public || got.Fingerprint != k.Fingerprint {
+		t.Fatalf("%+v %v", got, err)
+	}
+	for _, bad := range []string{"", "../x", "App", "app/one"} {
+		if _, err := ProjectPublic(s.KeysDir(), bad); err == nil {
+			t.Errorf("accepted id %q", bad)
+		}
+	}
+	if _, err := ProjectPublic("relative", "app-one"); err == nil {
+		t.Error("accepted a relative keys dir")
+	}
+	// a symlinked project folder gives nothing
+	other := t.TempDir()
+	if err := os.Symlink(other, filepath.Join(s.KeysDir(), "linked")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ProjectPublic(s.KeysDir(), "linked"); err == nil {
+		t.Error("followed a symlinked key folder")
+	}
+	// a keys directory open to others is not trusted
+	if err := os.Chmod(s.KeysDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ProjectPublic(s.KeysDir(), "app-one"); err == nil {
+		t.Error("trusted a world-readable keys directory")
+	}
+	os.Chmod(s.KeysDir(), 0o700)
+	// the public file must be a plain regular file
+	pub := filepath.Join(s.KeysDir(), "app-one", PublicName)
+	os.Remove(pub)
+	if err := os.Symlink(filepath.Join(other, "x"), pub); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ProjectPublic(s.KeysDir(), "app-one"); err == nil {
+		t.Error("read through a symlinked public file")
+	}
+}

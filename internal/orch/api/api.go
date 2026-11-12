@@ -267,9 +267,13 @@ type handler struct {
 	// W3e: the per-repository GitHub key store (nil: GitHub flows answer
 	// key_staging_failed), the shared limiter of link_project and attach_remote,
 	// and the repo paths that have a static --git-remote-for entry.
-	keys        *keys.Store
-	linkLimit   *actorLimiter
-	staticRepos map[string]bool
+	keys      *keys.Store
+	linkLimit *actorLimiter
+	// W3f (delete_project.go): per-actor buckets of the four deletion actions and
+	// of the removal preview, and the lock that serialises local removals.
+	removeLimit, deleteRemoteLimit, removeKeyLimit, orphanLimit, previewRemovalLimit *actorLimiter
+	localMu                                                                          sync.Mutex
+	staticRepos                                                                      map[string]bool
 }
 
 func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome string) (*handler, error) {
@@ -296,6 +300,11 @@ func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome 
 	h.cloneFn = clone.Clone
 	h.cloneLimit = newActorLimiter(CloneProjectPerActorHour, time.Hour)
 	h.linkLimit = newActorLimiter(LinkAttachPerActorHour, time.Hour)
+	h.removeLimit = newActorLimiter(RemoveProjectPerActorHour, time.Hour)
+	h.deleteRemoteLimit = newActorLimiter(DeleteRemotePerActorHour, time.Hour)
+	h.removeKeyLimit = newActorLimiter(RemoveKeyPerActorHour, time.Hour)
+	h.orphanLimit = newActorLimiter(ClearOrphanPerActorHour, time.Hour)
+	h.previewRemovalLimit = newActorLimiter(RemovalPreviewPerActorHour, time.Hour)
 	for _, r := range allowed {
 		if !filepath.IsAbs(r) || filepath.Clean(r) != r {
 			return nil, fmt.Errorf("allowed repo root %q must be an absolute clean path", r)

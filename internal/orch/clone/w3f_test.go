@@ -54,3 +54,14 @@ func TestCreatedOriginRowWithMismatchedNameRefusedByResolver(t *testing.T) {
 		t.Errorf("control: %q %q %v", remote, key, ok)
 	}
 }
+
+// W3f: a half-deleted project folder is a staging name too, so it is never a
+// project, a candidate or a clone.
+func TestIsStagingCoversDeletingNames(t *testing.T) {
+	for name, want := range map[string]bool{".clone-0123456789abcdef": true, ".deleting-0123456789abcdef": true, ".deleting-x": true,
+		"app": false, "deleting-x": false, "x.deleting-1": false, "": false} {
+		if IsStaging(name) != want {
+			t.Errorf("IsStaging(%q) = %v", name, !want)
+		}
+	}
+}

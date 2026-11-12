@@ -360,6 +360,19 @@ func (s *Store) CountQueued(ctx context.Context) (int, error) {
 	return q, err
 }
 
+// CountActiveByRepo is the number of tasks of repo (the exact path string the
+// task was submitted with, or a path below it) that are not in a final state: queued, running,
+// waiting for an approval, publishing, or in the resumable error state. A
+// project with such a task is busy (W3f deletion refuses it).
+func (s *Store) CountActiveByRepo(ctx context.Context, repo string) (int, error) {
+	var n int
+	esc := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(repo)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM tasks WHERE (repo = ? OR repo LIKE ? ESCAPE '\') AND state NOT IN (?, ?, ?)`,
+		repo, esc+"/%", StateDone, StateFailed, StateCancelled).Scan(&n)
+	return n, err
+}
+
 // GetTask returns one task or ErrNotFound.
 func (s *Store) GetTask(ctx context.Context, id int64) (Task, error) {
 	t, err := scanTask(s.db.QueryRowContext(ctx, `SELECT `+taskCols+` FROM tasks WHERE id = ?`, id))

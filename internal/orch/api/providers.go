@@ -161,6 +161,9 @@ func w3cBrokerErrorKind(action, kind string, e *broker.OpError, write bool) *htt
 }
 
 func w3cBrokerErrorBase(action, kind string, e *broker.OpError, write bool) *httpError {
+	if isDeleteAction(action) {
+		return deleteBrokerError(action, e)
+	}
 	unknown := errProvUnknownRes
 	switch action {
 	case registrymsg.ActionCreateProject:
@@ -584,6 +587,14 @@ func (h *handler) w3cLimiter(action string) *actorLimiter {
 		return h.groupLimit
 	case registrymsg.ActionLinkProject, registrymsg.ActionAttachRemote:
 		return h.linkLimit // one bucket for both
+	case registrymsg.ActionRemoveProject:
+		return h.removeLimit
+	case registrymsg.ActionDeleteRemoteRepo:
+		return h.deleteRemoteLimit
+	case registrymsg.ActionRemoveDeployKey:
+		return h.removeKeyLimit
+	case registrymsg.ActionClearOrphan:
+		return h.orphanLimit
 	}
 	return h.providerLimit
 }
@@ -724,7 +735,7 @@ func (h *handler) applyCore(w http.ResponseWriter, r *http.Request, allowed []st
 			limiter.refund(actor, started)
 		}
 		he := w3cBrokerErrorKind(c.Action, fieldKind(c), oerr, true)
-		changed := he.v1Code == "outcome_unknown" || he.v1Code == broker.CodeCreatePartial || he.v1Code == broker.CodeLinkPartial
+		changed := he.v1Code == "outcome_unknown" || he.v1Code == broker.CodeCreatePartial || he.v1Code == broker.CodeLinkPartial || he.v1Code == "delete_partial"
 		switch {
 		case provablyNothing:
 			sf(c, keyKept)
@@ -831,6 +842,14 @@ func (h *handler) recordW3c(actor, action, subject string, ok bool, code string)
 		typ = "project_link"
 	case registrymsg.ActionAttachRemote:
 		typ = "project_attach"
+	case registrymsg.ActionRemoveProject:
+		typ = "project_remove"
+	case registrymsg.ActionDeleteRemoteRepo:
+		typ = "remote_delete"
+	case registrymsg.ActionRemoveDeployKey:
+		typ = "key_remove"
+	case registrymsg.ActionClearOrphan:
+		typ = "orphan_clear"
 	}
 	home, err := gate.Home(h.grants.Home)
 	if err != nil {
