@@ -33,6 +33,7 @@ import (
 	"aigate/internal/gate"
 	"aigate/internal/ledger"
 	"aigate/internal/orch/approvals"
+	"aigate/internal/orch/keys"
 	"aigate/internal/orch/knownhosts"
 	"aigate/internal/orch/policy"
 	"aigate/internal/orch/store"
@@ -115,15 +116,21 @@ type Config struct {
 	// RemoteResolver, when set, is asked about a repository that RepoRemotes
 	// does not name (and only then), with nothing but the repository path:
 	//
-	//	(remote, true)  push to this remote (it must be an ssh:// remote whose
-	//	                host is pinned in SSHKnownHosts, else the push is refused);
-	//	("",     true)  a registered project whose remote cannot be resolved
-	//	                safely: the push is REFUSED, never sent to Remote;
-	//	("",     false) not its repository: Remote is used, as without a resolver.
+	//	(remote, key, true)  push to this remote (it must be an ssh:// remote whose
+	//	                     host is pinned in SSHKnownHosts, else the push is
+	//	                     refused) with this private key: the per-project key of
+	//	                     a GitHub project, or "" / the shared key for the
+	//	                     others (then SSHKeyFile is used). A key other than
+	//	                     SSHKeyFile must still be a usable private key file
+	//	                     (keys.UsableFile) at the moment of the push;
+	//	("", "", true)       a registered project whose remote cannot be resolved
+	//	                     safely: the push is REFUSED, never sent to Remote;
+	//	("", "", false)      not its repository: Remote is used, as without a resolver.
 	//
-	// orchd wires clone.Resolver.Resolve here (the registry and the pinning file
-	// are its only inputs). Without a resolver only the static remotes exist.
-	RemoteResolver func(repo string) (string, bool)
+	// orchd wires clone.Resolver.Resolve here (the registry, the pinning file and
+	// the per-project key directory are its only inputs). Without a resolver
+	// only the static remotes exist.
+	RemoteResolver func(repo string) (remote, key string, ok bool)
 	GitLab         GitLab
 	// TokenFile is the 0600 file holding the GitLab write token. Required
 	// for an https remote and for draft_pr.
@@ -299,25 +306,26 @@ func (p *Publisher) check(a Action) error {
 // remoteFor is the remote a task of repo pushes to: the static per-repository
 // remote, else the resolver's answer, else the default. "" means the push is
 // refused (the resolver knows the repository but cannot give a safe remote).
-func (p *Publisher) remoteFor(repo string) string {
+// key is the private key the resolver named ("" = SSHKeyFile).
+func (p *Publisher) remoteFor(repo string) (remote, key string) {
 	if r, ok := p.cfg.RepoRemotes[repo]; ok {
-		return r
+		return r, ""
 	}
 	if p.cfg.RemoteResolver != nil {
-		if r, ok := p.cfg.RemoteResolver(repo); ok {
+		if r, k, ok := p.cfg.RemoteResolver(repo); ok {
 			if r != "" && knownhosts.RemotePinned(p.cfg.SSHKnownHosts, r) {
-				return r
+				return r, k
 			}
-			return ""
+			return "", ""
 		}
 	}
-	return p.cfg.Remote
+	return p.cfg.Remote, ""
 }
 
 func (p *Publisher) target(kind, repo string) string {
 	switch kind {
 	case KindPushBranch:
-		if r := p.remoteFor(repo); r != "" {
+		if r, _ := p.remoteFor(repo); r != "" {
 			return r
 		}
 		return "(unresolved: refused)"
@@ -513,12 +521,20 @@ func (p *Publisher) push(ctx context.Context, a Action) error {
 		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0",
 		"GIT_ALLOW_PROTOCOL=file:https:ssh",
 	}
-	remote := p.remoteFor(a.Repo)
+	remote, key := p.remoteFor(a.Repo)
 	if remote == "" {
 		return errors.New("publish: no safe remote could be resolved for this repository; nothing was pushed")
 	}
 	if strings.HasPrefix(remote, "ssh://") {
-		env = append(env, "GIT_SSH_COMMAND="+sshCommand(p.cfg.SSHKeyFile, p.cfg.SSHKnownHosts))
+		keyFile := p.cfg.SSHKeyFile
+		if key != "" && key != keyFile {
+			// a per-project key: it must be a plain private file of ours right now
+			if !sshSafe(key) || keys.UsableFile(key) != nil {
+				return errors.New("publish: the project's deploy key is missing or not usable; nothing was pushed")
+			}
+			keyFile = key
+		}
+		env = append(env, "GIT_SSH_COMMAND="+sshCommand(keyFile, p.cfg.SSHKnownHosts))
 	}
 	token := ""
 	if strings.HasPrefix(remote, "https://") {

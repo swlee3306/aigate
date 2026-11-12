@@ -48,6 +48,7 @@ import (
 	"aigate/internal/orch/approvals"
 	"aigate/internal/orch/broker"
 	"aigate/internal/orch/clone"
+	"aigate/internal/orch/keys"
 	"aigate/internal/orch/machine"
 	"aigate/internal/orch/refine"
 	"aigate/internal/orch/store"
@@ -263,6 +264,12 @@ type handler struct {
 	cloneLimit       *actorLimiter
 	onRegistryChange func()
 	cloneFn          func(ctx context.Context, o clone.Options) error
+	// W3e: the per-repository GitHub key store (nil: GitHub flows answer
+	// key_staging_failed), the shared limiter of link_project and attach_remote,
+	// and the repo paths that have a static --git-remote-for entry.
+	keys        *keys.Store
+	linkLimit   *actorLimiter
+	staticRepos map[string]bool
 }
 
 func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome string) (*handler, error) {
@@ -288,6 +295,7 @@ func newHandler(st *store.Store, m *machine.Machine, allowed []string, gateHome 
 	h.groupsReadLimit = newActorLimiter(ListGroupsPerActorHour, time.Hour)
 	h.cloneFn = clone.Clone
 	h.cloneLimit = newActorLimiter(CloneProjectPerActorHour, time.Hour)
+	h.linkLimit = newActorLimiter(LinkAttachPerActorHour, time.Hour)
 	for _, r := range allowed {
 		if !filepath.IsAbs(r) || filepath.Clean(r) != r {
 			return nil, fmt.Errorf("allowed repo root %q must be an absolute clean path", r)

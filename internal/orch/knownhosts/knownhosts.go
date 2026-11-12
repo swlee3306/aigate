@@ -15,6 +15,8 @@ import (
 	"os"
 	"regexp"
 	"strings"
+
+	"aigate/internal/registrymsg"
 )
 
 // maxFile bounds the known_hosts file that is read.
@@ -24,6 +26,24 @@ const maxFile = 1 << 20
 // git, the host a lowercase DNS name, IPv4 or bracketed IPv6, an optional
 // port, then a path of lowercase name segments ending in .git.
 var remoteRE = regexp.MustCompile(`^ssh://git@(\[[0-9a-f:]+\]|[a-z0-9][a-z0-9.-]*)(?::([1-9][0-9]{0,4}))?/([a-z][a-z0-9-]*(?:/[a-z][a-z0-9-]*){0,4})\.git$`)
+
+// ownerRepoRE is the GitHub remote shape: the same user, host and port rules,
+// then exactly owner/repo.git with GitHub's own spelling (case kept; `_` in a
+// login, `.`, `_` and `-` in a repository name). The segment rules are
+// registrymsg's (the broker's too); ValidGitHubRepoName also refuses a name that
+// itself ends in ".git" and "." or "..".
+var ownerRepoRE = regexp.MustCompile(`^ssh://git@(\[[0-9a-f:]+\]|[a-z0-9][a-z0-9.-]*)(?::([1-9][0-9]{0,4}))?/(` +
+	registrymsg.GitHubLoginPattern + `)/(` + registrymsg.GitHubRepoPattern + `)\.git$`)
+
+// SplitSSHRemoteOwnerRepo is SplitSSHRemote for the GitHub shape
+// ssh://git@host[:port]/Owner/Repo.git.
+func SplitSSHRemoteOwnerRepo(remote string) (host, port string, ok bool) {
+	m := ownerRepoRE.FindStringSubmatch(remote)
+	if m == nil || strings.HasPrefix(m[1], "-") || strings.HasSuffix(m[3], "-") || !registrymsg.ValidGitHubRepoName(m[4]) {
+		return "", "", false
+	}
+	return m[1], m[2], true
+}
 
 // SplitSSHRemote returns the host (IPv6 keeps its brackets) and the port ("" =
 // none given) of a remote of the shape ssh://git@host[:port]/group/.../name.git.
@@ -35,10 +55,14 @@ func SplitSSHRemote(remote string) (host, port string, ok bool) {
 	return m[1], m[2], true
 }
 
-// RemotePinned reports whether remote has the shape above and its host is
-// pinned in the known_hosts file at path.
+// RemotePinned reports whether remote has one of the two shapes (the strict
+// lowercase one or the GitHub owner/repo one) and its host is pinned in the
+// known_hosts file at path.
 func RemotePinned(path, remote string) bool {
 	host, port, ok := SplitSSHRemote(remote)
+	if !ok {
+		host, port, ok = SplitSSHRemoteOwnerRepo(remote)
+	}
 	return ok && Pinned(path, host, port)
 }
 

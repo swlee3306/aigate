@@ -33,6 +33,7 @@ import (
 	"sync"
 	"time"
 
+	"aigate/internal/orch/fsx"
 	"aigate/internal/orch/knownhosts"
 	"aigate/internal/registrymsg"
 )
@@ -72,6 +73,10 @@ type Options struct {
 	SSHKey, KnownHosts string
 	// Timeout bounds the clone (0 = DefaultTimeout).
 	Timeout time.Duration
+	// Kind is the provider kind of the remote: "" or "gitlab" take the strict
+	// lowercase shape, "github" the Owner/Repo shape with GitHub's spelling.
+	// Anything else is refused as a bad remote.
+	Kind string
 }
 
 // seams are the test-only replacements of the command runner and of the
@@ -140,7 +145,14 @@ func clone(ctx context.Context, o Options, sm *seams) error {
 	if !sshSafe(o.SSHKey) || !sshSafe(o.KnownHosts) || (o.SSH != "" && !sshSafe(o.SSH)) {
 		return ErrBadConfig
 	}
-	host, port, ok := knownhosts.SplitSSHRemote(o.Remote)
+	var host, port string
+	var ok bool
+	switch o.Kind {
+	case "", "gitlab":
+		host, port, ok = knownhosts.SplitSSHRemote(o.Remote)
+	case "github":
+		host, port, ok = knownhosts.SplitSSHRemoteOwnerRepo(o.Remote)
+	}
 	if !ok {
 		return ErrBadRemote
 	}
@@ -247,7 +259,7 @@ func clone(ctx context.Context, o Options, sm *seams) error {
 		}
 		return ErrFailed
 	}
-	if err := renameNoReplace(staging, o.Dest); err != nil {
+	if err := fsx.RenameNoReplace(staging, o.Dest); err != nil {
 		cleanup()
 		if errors.Is(err, os.ErrExist) {
 			return ErrExists

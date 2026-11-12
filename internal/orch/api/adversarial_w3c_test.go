@@ -270,11 +270,11 @@ func TestResolverNeverTrustsRequestData(t *testing.T) {
 	e.setProjects(good, unpinned, badName)
 	r := &clone.Resolver{Client: &broker.Client{Socket: e.d.handler.broker.Socket, Timeout: 2 * time.Second}, KnownHosts: e.known}
 
-	if remote, ok := r.Resolve(good["path"].(string)); !ok || remote != expectedRemote {
+	if remote, _, ok := r.Resolve(good["path"].(string)); !ok || remote != expectedRemote {
 		t.Fatalf("control: %q %v", remote, ok)
 	}
 	for _, p := range []map[string]any{unpinned, badName} {
-		if remote, ok := r.Resolve(p["path"].(string)); !ok || remote != "" {
+		if remote, _, ok := r.Resolve(p["path"].(string)); !ok || remote != "" {
 			t.Errorf("%v: remote %q ok=%v, want refuse", p["id"], remote, ok)
 		}
 	}
@@ -284,7 +284,7 @@ func TestResolverNeverTrustsRequestData(t *testing.T) {
 		gp + "/", gp + "/..", gp + "/../app-one", filepath.Dir(gp), "app-one", strings.ToUpper(gp), gp + "\x00", gp + "\n", " " + gp, "../" + filepath.Base(gp),
 		gp + "/sub", "/etc/passwd", "",
 	} {
-		if remote, ok := r.Resolve(repo); remote != "" || (ok && repo == "") {
+		if remote, _, ok := r.Resolve(repo); remote != "" || (ok && repo == "") {
 			t.Errorf("repo %q resolved to %q (ok=%v)", repo, remote, ok)
 		} else if ok && strings.Contains(remote, "evil") {
 			t.Errorf("repo %q: %q", repo, remote)
@@ -294,7 +294,7 @@ func TestResolverNeverTrustsRequestData(t *testing.T) {
 	r.Invalidate()
 	e.wb.setReply(func(string, json.RawMessage) string { return "DROP" })
 	for _, repo := range []string{gp, filepath.Join(e.root, "never-seen")} {
-		if remote, ok := r.Resolve(repo); remote != "" || !ok {
+		if remote, _, ok := r.Resolve(repo); remote != "" || !ok {
 			t.Errorf("stale table, broker down: %q -> %q ok=%v (want refuse)", repo, remote, ok)
 		}
 	}

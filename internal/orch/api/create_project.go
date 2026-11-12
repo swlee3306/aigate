@@ -11,12 +11,14 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"aigate/internal/gate"
 	"aigate/internal/ledger"
 	"aigate/internal/orch/broker"
 	"aigate/internal/orch/clone"
+	"aigate/internal/orch/keys"
 	"aigate/internal/orch/policy"
 	"aigate/internal/orch/store"
 	"aigate/internal/registrymsg"
@@ -114,6 +116,25 @@ func createPreview(c registryChange, fingerprint string) []string {
 	if v, _ := c.Fields["ai_context"].(bool); v {
 		ai = aiOn
 	}
+	if vis, gh := c.Fields["visibility"].(string); gh {
+		visLine := "비공개 저장소로 만듭니다: 초대받은 사람만 볼 수 있습니다"
+		if vis == "public" {
+			visLine = "[중요] 공개 저장소로 만듭니다: 인터넷의 누구나 이 저장소의 코드를 읽을 수 있습니다"
+		}
+		return []string{
+			"GitHub 제공자 '" + str("provider") + "'의 소유자 '" + str("group_path") + "'에 새 저장소 '" + c.Subject + "'를 만듭니다",
+			visLine,
+			"템플릿: " + str("template") + " (코드에 고정된 파일들이 첫 커밋으로 들어갑니다)",
+			"설명: " + desc,
+			ai,
+			"게시 권한 — " + pub,
+			"저장소 전용 배포 키 지문(SHA-256): " + fingerprint + " (이 저장소 하나를 위해 지금 새로 만든 키입니다)",
+			"등록 후 정책 종류(kind)는 registered 입니다",
+			"브랜치 보호는 공개 저장소이거나 유료 요금제일 때만 켜집니다(안 되면 일부만 만들어진 것으로 알려 줍니다). 만든 뒤 이 도구는 저장소를 삭제하지 않습니다",
+			"만든 뒤 이 서버에 자동으로 한 번 복제합니다",
+			w3cStamp,
+		}
+	}
 	return []string{
 		"GitLab 제공자 '" + str("provider") + "'의 그룹 '" + str("group_path") + "'에 새 프로젝트 '" + c.Subject + "'를 만듭니다",
 		"템플릿: " + str("template") + " (코드에 고정된 파일들이 첫 커밋으로 들어갑니다)",
@@ -129,12 +150,15 @@ func createPreview(c registryChange, fingerprint string) []string {
 }
 
 // createPropose is POST /api/v1/projects/create/propose. Read-only: nothing
-// is stored and the broker is not called. A new project's kind is the policy
-// class `registered`, which must exist: without it the proposal is refused
-// before anything is signed. The deploy key hash is computed here from the
-// .pub file, never taken from the request.
+// is stored in the registry, the broker is not called and nothing is sent to a
+// provider. A new project's kind is the policy class `registered`, which must
+// exist: without it the proposal is refused before anything is signed. The deploy
+// key hash is computed here, never taken from the request: for GitLab from the
+// shared .pub file, for a GitHub create (a change with `visibility`) from a NEW
+// per-repository key made in staging for this proposal.
 func (h *handler) createPropose(w http.ResponseWriter, r *http.Request) {
 	var fp string
+	gh := false
 	h.proposeCore(w, r, []string{registrymsg.ActionCreateProject}, func(c *registryChange) (map[string]any, error) {
 		if h.folderTaken(c.Subject) {
 			return nil, errPathExists
@@ -142,58 +166,71 @@ func (h *handler) createPropose(w http.ResponseWriter, r *http.Request) {
 		if !h.hasPolicyClass(registeredClass) {
 			return nil, errPolicyClassMissing
 		}
-		line, f, ok := h.currentDeployKey()
-		if !ok {
-			return nil, errDeployKeyGone
+		_, gh = c.Fields["visibility"]
+		if gh {
+			if h.keys == nil || h.keys.Exists(c.Subject) {
+				return nil, errKeyStagingFailed
+			}
+			return nil, nil // the key is made after the slot is taken (stage)
 		}
+		f, extra, err := h.sharedKeyExtra(c)
 		fp = f
-		c.Fields["deploy_key_sha256"] = keyHash(line)
-		if _, err := registrymsg.CanonicalChange(c.Action, c.Subject, c.Fields); err != nil {
-			return nil, errProjBadBody
+		return extra, err
+	}, func(c *registryChange) (map[string]any, error) {
+		if !gh {
+			return nil, nil
 		}
-		return map[string]any{"deploy_key": map[string]string{"public_key": line, "fingerprint": f}}, nil
+		extra, err := h.stageKey(c)
+		if err == nil {
+			fp = extra["deploy_key"].(map[string]string)["fingerprint"]
+		}
+		return extra, err
 	}, func(c registryChange) []string { return createPreview(c, fp) })
 }
 
 // createApply is POST /api/v1/projects/create/apply.
 func (h *handler) createApply(w http.ResponseWriter, r *http.Request) {
+	plan := &keyPlan{h: h}
 	h.applyCore(w, r, []string{registrymsg.ActionCreateProject}, func(c registryChange, args map[string]any) error {
 		// Local checks that cost nothing and must hold at the moment of the call
-		// too: the policy class may have gone, the .pub may have been replaced
-		// since the proposal.
+		// too: the policy class may have gone, the key may have been replaced or
+		// have expired since the proposal.
 		if h.folderTaken(c.Subject) {
 			return errPathExists
 		}
 		if !h.hasPolicyClass(registeredClass) {
 			return errPolicyClassMissing
 		}
-		line, _, ok := h.currentDeployKey()
-		if !ok {
-			return errDeployKeyGone
-		}
-		if want, _ := c.Fields["deploy_key_sha256"].(string); keyHash(line) != want {
-			return errKeyMismatch
-		}
-		args["deploy_key"] = line
-		return nil
-	}, h.finishCreate)
+		_, gh := c.Fields["visibility"]
+		plan.prov, _ = c.Fields["provider"].(string)
+		return h.applyKey(c, args, gh, plan)
+	}, func(r *http.Request, c registryChange, res json.RawMessage, wall time.Time) (any, error) {
+		return h.finishCreate(r, c, res, wall, plan)
+	}, func(c registryChange, o keyOutcome) { plan.settle(c, o) })
 }
 
 // finishCreate turns the broker's ok result into the response: it checks that
-// the project is the one asked for, then clones it once from the REGISTRY.
-func (h *handler) finishCreate(r *http.Request, c registryChange, res json.RawMessage, wall time.Time) (any, error) {
+// the project is the one asked for, moves the project's own key (GitHub) into
+// place, then clones it once from the REGISTRY.
+func (h *handler) finishCreate(r *http.Request, c registryChange, res json.RawMessage, wall time.Time, plan *keyPlan) (any, error) {
 	var reply struct {
 		Project broker.Project `json:"project"`
 	}
 	if json.Unmarshal(res, &reply) != nil {
-		return nil, errCreateUnknown
+		return nil, providerWording(fieldKind(c), errCreateUnknown)
 	}
 	v, ok := projectView(reply.Project)
 	prov, _ := c.Fields["provider"].(string)
 	group, _ := c.Fields["group_path"].(string)
-	if !ok || v.ID != c.Subject || v.Kind != registeredClass || v.Provider == nil || *v.Provider != prov ||
-		v.GitLab == nil || v.GitLab.Project != group+"/"+c.Subject {
-		return nil, errCreateUnknown
+	_, gh := c.Fields["visibility"]
+	wantPath := group + "/" + c.Subject
+	pathOK := ok && v.GitLab != nil && (v.GitLab.Project == wantPath || (gh && strings.EqualFold(v.GitLab.Project, wantPath)))
+	if !ok || v.ID != c.Subject || v.Kind != registeredClass || v.Provider == nil || *v.Provider != prov || !pathOK {
+		return nil, providerWording(fieldKind(c), errCreateUnknown)
+	}
+	if plan.promote() != nil {
+		v.Cloned = h.isCloned(v.Path)
+		return map[string]any{"project": v, "clone": CloneResult{Status: "failed", Code: errKeyUnavailable.v1Code}}, nil
 	}
 	budget := createTotalBudget - time.Since(wall)
 	if budget < minAutoCloneBudget {
@@ -267,22 +304,35 @@ func (h *handler) cloneProject(ctx context.Context, id string, timeout time.Dura
 	if entry.Provider == nil || entry.Remote == nil {
 		return fail(errNotClonable)
 	}
-	var sshURL string
+	var sshURL, kind string
 	for _, p := range rv.Providers {
 		if p.ID == *entry.Provider {
-			sshURL = p.SSHURL
+			sshURL, kind = p.SSHURL, p.Kind
 		}
 	}
-	remote, ok := clone.RemoteFor(sshURL, entry.Remote.Path)
-	if !ok || !projectNameIs(entry.Remote.Path, id) || filepath.Base(entry.Path) != id {
+	remote, ok := clone.RemoteForKind(kind, sshURL, entry.Remote.Path)
+	if !ok || !clone.NameMatches(kind, entry.Remote.Path, id) || filepath.Base(entry.Path) != id {
 		return fail(errNotClonable)
 	}
 	if !h.directUnderRoot(entry.Path) || !safeProjectPath(entry.Path) {
 		return fail(errProjBadPath)
 	}
+	// A GitHub project clones with ITS OWN key (keys/<id>/id_ed25519, looked at
+	// by metadata only); a GitLab project with the shared key, as before.
+	sshKey, cloneKind := h.sshKey, "gitlab"
+	if kind == "github" {
+		if h.keys == nil {
+			return fail(errCloneUnavailable)
+		}
+		k, kerr := keys.PrivatePath(h.keys.KeysDir(), id)
+		if kerr != nil {
+			return fail(errKeyUnavailable)
+		}
+		sshKey, cloneKind = k, "github"
+	}
 	ran = true
 	err := h.cloneFn(ctx, clone.Options{Git: h.gitPath, SSH: h.sshPath, Remote: remote, Dest: entry.Path, Roots: h.roots,
-		SSHKey: h.sshKey, KnownHosts: h.knownHosts, Timeout: timeout})
+		SSHKey: sshKey, KnownHosts: h.knownHosts, Timeout: timeout, Kind: cloneKind})
 	if err != nil {
 		return fail(cloneError(err))
 	}
@@ -304,15 +354,6 @@ func (h *handler) recordClone(actor, subject string, ok bool, code string) {
 	if err != nil {
 		log.Printf("orchd: project_clone not recorded in the ledger")
 	}
-}
-
-func projectNameIs(project, id string) bool {
-	for i := len(project) - 1; i >= 0; i-- {
-		if project[i] == '/' {
-			return project[i+1:] == id
-		}
-	}
-	return false
 }
 
 // cloneError maps the clone helper's sentinels to fixed refusals (git's own

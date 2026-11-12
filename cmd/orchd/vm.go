@@ -67,9 +67,25 @@ type vmFlags struct {
 // the same files the clone endpoint uses.
 func (v *vmFlags) remoteResolver() *clone.Resolver {
 	if v.resolver == nil && v.BrokerSocket != "" && v.GitRemote != "" && v.GitSSHKey != "" && v.GitSSHKnownHosts != "" {
-		v.resolver = &clone.Resolver{Client: &broker.Client{Socket: v.BrokerSocket}, KnownHosts: v.GitSSHKnownHosts}
+		// GitHub projects have their own keys next to the shared one
+		// (<dir of --git-ssh-key>/keys/<project id>/id_ed25519): no new flag.
+		v.resolver = &clone.Resolver{Client: &broker.Client{Socket: v.BrokerSocket}, KnownHosts: v.GitSSHKnownHosts,
+			KeysDir: filepath.Join(filepath.Dir(v.GitSSHKey), "keys"), SharedKey: v.GitSSHKey}
 	}
 	return v.resolver
+}
+
+// staticRemoteRepos are the repository paths of the --git-remote-for entries
+// (paths only): a static remote beats the registry, so attach_remote refuses
+// those projects.
+func (v *vmFlags) staticRemoteRepos() []string {
+	var out []string
+	for _, kv := range v.GitRemoteFor {
+		if repo, _, ok := strings.Cut(kv, "="); ok && repo != "" {
+			out = append(out, repo)
+		}
+	}
+	return out
 }
 
 func (v *vmFlags) register(fs *flag.FlagSet) {

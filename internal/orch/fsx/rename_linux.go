@@ -1,6 +1,6 @@
 //go:build linux
 
-package clone
+package fsx
 
 import (
 	"errors"
@@ -9,10 +9,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// renameNoReplace moves from to to and fails with an error matching
+// RenameNoReplace moves from to to and fails with an error matching
 // os.ErrExist if anything (a symlink included) is at to. Where the file system
 // lacks RENAME_NOREPLACE it falls back to an Lstat check before the rename.
-func renameNoReplace(from, to string) error {
+func RenameNoReplace(from, to string) error {
 	err := unix.Renameat2(unix.AT_FDCWD, from, unix.AT_FDCWD, to, unix.RENAME_NOREPLACE)
 	if errors.Is(err, unix.EINVAL) || errors.Is(err, unix.ENOSYS) {
 		return renameChecked(from, to)

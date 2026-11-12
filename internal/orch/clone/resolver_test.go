@@ -156,7 +156,7 @@ func TestResolverBuildsFromRegistryOnly(t *testing.T) {
 		"/r/unknown":   {"", false},
 		"":             {"", false},
 	} {
-		got, ok := r.Resolve(path)
+		got, _, ok := r.Resolve(path)
 		if got != want.remote || ok != want.ok {
 			t.Errorf("Resolve(%q) = %q,%v want %q,%v", path, got, ok, want.remote, want.ok)
 		}
@@ -169,10 +169,10 @@ func TestResolverRequiresPinnedHost(t *testing.T) {
 		proj("evil-one", "/r/evil-one", "evil", "team/evil-one"), // host evil.example is not pinned
 	))
 	r, _ := newResolver(t, f)
-	if got, ok := r.Resolve("/r/app-one"); !ok || got == "" {
+	if got, _, ok := r.Resolve("/r/app-one"); !ok || got == "" {
 		t.Fatalf("pinned host refused: %q %v", got, ok)
 	}
-	if got, ok := r.Resolve("/r/evil-one"); !ok || got != "" {
+	if got, _, ok := r.Resolve("/r/evil-one"); !ok || got != "" {
 		t.Fatalf("unpinned host must be refused (empty remote, ok), got %q %v", got, ok)
 	}
 	// An emptied pinning file pins nothing.
@@ -180,7 +180,7 @@ func TestResolverRequiresPinnedHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.Invalidate()
-	if got, ok := r.Resolve("/r/app-one"); !ok || got != "" {
+	if got, _, ok := r.Resolve("/r/app-one"); !ok || got != "" {
 		t.Fatalf("empty known_hosts: %q %v", got, ok)
 	}
 }
@@ -196,12 +196,12 @@ func TestResolverCacheInvalidation(t *testing.T) {
 	}
 	// A project created meanwhile is unknown until the cache is dropped...
 	f.set(view(proj("app-one", "/r/app-one", "gl", "team/app-one"), proj("app-two", "/r/app-two", "gl", "team/app-two")))
-	if _, ok := r.Resolve("/r/app-two"); ok {
+	if _, _, ok := r.Resolve("/r/app-two"); ok {
 		t.Fatal("a new project resolved from a stale cache")
 	}
 	// ...and known right after Invalidate.
 	r.Invalidate()
-	if got, ok := r.Resolve("/r/app-two"); !ok || got != "ssh://git@gitlab.example/team/app-two.git" {
+	if got, _, ok := r.Resolve("/r/app-two"); !ok || got != "ssh://git@gitlab.example/team/app-two.git" {
 		t.Fatalf("after invalidate: %q %v", got, ok)
 	}
 	if n := f.calls.Load(); n != 2 {
@@ -226,7 +226,7 @@ func TestResolverFailsClosedWhenBrokerDown(t *testing.T) {
 	// Cold start with the broker down: nothing is known, so nothing is
 	// pushed anywhere by guessing (the default remote is not used).
 	cold := &Resolver{Client: &broker.Client{Socket: filepath.Join(shortDir(t), "none.sock")}, KnownHosts: r.KnownHosts}
-	if got, ok := cold.Resolve("/r/app-one"); !ok || got != "" {
+	if got, _, ok := cold.Resolve("/r/app-one"); !ok || got != "" {
 		t.Fatalf("cold start, broker down: %q %v", got, ok)
 	}
 	// Warm, then the broker goes away: a repo known to be provider-linked is
@@ -235,36 +235,36 @@ func TestResolverFailsClosedWhenBrokerDown(t *testing.T) {
 	r.Resolve("/r/app-one")
 	f.stop()
 	*now = now.Add(time.Minute)
-	if got, ok := r.Resolve("/r/app-one"); !ok || got != "" {
+	if got, _, ok := r.Resolve("/r/app-one"); !ok || got != "" {
 		t.Fatalf("stale + broker down, linked repo: %q %v", got, ok)
 	}
 	// An unlisted repo is UNKNOWN while the table is stale (it may be the one
 	// just created): refused too. Tradeoff: repos that only use the default
 	// remote cannot publish until the registry can be read again.
-	if got, ok := r.Resolve("/r/never-listed"); !ok || got != "" {
+	if got, _, ok := r.Resolve("/r/never-listed"); !ok || got != "" {
 		t.Fatalf("stale + broker down, unlisted repo must be refused: %q %v", got, ok)
 	}
 	// The broker comes back: it resolves again, and with a FRESH table a repo
 	// the registry does not list is known to be unlisted: the default applies.
 	f.listen(t)
-	if got, ok := r.Resolve("/r/app-one"); !ok || got == "" {
+	if got, _, ok := r.Resolve("/r/app-one"); !ok || got == "" {
 		t.Fatalf("after recovery: %q %v", got, ok)
 	}
-	if got, ok := r.Resolve("/r/never-listed"); ok || got != "" {
+	if got, _, ok := r.Resolve("/r/never-listed"); ok || got != "" {
 		t.Fatalf("fresh table, unlisted repo: %q %v", got, ok)
 	}
 	// Invalidated (a create just happened) and the broker gone again: a repo
 	// absent from the stale table is unknown, not unlisted.
 	r.Invalidate()
 	f.stop()
-	if got, ok := r.Resolve("/r/brand-new"); !ok || got != "" {
+	if got, _, ok := r.Resolve("/r/brand-new"); !ok || got != "" {
 		t.Fatalf("invalidated + broker down, new repo: %q %v", got, ok)
 	}
 }
 
 func TestResolverNilClientNeverResolves(t *testing.T) {
 	var r *Resolver
-	if got, ok := r.Resolve("/r/x"); ok || got != "" {
+	if got, _, ok := r.Resolve("/r/x"); ok || got != "" {
 		t.Fatalf("%q %v", got, ok)
 	}
 	r.Invalidate() // must not panic
@@ -279,13 +279,13 @@ func TestResolverProviderLinkedWithoutRemoteIsRefused(t *testing.T) {
 		proj("legacy", "/r/legacy", "", ""),
 	))
 	r, _ := newResolver(t, f)
-	if got, ok := r.Resolve("/r/no-link"); got != "" || !ok {
+	if got, _, ok := r.Resolve("/r/no-link"); got != "" || !ok {
 		t.Errorf("provider-linked without remote: %q,%v want refuse (\"\",true)", got, ok)
 	}
-	if got, ok := r.Resolve("/r/legacy"); got != "" || ok {
+	if got, _, ok := r.Resolve("/r/legacy"); got != "" || ok {
 		t.Errorf("legacy project: %q,%v want default (\"\",false)", got, ok)
 	}
-	if got, ok := r.Resolve("/r/unlisted"); got != "" || ok {
+	if got, _, ok := r.Resolve("/r/unlisted"); got != "" || ok {
 		t.Errorf("unlisted project: %q,%v want default", got, ok)
 	}
 }

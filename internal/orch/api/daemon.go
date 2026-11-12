@@ -18,6 +18,7 @@ import (
 
 	"aigate/internal/orch/broker"
 	"aigate/internal/orch/clone"
+	"aigate/internal/orch/keys"
 	"aigate/internal/orch/machine"
 	"aigate/internal/orch/store"
 	"aigate/internal/orch/web"
@@ -98,6 +99,11 @@ type Config struct {
 	// project-creation request that may have changed the registry (the publish
 	// resolver drops its cache).
 	OnRegistryChange func()
+	// StaticRemoteRepos are the repository paths of orchd's --git-remote-for
+	// entries (the paths only, never their remotes). A static remote has
+	// priority over the registry, so attach_remote refuses such a project
+	// (static_remote_wins) before anything is signed.
+	StaticRemoteRepos []string
 }
 
 const (
@@ -204,6 +210,19 @@ func NewDaemon(cfg Config, st *store.Store, p StepProvider) (*Daemon, error) {
 		h.knownHosts = cfg.GitSSHKnownHosts
 	}
 	h.onRegistryChange = cfg.OnRegistryChange
+	// Per-repository GitHub deploy keys live next to the shared key
+	// (<dir of --git-ssh-key>/keys and /keys-staging); no new flag. Nothing
+	// staged survives a restart.
+	if broker.ValidSocketPath(cfg.GitSSHKey) {
+		h.keys = &keys.Store{Root: filepath.Dir(cfg.GitSSHKey)}
+		if n := h.keys.SweepAll(); n > 0 {
+			log.Printf("orchd: removed %d unapplied staged deploy keys", n)
+		}
+	}
+	h.staticRepos = map[string]bool{}
+	for _, r := range cfg.StaticRemoteRepos {
+		h.staticRepos[filepath.Clean(r)] = true
+	}
 	// git and ssh are looked up once, in fixed directories (never the
 	// environment); a crashed clone's .clone-* staging dirs are swept.
 	h.gitPath, h.sshPath = clone.FindTool("git"), clone.FindTool("ssh")

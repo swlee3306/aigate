@@ -75,9 +75,11 @@ func TestClientTimedOutFlag(t *testing.T) {
 // limit stays shorter than the client's, and the web waits longer still.
 func TestW3cDefaultTimeouts(t *testing.T) {
 	want := map[string]time.Duration{OpCreateProject: 70 * time.Second, OpCreateGroup: 25 * time.Second, OpListGroups: 25 * time.Second,
-		OpSetProvider: 20 * time.Second, OpDeleteProvider: 15 * time.Second, OpProviders: 8 * time.Second}
+		OpSetProvider: 20 * time.Second, OpDeleteProvider: 15 * time.Second, OpProviders: 8 * time.Second,
+		OpLinkProject: 55 * time.Second, OpAttachRemote: 55 * time.Second}
 	brokerLimit := map[string]time.Duration{OpCreateProject: 60 * time.Second, OpCreateGroup: 20 * time.Second, OpListGroups: 20 * time.Second,
-		OpSetProvider: 15 * time.Second, OpDeleteProvider: 10 * time.Second, OpProviders: 5 * time.Second}
+		OpSetProvider: 15 * time.Second, OpDeleteProvider: 10 * time.Second, OpProviders: 5 * time.Second,
+		OpLinkProject: 45 * time.Second, OpAttachRemote: 45 * time.Second}
 	for op, d := range want {
 		if defaultTimeouts[op] != d {
 			t.Errorf("%s: %v want %v", op, defaultTimeouts[op], d)

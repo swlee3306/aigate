@@ -137,20 +137,7 @@ func (r remoteReq) signedFields() map[string]any {
 // that no later step can answer a bad_request after the ID was burnt. GitHub:
 // owner/repo (exactly two segments). GitLab: group path (lowercase names, at most
 // 4 segments) plus a lowercase project name, as GitLabAPI.Project requires.
-func remotePathShape(kind, p string) bool {
-	if !registrymsg.ValidRemotePath(p) {
-		return false
-	}
-	switch kind {
-	case "github":
-		_, _, ok := splitGH(p)
-		return ok && strings.Count(p, "/") == 1
-	case "gitlab":
-		i := strings.LastIndexByte(p, '/')
-		return i > 0 && registrymsg.ValidGroupPath(p[:i]) && registrymsg.ValidName(p[i+1:])
-	}
-	return false
-}
+func remotePathShape(kind, p string) bool { return registrymsg.ValidRemotePathForKind(kind, p) }
 
 // remoteRegistryCode applies the registry rules of link/attach to r and returns
 // "" or the fixed code to refuse with. Pure: no I/O.

@@ -124,19 +124,36 @@ func orphanView(o broker.OrphanRow) (OrphanView, bool) {
 type GroupView struct {
 	Path string `json:"path"`
 	Name string `json:"name"`
+	// Kind is set for GitHub owners: user (the token's account) or org.
+	Kind string `json:"kind,omitempty"`
 }
 
 // ---- broker error mapping ----
 
-// w3cBrokerError maps a broker failure to orchd's fixed refusal. Only the code
-// (and, for create_partial, the validated detail) is looked at. write says the
-// call was a write: then a failure that may have happened is outcome_unknown,
-// never a plain retry. The codes of the older ops are mapped by
-// projectsBrokerError.
+// w3cBrokerError maps a broker failure to orchd's fixed refusal (GitLab
+// wording where the sentence names the provider). See w3cBrokerErrorKind.
 func w3cBrokerError(action string, e *broker.OpError, write bool) *httpError {
+	return w3cBrokerErrorKind(action, "", e, write)
+}
+
+// w3cBrokerErrorKind maps a broker failure to orchd's fixed refusal. Only the
+// code (and, for create_partial/link_partial, the validated detail) is looked
+// at. write says the call was a write: then a failure that may have happened is
+// outcome_unknown, never a plain retry. The codes of the older ops are mapped
+// by projectsBrokerError. kind picks the wording of the sentences that name
+// the provider: "github" for GitHub, "neutral" for link/attach (the provider's
+// kind is not known to this function), anything else is the W3c GitLab text.
+func w3cBrokerErrorKind(action, kind string, e *broker.OpError, write bool) *httpError {
+	return providerWording(kind, w3cBrokerErrorBase(action, kind, e, write))
+}
+
+func w3cBrokerErrorBase(action, kind string, e *broker.OpError, write bool) *httpError {
 	unknown := errProvUnknownRes
-	if action == registrymsg.ActionCreateProject {
+	switch action {
+	case registrymsg.ActionCreateProject:
 		unknown = errCreateUnknown
+	case registrymsg.ActionLinkProject, registrymsg.ActionAttachRemote:
+		unknown = errLinkUnknown
 	}
 	if write && e.UnknownOutcome() {
 		return unknown
@@ -156,6 +173,20 @@ func w3cBrokerError(action string, e *broker.OpError, write bool) *httpError {
 		return errGLUnreachable
 	case "gitlab_refused":
 		return errGLRefused
+	case "github_refused":
+		return errGHRefused
+	case "provider_rate_limited":
+		return errProviderRateLimited
+	case "not_supported_for_provider":
+		return errNotSupportedForProvider
+	case "visibility_required":
+		return errVisibilityRequired
+	case "visibility_not_allowed":
+		return errVisibilityNotAllowed
+	case "repo_not_found":
+		return errRepoNotFound
+	case "already_linked":
+		return errAlreadyLinked
 	case "group_unknown":
 		return errGroupUnknown
 	case "group_exists":
@@ -172,7 +203,11 @@ func w3cBrokerError(action string, e *broker.OpError, write bool) *httpError {
 		return errTokensGone
 	case broker.CodeCreatePartial:
 		if write && action == registrymsg.ActionCreateProject {
-			return partialError(e.Partial)
+			return partialErrorWith(providerWording(kind, errCreatePartial), e.Partial)
+		}
+	case broker.CodeLinkPartial:
+		if write && (action == registrymsg.ActionLinkProject || action == registrymsg.ActionAttachRemote) {
+			return linkPartialError(e.Partial)
 		}
 	}
 	he := projectsBrokerError(e, write)
@@ -183,18 +218,39 @@ func w3cBrokerError(action string, e *broker.OpError, write bool) *httpError {
 }
 
 // partialError is create_partial with the orphan facts when the broker gave
-// valid ones (public values only: no token, no GitLab text).
-func partialError(d *broker.PartialDetail) *httpError {
-	he := *errCreatePartial
-	if d != nil {
-		origin := d.Origin
-		if origin == "" {
-			origin = broker.OriginCreated
-		}
-		he.detail = map[string]any{"provider": d.Provider, "project": d.Project, "project_id": d.ProjectID, "step": d.Step,
-			"orphan_recorded": d.Recorded, "orphan_dropped": d.Dropped, "origin": origin}
+// valid ones (public values only: no token, no provider text).
+func partialError(d *broker.PartialDetail) *httpError { return partialErrorWith(errCreatePartial, d) }
+
+// partialErrorWith is partialError with the sentence of a given provider wording.
+func partialErrorWith(base *httpError, d *broker.PartialDetail) *httpError {
+	he := *base
+	if m := partialDetail(d); m != nil {
+		he.detail = m
 	}
 	return &he
+}
+
+// linkPartialError is link_partial (a link or attach that stopped after the
+// repository was read: a deploy key of this server may be attached to an
+// EXISTING repository) with the same public orphan facts.
+func linkPartialError(d *broker.PartialDetail) *httpError {
+	he := *errLinkPartial
+	if m := partialDetail(d); m != nil {
+		he.detail = m
+	}
+	return &he
+}
+
+func partialDetail(d *broker.PartialDetail) map[string]any {
+	if d == nil {
+		return nil
+	}
+	origin := d.Origin
+	if origin == "" {
+		origin = broker.OriginCreated
+	}
+	return map[string]any{"provider": d.Provider, "project": d.Project, "project_id": d.ProjectID, "step": d.Step,
+		"orphan_recorded": d.Recorded, "orphan_dropped": d.Dropped, "origin": origin}
 }
 
 // ---- reads ----
@@ -256,8 +312,8 @@ func (h *handler) providerGroups(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var reply struct {
-		Groups    []struct{ Path, Name string } `json:"groups"`
-		Truncated bool                          `json:"truncated"`
+		Groups    []struct{ Path, Name, Kind string } `json:"groups"`
+		Truncated bool                                `json:"truncated"`
 	}
 	if err := json.Unmarshal(res, &reply); err != nil || len(reply.Groups) > maxGroupRows {
 		writeErr(w, errProjBrokerBad)
@@ -265,16 +321,23 @@ func (h *handler) providerGroups(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]GroupView, 0, len(reply.Groups))
 	for _, g := range reply.Groups {
-		if !registrymsg.ValidOwnerField(g.Path) || g.Name == "" || len(g.Name) > maxNameBytes || hostileText(g.Name) {
+		if !registrymsg.ValidOwnerField(g.Path) || g.Name == "" || len(g.Name) > maxNameBytes || hostileText(g.Name) ||
+			(g.Kind != "" && g.Kind != "user" && g.Kind != "org") {
 			writeErr(w, errProjBrokerBad)
 			return
 		}
-		out = append(out, GroupView{Path: g.Path, Name: g.Name})
+		out = append(out, GroupView{Path: g.Path, Name: g.Name, Kind: g.Kind})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"groups": out, "truncated": reply.Truncated})
 }
 
 // ---- the change ----
+
+// hasServerHash says the server computes deploy_key_sha256 for the action (the
+// client never sends it in a proposal).
+func hasServerHash(action string) bool {
+	return action == registrymsg.ActionCreateProject || action == registrymsg.ActionLinkProject || action == registrymsg.ActionAttachRemote
+}
 
 // parseW3cChange validates action, subject and the raw fields of a provider,
 // group or project-creation change: registrymsg's strict field parser and
@@ -305,7 +368,7 @@ func parseW3cChange(rawAction, rawSubject, rawFields json.RawMessage, allowed []
 		}
 	}
 	check := fields
-	if action == registrymsg.ActionCreateProject && !withHash {
+	if hasServerHash(action) && !withHash {
 		if _, has := fields["deploy_key_sha256"]; has {
 			return registryChange{}, errProjBadBody // the server alone computes it
 		}
@@ -318,20 +381,22 @@ func parseW3cChange(rawAction, rawSubject, rawFields json.RawMessage, allowed []
 	if _, err := registrymsg.CanonicalChange(action, subject, check); err != nil {
 		return registryChange{}, errProjBadBody
 	}
-	// W3e E1: the schema now knows github and visibility, but this console has
-	// no GitHub flow, preview text or key handling yet (E3/E4): refuse them
-	// here so nothing is proposed with a GitLab-worded preview.
-	if k, _ := fields["kind"].(string); action == registrymsg.ActionSetProvider && k != "gitlab" {
-		return registryChange{}, errProjBadBody
-	}
-	if _, has := fields["visibility"]; has {
-		return registryChange{}, errProjBadBody
-	}
-	// The signed owner field is a superset of both providers' rules (W3e E3 fix
-	// round A); until E4 gives this console a kind-aware check it stays a GitLab
-	// group path here, exactly as before.
-	if g, _ := fields["group_path"].(string); action == registrymsg.ActionCreateProject && !registrymsg.ValidGroupPath(g) {
-		return registryChange{}, errProjBadBody
+	// create_project: the signed owner field is a superset of both providers'
+	// rules, and the provider's kind is not known to this pure function. A
+	// change that carries `visibility` is a GitHub create (visibility is
+	// required for GitHub and forbidden for GitLab: the broker refuses the
+	// wrong combination in its shape stage, before any signature is looked at
+	// and without burning the request id), so its owner is one GitHub login;
+	// without it the W3c GitLab group-path rule applies, exactly as before.
+	if action == registrymsg.ActionCreateProject {
+		g, _ := fields["group_path"].(string)
+		if _, gh := fields["visibility"]; gh {
+			if !registrymsg.ValidOwnerForKind("github", g) {
+				return registryChange{}, errProjBadBody
+			}
+		} else if !registrymsg.ValidOwnerForKind("gitlab", g) {
+			return registryChange{}, errProjBadBody
+		}
 	}
 	return registryChange{Action: action, Subject: subject, Fields: fields}, nil
 }
@@ -345,6 +410,17 @@ func providerPreview(c registryChange) []string {
 	str := func(k string) string { s, _ := c.Fields[k].(string); return s }
 	switch c.Action {
 	case registrymsg.ActionSetProvider:
+		if str("kind") == "github" {
+			return []string{
+				"제공자 '" + c.Subject + "'를 저장합니다(종류: github). 같은 id가 있으면 이 값으로 바뀝니다",
+				"GitHub API 주소: " + str("base_url"),
+				"ssh 주소: " + str("ssh_url"),
+				"사용할 토큰 이름: " + str("token_ref") + " (토큰 값은 이 화면에 나오지 않습니다)",
+				"[중요] 이 토큰의 권한으로 위 주소의 GitHub에 저장소를 만들고 저장소별 배포 키를 등록합니다",
+				"이 제공자를 쓰는 프로젝트가 있으면 주소는 바꿀 수 없습니다",
+				w3cStamp,
+			}
+		}
 		return []string{
 			"제공자 '" + c.Subject + "'를 저장합니다(종류: " + str("kind") + "). 같은 id가 있으면 이 값으로 바뀝니다",
 			"GitLab 주소: " + str("base_url"),
@@ -379,10 +455,13 @@ func providerPreview(c registryChange) []string {
 
 var providerActions = []string{registrymsg.ActionSetProvider, registrymsg.ActionDeleteProvider, registrymsg.ActionCreateGroup}
 
-// proposeCore is the shared body of the two propose endpoints. check runs
-// after the body is understood and before a slot is taken; fill may add the
-// server-computed fields; extra adds response members.
-func (h *handler) proposeCore(w http.ResponseWriter, r *http.Request, allowed []string, check func(c *registryChange) (extra map[string]any, err error), preview func(c registryChange) []string) {
+// proposeCore is the shared body of the propose endpoints. check runs after
+// the body is understood and before a slot is taken (it may add the
+// server-computed fields and response members); stage, when set, runs once the
+// slot is taken and before the change is hashed: it is where a per-repository
+// deploy key is made (a refused or rate-limited proposal makes none).
+func (h *handler) proposeCore(w http.ResponseWriter, r *http.Request, allowed []string, check func(c *registryChange) (extra map[string]any, err error),
+	stage func(c *registryChange) (extra map[string]any, err error), preview func(c registryChange) []string) {
 	raw, err := readProjectsBody(w, r)
 	if err != nil {
 		writeErr(w, err)
@@ -409,6 +488,19 @@ func (h *handler) proposeCore(w http.ResponseWriter, r *http.Request, allowed []
 	if !h.w3cProposeLimit.take(store.ActorFrom(r.Context()), h.clock()) {
 		writeErr(w, errProjRateLimited)
 		return
+	}
+	if stage != nil {
+		more, err := stage(&c)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		if extra == nil {
+			extra = map[string]any{}
+		}
+		for k, v := range more {
+			extra[k] = v
+		}
 	}
 	change, err := c.hash()
 	if err != nil {
@@ -441,12 +533,12 @@ func (h *handler) proposeCore(w http.ResponseWriter, r *http.Request, allowed []
 // providersPropose is POST /api/v1/providers/propose (set_provider,
 // delete_provider, create_group). Read-only: nothing is stored.
 func (h *handler) providersPropose(w http.ResponseWriter, r *http.Request) {
-	h.proposeCore(w, r, providerActions, nil, providerPreview)
+	h.proposeCore(w, r, providerActions, nil, nil, providerPreview)
 }
 
 // providersApply is POST /api/v1/providers/apply.
 func (h *handler) providersApply(w http.ResponseWriter, r *http.Request) {
-	h.applyCore(w, r, providerActions, nil, nil)
+	h.applyCore(w, r, providerActions, nil, nil, nil)
 }
 
 // w3cLimiter is the bucket of an action.
@@ -456,6 +548,8 @@ func (h *handler) w3cLimiter(action string) *actorLimiter {
 		return h.createLimit
 	case registrymsg.ActionCreateGroup:
 		return h.groupLimit
+	case registrymsg.ActionLinkProject, registrymsg.ActionAttachRemote:
+		return h.linkLimit // one bucket for both
 	}
 	return h.providerLimit
 }
@@ -466,9 +560,17 @@ func (h *handler) w3cLimiter(action string) *actorLimiter {
 // broker arguments), takes a slot, and forwards the signed change to the
 // broker unchanged (one attempt, never retried). `finish` turns an ok result
 // into the response (nil: the generic one).
+//
+// settle, when set, hears how the call ended (for the per-repository key of a
+// GitHub project): keyKept when nothing reached the broker or the broker
+// provably did nothing, keyRefused for a known refusal, keyPartial for a
+// create_partial/link_partial and keyUnknown for an unknown outcome or an ok
+// result that could not be trusted. A fully trusted success is settled by
+// `finish` itself (it moves the key before it clones).
 func (h *handler) applyCore(w http.ResponseWriter, r *http.Request, allowed []string,
 	pre func(c registryChange, args map[string]any) error,
-	finish func(r *http.Request, c registryChange, res json.RawMessage, wall time.Time) (body any, err error)) {
+	finish func(r *http.Request, c registryChange, res json.RawMessage, wall time.Time) (body any, err error),
+	settle func(c registryChange, o keyOutcome)) {
 	started := h.clock()
 	wall := time.Now()
 	raw, err := readProjectsBody(w, r)
@@ -544,6 +646,9 @@ func (h *handler) applyCore(w http.ResponseWriter, r *http.Request, allowed []st
 	actor := store.ActorFrom(r.Context())
 	limiter := h.w3cLimiter(c.Action)
 	if !limiter.take(actor, started) {
+		if settle != nil {
+			settle(c, keyKept)
+		}
 		writeErr(w, errProjRateLimited)
 		return
 	}
@@ -555,11 +660,24 @@ func (h *handler) applyCore(w http.ResponseWriter, r *http.Request, allowed []st
 		// Only a failure that provably cost nothing gives the slot back (same
 		// rule as the registry and token endpoints): the request never
 		// completely left, or the broker refused before looking at it.
-		if oerr.Unsent || oerr.Code == "busy" || oerr.Code == "forbidden" {
+		provablyNothing := oerr.Unsent || oerr.Code == "busy" || oerr.Code == "forbidden"
+		if provablyNothing {
 			limiter.refund(actor, started)
 		}
-		he := w3cBrokerError(c.Action, oerr, true)
-		changed := he.v1Code == "outcome_unknown" || he.v1Code == broker.CodeCreatePartial
+		he := w3cBrokerErrorKind(c.Action, fieldKind(c), oerr, true)
+		changed := he.v1Code == "outcome_unknown" || he.v1Code == broker.CodeCreatePartial || he.v1Code == broker.CodeLinkPartial
+		if settle != nil {
+			switch {
+			case provablyNothing:
+				settle(c, keyKept)
+			case he.v1Code == broker.CodeCreatePartial || he.v1Code == broker.CodeLinkPartial:
+				settle(c, keyPartial)
+			case he.v1Code == "outcome_unknown":
+				settle(c, keyUnknown)
+			default:
+				settle(c, keyRefused)
+			}
+		}
 		if changed {
 			h.registryChanged()
 		}
@@ -583,6 +701,9 @@ func (h *handler) applyCore(w http.ResponseWriter, r *http.Request, allowed []st
 		code := errProjUnknownResult.v1Code
 		if he != nil {
 			code = he.v1Code
+		}
+		if settle != nil {
+			settle(c, keyUnknown) // the broker said ok but the result was not what was asked for
 		}
 		h.recordW3c(actor, c.Action, c.Subject, false, code)
 		writeErr(w, err)
@@ -644,8 +765,13 @@ func (h *handler) providerResult(c registryChange, res json.RawMessage) (any, er
 // the signature.
 func (h *handler) recordW3c(actor, action, subject string, ok bool, code string) {
 	typ := "provider_change"
-	if action == registrymsg.ActionCreateProject {
+	switch action {
+	case registrymsg.ActionCreateProject:
 		typ = "project_create"
+	case registrymsg.ActionLinkProject:
+		typ = "project_link"
+	case registrymsg.ActionAttachRemote:
+		typ = "project_attach"
 	}
 	home, err := gate.Home(h.grants.Home)
 	if err != nil {

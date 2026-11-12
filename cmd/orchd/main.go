@@ -123,6 +123,7 @@ func run(args []string) int {
 	// private key is never read by the API. Same flag, no new one.
 	cfg.GitSSHKey = vf.GitSSHKey
 	cfg.GitSSHKnownHosts = vf.GitSSHKnownHosts
+	cfg.StaticRemoteRepos = vf.staticRemoteRepos()
 	if err := checkQueueLimit(cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "orchd:", err)
 		return 2

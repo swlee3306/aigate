@@ -2,10 +2,12 @@ package clone
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
 	"aigate/internal/orch/broker"
+	"aigate/internal/orch/keys"
 	"aigate/internal/orch/knownhosts"
 	"aigate/internal/registrymsg"
 )
@@ -25,6 +27,40 @@ func RemoteFor(sshURL, project string) (string, bool) {
 	return remote, true
 }
 
+// RemoteForKind is RemoteFor for a provider kind. GitLab is RemoteFor exactly;
+// GitHub takes owner/repo (registrymsg's shape rule, case kept as the registry
+// holds it) and must produce the GitHub remote shape.
+func RemoteForKind(kind, sshURL, path string) (string, bool) {
+	switch kind {
+	case "gitlab":
+		return RemoteFor(sshURL, path)
+	case "github":
+		if !registrymsg.ValidSSHURL(sshURL) || !registrymsg.ValidRemotePathForKind("github", path) {
+			return "", false
+		}
+		remote := sshURL + "/" + path + ".git"
+		if _, _, ok := knownhosts.SplitSSHRemoteOwnerRepo(remote); !ok {
+			return "", false
+		}
+		return remote, true
+	}
+	return "", false
+}
+
+// NameMatches reports whether the last segment of a remote path is the project
+// id: exactly for GitLab, ignoring case for GitHub (its names are
+// case-insensitive; the registry keeps the provider's spelling).
+func NameMatches(kind, remotePath, id string) bool {
+	i := strings.LastIndexByte(remotePath, '/')
+	if i < 0 {
+		return false
+	}
+	if kind == "github" {
+		return strings.EqualFold(remotePath[i+1:], id)
+	}
+	return remotePath[i+1:] == id
+}
+
 // DefaultResolverTTL is how long the registry read is reused (D6).
 const DefaultResolverTTL = 30 * time.Second
 
@@ -38,14 +74,23 @@ const DefaultResolverTTL = 30 * time.Second
 //
 // Resolve returns:
 //
-//	(remote, true)  a project linked to a provider, resolved and pinned: push there;
-//	("",     true)  a project that is (or, while the registry cannot be read
-//	                and the cached table is stale, may be) linked but cannot be
-//	                resolved safely: REFUSE the push;
-//	("",     false) not a provider-linked project: the caller's own default applies.
+//	(remote, key, true)  a project linked to a provider, resolved and pinned: push
+//	                     there with this private key (GitLab: the shared deploy
+//	                     key, SharedKey; GitHub: keys/<project id>/id_ed25519
+//	                     under KeysDir, checked right now: missing, unreadable,
+//	                     not a regular file or wrong mode/owner refuses);
+//	("", "", true)       a project that is (or, while the registry cannot be read
+//	                     and the cached table is stale, may be) linked but cannot
+//	                     be resolved safely: REFUSE the push;
+//	("", "", false)      not a provider-linked project: the caller's own default applies.
 type Resolver struct {
 	Client     *broker.Client
 	KnownHosts string
+	// KeysDir is the directory of the per-project GitHub keys; SharedKey the
+	// shared GitLab deploy key (both absolute; "" = none: a GitHub project is
+	// then refused, GitLab projects get no explicit key and the publisher's own
+	// applies).
+	KeysDir, SharedKey string
 	// TTL is the cache lifetime (0 = DefaultResolverTTL); Now is the clock
 	// (nil = time.Now).
 	TTL time.Duration
@@ -54,7 +99,15 @@ type Resolver struct {
 	mu     sync.Mutex
 	fresh  bool // the cache is current (not invalidated, within the TTL)
 	at     time.Time
-	byPath map[string]string // provider-linked project path -> remote ("" = refuse)
+	byPath map[string]resolved // provider-linked project path -> answer (zero = refuse)
+}
+
+// resolved is a table row: the remote ("" = refuse) and, for GitHub, the project
+// id whose key directory holds the private key.
+type resolved struct {
+	remote string
+	github bool
+	id     string
 }
 
 func (r *Resolver) now() time.Time {
@@ -77,9 +130,9 @@ func (r *Resolver) Invalidate() {
 }
 
 // Resolve: see the type comment.
-func (r *Resolver) Resolve(repo string) (string, bool) {
+func (r *Resolver) Resolve(repo string) (remote, key string, ok bool) {
 	if r == nil || r.Client == nil || r.Client.Socket == "" || repo == "" {
-		return "", false
+		return "", "", false
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -95,12 +148,25 @@ func (r *Resolver) Resolve(repo string) (string, bool) {
 		// not be read again: which repositories are provider-linked is UNKNOWN, so
 		// nothing is pushed anywhere by guessing, a repository the old table did
 		// not list included (it may be the one just created).
-		return "", true
+		return "", "", true
 	}
-	if remote, ok := r.byPath[repo]; ok {
-		return remote, true
+	row, found := r.byPath[repo]
+	if !found {
+		return "", "", false
 	}
-	return "", false
+	if row.remote == "" {
+		return "", "", true
+	}
+	if !row.github {
+		return row.remote, r.SharedKey, true
+	}
+	// The per-project key is looked at on EVERY call (the table may be 30 s old):
+	// a key that went missing or lost its mode refuses the push.
+	p, err := keys.PrivatePath(r.KeysDir, row.id)
+	if err != nil {
+		return "", "", true
+	}
+	return row.remote, p, true
 }
 
 func (r *Resolver) refresh() {
@@ -111,39 +177,34 @@ func (r *Resolver) refresh() {
 		r.fresh = false
 		return
 	}
-	providers := map[string]string{}
+	type prov struct{ ssh, kind string }
+	providers := map[string]prov{}
 	for _, p := range view.Providers {
-		providers[p.ID] = p.SSHURL
+		providers[p.ID] = prov{p.SSHURL, p.Kind}
 	}
-	table := map[string]string{}
+	table := map[string]resolved{}
 	for _, p := range view.Projects {
 		if p.Provider == nil {
 			continue // not a provider-linked project
 		}
 		// Provider-linked but unresolved is refuse-class even without a remote
 		// link (an old broker, a rollback): never the default --git-remote.
-		table[p.Path] = ""
+		table[p.Path] = resolved{}
 		if p.Remote == nil {
 			continue
 		}
-		ssh, known := providers[*p.Provider]
-		if !known || !lastSegmentIs(p.Remote.Path, p.ID) {
+		pv, known := providers[*p.Provider]
+		if !known || !NameMatches(pv.kind, p.Remote.Path, p.ID) {
 			continue
 		}
-		remote, ok := RemoteFor(ssh, p.Remote.Path)
+		remote, ok := RemoteForKind(pv.kind, pv.ssh, p.Remote.Path)
 		if !ok || !knownhosts.RemotePinned(r.KnownHosts, remote) {
 			continue
 		}
-		table[p.Path] = remote
+		if pv.kind == "github" && !registrymsg.ValidSubject(p.ID) {
+			continue
+		}
+		table[p.Path] = resolved{remote: remote, github: pv.kind == "github", id: p.ID}
 	}
 	r.byPath, r.fresh, r.at = table, true, r.now()
-}
-
-func lastSegmentIs(project, id string) bool {
-	for i := len(project) - 1; i >= 0; i-- {
-		if project[i] == '/' {
-			return project[i+1:] == id
-		}
-	}
-	return false
 }

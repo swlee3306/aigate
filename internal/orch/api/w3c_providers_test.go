@@ -266,7 +266,7 @@ func TestW3cProposeRejectsBadFieldsAndHostileText(t *testing.T) {
 		"no fields":                         {"/api/v1/providers/propose", map[string]any{"action": "delete_provider", "subject": "gl"}},
 		"delete with fields":                {"/api/v1/providers/propose", map[string]any{"action": "delete_provider", "subject": "gl", "fields": map[string]any{"x": "y"}}},
 		"set_provider bad url":              {"/api/v1/providers/propose", map[string]any{"action": "set_provider", "subject": "gl", "fields": map[string]any{"kind": "gitlab", "base_url": "http://u:p@h", "ssh_url": "ssh://git@h", "token_ref": "t"}}},
-		"set_provider bad kind":             {"/api/v1/providers/propose", map[string]any{"action": "set_provider", "subject": "gl", "fields": map[string]any{"kind": "github", "base_url": "http://h", "ssh_url": "ssh://git@h", "token_ref": "t"}}},
+		"set_provider bad kind":             {"/api/v1/providers/propose", map[string]any{"action": "set_provider", "subject": "gl", "fields": map[string]any{"kind": "bitbucket", "base_url": "http://h", "ssh_url": "ssh://git@h", "token_ref": "t"}}},
 		"create_group bad parent":           {"/api/v1/providers/propose", map[string]any{"action": "create_group", "subject": "gl", "fields": map[string]any{"name": "ab", "path": "ab", "parent_path": "../x"}}},
 	} {
 		if code, b := post(tc.path, tc.body); code != 400 {

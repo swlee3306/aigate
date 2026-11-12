@@ -26,6 +26,10 @@ const (
 	OpDeleteProvider = "delete_provider"
 	OpCreateGroup    = "create_group"
 	OpCreateProject  = "create_project"
+	// W3e: link an existing remote repository as a new project, or attach one
+	// to a registered project.
+	OpLinkProject  = "link_project"
+	OpAttachRemote = "attach_remote"
 )
 
 func init() {
@@ -38,6 +42,9 @@ func init() {
 	defaultTimeouts[OpDeleteProvider] = 15 * time.Second
 	defaultTimeouts[OpCreateGroup] = 25 * time.Second
 	defaultTimeouts[OpCreateProject] = 70 * time.Second
+	// The broker gives link/attach 45 s: the client waits a little longer.
+	defaultTimeouts[OpLinkProject] = 55 * time.Second
+	defaultTimeouts[OpAttachRemote] = 55 * time.Second
 }
 
 // CodeCreatePartial is the reply code of a create_project that left a GitLab

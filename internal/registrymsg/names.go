@@ -81,6 +81,82 @@ func ValidRemotePath(s string) bool {
 	return true
 }
 
+// The GitHub name patterns, shared with the broker's request allowlist so a
+// shape accepted here can never be refused there (or the other way round).
+const (
+	// GitHubLoginPattern: a login of 1-39 characters; `_` is for Enterprise
+	// Managed Users logins.
+	GitHubLoginPattern = `[A-Za-z0-9][A-Za-z0-9_-]{0,38}`
+	// GitHubRepoPattern: a repository name.
+	GitHubRepoPattern = `[A-Za-z0-9._-]{1,100}`
+)
+
+var (
+	ghLoginRE = regexp.MustCompile(`^` + GitHubLoginPattern + `$`)
+	ghRepoRE  = regexp.MustCompile(`^` + GitHubRepoPattern + `$`)
+)
+
+// ValidGitHubLogin reports whether s is a GitHub account or organization login.
+func ValidGitHubLogin(s string) bool { return ghLoginRE.MatchString(s) }
+
+// ValidGitHubOwner is the rule for the SIGNED owner of a GitHub create: one
+// login, case kept, no trailing hyphen (a leading one is excluded by the
+// pattern).
+func ValidGitHubOwner(s string) bool {
+	return ValidGitHubLogin(s) && !strings.HasSuffix(s, "-")
+}
+
+// ValidGitHubRepoName reports whether s is a GitHub repository name: not "." or
+// "..", no ".git" ending in any case.
+func ValidGitHubRepoName(s string) bool {
+	if !ghRepoRE.MatchString(s) || s == "." || s == ".." {
+		return false
+	}
+	return !(len(s) >= 4 && strings.EqualFold(s[len(s)-4:], ".git"))
+}
+
+// SplitGitHubPath splits "owner/repo" (exactly two valid segments).
+func SplitGitHubPath(path string) (owner, repo string, ok bool) {
+	owner, repo, found := strings.Cut(path, "/")
+	if !found || !ValidGitHubLogin(owner) || !ValidGitHubRepoName(repo) {
+		return "", "", false
+	}
+	return owner, repo, true
+}
+
+// ValidOwnerForKind is the provider-specific rule for the signed owner field of
+// create_project (it is checked by the broker before the signature is looked
+// at, and by orchd before anything is proposed): GitLab keeps the lowercase
+// group-path rule, GitHub takes one login.
+func ValidOwnerForKind(kind, owner string) bool {
+	switch kind {
+	case "gitlab":
+		return ValidGroupPath(owner)
+	case "github":
+		return ValidGitHubOwner(owner)
+	}
+	return false
+}
+
+// ValidRemotePathForKind reports whether p is a remote path the provider's
+// client accepts. GitHub: owner/repo, exactly two segments. GitLab: a group path
+// (lowercase names, at most MaxGroupDepth segments) plus a lowercase project
+// name.
+func ValidRemotePathForKind(kind, p string) bool {
+	if !ValidRemotePath(p) {
+		return false
+	}
+	switch kind {
+	case "github":
+		_, _, ok := SplitGitHubPath(p)
+		return ok && strings.Count(p, "/") == 1
+	case "gitlab":
+		i := strings.LastIndexByte(p, '/')
+		return i > 0 && ValidGroupPath(p[:i]) && ValidName(p[i+1:])
+	}
+	return false
+}
+
 // ValidProviderID reports whether s is a provider id.
 func ValidProviderID(s string) bool { return providerIDRE.MatchString(s) }
 

@@ -80,11 +80,11 @@ func TestPublishResolverOnlyForUnlistedRepos(t *testing.T) {
 	a, b := newRFix(t), newRFix(t)
 	var mu sync.Mutex
 	var asked []string
-	res := func(repo string) (string, bool) {
+	res := func(repo string) (string, string, bool) {
 		mu.Lock()
 		asked = append(asked, repo)
 		mu.Unlock()
-		return resolved, true
+		return resolved, "", true
 	}
 	// b.repo has its own static remote (a local bare); a.repo is unlisted.
 	p := a.pub(t, Config{RepoRemotes: map[string]string{b.repo: b.bare}, RemoteResolver: res})
@@ -131,7 +131,7 @@ func TestResolverRequiresPinnedHost(t *testing.T) {
 		"trailing newline": resolved + "\n",
 	} {
 		os.Remove(r.log)
-		p := r.pub(t, Config{RemoteResolver: func(string) (string, bool) { return remote, true }})
+		p := r.pub(t, Config{RemoteResolver: func(string) (string, string, bool) { return remote, "", true }})
 		if err := r.push(p, r.repo); err == nil {
 			t.Errorf("%s: push was allowed", name)
 		}
@@ -140,13 +140,13 @@ func TestResolverRequiresPinnedHost(t *testing.T) {
 		}
 	}
 	// A pinned host is accepted.
-	p := r.pub(t, Config{RemoteResolver: func(string) (string, bool) { return resolved, true }})
+	p := r.pub(t, Config{RemoteResolver: func(string) (string, string, bool) { return resolved, "", true }})
 	if err := r.push(p, r.repo); err != nil {
 		t.Fatalf("pinned host refused: %v", err)
 	}
 	// ("", true) is a refusal, not a fall-through to the default remote.
 	os.Remove(r.log)
-	p = r.pub(t, Config{RemoteResolver: func(string) (string, bool) { return "", true }})
+	p = r.pub(t, Config{RemoteResolver: func(string) (string, string, bool) { return "", "", true }})
 	if err := r.push(p, r.repo); err == nil {
 		t.Fatal("an unresolvable linked repo was pushed to the default remote")
 	}
@@ -160,7 +160,7 @@ func TestStaticRemotesUnchanged(t *testing.T) {
 	other := newRFix(t)
 	// A resolver that says "not mine" leaves the old behaviour untouched: the
 	// listed repo uses its remote, any other repo the default.
-	p := r.pub(t, Config{RepoRemotes: map[string]string{other.repo: other.bare}, RemoteResolver: func(string) (string, bool) { return "", false }})
+	p := r.pub(t, Config{RepoRemotes: map[string]string{other.repo: other.bare}, RemoteResolver: func(string) (string, string, bool) { return "", "", false }})
 	if err := r.push(p, other.repo); err != nil || !r.pushedTo(other.bare) {
 		t.Fatalf("listed: %v %v", err, r.pushes())
 	}
@@ -177,7 +177,7 @@ func TestStaticRemotesUnchanged(t *testing.T) {
 	if err := r.push(q, r.repo); err != nil || !r.pushedTo(r.bare) {
 		t.Fatalf("no resolver: %v %v", err, r.pushes())
 	}
-	if p := q.remoteFor(other.repo); p != other.bare {
+	if p, _ := q.remoteFor(other.repo); p != other.bare {
 		t.Fatalf("remoteFor %q", p)
 	}
 }
@@ -186,7 +186,7 @@ func TestStaticRemotesUnchanged(t *testing.T) {
 // ssh key and the pinning file exactly as a static ssh remote does.
 func TestNewWithResolverNeedsSSHFiles(t *testing.T) {
 	r := newRFix(t)
-	res := func(string) (string, bool) { return "", false }
+	res := func(string) (string, string, bool) { return "", "", false }
 	al := policy.NewAllowlist(KindPushBranch)
 	for name, c := range map[string]Config{
 		"no ssh settings":   {Allow: al, Remote: r.bare, RemoteResolver: res},

@@ -79,8 +79,8 @@ var (
 // ---------- allowlist ----------
 
 const (
-	ghOwner = `[A-Za-z0-9][A-Za-z0-9_-]{0,38}` // '_' for Enterprise Managed Users logins
-	ghRepo  = `[A-Za-z0-9._-]{1,100}`
+	ghOwner = registrymsg.GitHubLoginPattern
+	ghRepo  = registrymsg.GitHubRepoPattern
 	ghFile  = reFSeg + `(?:/` + reFSeg + `){0,3}`
 )
 
@@ -350,36 +350,16 @@ func (a *GitHubAPI) token() (string, bool) {
 
 // ---------- names ----------
 
-var (
-	ghLoginRE = regexp.MustCompile(`^` + ghOwner + `$`)
-	ghRepoRE  = regexp.MustCompile(`^` + ghRepo + `$`)
-)
+func validGHLogin(s string) bool { return registrymsg.ValidGitHubLogin(s) }
 
-func validGHLogin(s string) bool { return ghLoginRE.MatchString(s) }
+// validGHOwnerLogin is the rule for the SIGNED owner of a GitHub create; the
+// rule itself is registrymsg's, shared with orchd's propose-time check.
+func validGHOwnerLogin(s string) bool { return registrymsg.ValidGitHubOwner(s) }
 
-// validGHOwnerLogin is the rule for the SIGNED owner of a GitHub create: one
-// login of 1-39 characters [A-Za-z0-9-] (plus `_`, which Enterprise Managed
-// Users logins have), case kept, no leading or trailing hyphen. The login the
-// provider returns is what is used; this only decides what may be signed.
-func validGHOwnerLogin(s string) bool {
-	return validGHLogin(s) && !strings.HasPrefix(s, "-") && !strings.HasSuffix(s, "-")
-}
-
-func validGHRepoName(s string) bool {
-	if !ghRepoRE.MatchString(s) || s == "." || s == ".." {
-		return false
-	}
-	return !(len(s) >= 4 && strings.EqualFold(s[len(s)-4:], ".git"))
-}
+func validGHRepoName(s string) bool { return registrymsg.ValidGitHubRepoName(s) }
 
 // splitGH splits "owner/repo" (exactly two valid segments).
-func splitGH(path string) (owner, repo string, ok bool) {
-	owner, repo, found := strings.Cut(path, "/")
-	if !found || !validGHLogin(owner) || !validGHRepoName(repo) {
-		return "", "", false
-	}
-	return owner, repo, true
-}
+func splitGH(path string) (owner, repo string, ok bool) { return registrymsg.SplitGitHubPath(path) }
 
 func validGHRepoInfo(r RepoInfo) (owner, repo string, ok bool) {
 	owner, repo, ok = splitGH(r.Path)

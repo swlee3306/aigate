@@ -70,7 +70,7 @@ func (b *w3cBroker) allOps() []string {
 }
 
 func (b *w3cBroker) writeCalls() []regCall {
-	return b.opsNamed("set_provider", "delete_provider", "create_group", "create_project", "register_project", "set_flag")
+	return b.opsNamed("set_provider", "delete_provider", "create_group", "create_project", "link_project", "attach_remote", "register_project", "set_flag")
 }
 
 func (b *w3cBroker) setReply(fn func(op string, args json.RawMessage) string) {
@@ -188,9 +188,44 @@ func (b *w3cBroker) serve(c net.Conn) {
 			res[k] = v
 		}
 		ok(res)
+	case "link_project":
+		name, _ := a["id"].(string)
+		entry := map[string]any{"id": name, "path": "/repos/" + name, "kind": "registered", "ai_context": a["ai_context"], "provider": a["provider"],
+			"remote": map[string]any{"path": a["remote_path"], "id": 77}, "auto_merge": map[string]any{"enabled": false}}
+		b.mu.Lock()
+		if p, ok := b.createPathOverride(name); ok {
+			entry["path"] = p
+		}
+		b.projects = append(b.projects, entry)
+		b.mu.Unlock()
+		ok(map[string]any{"project": entry, "ssh_url": "ssh://git@evil.example", "clone_url": "ssh://git@evil.example/x/y.git", "cloned_hint": false})
+	case "attach_remote":
+		name, _ := a["id"].(string)
+		b.mu.Lock()
+		var entry map[string]any
+		for _, p := range b.projects {
+			if p["id"] == name {
+				p["provider"] = a["provider"]
+				p["remote"] = map[string]any{"path": a["remote_path"], "id": 78}
+				entry = p
+			}
+		}
+		b.mu.Unlock()
+		if entry == nil {
+			c.Write([]byte("{\"ok\":false,\"code\":\"project_unknown\"}\n"))
+			return
+		}
+		ok(map[string]any{"project": entry, "ssh_url": "ssh://git@evil.example", "clone_url": "ssh://git@evil.example/x/y.git", "cloned_hint": false})
 	default:
 		c.Write([]byte("{\"ok\":false,\"code\":\"unknown_op\"}\n"))
 	}
+}
+
+// addGitHub adds a github provider to the registry the fake broker reports.
+func (b *w3cBroker) addGitHub() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.providers = append(b.providers, map[string]any{"id": "gh", "kind": "github", "base_url": "https://api.github.com", "ssh_url": "ssh://git@github.com", "token_ref": "gh-main"})
 }
 
 func (b *w3cBroker) createPathOverride(name string) (string, bool) {
@@ -298,15 +333,25 @@ type w3cProposal struct {
 }
 
 func (e *w3cEnv) proposePath(action string) string {
-	if action == "create_project" {
+	switch action {
+	case "create_project":
 		return "/api/v1/projects/create/propose"
+	case "link_project":
+		return "/api/v1/projects/link/propose"
+	case "attach_remote":
+		return "/api/v1/projects/attach/propose"
 	}
 	return "/api/v1/providers/propose"
 }
 
 func (e *w3cEnv) applyPath(action string) string {
-	if action == "create_project" {
+	switch action {
+	case "create_project":
 		return "/api/v1/projects/create/apply"
+	case "link_project":
+		return "/api/v1/projects/link/apply"
+	case "attach_remote":
+		return "/api/v1/projects/attach/apply"
 	}
 	return "/api/v1/providers/apply"
 }
