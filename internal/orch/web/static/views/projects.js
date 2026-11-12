@@ -274,7 +274,7 @@ const ORPHAN_AT_RE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/;
 function validOrphan(o) {
   return isObj(o) && typeof o.provider === 'string' && PROVIDER_ID_RE.test(o.provider) && validRemotePath(o.project) &&
     (o.project_id === null || (Number.isSafeInteger(o.project_id) && o.project_id > 0)) && PARTIAL_STEPS.includes(o.step) &&
-    (o.origin === undefined || ORPHAN_ORIGINS.includes(o.origin)) && typeof o.at === 'string' && ORPHAN_AT_RE.test(o.at);
+    typeof o.at === 'string' && ORPHAN_AT_RE.test(o.at);
 }
 
 // validCloneResult: the `clone` member of a create answer.
@@ -314,6 +314,7 @@ export function projectsView(ctx) {
   const flow = makeFlow(ctx, {
     onChange: onFlowChange,
     onResult: onFlowResult,
+    prepare: prepareResult,
     kindOf: (sent) => kindFor(sent.action === ACTION_CREATE_GROUP ? sent.subject : sent.fields.provider),
   });
   let signerP = null;
@@ -584,6 +585,23 @@ export function projectsView(ctx) {
     if (st.step === 'x_confirm' || st.step === 'x_result' || st.step === 'cp_form' || st.step === 'cg_form' || st.step === 'lk_form') paint();
   }
 
+  // prepareResult runs BEFORE the result screen is first drawn: what the server answered about the clone
+  // (or the attach key) is known by then, so the screen never shows a default while the lists are re-read.
+  function prepareResult(result, sent) {
+    if (sent.action === ACTION_CREATE_GROUP) return;
+    cp.clone = null;
+    cp.keyFailed = false;
+    if (result.ok && sent.action === ACTION_ATTACH_REMOTE) {
+      // an attach has no clone; its answer may say that the key could not be put in place
+      const k = isObj(result.data) ? result.data.key : null;
+      cp.keyFailed = isObj(k) && k.status === 'failed' && k.code === 'key_unavailable';
+    } else if (result.ok) {
+      const c = validCloneResult(isObj(result.data) ? result.data.clone : null);
+      // the folder was already there: the project exists but what this server holds under that name is unknown
+      cp.clone = { state: c.status === 'cloned' ? 'ok' : c.status === 'already_cloned' ? 'check' : 'failed', code: c.code };
+    }
+  }
+
   // After a signed change ended, whatever the answer.
   async function onFlowResult(result, sent) {
     if (sent.action === ACTION_CREATE_GROUP) {
@@ -600,17 +618,6 @@ export function projectsView(ctx) {
       return;
     }
     // a project: the lists are read again (an unknown outcome certainly changed what they say, a half-made project adds an alert)
-    cp.clone = null;
-    cp.keyFailed = false;
-    if (result.ok && sent.action === ACTION_ATTACH_REMOTE) {
-      // an attach has no clone; its answer may say that the key could not be put in place
-      const k = isObj(result.data) ? result.data.key : null;
-      cp.keyFailed = isObj(k) && k.status === 'failed' && k.code === 'key_unavailable';
-    } else if (result.ok) {
-      const c = validCloneResult(isObj(result.data) ? result.data.clone : null);
-      // the folder was already there: the project exists but what this server holds under that name is unknown
-      cp.clone = { state: c.status === 'cloned' ? 'ok' : c.status === 'already_cloned' ? 'check' : 'failed', code: c.code };
-    }
     const reads = [loadList()];
     if (!result.ok && result.unknown) reads.push(reloadProviders());
     await Promise.all(reads);
@@ -931,7 +938,8 @@ export function projectsView(ctx) {
       el('p', {}, '제공자(GitLab/GitHub)에 일부만 만들어졌거나 연결이 중간에 멈춘 항목 ' + st.orphans.length + '개가 있을 수 있습니다.'),
       el('ul', {}, st.orphans.map((o) => {
         const kind = kindFor(o.provider);
-        const origin = o.origin === 'linked' ? 'linked' : 'created';
+        // a missing or unknown origin is never guessed: it says "origin unknown" and does not tell anyone to delete
+        const origin = ORPHAN_ORIGINS.includes(o.origin) ? o.origin : 'unknown';
         return el('li', { 'data-origin': origin }, [
           el('span', { class: 'mono' }, o.project),
           ' (프로젝트 ID ' + (o.project_id === null ? '알 수 없음' : String(o.project_id)) + ', 멈춘 단계: ' + stepLabel(o.step, kind) + ', ' + o.at + ')',
@@ -945,7 +953,7 @@ export function projectsView(ctx) {
     const f = cp.f;
     const kind = createKind();
     const gh = kind === 'github';
-    const field = (labelText, id, control, hint) => el('div', { class: 'field' }, [el('label', { for: id }, labelText), control, hint ? el('span', { class: 'hint' }, hint) : null]);
+    const field = (labelText, id, control, hint) => el('div', { class: 'field' }, [el('label', { for: id }, labelText), control, hint ? el('span', { class: 'hint', id: id + '-hint' }, hint) : null]);
     const needVisibility = gh && !VISIBILITIES.includes(f.visibility.value);
     return el('div', { class: ['panel', 'canvas'] }, [
       el('h1', { id: 'h-projects' }, '새 프로젝트 만들기'),
@@ -974,7 +982,7 @@ export function projectsView(ctx) {
         f.problem,
         noteNode(),
         el('div', { class: 'row' }, [
-          el('button', { type: 'button', class: ['btn', 'primary'], 'data-focus-key': 'confirm', disabled: flow.busy || needVisibility, on: { click: submitCreate } }, '변경 내용 확인'),
+          el('button', { type: 'button', class: ['btn', 'primary'], 'data-focus-key': 'confirm', disabled: flow.busy || needVisibility, 'aria-describedby': needVisibility ? 'cp-visibility-hint' : null, on: { click: submitCreate } }, '변경 내용 확인'),
           ' ',
           el('button', { type: 'button', class: 'btn', 'data-focus-key': 'cancel', on: { click: toList } }, '취소'),
         ]),
@@ -1141,16 +1149,16 @@ export function projectsView(ctx) {
       ]);
     }
     if (r.ok) {
-      const c = cp.clone || { state: 'ok', code: 'ok' };
+      const c = cp.clone || { state: 'checking', code: 'other' };
       const cloneDone = c.state === 'ok';
       const cloneLine = cloneDone ? '이 서버에 복제했습니다.'
         : c.state === 'check' ? CLONE_TEXT.check
-        : c.state === 'busy' ? '복제하는 중입니다(최대 2분)…' : (c.text || cloneText(c.code, kind));
+        : c.state === 'checking' ? '복제 결과를 확인하는 중…' : c.state === 'busy' ? '복제하는 중입니다(최대 2분)…' : (c.text || cloneText(c.code, kind));
       return el('div', { class: ['panel', 'canvas'] }, [
         el('h1', { id: 'h-projects' }, '완료'),
         el('p', { class: ['note', 'ok'], role: 'status', 'data-result': 'ok' }, kind === 'github' ? '저장소를 만들고 등록했습니다.' : '프로젝트를 만들고 등록했습니다.'),
         stepList(stepStates('ok', null, cloneDone), kind),
-        el('p', { class: cloneDone ? ['note', 'ok'] : c.state === 'busy' ? ['note'] : ['note', 'err'], role: 'status', 'data-clone': c.state }, cloneLine),
+        el('p', { class: cloneDone ? ['note', 'ok'] : c.state === 'busy' || c.state === 'checking' ? ['note'] : ['note', 'err'], role: 'status', 'data-clone': c.state }, cloneLine),
         c.state === 'failed'
           ? el('p', {}, [el('button', { type: 'button', class: 'btn', 'data-focus-key': 'reclone', disabled: cp.cloneBusy, on: { click: () => retryClone(s.subject, 'result') } }, '다시 복제'), ' ',
             el('span', { class: 'note' }, '서명 없이 이미 등록된 내용대로 복제만 다시 합니다.')])
@@ -1164,6 +1172,9 @@ export function projectsView(ctx) {
     return el('div', { class: ['panel', 'canvas'] }, [
       el('h1', { id: 'h-projects' }, '프로젝트를 만들지 못했습니다'),
       el('p', { class: ['note', 'err'], role: 'alert', 'data-result': 'error' }, r.unknown ? W3C_ERROR_TEXT.outcome_unknown : w3cFailureText(r.err, kind)),
+      (partial || r.unknown) && has(s.fields, 'visibility') ? el('p', { class: 'note', 'data-field': 'visibility' }, [el('strong', {}, '공개 여부: '),
+        s.fields.visibility === 'public' ? '공개로 만들려던 저장소가 이미 만들어졌을 수 있습니다. 만들어졌다면 인터넷의 누구나 읽을 수 있으니 GitHub에서 바로 확인하세요.'
+          : '비공개로 만들려던 저장소였습니다(만들어졌다면 초대받은 사람만 볼 수 있습니다).']) : null,
       partial && info.step !== null ? stepList(stepStates('partial', info.step, false), kind) : null,
       partial ? orphanBlock(info, kind) : null,
       partial && info.step === null ? el('p', { class: 'note' }, '어느 단계에서 멈췄는지 알 수 없습니다. ' + host + '에서 위 경로를 확인하세요.') : null,
@@ -1185,10 +1196,10 @@ export function projectsView(ctx) {
       ]);
     }
     if (r.ok) {
-      const c = cp.clone || { state: 'ok', code: 'ok' };
+      const c = cp.clone || { state: 'checking', code: 'other' };
       const cloneDone = c.state === 'ok';
       const cloneLine = cloneDone ? '이 서버에 복제했습니다.' : c.state === 'check' ? CLONE_TEXT.check
-        : c.state === 'busy' ? '복제하는 중입니다(최대 2분)…' : (c.text || cloneText(c.code, kind));
+        : c.state === 'checking' ? '복제 결과를 확인하는 중…' : c.state === 'busy' ? '복제하는 중입니다(최대 2분)…' : (c.text || cloneText(c.code, kind));
       return el('div', { class: ['panel', 'canvas'] }, [
         el('h1', { id: 'h-projects' }, '완료'),
         el('p', { class: ['note', 'ok'], role: 'status', 'data-result': 'ok' }, link ? '이미 있는 저장소를 프로젝트로 등록했습니다.' : '프로젝트에 원격 저장소를 연결했습니다.'),
@@ -1196,7 +1207,7 @@ export function projectsView(ctx) {
           factItem('프로젝트 ID', s.subject, { 'data-field': 'id' }),
           factItem('원격 저장소', s.fields.remote_path, { 'data-field': 'remote_path' }),
         ]),
-        link ? el('p', { class: cloneDone ? ['note', 'ok'] : c.state === 'busy' ? ['note'] : ['note', 'err'], role: 'status', 'data-clone': c.state }, cloneLine) : null,
+        link ? el('p', { class: cloneDone ? ['note', 'ok'] : c.state === 'busy' || c.state === 'checking' ? ['note'] : ['note', 'err'], role: 'status', 'data-clone': c.state }, cloneLine) : null,
         !link && cp.keyFailed ? el('p', { class: ['note', 'err'], role: 'alert', 'data-note': 'key' }, W3C_ERROR_TEXT.key_unavailable) : null,
         link && c.state === 'failed'
           ? el('p', {}, [el('button', { type: 'button', class: 'btn', 'data-focus-key': 'reclone', disabled: cp.cloneBusy, on: { click: () => retryClone(s.subject, 'result') } }, '다시 복제'), ' ',
@@ -1283,7 +1294,7 @@ export function projectsView(ctx) {
         : '원격 저장소 경로는 그룹/하위그룹/프로젝트 형태여야 합니다(소문자·숫자·하이픈 이름, 예: team/sub/app-one). 점 경로, .git 끝, % 기호는 쓸 수 없습니다.');
     }
     if (c.why === 'id') return setProblem(f, '저장소 이름에서 정해지는 프로젝트 ID(' + c.id + ')가 규칙에 맞지 않습니다. 프로젝트 ID는 소문자로 시작하고 소문자·숫자·하이픈만 써서 2~40자여야 합니다. 이 이름의 저장소는 연결할 수 없습니다.');
-    if (c.why === 'mismatch') return setProblem(f, W3C_ERROR_TEXT.remote_name_mismatch);
+    if (c.why === 'mismatch') return setProblem(f, w3cFailureText({ code: 'remote_name_mismatch' }, c.kind));
     if (!PUBLISH_MODES.includes(f.publish.value)) return setProblem(f, '게시 권한을 목록에서 고르세요.');
     setProblem(f, '');
     const provider = f.provider.value;

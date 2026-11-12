@@ -429,7 +429,7 @@ export const ERROR_TEXT = {
   visibility_not_allowed: 'GitLab 프로젝트에는 공개 여부를 정할 수 없습니다(항상 비공개로 만들어집니다). 변경은 적용되지 않았습니다.',
   repo_not_found: '연결하려는 저장소를 제공자에서 찾지 못했습니다. 경로를 확인하고, 토큰이 그 저장소를 볼 수 있는지 확인하세요. 변경은 적용되지 않았습니다.',
   already_linked: '이미 원격에 연결된 프로젝트이거나, 같은 원격 저장소가 이미 다른 프로젝트에 연결되어 있습니다. 변경은 적용되지 않았습니다.',
-  remote_name_mismatch: '프로젝트 ID와 원격 저장소 이름이 같아야 합니다(GitHub는 대소문자만 달라도 됩니다). 변경은 적용되지 않았습니다.',
+  remote_name_mismatch: '프로젝트 ID와 원격 저장소 이름이 같아야 합니다(글자 그대로). 변경은 적용되지 않았습니다.',
   static_remote_wins: '이 프로젝트는 서버 설정(--git-remote-for)에 원격이 이미 정해져 있어 그것이 우선합니다. 여기서 원격을 연결해도 효과가 없어 연결하지 않았습니다.',
   key_expired: '제안할 때 만든 저장소 전용 배포 키가 만료되었거나(15분) 서버가 다시 시작되어 사라졌습니다. 오래된 내용으로는 서명하지 않습니다: 처음부터 다시 제안하세요. 변경은 적용되지 않았습니다.',
   key_staging_failed: '서버가 이 저장소 전용 배포 키를 준비하지 못했습니다(같은 이름의 키 폴더가 이미 있거나 서버 설정 문제입니다). 관리자가 확인해야 합니다. 변경은 적용되지 않았습니다.',
@@ -441,6 +441,7 @@ export const ERROR_TEXT = {
 // knows the provider is a GitHub one (ERROR_TEXT is the provider-neutral baseline, which is also
 // what GitLab screens show).
 export const GITHUB_TEXT = {
+  remote_name_mismatch: '프로젝트 ID와 원격 저장소 이름이 같아야 합니다(GitHub 이름은 대소문자만 달라도 같은 것으로 봅니다). 변경은 적용되지 않았습니다.',
   provider_in_use: ERROR_TEXT.provider_in_use,
   bad_url: '서버가 이 GitHub API 주소를 허용하지 않았습니다(접속 대상이 허용 범위 밖이거나 주소가 맞지 않습니다). 변경은 적용되지 않았습니다.',
   provider_unreachable: 'GitHub에 연결하지 못했거나 응답이 없었습니다. 잠시 후 다시 시도하세요. 서버의 방화벽이 GitHub을 허용하는지도 확인하세요. 저장소를 만드는 중이었다면 목록의 알림도 확인하세요.',
@@ -584,6 +585,7 @@ export const kindOfProvider = (list, id) => {
 // owner/group path and the name, or the remote path of a link) and says it cannot tell the step.
 export function partialInfo(err, sent) {
   const own = sent.action === ACTION_CREATE_PROJECT ? sent.fields.group_path + '/' + sent.subject : sent.fields.remote_path;
+  // a link or an attach never made the repository: its screen always says "linked", whatever origin the server names
   const origin = sent.action === ACTION_CREATE_PROJECT ? 'created' : 'linked';
   const fallback = { provider: sent.fields.provider, project: own, projectId: null, step: null, recorded: null, dropped: false, origin, valid: false };
   const d = err && err.detail;
@@ -594,14 +596,16 @@ export function partialInfo(err, sent) {
       (d.origin !== undefined && !ORPHAN_ORIGINS.includes(d.origin))) {
     return fallback;
   }
-  return { provider: d.provider, project: d.project, projectId: d.project_id, step: d.step, recorded: d.orphan_recorded, dropped: d.orphan_dropped, origin: d.origin === undefined ? origin : d.origin, valid: true };
+  return { provider: d.provider, project: d.project, projectId: d.project_id, step: d.step, recorded: d.orphan_recorded, dropped: d.orphan_dropped, origin, valid: true };
 }
 
 // orphanNotice: what to do with a half-made or half-linked repository, by where it came from.
 // `created`: this tool made it, the person removes it. `linked`: it was there before; only the
 // deploy key of this server may sit in it, and only that is removed.
+export const ORPHAN_UNKNOWN_NOTICE = '출처 불명: 지우기 전에 확인하세요 — 이 도구는 아무것도 지우지 않습니다';
 export function orphanNotice(origin, kind) {
   const host = hostName(kind);
+  if (origin !== 'linked' && origin !== 'created') return ORPHAN_UNKNOWN_NOTICE;
   if (origin === 'linked') {
     return '원래 있던 저장소입니다. 지우지 마세요. 배포 키만 직접 제거하세요: ' + host + ' 저장소 설정의 배포 키(Deploy keys)에서 제목이 orchd로 시작하는 이 서버의 키를 지우면 됩니다. 이 도구는 아무것도 지우지 않습니다.';
   }
@@ -757,7 +761,8 @@ const applyTimeout = (action) => (action === ACTION_CREATE_PROJECT ? CREATE_APPL
 // makeFlow runs ONE signed change at a time for a view: propose -> check ->
 // passkey -> apply. The view paints from `flow` (phase, sent, resp, problems,
 // signer, note, result) and is told by cfg.onChange() after every step, and by
-// cfg.onResult(result) once the apply has ended (the view then re-reads its lists).
+// cfg.onResult(result) once the apply has ended (the view then re-reads its lists). cfg.prepare(result, sent),
+// when given, runs synchronously before the first paint of the result.
 //   phase: idle | proposing | confirm | sending | done
 //   result: {ok: true, data} | {ok: false, err, unknown}
 // A proposal is spent when the signature is made: whatever the answer, it is
@@ -881,6 +886,7 @@ export function makeFlow(ctx, cfg) {
       f.busy = false;
       f.phase = 'done';
       f.result = { ok: false, err, unknown: isUnknown(err) };
+      if (cfg.prepare) cfg.prepare(f.result, cur.sent);
       changed();
       await cfg.onResult(f.result, cur.sent);
       return;
@@ -889,6 +895,7 @@ export function makeFlow(ctx, cfg) {
     f.busy = false;
     f.phase = 'done';
     f.result = { ok: true, data };
+    if (cfg.prepare) cfg.prepare(f.result, cur.sent); // what the result screen needs is ready BEFORE it is drawn
     changed();
     await cfg.onResult(f.result, cur.sent);
   };
@@ -1115,6 +1122,7 @@ export function providersView(ctx) {
       return formProblem('GitLab 주소는 http:// 또는 https://로 시작하는 주소여야 합니다(호스트와 선택적 포트만, 경로·계정·쿼리 없음). 예: http://gitlab.example:18082');
     }
     if (!validSshUrl(ssh)) return formProblem('ssh 주소는 ssh://git@호스트 또는 ssh://git@호스트:포트 형태여야 합니다(경로 없음).');
+    if (st.tokens === null) return formProblem('토큰 목록을 읽지 못해 토큰을 고를 수 없습니다. 목록으로 돌아가 "목록 새로고침"으로 다시 읽은 뒤 시도하세요.');
     if (!usableTokensOfKind(st.tokens, kind).some((t) => t.ref === tokenRef)) {
       return formProblem('토큰을 목록에서 고르세요. 쓸 수 있는 ' + kind + ' 종류 토큰만 나옵니다. 없으면 토큰 화면에서 먼저 등록하세요.');
     }
@@ -1245,7 +1253,7 @@ export function providersView(ctx) {
         field(gh ? 'GitHub API 주소' : 'GitLab 주소', 'pv-base', f.base, gh ? 'https://api.github.com — GitHub Enterprise Server는 그 서버의 https 주소. github.com(웹 주소)은 쓸 수 없습니다.'
           : 'http(s)://호스트[:포트] — 경로·계정·쿼리 없음. 서버가 루프백·링크 로컬 주소를 거부합니다.'),
         field('ssh 주소', 'pv-ssh', f.ssh, gh ? 'ssh://git@github.com — 복제와 게시에 쓰입니다(github.com의 호스트 키는 서버 관리자가 미리 등록해야 합니다).' : 'ssh://git@호스트[:포트] — 복제와 게시에 쓰입니다.'),
-        field('사용할 토큰(이름)', 'pv-token', f.token, f.noTokens ? '쓸 수 있는 ' + f.kind.value + ' 종류 토큰이 없습니다. 토큰 화면에서 먼저 등록하세요.'
+        field('사용할 토큰(이름)', 'pv-token', f.token, st.tokens === null ? '토큰 목록을 읽지 못했습니다. 목록으로 돌아가 "목록 새로고침"으로 다시 읽으세요.' : f.noTokens ? '쓸 수 있는 ' + f.kind.value + ' 종류 토큰이 없습니다. 토큰 화면에서 먼저 등록하세요.'
           : gh ? 'GitHub에 저장소를 만들고 배포 키를 등록할 권한이 있는 토큰. 이름만 고릅니다.' : 'GitLab에 그룹·프로젝트를 만들 권한이 있는 관리자 토큰. 이름만 고릅니다.'),
         f.problem,
         noteNode(st.note),

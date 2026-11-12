@@ -267,3 +267,4 @@ pre.block-pre { font-family: var(--mono); font-size: 13px; background: var(--bg)
 .trunc ul { margin: 0 0 6px; padding-left: 20px; } .trunc li { overflow-wrap: anywhere; min-width: 0; }
 .form select { max-width: 100%; }
 li[data-preview] { overflow-wrap: anywhere; min-width: 0; }
+.field, .field .mono, .field .hint, .field [data-field] { overflow-wrap: anywhere; min-width: 0; }

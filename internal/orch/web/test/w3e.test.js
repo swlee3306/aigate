@@ -783,7 +783,7 @@ test('TestAttachRemoteFlow', async () => {
     await openAttachForm(atPropose, 'plain-app');
     fillRemote(atPropose, { provider: 'gh', remote: 'octo/Plain-App' });
     click(proposeBtn(atPropose));
-    await until(() => problemText(atPropose).includes(P.ERROR_TEXT[code]), code + ' at propose');
+    await until(() => problemText(atPropose).includes(P.failureText(apiError(409, code), 'github')), code + ' at propose');
     assert.ok(!text(atPropose.root).includes('SERVER-WORDS'));
     assert.equal(byLabel(atPropose.root, '패스키로 서명').length, 0);
     const atApply = await mountProjects({ 'POST /api/v1/projects/attach/apply': () => { throw apiError(409, code, SECRET); } });
@@ -791,7 +791,7 @@ test('TestAttachRemoteFlow', async () => {
     await waitSignable(atApply);
     click(signBtn(atApply));
     await until(() => byData(atApply.root, 'result', 'error').length === 1, code + ' at apply');
-    assert.ok(text(atApply.root).includes(P.ERROR_TEXT[code]), code);
+    assert.ok(text(atApply.root).includes(P.failureText(apiError(409, code), 'github')), code);
     assert.ok(!text(atApply.root).includes('SERVER-WORDS'));
     assert.equal(byLabel(atApply.root, '패스키로 서명').length, 0, 'a refused change is never signed again');
     assert.equal(posts(atApply, '/api/v1/projects/attach/apply').length, 1);
@@ -844,7 +844,7 @@ test('TestAllNewErrorCodesFixedTextsW3e', async () => {
       click(signBtn(c));
       await until(() => byData(c.root, 'result', 'error').length === 1, name + ' ' + code);
       const shown = text(c.root);
-      const want = name === 'create' && ['provider_unreachable', 'group_unknown', 'project_name_taken', 'bad_url'].includes(code) ? P.failureText(apiError(0, code), 'github') : P.ERROR_TEXT[code];
+      const want = P.failureText(apiError(0, code), 'github'); // both screens use a github provider
       assert.ok(shown.includes(want), name + ' ' + code);
       assert.ok(!shown.includes('SERVER-WORDS'), name + ' ' + code);
       assert.equal(byLabel(c.root, '패스키로 서명').length, 0, name + ' ' + code + ': spent, not signable again');
@@ -1043,7 +1043,11 @@ test('TestNoPasswordLikeMarkupW3e', async () => {
     }
   };
   scan();
-  assert.ok(!text(ctx.root).includes('SERVER-WORDS'), 'a malformed orphan row is dropped, not shown');
+  assert.ok(!text(ctx.root).includes('SERVER-WORDS'), 'a row whose path is hostile is dropped, not shown');
+  // a row with an unknown origin is NOT dropped: it is shown with the fixed "origin unknown" sentence
+  const okRow = findAll(byData(ctx.root, 'orphans', 'list')[0], (e) => e.tagName === 'LI' && text(e).includes('octo/ok'))[0];
+  assert.ok(okRow, 'unknown origin: row kept');
+  assert.ok(text(okRow).includes(P.ORPHAN_UNKNOWN_NOTICE) && !/직접 지우세요/.test(text(okRow)));
   await openCreateForm(ctx);
   await pickProvider(ctx, 'gh');
   assert.deepEqual(optionValues(byId(ctx.root, 'cp-group')), ['', 'fine']);
@@ -1148,3 +1152,152 @@ test('TestGitHubOwnerWithUppercaseAndPublishDefaultsW3e', async () => {
 });
 const gone = () => {};
 void gone;
+
+// ---- fix round 1 (E5 review) ----------------------------------------------------------
+
+test('TestNoFalseCloneSuccessWhileTheListIsReReadW3e', async () => {
+  for (const kind of ['link', 'create']) {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    let reads = 0;
+    const over = {
+      '/api/v1/projects/registry': async () => { reads++; if (reads > 1) await gate; return REG_E; },
+      'POST /api/v1/projects/link/apply': () => ({ ...LINK_OK, clone: { status: 'failed', code: 'host_not_pinned' } }),
+      'POST /api/v1/projects/create/apply': () => ({ ...CREATE_GH_OK, clone: { status: 'failed', code: 'host_not_pinned' } }),
+    };
+    const c = await mountProjects(over);
+    if (kind === 'link') await toLinkConfirm(c, { provider: 'gh', remote: 'octo/Hello-World' });
+    else await toCreateConfirm(c, 'gh', GH_CREATE);
+    await waitSignable(c);
+    click(signBtn(c));
+    await until(() => byData(c.root, 'result', 'ok').length === 1, kind + ' result');
+    assert.ok(reads >= 2 && posts(c, '/api/v1/projects/' + kind + '/apply').length === 1);
+    // the re-read is still pending: the screen must already say what the server answered, never "복제했습니다"
+    assert.ok(!text(c.root).includes('이 서버에 복제했습니다'), kind + ': no false clone success while the re-read is pending');
+    assert.ok(text(c.root).includes(P.CLONE_TEXT.host_not_pinned) || byData(c.root, 'clone', 'failed').length === 1, kind + ': the real answer');
+    release();
+    await c.settle();
+  }
+  // attach: the key note is there at once
+  let release2;
+  const gate2 = new Promise((r) => { release2 = r; });
+  let n = 0;
+  const a = await mountProjects({ '/api/v1/projects/registry': async () => { n++; if (n > 1) await gate2; return REG_E; }, 'POST /api/v1/projects/attach/apply': () => ATTACH_KEY_FAILED });
+  await toAttachConfirm(a, 'plain-app', { provider: 'gh', remote: 'octo/Plain-App' });
+  await waitSignable(a);
+  click(signBtn(a));
+  await until(() => byData(a.root, 'result', 'ok').length === 1, 'attach result');
+  assert.equal(byData(a.root, 'note', 'key').length, 1, 'the key-failed note is shown before the re-read ends');
+  release2();
+  await a.settle();
+  // a result whose clone block is missing is not "cloned" either
+  const m = await mountProjects({ 'POST /api/v1/projects/link/apply': () => ({ project: LINK_OK.project }) });
+  await toLinkConfirm(m, { provider: 'gh', remote: 'octo/Hello-World' });
+  await waitSignable(m);
+  click(signBtn(m));
+  await until(() => byData(m.root, 'result', 'ok').length === 1, 'no clone block');
+  assert.ok(!text(m.root).includes('이 서버에 복제했습니다'));
+});
+
+test('TestOrphanOriginSafeDefaultsW3e', async () => {
+  // link/attach result screens always use the "linked" wording, whatever origin the server names
+  for (const origin of ['created', 'bogus', undefined]) {
+    const detail = { ...LINK_PARTIAL.error.detail };
+    if (origin === undefined) delete detail.origin; else detail.origin = origin;
+    const c = await mountProjects({ 'POST /api/v1/projects/link/apply': () => { throw apiError(502, 'link_partial', SECRET, { detail }); } });
+    await toLinkConfirm(c, { provider: 'gh', remote: 'octo/Hello-World' });
+    await waitSignable(c);
+    click(signBtn(c));
+    await until(() => byData(c.root, 'result', 'error').length === 1, String(origin));
+    const notice = text(byData(c.root, 'orphan', 'notice')[0]);
+    assert.match(notice, /원래 있던 저장소입니다\. 지우지 마세요/, String(origin));
+    assert.ok(!/직접 지우세요/.test(notice), String(origin));
+  }
+  // list rows: missing or unknown origin is kept and says "unknown"; only an explicit `created` says delete by hand
+  const rows = [
+    { provider: 'gh', project: 'octo/no-origin', project_id: null, step: 'protect', at: '2026-11-12T12:00:00Z' },
+    { provider: 'gh', project: 'octo/odd-origin', project_id: null, step: 'protect', at: '2026-11-12T12:00:00Z', origin: 'weird' },
+    { provider: 'gh', project: 'octo/made-here', project_id: null, step: 'protect', at: '2026-11-12T12:00:00Z', origin: 'created' },
+  ];
+  const ctx = await mountProjects({ '/api/v1/projects/registry': { ...REG_E, orphans: rows } });
+  const li = (n) => findAll(byData(ctx.root, 'orphans', 'list')[0], (e) => e.tagName === 'LI' && text(e).includes(n))[0];
+  for (const n of ['octo/no-origin', 'octo/odd-origin']) {
+    assert.ok(li(n), n + ' is kept');
+    assert.ok(text(li(n)).includes('출처 불명: 지우기 전에 확인하세요 — 이 도구는 아무것도 지우지 않습니다'), n);
+    assert.ok(!/직접 지우세요/.test(text(li(n))), n);
+  }
+  assert.match(text(li('octo/made-here')), /GitHub에서 직접 지우세요/);
+});
+
+test('TestFormHintsAndAccessibilityW3e', async () => {
+  const ctx = await mountProjects();
+  await openCreateForm(ctx);
+  await pickProvider(ctx, 'gh');
+  const btn = proposeBtn(ctx);
+  assert.ok(btn.hasAttribute('disabled'));
+  const id = btn.getAttribute('aria-describedby');
+  assert.ok(id, 'the disabled button points at the reason');
+  const hint = findAll(ctx.root, (e) => e.getAttribute('id') === id)[0];
+  assert.ok(hint && /공개|비공개/.test(text(hint)), 'the hint says why');
+  fillCreate(ctx, { visibility: 'public' });
+  assert.ok(!proposeBtn(ctx).hasAttribute('aria-describedby'), 'enabled: no pointer needed');
+  // 100-character names cannot widen the page: the css lets the derived id and the hints wrap anywhere
+  const css = src('style.css');
+  assert.match(css, /\.field[^{]*\{[^}]*overflow-wrap:\s*anywhere/, 'field content wraps');
+  const long = 'a' + 'b'.repeat(99);
+  const l = await mountProjects();
+  await openLinkForm(l);
+  fillRemote(l, { provider: 'gh', remote: 'octo/' + long });
+  const d = text(byData(l.root, 'field', 'derived-id')[0]);
+  assert.ok(d.includes('사용할 수 없음') || d.includes(long.toLowerCase()), d.slice(0, 80));
+  assert.match(css, /\[data-field=["']?derived-id["']?\][^{]*\{[^}]*overflow-wrap:\s*anywhere|\.field[^{]*\{[^}]*overflow-wrap:\s*anywhere/);
+});
+
+test('TestPartialAndUnknownShowIntendedVisibilityW3e', async () => {
+  const cases = [
+    ['public', 'partial', () => { throw apiError(502, 'create_partial', SECRET, { detail: CREATE_GH_PARTIAL.error.detail }); }],
+    ['public', 'unknown', () => { throw apiError(504, 'outcome_unknown', SECRET); }],
+    ['private', 'partial', () => { throw apiError(502, 'create_partial', SECRET, { detail: CREATE_GH_PARTIAL.error.detail }); }],
+    ['private', 'unknown', () => { throw apiError(0, 'timeout', SECRET); }],
+  ];
+  for (const [vis, what, fn] of cases) {
+    const c = await mountProjects({ 'POST /api/v1/projects/create/apply': fn });
+    await toCreateConfirm(c, 'gh', { ...GH_CREATE, visibility: vis });
+    await waitSignable(c);
+    click(signBtn(c));
+    await until(() => byData(c.root, 'result', 'error').length === 1, vis + what);
+    const v = byData(c.root, 'field', 'visibility')[0];
+    assert.ok(v, vis + ' ' + what + ': visibility is shown');
+    if (vis === 'public') assert.match(text(v), /공개로 만들려던 저장소가 이미 만들어졌을 수 있습니다/);
+    else assert.match(text(v), /비공개로 만들려던/);
+    assert.equal(findAll(v, (e) => e.tagName === 'IMG').length, 0);
+  }
+  // gitlab: no visibility line
+  const g = await mountProjects({ 'POST /api/v1/projects/create/apply': () => { throw apiError(504, 'outcome_unknown', SECRET); } });
+  await toCreateConfirm(g, 'gl', GL_CREATE);
+  await waitSignable(g);
+  click(signBtn(g));
+  await until(() => byData(g.root, 'result', 'error').length === 1, 'gl');
+  assert.equal(byData(g.root, 'field', 'visibility').length, 0);
+});
+
+test('TestWordingFixesW3e', async () => {
+  assert.ok(!/GitHub/.test(P.ERROR_TEXT.remote_name_mismatch), 'the baseline makes no GitHub claim (it is what GitLab screens show)');
+  const gh = P.failureText(apiError(400, 'remote_name_mismatch'), 'github');
+  assert.ok(/GitHub/.test(gh) && /대소문자/.test(gh));
+  assert.ok(!/대소문자/.test(P.failureText(apiError(400, 'remote_name_mismatch'), 'gitlab')));
+  // a failed token-list read says so; it does not tell the person to register a token
+  const ctx = await mountProviders({ '/api/v1/settings/tokens': () => { throw apiError(503, 'tokens_unavailable', SECRET); } });
+  await openProviderForm(ctx);
+  const hint = text(byId(ctx.root, 'pv-token').parentNode);
+  assert.match(hint, /읽지 못했/);
+  assert.ok(!/먼저 등록/.test(hint));
+  fillProvider(ctx, { id: 'gh9', base: 'https://api.github.com', ssh: 'ssh://git@github.com' });
+  click(proposeBtn(ctx));
+  assert.match(problemText(ctx), /읽지 못/);
+  assert.ok(!/먼저 등록/.test(problemText(ctx)));
+  // with a readable list and no usable token the old advice stays
+  const none = await mountProviders({ '/api/v1/settings/tokens': { warn_days: 14, tokens: [] } });
+  await openProviderForm(none);
+  assert.match(text(byId(none.root, 'pv-token').parentNode), /먼저 등록/);
+});
