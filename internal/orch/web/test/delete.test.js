@@ -100,6 +100,10 @@ function previewFor(action, subject, f) {
   if (action === 'remove_project') {
     const out = ["프로젝트 '" + subject + "'를 이 서버에서 지웁니다: 프로젝트 등록, 서버의 복제본 폴더(" + path + '), 이 프로젝트의 배포 키 폴더', '원격 저장소는 지워지지 않고 그대로 남습니다',
       '[중요] 되돌릴 수 없습니다. 원격에 올라가지 않은 커밋과 저장하지 않은 변경은 이 서버의 복제본에만 있으므로 함께 사라집니다', '이 서버의 작업 기록은 남습니다'];
+    if (f.detach_key) {
+      const r = ROWS.find((x) => x.id === subject);
+      out.splice(2, 0, "먼저 원격 저장소 '" + (r && r.gitlab ? r.gitlab.project : '?') + "'에서 이 서버의 배포 키(지문 " + FP + ')를 뗍니다. 키를 떼지 못하거나 결과를 알 수 없으면 프로젝트 등록과 서버의 파일을 지우지 않습니다');
+    }
     if (f.legacy_ack) out.push('[중요] 처음부터 있던(legacy) 프로젝트입니다. 지우면 이 저장소로는 더 작업을 낼 수 없습니다(두 번째 확인을 했습니다)');
     return [...out, STAMP];
   }
@@ -119,6 +123,10 @@ function previewFor(action, subject, f) {
   }
   return ["제공자 '" + subject + "'의 고아 기록 하나('" + f.project + "')를 지웁니다", '외부에는 아무것도 보내지 않습니다. 제공자에 남아 있을 수 있는 프로젝트는 지워지지 않으니 제공자 화면에서 직접 정리하세요', STAMP];
 }
+// W3g: what orchd adds to a remove_project proposal (detach_key_available always, the key's identity only when asked)
+const isShared = (id) => { const r = ROWS.find((x) => x.id === id); return !!r && PROVIDERS.some((p) => p.id === r.provider && p.kind === 'gitlab'); };
+const rpExtra = (b) => ({ detach_key_available: !!b.fields.detach_key,
+  ...(b.fields.detach_key ? { deploy_key_title: 'orchd ' + b.subject, deploy_key_fingerprint: FP, deploy_key_shared: isShared(b.subject) } : {}) });
 let seq = 0;
 async function proposeFor(body, over) {
   const change = await P.computeChange(body.action, body.subject, body.fields);
@@ -128,7 +136,7 @@ async function proposeFor(body, over) {
   return {
     action: body.action, subject: body.subject, fields: body.fields,
     message: 'aigate-registry-v1\naction: ' + body.action + '\nsubject: ' + body.subject + '\nchange: ' + change + '\nrequest: ' + request + '\nissued: ' + issued + '\n',
-    change, request, issued, preview: previewFor(body.action, body.subject, body.fields), ...(over || {}),
+    change, request, issued, preview: previewFor(body.action, body.subject, body.fields), ...(body.action === 'remove_project' ? rpExtra(body) : {}), ...(over || {}),
   };
 }
 
@@ -140,10 +148,10 @@ function routesFor(over) {
     '/api/v1/settings/tokens': { warn_days: 14, tokens: [] },
     '/api/v1/auth/signers': SIGNERS,
     '/api/v1/projects/registry': REG(),
-    'POST /api/v1/projects/remove/propose': rec('rp', (b) => proposeFor(b)),
-    'POST /api/v1/projects/remove/apply': rec('ra', (b) => ({ id: b.subject, removed: true, local: { clone: 'removed', key: 'removed' } })),
+    'POST /api/v1/projects/remove/propose': rec('rp', (b) => proposeFor(b, rpExtra(b))),
+    'POST /api/v1/projects/remove/apply': rec('ra', (b) => ({ id: b.subject, removed: true, detach_key: b.fields.detach_key, ...(b.fields.detach_key ? { key_state: 'removed' } : {}), local: { clone: 'removed', key: 'removed' } })),
     'POST /api/v1/projects/delete-remote/propose': rec('dp', (b) => proposeFor(b)),
-    'POST /api/v1/projects/delete-remote/apply': rec('da', (b) => ({ id: b.subject, remote_state: 'deleted', remote_deleted_at: '2026-11-13T01:02:03Z', also_local: b.fields.also_local, registry: 'kept', ...(b.fields.also_local ? { local: { clone: 'removed', key: 'removed' } } : {}) })),
+    'POST /api/v1/projects/delete-remote/apply': rec('da', (b) => ({ id: b.subject, remote_state: 'deleted', remote_deleted_at: '2026-11-13T01:02:03Z', also_local: b.fields.also_local, registry: b.fields.also_local ? 'removed' : 'kept', ...(b.fields.also_local ? { local: { clone: 'removed', key: 'removed' } } : {}) })),
     'POST /api/v1/projects/remove-key/propose': rec('kp', (b) => proposeFor(b, { deploy_key_fingerprint: FP })),
     'POST /api/v1/projects/remove-key/apply': rec('ka', (b) => ({ id: b.subject, key_removed: true })),
     'POST /api/v1/orphans/clear/propose': rec('op', (b) => proposeFor(b)),
@@ -478,13 +486,15 @@ test('TestRemoteDeleteSignedFieldsAndAlsoLocalSingleSignature', async () => {
   assert.equal(auth.gets.length, 1);
   assert.equal(posts(ctx, '/api/v1/projects/remove/propose').length, 0, 'the follow-up is never started by itself');
   assert.equal(posts(ctx, '/api/v1/projects/remove/apply').length, 0);
-  // the result: steps with fixed texts and the follow-up button
+  // the result: steps with fixed texts; W3g (G-D7): also_local removed the registration in the same signature,
+  // so there is no follow-up button and the registry step says removed (W3f asserted '남음' and the follow-up here)
   const steps = text(findAll(ctx.root, (e) => e.className === 'steps')[0]);
-  assert.ok(steps.includes('원격 저장소 삭제') && steps.includes('서버의 복제본 폴더') && steps.includes('남음'), steps);
-  assert.equal(byData(ctx.root, 'followup', 'remove').length, 1);
+  assert.ok(steps.includes('원격 저장소 삭제') && steps.includes('서버의 복제본 폴더') && !steps.includes('남음'), steps);
+  assert.equal(byData(ctx.root, 'followup', 'remove').length, 0);
 });
 
 test('TestFollowUpRemoveRegistryIsSecondSignedChange', async () => {
+  // W3g: the follow-up exists only after a remote deletion WITHOUT also_local (W3f ran this with also_local=true)
   let regAfter = REG();
   const ctx = await mountProjects({
     '/api/v1/projects/registry': () => regAfter,
@@ -492,7 +502,7 @@ test('TestFollowUpRemoveRegistryIsSecondSignedChange', async () => {
   });
   await toConfirm(ctx, 'mine', 'remote', async () => {
     typeInto(typed(ctx), 'Hello-World');
-    await alsoAndAck(ctx);
+    await until(() => !proposeBtn(ctx).hasAttribute('disabled'), 'enabled');
   });
   // after the delete the registry row is: remote null, remote_deleted_at set
   regAfter = REG({ projects: ROWS.map((r) => (r.id === 'mine' ? { ...r, gitlab: null, remote_deleted_at: '2026-11-13T01:02:03Z' } : r)) });
@@ -1273,4 +1283,467 @@ test('TestEachUnknownCountAloneForcesTheAcknowledgementW3f', async () => {
   await pick(ok, 'local');
   assert.equal(byId(ok.root, 'del-ack'), undefined);
   assert.equal(proposeBtn(ok).hasAttribute('disabled'), false);
+});
+
+// ===== W3g (Task G3): detach the deploy key with the removal; one signature for remote deletion =====
+// Written red-first against the W3f page (which never offered the option and still drew the also_local follow-up).
+
+const FP2 = 'SHA256:' + 'ZYXWVUTSRQPONMLKJIHGFEDCBAzyxwvutsrqponmlkj'.slice(0, 43);
+const AV = (id) => ({ detach_key_available: true, deploy_key_title: 'orchd ' + id, deploy_key_fingerprint: FP, deploy_key_shared: isShared(id) });
+const pvAvail = (id) => ({ ['/api/v1/projects/' + id + '/removal-preview']: () => pvBody(id, AV(id)) });
+const detachBox = (ctx) => byId(ctx.root, 'del-detach');
+const factsOf = (ctx) => Object.fromEntries(byData(ctx.root, 'field').map((e) => [e.getAttribute('data-field'), text(e)]));
+const rpDetachLine = (remote, fp) => "먼저 원격 저장소 '" + remote + "'에서 이 서버의 배포 키(지문 " + fp + ')를 뗍니다. 키를 떼지 못하거나 결과를 알 수 없으면 프로젝트 등록과 서버의 파일을 지우지 않습니다';
+async function ackIfAsked(ctx) {
+  if (byId(ctx.root, 'del-ack')) {
+    byId(ctx.root, 'del-ack').checked = true;
+    fire(byId(ctx.root, 'del-ack'), 'change');
+  }
+  await until(() => !!proposeBtn(ctx) && !proposeBtn(ctx).hasAttribute('disabled'), 'propose on');
+}
+const setDetach = async (ctx, on) => {
+  detachBox(ctx).checked = on;
+  fire(detachBox(ctx), 'change');
+  await until(() => (byData(ctx.root, 'emph', 'key-remains').length === 1) === !on, 'repaint after the detach option changed');
+};
+
+test('TestDetachKeyCheckboxShownOnlyWhenAvailableDefaultChecked', async () => {
+  // the preview says the key line is usable: the option is there, checked, and the proposal signs detach_key true
+  for (const id of ['mine', 'linked-app', 'lab']) {
+    const ctx = await mountProjects(pvAvail(id));
+    await openDelete(ctx, id);
+    await pick(ctx, 'local');
+    const box = detachBox(ctx);
+    assert.ok(box, id + ': the option is shown');
+    assert.equal(box.getAttribute('type'), 'checkbox');
+    assert.equal(box.checked, true, id + ': checked by default');
+    assert.ok(text(byData(ctx.root, 'detach', 'option')[0]).includes('배포 키도 함께 떼기'), id);
+    assert.equal(byData(ctx.root, 'hint', 'detach-key').length, 0, id + ': the W3f "detach first" hint gives way to the option');
+    assert.ok(text(byData(ctx.root, 'targets', 'list')[0]).includes('배포 키'), id + ': the provider key is listed as a target');
+    click(proposeBtn(ctx));
+    await waitSignable(ctx);
+    assert.deepEqual(posts(ctx, '/api/v1/projects/remove/propose')[0].body.fields, { scope: 'local', legacy_ack: false, detach_key: true }, id);
+  }
+  // not available (no usable key line; no remote; remote already deleted): no option and detach_key false
+  for (const id of ['mine', 'linked-app', 'plain', 'gone-app', 'noid']) {
+    const ctx = await mountProjects();
+    await openDelete(ctx, id);
+    await pick(ctx, 'local');
+    assert.equal(detachBox(ctx), undefined, id + ': no option');
+    assert.ok(!text(ctx.root).includes('배포 키도 함께 떼기'), id);
+    await ackIfAsked(ctx);
+    click(proposeBtn(ctx));
+    await waitSignable(ctx);
+    assert.equal(posts(ctx, '/api/v1/projects/remove/propose')[0].body.fields.detach_key, false, id);
+  }
+  // the other choices never carry the option
+  const ctx = await mountProjects(pvAvail('mine'));
+  await openDelete(ctx, 'mine');
+  await pick(ctx, 'remote');
+  assert.equal(detachBox(ctx), undefined, 'not on the remote deletion');
+  click(fkey(ctx, 'back-choose'));
+  await until(() => !!fkey(ctx, 'choice-key'), 'back');
+  await pick(ctx, 'key');
+  assert.equal(detachBox(ctx), undefined, 'not on the key-only removal');
+  // a preview that claims the option where the row cannot have it, or whose key identity is off, is refused whole
+  const bad = [
+    ['plain', AV('plain')], ['gone-app', AV('gone-app')], ['noid', AV('noid')],
+    ['mine', { ...AV('mine'), deploy_key_fingerprint: null }], ['mine', { ...AV('mine'), deploy_key_fingerprint: 'SHA256:x' }],
+    ['mine', { ...AV('mine'), deploy_key_title: 'orchd other' }], ['mine', { ...AV('mine'), deploy_key_shared: 'no' }],
+    ['mine', { ...AV('mine'), detach_key_available: 'yes' }], ['mine', { deploy_key_fingerprint: FP }], ['mine', { deploy_key_title: 'orchd mine' }],
+    ['mine', { deploy_key_shared: true }], ['mine', { detach_key_available: undefined }],
+  ];
+  for (const [id, over] of bad) {
+    const c = await mountProjects({ ['/api/v1/projects/' + id + '/removal-preview']: () => pvBody(id, over) });
+    await openDelete(c, id);
+    click(fkey(c, 'choice-local'));
+    await until(() => byData(c.root, 'note', 'del').length === 1, id + ' ' + JSON.stringify(over));
+    assert.equal(text(byData(c.root, 'note', 'del')[0]), D.DEL_TEXT.previewBad, id + ' ' + JSON.stringify(over));
+    assert.equal(proposeBtn(c), undefined);
+  }
+  // a legacy project with a remote: the option survives the second confirmation and is signed with legacy_ack
+  const lrow = row('oldgh', { origin: 'legacy', kind: 'legacy', provider: 'gh', gitlab: { project: 'octo/Old-Repo', project_id: 55 } });
+  const lg = await mountProjects({
+    '/api/v1/projects/registry': REG({ projects: [...ROWS, lrow] }),
+    '/api/v1/projects/oldgh/removal-preview': () => pvBody('oldgh', AV('oldgh'), lrow),
+    'POST /api/v1/projects/remove/propose': async (b) => {
+      const r = await proposeFor(b, rpExtra(b));
+      const out = r.preview.slice(0, -1);
+      if (b.fields.detach_key) out.splice(2, 1, rpDetachLine('octo/Old-Repo', FP));
+      r.preview = [...out, STAMP];
+      return r;
+    },
+  });
+  await openDelete(lg, 'oldgh');
+  click(fkey(lg, 'choice-local'));
+  await until(() => byLabel(lg.root, '다음: 두 번째 확인').length === 1, 'legacy preview');
+  assert.equal(detachBox(lg).checked, true);
+  click(byLabel(lg.root, '다음: 두 번째 확인')[0]);
+  await until(() => !!byId(lg.root, 'del-legacy-typed'), 'second screen');
+  typeInto(byId(lg.root, 'del-legacy-typed'), 'oldgh');
+  await until(() => !proposeBtn(lg).hasAttribute('disabled'), 'on');
+  click(proposeBtn(lg));
+  await waitSignable(lg);
+  assert.deepEqual(posts(lg, '/api/v1/projects/remove/propose')[0].body.fields, { scope: 'local', legacy_ack: true, detach_key: true });
+});
+
+test('TestConfirmationNamesRepoAndKeyTitleAndFingerprint', async () => {
+  // GitHub: the repository (name and address) and the key (title and fingerprint), on the preview and on the confirmation
+  const ctx = await mountProjects(pvAvail('mine'));
+  await openDelete(ctx, 'mine');
+  await pick(ctx, 'local');
+  const pre = text(byData(ctx.root, 'detach', 'option')[0]);
+  for (const want of ['octo/Hello-World', 'ssh://git@github.com/octo/Hello-World', 'orchd mine', FP]) assert.ok(pre.includes(want), want + ' in ' + pre);
+  click(proposeBtn(ctx));
+  await waitSignable(ctx);
+  let f = factsOf(ctx);
+  assert.ok(f.detach_key.includes('예'), f.detach_key);
+  assert.ok(f.key_repo.includes('octo/Hello-World') && f.key_repo.includes('ssh://git@github.com/octo/Hello-World') && f.key_repo.includes('GitHub'), f.key_repo);
+  assert.ok(f.key_title.includes('orchd mine'), f.key_title);
+  assert.ok(f.key_fingerprint.includes(FP), f.key_fingerprint);
+  assert.equal(byData(ctx.root, 'emph', 'key-remains').length, 0);
+  assert.ok(text(ctx.root).includes('배포 키'), 'the lead says the key goes first');
+  // GitLab (shared key): the fingerprint is the identity; the title is not claimed (the provider may show another project's)
+  const gl = await mountProjects(pvAvail('lab'));
+  await openDelete(gl, 'lab');
+  await pick(gl, 'local');
+  const gpre = text(byData(gl.root, 'detach', 'option')[0]);
+  assert.ok(gpre.includes('team/lab') && gpre.includes('ssh://git@gitlab.example/team/lab') && gpre.includes(FP) && !gpre.includes('orchd lab'), gpre);
+  click(proposeBtn(gl));
+  await waitSignable(gl);
+  f = factsOf(gl);
+  assert.equal(f.key_title, undefined, 'no title claimed for a shared GitLab key');
+  assert.ok(f.key_shared.includes('지문') && f.key_shared.includes('공용'), f.key_shared);
+  assert.ok(f.key_fingerprint.includes(FP) && f.key_repo.includes('team/lab') && f.key_repo.includes('GitLab'), JSON.stringify(f));
+});
+
+test('TestUncheckedShowsKeyRemainsWarning', async () => {
+  const ctx = await mountProjects(pvAvail('mine'));
+  await openDelete(ctx, 'mine');
+  await pick(ctx, 'local');
+  assert.equal(byData(ctx.root, 'emph', 'key-remains').length, 0, 'no warning while checked');
+  await setDetach(ctx, false);
+  const w = byData(ctx.root, 'emph', 'key-remains')[0];
+  assert.ok(text(w).includes('키가 원격에 남습니다. 직접 지우세요') && text(w).includes('octo/Hello-World'), text(w));
+  assert.equal(byTag(w, 'strong').length, 1, 'bold');
+  assert.ok(!text(byData(ctx.root, 'targets', 'list')[0]).includes('제공자의 배포 키'), 'the key is not a target any more');
+  assert.ok(text(byData(ctx.root, 'kept', 'list')[0]).includes('배포 키'), 'the key is listed as staying');
+  click(proposeBtn(ctx));
+  await waitSignable(ctx);
+  assert.deepEqual(posts(ctx, '/api/v1/projects/remove/propose')[0].body.fields, { scope: 'local', legacy_ack: false, detach_key: false });
+  assert.ok(factsOf(ctx).detach_key.includes('아니오'));
+  assert.ok(text(byData(ctx.root, 'emph', 'key-remains')[0]).includes('키가 원격에 남습니다. 직접 지우세요'), 'the confirmation says it too');
+  await sign(ctx);
+  await until(() => byData(ctx.root, 'result', 'ok').length === 1, 'result');
+  assert.equal(posts(ctx, '/api/v1/projects/remove/apply')[0].body.fields.detach_key, false);
+  assert.ok(text(byData(ctx.root, 'note', 'key-remains')[0]).includes('직접 지우세요'), 'the result repeats where the key stays');
+  // checking it again takes the warning away
+  const c2 = await mountProjects(pvAvail('mine'));
+  await openDelete(c2, 'mine');
+  await pick(c2, 'local');
+  await setDetach(c2, false);
+  await setDetach(c2, true);
+  assert.equal(byData(c2.root, 'emph', 'key-remains').length, 0);
+});
+
+test('TestSignGateRecomputesChangeWithDetachKey', async () => {
+  const forge = (alter) => async (b) => {
+    const fields = alter(b.fields);
+    return proposeFor({ action: b.action, subject: b.subject, fields }, rpExtra({ subject: b.subject, fields }));
+  };
+  const tamper = (fn) => async (b) => fn(await proposeFor(b, rpExtra(b)));
+  const on = [
+    ['detach flipped off (self-consistent)', forge((f) => ({ ...f, detach_key: false }))],
+    ['the change of the other value', tamper(async (r) => ({ ...r, change: await P.computeChange('remove_project', 'mine', { ...r.fields, detach_key: false }) }))],
+    ['the detach line dropped', tamper((r) => ({ ...r, preview: r.preview.filter((x) => !x.startsWith('먼저 원격 저장소')) }))],
+    ['the detach line names another repository', tamper((r) => ({ ...r, preview: r.preview.map((x) => x.replace('octo/Hello-World', 'someone/else')) }))],
+    ['another fingerprint than the preview showed', tamper((r) => ({ ...r, deploy_key_fingerprint: FP2, preview: r.preview.map((x) => x.replace(FP, FP2)) }))],
+    ['a bad fingerprint', tamper((r) => ({ ...r, deploy_key_fingerprint: 'SHA256:x' }))],
+    ['another title', tamper((r) => ({ ...r, deploy_key_title: 'orchd other' }))],
+    ['no title', tamper((r) => { const x = { ...r }; delete x.deploy_key_title; return x; })],
+    ['shared not a bool', tamper((r) => ({ ...r, deploy_key_shared: 'false' }))],
+    ['shared flipped', tamper((r) => ({ ...r, deploy_key_shared: true }))],
+    ['detach_key_available false', tamper((r) => ({ ...r, detach_key_available: false }))],
+    ['detach_key_available missing', tamper((r) => { const x = { ...r }; delete x.detach_key_available; return x; })],
+  ];
+  for (const [name, route] of on) {
+    const ctx = await mountProjects({ ...pvAvail('mine'), 'POST /api/v1/projects/remove/propose': route });
+    await toConfirm(ctx, 'mine', 'local');
+    assert.equal(byData(ctx.root, 'warn', 'mismatch').length, 1, name);
+    assert.equal(signBtn(ctx), undefined, name);
+    assert.equal(auth.gets.length, 0, name);
+  }
+  const off = [
+    ['detach flipped on (self-consistent)', forge((f) => ({ ...f, detach_key: true }))],
+    ['the detach line added', tamper((r) => ({ ...r, preview: [...r.preview.slice(0, 2), rpDetachLine('octo/Hello-World', FP), ...r.preview.slice(2)] }))],
+    ['a key identity when not asked', tamper((r) => ({ ...r, deploy_key_title: 'orchd mine', deploy_key_fingerprint: FP, deploy_key_shared: false }))],
+    ['detach_key_available not a bool', tamper((r) => ({ ...r, detach_key_available: 'true' }))],
+  ];
+  for (const [name, route] of off) {
+    const ctx = await mountProjects({ ...pvAvail('mine'), 'POST /api/v1/projects/remove/propose': route });
+    await toConfirm(ctx, 'mine', 'local', () => setDetach(ctx, false));
+    assert.equal(byData(ctx.root, 'warn', 'mismatch').length, 1, name);
+    assert.equal(signBtn(ctx), undefined, name);
+  }
+  // the honest answer: signable, and the signed change is the browser's own hash over detach_key true
+  const ok = await mountProjects(pvAvail('mine'));
+  await toConfirm(ok, 'mine', 'local');
+  assert.ok(signBtn(ok));
+  await sign(ok);
+  await until(() => byData(ok.root, 'result', 'ok').length === 1, 'result');
+  const body = posts(ok, '/api/v1/projects/remove/apply')[0].body;
+  assert.deepEqual(body.fields, { scope: 'local', legacy_ack: false, detach_key: true });
+  assert.equal(body.change, await P.computeChange('remove_project', 'mine', { scope: 'local', legacy_ack: false, detach_key: true }));
+  assert.notEqual(body.change, await P.computeChange('remove_project', 'mine', { scope: 'local', legacy_ack: false, detach_key: false }));
+  assert.equal(auth.gets.length, 1);
+  assert.ok(auth.gets[0].publicKey.challenge, 'the passkey signed the server message');
+});
+
+test('TestAlsoLocalResultHasNoFollowUpSignature', async () => {
+  // the hint under the option says the registration goes too (W3f said it stays)
+  assert.ok(D.DEL_TEXT.alsoHint.includes('등록') && D.DEL_TEXT.alsoHint.includes('같은 서명') && !D.DEL_TEXT.alsoHint.includes('남습니다'), D.DEL_TEXT.alsoHint);
+  const ctx = await mountProjects();
+  await openDelete(ctx, 'mine');
+  await pick(ctx, 'remote');
+  typeInto(typed(ctx), 'Hello-World');
+  await alsoAndAck(ctx);
+  assert.ok(text(byData(ctx.root, 'targets', 'list')[0]).includes('프로젝트 등록(mine)'), 'the registration is a target');
+  const kept = text(byData(ctx.root, 'kept', 'list')[0]);
+  assert.ok(!kept.includes('원격 없음') && !kept.includes('별도 서명'), kept);
+  click(proposeBtn(ctx));
+  await waitSignable(ctx);
+  assert.ok(factsOf(ctx).also_local.includes('등록'), factsOf(ctx).also_local);
+  await sign(ctx);
+  await until(() => byData(ctx.root, 'result', 'ok').length === 1, 'result');
+  const steps = findAll(ctx.root, (e) => e.className === 'steps')[0];
+  const reg = findAll(steps, (e) => e.getAttribute('data-step') === 'registry')[0];
+  assert.equal(reg.getAttribute('data-status'), 'removed', text(reg));
+  assert.equal(byData(ctx.root, 'followup', 'remove').length, 0, 'no follow-up box');
+  assert.equal(fkey(ctx, 'follow-up'), undefined, 'no follow-up button');
+  assert.ok(!text(ctx.root).includes('별도의 서명'), text(ctx.root));
+  await sleep(40);
+  assert.equal(auth.gets.length, 1);
+  assert.equal(posts(ctx, '/api/v1/projects/remove/propose').length, 0);
+  // an answer that does not say the registration went (or says it for a remote-only deletion) is not shown as done
+  for (const [also, answer] of [[true, 'kept'], [true, undefined], [false, 'removed']]) {
+    const c = await mountProjects({ 'POST /api/v1/projects/delete-remote/apply': (b) => ({ id: 'mine', remote_state: 'deleted', remote_deleted_at: '2026-11-13T01:02:03Z', also_local: also, ...(answer ? { registry: answer } : {}), ...(also ? { local: { clone: 'removed', key: 'removed' } } : {}) }) });
+    await toConfirm(c, 'mine', 'remote', async () => { typeInto(typed(c), 'Hello-World'); if (also) await alsoAndAck(c); else await until(() => !proposeBtn(c).hasAttribute('disabled'), 'en'); });
+    await sign(c);
+    await until(() => byData(c.root, 'result', 'check').length === 1, 'neutral for ' + also + ' ' + answer);
+    assert.equal(fkey(c, 'follow-up'), undefined);
+  }
+});
+
+test('TestFollowUpStillOfferedForRemoteDeletedRows', async () => {
+  // a remote deletion without also_local: the registration stays, the follow-up is offered (second signature, by hand)
+  let after = false;
+  const goneMine = { ...ROWS[0], gitlab: null, remote_deleted_at: '2026-11-13T01:02:03Z' };
+  const ctx = await mountProjects({
+    '/api/v1/projects/registry': () => (after ? REG({ projects: ROWS.map((r) => (r.id === 'mine' ? goneMine : r)) }) : REG()),
+    '/api/v1/projects/mine/removal-preview': () => (after ? pvBody('mine', {}, goneMine) : pvBody('mine', AV('mine'))),
+  });
+  await toConfirm(ctx, 'mine', 'remote', async () => { typeInto(typed(ctx), 'Hello-World'); await until(() => !proposeBtn(ctx).hasAttribute('disabled'), 'en'); });
+  after = true;
+  await sign(ctx);
+  await until(() => byData(ctx.root, 'followup', 'remove').length === 1, 'follow-up offered');
+  const reg = findAll(ctx.root, (e) => e.getAttribute('data-step') === 'registry')[0];
+  assert.equal(reg.getAttribute('data-status'), 'kept');
+  click(fkey(ctx, 'follow-up'));
+  await until(() => !!proposeBtn(ctx), 'follow-up preview');
+  assert.equal(detachBox(ctx), undefined, 'the remote is gone: no key to detach');
+  await ackIfAsked(ctx);
+  click(proposeBtn(ctx));
+  await waitSignable(ctx);
+  assert.equal(posts(ctx, '/api/v1/projects/remove/propose')[0].body.fields.detach_key, false);
+  // a W3f leftover row (remote_deleted_at already set): the local removal is offered, without the key option
+  const c2 = await mountProjects();
+  await openDelete(c2, 'gone-app');
+  assert.ok(fkey(c2, 'choice-local'));
+  await pick(c2, 'local');
+  assert.equal(detachBox(c2), undefined);
+  assert.ok(byData(c2.root, 'emph', 'remote-gone').length === 1);
+  await ackIfAsked(c2);
+  click(proposeBtn(c2));
+  await waitSignable(c2);
+  assert.deepEqual(posts(c2, '/api/v1/projects/remove/propose')[0].body.fields, { scope: 'local', legacy_ack: false, detach_key: false });
+});
+
+test('TestChangeVectorsMatchGoW3g', async () => {
+  const rp = VEC.good.filter((g) => g.action === 'remove_project');
+  assert.ok(rp.some((g) => g.fields.detach_key === true) && rp.some((g) => g.fields.detach_key === false), 'vectors for detach_key true and false');
+  for (const g of rp) {
+    assert.deepEqual(Object.keys(g.fields).sort(), ['detach_key', 'legacy_ack', 'scope'], g.name);
+    assert.equal(P.canonicalChange(g.action, g.subject, g.fields), g.canonical, g.name);
+    assert.equal(await P.computeChange(g.action, g.subject, g.fields), g.change, g.name);
+  }
+  // the two values give two hashes for the same project
+  const t = rp.find((g) => g.fields.detach_key === true && g.fields.legacy_ack === false);
+  const f = rp.find((g) => g.fields.detach_key === false && g.fields.legacy_ack === false && g.subject === t.subject);
+  assert.ok(t && f && t.change !== f.change);
+  // Go refuses a string or a missing detach_key, and so does the browser
+  const ref = VEC.refused.filter((r) => r.action === 'remove_project');
+  assert.ok(ref.some((r) => typeof r.fields.detach_key === 'string') && ref.some((r) => !Object.prototype.hasOwnProperty.call(r.fields, 'detach_key')));
+  for (const r of ref) assert.throws(() => P.canonicalChange(r.action, r.subject, r.fields), { name: 'ChangeError' }, r.name);
+  for (const m of VEC.messages.filter((x) => x.action === 'remove_project')) assert.equal(wa.checkRegistryMessage(m.text).change, m.change, m.name);
+});
+
+test('TestNoStorageNoNavigateTrap', async () => {
+  const dj = src('views/delete.js');
+  for (const bad of ['localStorage', 'sessionStorage', 'indexedDB', 'document.cookie', 'history.pushState', 'history.replaceState', 'ctx.navigate', 'location.hash', 'innerHTML', 'beforeunload', 'onbeforeunload']) {
+    assert.ok(!dj.includes(bad), 'delete.js uses ' + bad);
+  }
+  assert.ok(/id: 'del-detach'/.test(dj) && !/id: 'del-detach'[^}]*autocomplete/.test(dj), 'a plain checkbox');
+  const had = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, get() { throw new Error('storage touched'); } });
+  Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, get() { throw new Error('storage touched'); } });
+  try {
+    const ctx = await mountProjects(pvAvail('mine'));
+    await toConfirm(ctx, 'mine', 'local', () => setDetach(ctx, false).then(() => setDetach(ctx, true)));
+    await sign(ctx);
+    await until(() => byData(ctx.root, 'result', 'ok').length === 1, 'detach done');
+    assert.deepEqual(ctx.nav, [], 'no navigation');
+    const c2 = await mountProjects();
+    await toConfirm(c2, 'mine', 'remote', async () => { typeInto(typed(c2), 'Hello-World'); await alsoAndAck(c2); });
+    await sign(c2);
+    await until(() => byData(c2.root, 'result', 'ok').length === 1, 'also_local done');
+    assert.deepEqual(c2.nav, []);
+    // leaving mid-flow is free: no trap, nothing sent afterwards
+    const c3 = await mountProjects(pvAvail('mine'));
+    await toConfirm(c3, 'mine', 'local');
+    c3.leave();
+    await sleep(20);
+    assert.equal(posts(c3, '/api/v1/projects/remove/apply').length, 0);
+  } finally {
+    if (had) Object.defineProperty(globalThis, 'localStorage', had); else delete globalThis.localStorage;
+    delete globalThis.sessionStorage;
+  }
+});
+
+test('TestRemoveApplyWaitOutlastsOrchdW3g', async () => {
+  // orchd waits up to 70 s for the broker (key detach included) plus up to 15 s for the local removal
+  assert.ok(P.DELETE_APPLY_TIMEOUT_MS > 70000 + 15000, String(P.DELETE_APPLY_TIMEOUT_MS));
+  const ctx = await mountProjects(pvAvail('mine'));
+  await toConfirm(ctx, 'mine', 'local');
+  await sign(ctx);
+  await until(() => byData(ctx.root, 'result', 'ok').length === 1, 'result');
+  const a = posts(ctx, '/api/v1/projects/remove/apply')[0];
+  assert.equal(a.opts.timeoutMs, P.DELETE_APPLY_TIMEOUT_MS);
+  assert.equal(a.opts.noRetry429, true);
+});
+
+test('TestRemoveResultShowsKeyStateW3g', async () => {
+  for (const [ks, want] of [['removed', '뗐습니다'], ['already_gone', '이미 없었습니다']]) {
+    const ctx = await mountProjects({ ...pvAvail('mine'), 'POST /api/v1/projects/remove/apply': (b) => ({ id: 'mine', removed: true, detach_key: true, key_state: ks, local: { clone: 'removed', key: 'removed' } }) });
+    await toConfirm(ctx, 'mine', 'local');
+    await sign(ctx);
+    await until(() => byData(ctx.root, 'result', 'ok').length === 1, ks);
+    const st = findAll(ctx.root, (e) => e.getAttribute('data-step') === 'remote-key')[0];
+    assert.ok(text(st).includes(want), text(st));
+    assert.ok(!text(byData(ctx.root, 'result', 'ok')[0]).includes('원격 저장소는 그대로입니다.') || text(byData(ctx.root, 'result', 'ok')[0]).includes('배포 키'), 'the note mentions the key');
+  }
+  // an ok answer that does not match what was signed is shown neutrally
+  for (const [fields, answer] of [
+    [true, { id: 'mine', removed: true, detach_key: true, local: { clone: 'removed', key: 'removed' } }],
+    [true, { id: 'mine', removed: true, detach_key: true, key_state: 'weird', local: { clone: 'removed', key: 'removed' } }],
+    [true, { id: 'mine', removed: true, detach_key: false, local: { clone: 'removed', key: 'removed' } }],
+    [false, { id: 'mine', removed: true, detach_key: false, key_state: 'removed', local: { clone: 'removed', key: 'removed' } }],
+    [false, { id: 'mine', removed: true, detach_key: true, local: { clone: 'removed', key: 'removed' } }],
+  ]) {
+    const ctx = await mountProjects({ ...pvAvail('mine'), 'POST /api/v1/projects/remove/apply': () => answer });
+    await toConfirm(ctx, 'mine', 'local', fields ? undefined : () => setDetach(ctx, false));
+    await sign(ctx);
+    await until(() => byData(ctx.root, 'result', 'check').length === 1, JSON.stringify(answer));
+    assert.equal(byData(ctx.root, 'result', 'ok').length, 0);
+  }
+});
+
+test('TestRemoveFlowErrorTextsW3g', async () => {
+  const RT = D.DEL_REMOVE_TEXT;
+  // key line unavailable at propose: the remove flow's own sentence offers turning the option off
+  assert.ok(RT.keyUnavailable.includes('배포 키도 함께 떼기') && RT.keyUnavailable.includes('끄고') && RT.keyUnavailable.includes('아무것도 지우지 않았습니다'), RT.keyUnavailable);
+  const c1 = await mountProjects({ ...pvAvail('mine'), 'POST /api/v1/projects/remove/propose': () => { throw apiError(409, 'key_unavailable_for_removal', SECRET); } });
+  await openDelete(c1, 'mine');
+  await pick(c1, 'local');
+  click(proposeBtn(c1));
+  await until(() => byData(c1.root, 'note', 'del').length === 1, 'refused at propose');
+  assert.equal(text(byData(c1.root, 'note', 'del')[0]), RT.keyUnavailable);
+  assert.ok(detachBox(c1), 'back on the preview, where the option can be turned off');
+  // the key-only flow keeps the W3f sentence
+  const c1b = await mountProjects({ 'POST /api/v1/projects/remove-key/propose': () => { throw apiError(409, 'key_unavailable_for_removal', SECRET); } });
+  await openDelete(c1b, 'mine');
+  await pick(c1b, 'key');
+  click(proposeBtn(c1b));
+  await until(() => byData(c1b.root, 'note', 'del').length === 1, 'key flow');
+  assert.equal(text(byData(c1b.root, 'note', 'del')[0]), P.ERROR_TEXT.key_unavailable_for_removal);
+  // a mixed-version or changed-state refusal (broker_unavailable 503): nothing deleted, read the list, not an unknown outcome
+  assert.ok(RT.brokerUnavailable.includes('버전') && RT.brokerUnavailable.includes('상태가 바뀌었') && RT.brokerUnavailable.includes('아무것도 지우지 않았습니다'), RT.brokerUnavailable);
+  for (const [route, key] of [['POST /api/v1/projects/remove/apply', 'local'], ['POST /api/v1/projects/delete-remote/apply', 'remote']]) {
+    const c = await mountProjects({ ...pvAvail('mine'), [route]: () => { throw apiError(503, 'broker_unavailable', SECRET); } });
+    await toConfirm(c, 'mine', key, key === 'remote' ? async () => { typeInto(typed(c), 'Hello-World'); await until(() => !proposeBtn(c).hasAttribute('disabled'), 'en'); } : undefined);
+    await sign(c);
+    await until(() => byData(c.root, 'result', 'error').length === 1 || byData(c.root, 'result', 'unknown').length === 1, route);
+    assert.equal(text(byData(c.root, 'result', 'error')[0]), RT.brokerUnavailable, route);
+  }
+  const cp = await mountProjects({ 'POST /api/v1/projects/remove/propose': () => { throw apiError(503, 'broker_unavailable', SECRET); } });
+  await openDelete(cp, 'plain');
+  await pick(cp, 'local');
+  click(proposeBtn(cp));
+  await until(() => byData(cp.root, 'note', 'del').length === 1, 'at propose');
+  assert.equal(text(byData(cp.root, 'note', 'del')[0]), RT.brokerUnavailable);
+  // outcome unknown with detach: the key may already be detached; without detach the W3f sentence
+  for (const detach of [true, false]) {
+    const c = await mountProjects({ ...pvAvail('mine'), 'POST /api/v1/projects/remove/apply': () => { throw apiError(504, 'outcome_unknown', SECRET); } });
+    await toConfirm(c, 'mine', 'local', detach ? undefined : () => setDetach(c, false));
+    await sign(c);
+    await until(() => byData(c.root, 'result', 'unknown').length === 1, 'unknown ' + detach);
+    const t = text(byData(c.root, 'result', 'unknown')[0]);
+    if (detach) assert.ok(t === RT.unknownDetach && t.includes('이미 떼어졌을 수'), t);
+    else assert.equal(t, D.DEL_TEXT.unknown.remove_project);
+    await sleep(30);
+    assert.equal(posts(c, '/api/v1/projects/remove/apply').length, 1, 'never retried');
+  }
+  // delete_partial on the remove flow (the key detach): its own screen, no remote-deletion buttons, never retried
+  const c3 = await mountProjects({ ...pvAvail('mine'), 'POST /api/v1/projects/remove/apply': () => { throw apiError(504, 'delete_partial', SECRET); } });
+  await toConfirm(c3, 'mine', 'local');
+  await sign(c3);
+  await until(() => byData(c3.root, 'result', 'unknown').length === 1, 'partial detach');
+  const t3 = text(c3.root);
+  assert.ok(t3.includes(RT.partialDetach) && RT.partialDetach.includes('이미 떼어졌을 수') && RT.partialDetach.includes('지우지 않았습니다'), t3);
+  assert.ok(!t3.includes('원격 저장소 삭제 결과'), 'not the remote deletion screen');
+  assert.equal(fkey(c3, 'again-remote'), undefined);
+  assert.equal(fkey(c3, 'again-local'), undefined);
+  await sleep(30);
+  assert.equal(posts(c3, '/api/v1/projects/remove/apply').length, 1);
+  assert.equal(auth.gets.length >= 1, true);
+  // delete_partial_local after the key was detached: the key row is shown, and the recovery says to turn the option off
+  for (const [ks, want] of [['removed', '뗐습니다'], ['already_gone', '이미 없었습니다']]) {
+    const detail = { remaining: ['clone'], clone: 'kept_in_place', key: 'removed', registry_removed: true, remote_deleted: false, reason: 'remove_failed', key_state: ks, key_detached: true };
+    const c = await mountProjects({ ...pvAvail('mine'), 'POST /api/v1/projects/remove/apply': () => { throw apiError(502, 'delete_partial_local', SECRET, { detail }); } });
+    await toConfirm(c, 'mine', 'local');
+    await sign(c);
+    await until(() => byData(c.root, 'result', 'partial-local').length === 1, ks);
+    const st = findAll(c.root, (e) => e.getAttribute('data-step') === 'remote-key')[0];
+    assert.ok(st && text(st).includes(want), st ? text(st) : 'no key row');
+    const todo = text(byData(c.root, 'note', 'todo')[0]);
+    assert.ok(todo.includes('등록은 이미 지워져') && todo.includes('"배포 키도 함께 떼기"를 끄고'), todo);
+  }
+  for (const bad of [{ key_state: 'weird', key_detached: true }, { key_state: 'removed', key_detached: false }, { key_state: 'removed' }, { key_detached: true }]) {
+    const detail = { remaining: ['clone'], clone: 'kept_in_place', key: 'removed', registry_removed: true, remote_deleted: false, reason: 'remove_failed', ...bad };
+    const c = await mountProjects({ ...pvAvail('mine'), 'POST /api/v1/projects/remove/apply': () => { throw apiError(502, 'delete_partial_local', SECRET, { detail }); } });
+    await toConfirm(c, 'mine', 'local');
+    await sign(c);
+    await until(() => byData(c.root, 'result', 'partial-local').length === 1, JSON.stringify(bad));
+    assert.equal(byData(c.root, 'note', 'detail-invalid').length, 1, JSON.stringify(bad));
+  }
+  // delete_partial_local after also_local (remote deleted, registration removed): the same concise recovery
+  const d4 = { remaining: ['clone'], clone: 'kept_in_place', key: 'removed', registry_removed: true, remote_deleted: true, reason: 'remove_failed' };
+  const c4 = await mountProjects({ 'POST /api/v1/projects/delete-remote/apply': () => { throw apiError(502, 'delete_partial_local', SECRET, { detail: d4 }); } });
+  await toConfirm(c4, 'mine', 'remote', async () => { typeInto(typed(c4), 'Hello-World'); await alsoAndAck(c4); });
+  await sign(c4);
+  await until(() => byData(c4.root, 'result', 'partial-local').length === 1, 'also_local partial');
+  const todo4 = text(byData(c4.root, 'note', 'todo')[0]);
+  assert.ok(todo4.includes('등록은 이미 지워져') && todo4.includes('"배포 키도 함께 떼기"를 끄고'), todo4);
+  // delete_partial on the remote flow: the local path is taken with the option off (the repository may be gone)
+  assert.ok(D.DEL_TEXT.partialRemoteDo.includes('"배포 키도 함께 떼기"를 끄고'), D.DEL_TEXT.partialRemoteDo);
+  assert.ok(!text(c4.root).includes('SERVER-WORDS'));
 });

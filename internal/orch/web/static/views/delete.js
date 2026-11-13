@@ -11,8 +11,13 @@
 //    typed exactly (case kept) before the propose button turns on;
 //  * a legacy project gets a SEPARATE second confirmation before anything is proposed, and the signed
 //    `legacy_ack` is true exactly then;
-//  * `also_local` is a signed field of ONE signature; the follow-up "등록 지우기" is a second,
-//    separately signed remove_project that is never started or signed automatically;
+//  * `also_local` is a signed field of ONE signature that also removes the registration (W3g); the
+//    follow-up "등록 지우기" (a second, separately signed remove_project, never started or signed
+//    automatically) stays only for a remote deletion without also_local and for rows already marked
+//    remote_deleted_at;
+//  * W3g: "배포 키도 함께 떼기" (signed `detach_key`) is offered on the local removal only when the
+//    removal preview says the key can be detached; it is checked by default, and unchecking it says
+//    plainly that the key stays at the remote;
 //  * an unknown outcome is never retried and never signed again: the lists are read again and a fixed
 //    sentence is shown; every sentence is chosen by code, the server's words are never shown.
 // Every string from the server is a text node (el()); nothing is stored in the browser.
@@ -30,6 +35,8 @@ const ID_RE = /^[a-z][a-z0-9-]{0,39}$/;
 const ORIGINS = ['created', 'linked', 'unknown', 'legacy'];
 const KEEP_STATES = ['kept_in_place', 'moved_aside'];
 const DONE_STATES = ['removed', 'already_gone', 'not_managed'];
+const KEY_STATES = ['removed', 'already_gone'];
+const KEY_STATE_TEXT = { removed: '뗐습니다', already_gone: '이미 없었습니다(찾은 키가 없어 지울 것이 없었음)' };
 const PARTIAL_REASONS = ['project_busy', 'busy_check_failed', 'in_progress', 'remove_failed'];
 
 // The members of the removal-preview answer (internal/orch/api removalPreview; TestConstantsAgreeWithWeb
@@ -68,7 +75,11 @@ export const DEL_TEXT = {
   typedLabel: '저장소 이름을 직접 입력하세요(대소문자까지 같아야 합니다)',
   typedHint: '입력한 이름이 저장소 이름과 글자 그대로 같을 때만 다음 단계로 갈 수 있습니다. 붙여넣어도 됩니다.',
   alsoLabel: '원격 저장소를 지운 뒤 이 서버의 복제본과 배포 키 폴더도 이어서 지웁니다(같은 서명 한 번)',
-  alsoHint: '프로젝트 등록은 "원격 없음" 상태로 남습니다. 등록까지 지우려면 별도로 서명하는 "복제본과 등록 지우기"가 한 번 더 필요하며 자동으로 하지 않습니다.',
+  alsoHint: '원격 삭제가 끝나면 프로젝트 등록도 같은 서명으로 지웁니다(두 번째 서명은 없습니다). 서버의 파일을 지우지 못하면 등록 없는 폴더가 남을 수 있고, 그때는 관리자가 정리합니다.',
+  detachLabel: '배포 키도 함께 떼기',
+  detachHint: '지우기 전에 먼저 원격 저장소에서 이 서버의 배포 키를 뗍니다(같은 서명 한 번). 키를 떼지 못하거나 결과를 알 수 없으면 등록과 파일은 지우지 않습니다.',
+  detachShared: 'GitLab 공용 키: 제공자 화면의 키 제목은 처음 등록한 프로젝트의 이름일 수 있어, 지문으로 이 서버의 키를 확인합니다.',
+  keyRemains: '[중요] 키가 원격에 남습니다. 직접 지우세요. 원격 저장소 설정(Deploy keys)에서 이 서버의 배포 키를 제거해야 합니다.',
   legacyBody: '이것은 처음부터 있던 프로젝트입니다. 서버의 복제본과 등록이 지워지고, 이 서버의 작업 기록은 남지만 이 저장소로는 더 작업을 낼 수 없습니다. 원격 저장소는 이 도구가 지우지 않고 그대로 남습니다.',
   legacyTyped: '프로젝트 이름을 한 번 더 직접 입력하세요',
   legacyStatic: '이 프로젝트에는 서버 설정(--git-remote-for)에 정해진 원격이 있습니다. 그 설정은 바뀌지 않으니 관리자가 따로 정리해야 합니다.',
@@ -82,7 +93,7 @@ export const DEL_TEXT = {
     [ACTION_CLEAR_ORPHAN]: '고아 기록이 지워졌는지 알 수 없습니다. 자동으로 다시 시도하지 않았습니다. 목록(알림 포함)을 다시 읽었으니 확인하세요.',
   },
   partialRemote: '원격 저장소 삭제가 일부만 처리되었거나 결과를 알 수 없습니다. 저장소가 지워졌을 수도, 아닐 수도 있습니다.',
-  partialRemoteDo: '아래 단추: 저장소가 아직 있으면 "원격 저장소 다시 지우기"(새 서명이 필요하고 서버가 번호와 이름을 다시 확인합니다), 이미 없으면 "복제본과 등록 지우기"(그 복제본이 유일한 사본일 수 있습니다). 어느 쪽도 눌러야 시작하며 눌러도 서명 전에는 아무것도 지워지지 않습니다.',
+  partialRemoteDo: '아래 단추: 저장소가 아직 있으면 "원격 저장소 다시 지우기"(새 서명이 필요하고 서버가 번호와 이름을 다시 확인합니다), 이미 없으면 "배포 키도 함께 떼기"를 끄고 "복제본과 등록 지우기"(그 복제본이 유일한 사본일 수 있습니다). 어느 쪽도 눌러야 시작하며 눌러도 서명 전에는 아무것도 지워지지 않습니다.',
   noResult: '서버의 답이 요청한 내용과 맞지 않아 결과를 확인하지 못했습니다. 목록을 다시 읽었으니 확인하세요. 자동으로 다시 시도하지 않았습니다.',
   orphanCreated: '이 도구가 만든 저장소가 제공자에 남아 있을 수 있습니다. 이 기록에 대해서는 이 도구가 원격 저장소를 지우지 않습니다: 먼저 GitHub·GitLab에서 직접 지운 뒤에 이 기록을 지우세요. 이 기록만 지우고 저장소를 그대로 두면 같은 이름으로 다시 만들 수 없습니다.',
   orphanLinked: '원래 있던 저장소입니다. 절대 지우지 마세요. 이 도구는 제공자에서 아무것도 지우지 않고 이 서버의 기록 한 줄만 지웁니다. 이 서버의 배포 키가 붙어 있을 수 있으니 필요하면 제공자 저장소 설정(Deploy keys)에서 제목이 orchd로 시작하는 키를 직접 제거하세요.',
@@ -100,7 +111,19 @@ export const DEL_FAIL = {
   provider_rate_limited: '제공자가 요청 한도를 넘었다고 응답했습니다. 아무것도 지우지 않았습니다. 한참 뒤에 다시 시도하세요. 자동으로 다시 시도하지 않았습니다.',
   remove_refused: '제공자가 삭제 요청을 받아들이지 않았거나 지울 대상이 하나로 정해지지 않아 아무것도 지우지 않았습니다. 토큰 권한과 제공자 화면을 확인하세요.',
 };
-const failText = (err) => (err && typeof err.code === 'string' && has(DEL_FAIL, err.code) ? DEL_FAIL[err.code] : null);
+// W3g: the remove flow's own sentences (G-D6 reuses the codes; the page words them for this flow).
+export const DEL_REMOVE_TEXT = {
+  keyUnavailable: '이 프로젝트의 배포 키 공개 키를 서버에서 읽을 수 없어 키를 함께 뗄 수 없습니다. 아무것도 지우지 않았습니다. "배포 키도 함께 떼기"를 끄고 진행할 수 있으며, 그러면 키는 원격에 남으니 제공자 저장소 설정(Deploy keys)에서 직접 지우세요.',
+  brokerUnavailable: '서버 구성 요소(broker와 orchd)의 버전이 서로 맞지 않거나 그사이 프로젝트 상태가 바뀌었거나 등록부 서비스에 연결하지 못해 처리하지 않았습니다. 아무것도 지우지 않았습니다. 목록을 다시 읽은 뒤 다시 시도하세요.',
+  unknownDetach: '배포 키 떼기와 프로젝트 등록 지우기가 끝났는지 알 수 없습니다. 키는 이미 떼어졌을 수 있습니다. 자동으로 다시 시도하지 않았습니다. 제공자 저장소 설정(Deploy keys)과 목록을 확인하고, 필요하면 처음부터 새로 서명하세요.',
+  partialDetach: '배포 키 떼기가 일부만 처리되었거나 결과를 알 수 없습니다(키는 이미 떼어졌을 수 있습니다). 프로젝트 등록과 서버의 복제본은 지우지 않았습니다. 자동으로 다시 시도하지 않았습니다. 제공자 저장소 설정(Deploy keys)에서 확인한 뒤 "복제본과 등록 지우기"를 새로 서명하세요(키가 이미 없으면 "배포 키도 함께 떼기"를 끄고).',
+};
+const failText = (err, sent) => {
+  const code = err && typeof err.code === 'string' ? err.code : '';
+  if (code === 'broker_unavailable') return DEL_REMOVE_TEXT.brokerUnavailable;
+  if (code === 'key_unavailable_for_removal' && sent && sent.action === ACTION_REMOVE_PROJECT) return DEL_REMOVE_TEXT.keyUnavailable;
+  return has(DEL_FAIL, code) ? DEL_FAIL[code] : null;
+};
 
 // The server's fixed preview lines (internal/orch/api deletePreview), as templates: {id} {path} {remote} {name} {fp}
 // {provider} {project}. This page rebuilds the whole preview from its own values and a proposal is signable only
@@ -137,14 +160,9 @@ export function expectedLines(sent, row, pv, resp) {
   const path = isObj(row) ? row.path : null;
   let out;
   if (sent.action === ACTION_REMOVE_PROJECT) {
+    if (!proposalKeyOk(sent, row, pv, resp)) return null;
     out = [fill(L.rp1, { id: sent.subject, path }), L.rp2];
-    if (f.detach_key) {
-      // the key's fingerprint is the server's (from the key folder); the repository is the row's
-      const fp = isObj(resp) ? resp.deploy_key_fingerprint : null;
-      const r = remoteOf(row);
-      if (typeof fp !== 'string' || !FP_RE.test(fp) || r === null) return null;
-      out.push(fill(L.rpDetach, { remote: r.path, fp }));
-    }
+    if (f.detach_key) out.push(fill(L.rpDetach, { remote: remoteOf(row).path, fp: resp.deploy_key_fingerprint }));
     out.push(L.rp3, L.rp4);
     if (f.legacy_ack) out.push(L.rpLegacy);
     if (pv && pv.static_remote) out.push(L.rpStatic);
@@ -160,6 +178,18 @@ export function expectedLines(sent, row, pv, resp) {
   }
   if (out.some((x) => typeof x !== 'string' || x.includes('{'))) return null;
   return [...out, L.stamp];
+}
+
+// proposalKeyOk: the key members of a remove_project proposal (W3g). detach_key_available is always a bool;
+// the key's identity is there exactly when detach_key was asked, and it is the key the removal preview showed
+// (title computed here, fingerprint equal to the preview's, shared a bool equal to the preview's).
+function proposalKeyOk(sent, row, pv, resp) {
+  if (!isObj(resp) || typeof resp.detach_key_available !== 'boolean') return false;
+  const ident = ['deploy_key_title', 'deploy_key_fingerprint', 'deploy_key_shared'];
+  if (!sent.fields.detach_key) return !ident.some((k) => has(resp, k));
+  if (resp.detach_key_available !== true || remoteOf(row) === null || !isObj(pv) || pv.detach_key_available !== true) return false;
+  return resp.deploy_key_title === 'orchd ' + sent.subject && typeof resp.deploy_key_fingerprint === 'string' && FP_RE.test(resp.deploy_key_fingerprint) &&
+    resp.deploy_key_fingerprint === pv.deploy_key_fingerprint && typeof resp.deploy_key_shared === 'boolean' && resp.deploy_key_shared === pv.deploy_key_shared;
 }
 
 const CLONE_STATE_TEXT = {
@@ -212,6 +242,11 @@ export function checkPreview(pv, id, row) {
   if (pv.has_remote !== (isObj(row) && isObj(row.gitlab))) return null;
   if (pv.remote_deleted_at !== null && typeof pv.remote_deleted_at !== 'string') return null;
   if ((pv.remote_deleted_at !== null) !== (isObj(row) && typeof row.remote_deleted_at === 'string')) return null;
+  // W3g: whether the key can be detached with the removal, and which key (public identity only)
+  if (typeof pv.detach_key_available !== 'boolean' || typeof pv.deploy_key_shared !== 'boolean') return null;
+  if (pv.detach_key_available) {
+    if (!deleteOptions(row).key || pv.deploy_key_title !== 'orchd ' + id || typeof pv.deploy_key_fingerprint !== 'string' || !FP_RE.test(pv.deploy_key_fingerprint)) return null;
+  } else if (pv.deploy_key_title !== null || pv.deploy_key_fingerprint !== null || pv.deploy_key_shared !== false) return null;
   return pv;
 }
 
@@ -232,7 +267,12 @@ export function partialDetail(err) {
   const okState = (v) => typeof v === 'string' && (DONE_STATES.includes(v) || KEEP_STATES.includes(v));
   if (!okState(d.clone) || !okState(d.key) || typeof d.registry_removed !== 'boolean' || typeof d.remote_deleted !== 'boolean' ||
       typeof d.reason !== 'string' || !PARTIAL_REASONS.includes(d.reason)) return null;
-  return { remaining: d.remaining, clone: d.clone, key: d.key, registryRemoved: d.registry_removed, remoteDeleted: d.remote_deleted, reason: d.reason };
+  // W3g: the key was detached at the provider before the local removal failed (both members, or neither)
+  if (has(d, 'key_state') || has(d, 'key_detached')) {
+    if (d.key_detached !== true || !KEY_STATES.includes(d.key_state) || d.registry_removed !== true) return null;
+  }
+  return { remaining: d.remaining, clone: d.clone, key: d.key, registryRemoved: d.registry_removed, remoteDeleted: d.remote_deleted, reason: d.reason,
+    keyState: has(d, 'key_state') ? d.key_state : null };
 }
 
 // --- the controller ---------------------------------------------------------------
@@ -243,7 +283,7 @@ export function makeDelete(ctx, host) {
     prevStep: null,
     step: 'idle', // idle | choose | loading | preview | legacy | flow | orphan | fail
     row: null, opts: null, choice: null, pv: null, note: null, followUp: false, orphan: null, seq: 0,
-    typed: null, ack: null, also: null, legacyTyped: null, blocked: null,
+    typed: null, ack: null, also: null, detach: null, legacyTyped: null, blocked: null,
   };
   const gone = () => !!(ctx.signal && ctx.signal.aborted);
   let resultErr = null;
@@ -262,7 +302,7 @@ export function makeDelete(ctx, host) {
   function reset() {
     d.seq++;
     flow.reset();
-    Object.assign(d, { step: 'idle', prevStep: null, row: null, opts: null, choice: null, pv: null, note: null, followUp: false, orphan: null, typed: null, ack: null, also: null, legacyTyped: null, blocked: null });
+    Object.assign(d, { step: 'idle', prevStep: null, row: null, opts: null, choice: null, pv: null, note: null, followUp: false, orphan: null, typed: null, ack: null, also: null, detach: null, legacyTyped: null, blocked: null });
     resultErr = null;
   }
   api.reset = reset;
@@ -308,6 +348,7 @@ export function makeDelete(ctx, host) {
     d.typed = null;
     d.ack = null;
     d.also = null;
+    d.detach = null;
     d.legacyTyped = null;
     if (d.pv) {
       d.step = 'preview';
@@ -349,6 +390,9 @@ export function makeDelete(ctx, host) {
     d.ack.checked = false;
     d.also = el('input', { type: 'checkbox', id: 'del-also', 'data-focus-key': 'also', on: { change: () => { gateChanged(true); } } });
     d.also.checked = false;
+    // W3g: checked by default; shown (and sent as true) only when the preview says the key can be detached
+    d.detach = el('input', { type: 'checkbox', id: 'del-detach', 'data-focus-key': 'detach', on: { change: () => { gateChanged(true); } } });
+    d.detach.checked = true;
     d.typed = el('input', { type: 'text', id: 'del-typed', class: 'mono', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off', maxlength: '120', 'data-focus-key': 'typed', on: { input: gateChanged } });
     d.typed.value = '';
     d.legacyTyped = el('input', { type: 'text', id: 'del-legacy-typed', class: 'mono', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off', maxlength: '60', 'data-focus-key': 'ltyped', on: { input: gateChanged } });
@@ -360,7 +404,7 @@ export function makeDelete(ctx, host) {
   // The propose button's state is part of the render: a repaint happens only when it changes.
   function gateChanged(force) {
     const g = gate();
-    const key = g.ok + '|' + g.needAck + '|' + g.why + '|' + (d.choice === ACTION_DELETE_REMOTE_REPO && d.also ? d.also.checked : '') + '|' + (d.step === 'legacy' && legacyTypedOk());
+    const key = g.ok + '|' + g.needAck + '|' + g.why + '|' + (d.choice === ACTION_DELETE_REMOTE_REPO && d.also ? d.also.checked : '') + '|' + (d.step === 'legacy' && legacyTypedOk()) + '|' + detachKey();
     if (force === true || key !== d.blocked) {
       d.blocked = key;
       keepFocus(() => host.paint());
@@ -393,6 +437,9 @@ export function makeDelete(ctx, host) {
   }
 
   const alsoLocal = () => d.choice === ACTION_DELETE_REMOTE_REPO && !!d.also && d.also.checked === true;
+  // detachOffered: the local removal of a row whose key the server can detach (removal preview, checked against the row)
+  const detachOffered = () => d.choice === ACTION_REMOVE_PROJECT && !!d.pv && d.pv.detach_key_available === true && !!d.opts && d.opts.key;
+  const detachKey = () => detachOffered() && !!d.detach && d.detach.checked === true;
   const touchesLocal = () => d.choice === ACTION_REMOVE_PROJECT || alsoLocal();
 
   // maybeGone: the remote is already deleted, or its deletion ended "maybe done" in this page visit
@@ -437,7 +484,7 @@ export function makeDelete(ctx, host) {
     let sent;
     if (choice === ACTION_REMOVE_PROJECT) {
       if (d.opts.origin === 'legacy') return; // only the second confirmation screen proposes a legacy removal
-      sent = { action: ACTION_REMOVE_PROJECT, subject: row.id, fields: { scope: 'local', legacy_ack: false, detach_key: false } };
+      sent = { action: ACTION_REMOVE_PROJECT, subject: row.id, fields: { scope: 'local', legacy_ack: false, detach_key: detachKey() } };
     } else if (choice === ACTION_DELETE_REMOTE_REPO) {
       const r = d.opts.remote;
       sent = { action: ACTION_DELETE_REMOTE_REPO, subject: row.id, fields: { remote_path: r.path, remote_id: r.id, confirm_name: d.typed.value, also_local: alsoLocal() } };
@@ -451,7 +498,7 @@ export function makeDelete(ctx, host) {
     if (flow.busy || d.opts.origin !== 'legacy' || d.step !== 'legacy') return;
     const g = gate();
     if (!g.ok || !legacyTypedOk()) return;
-    startFlow({ action: ACTION_REMOVE_PROJECT, subject: d.row.id, fields: { scope: 'local', legacy_ack: true, detach_key: false } });
+    startFlow({ action: ACTION_REMOVE_PROJECT, subject: d.row.id, fields: { scope: 'local', legacy_ack: true, detach_key: detachKey() } });
   }
 
   const legacyTypedOk = () => !!d.legacyTyped && d.legacyTyped.value === d.row.id;
@@ -551,6 +598,20 @@ export function makeDelete(ctx, host) {
     return { host: prov && (prov.kind === 'github' || prov.kind === 'gitlab') ? hostName(prov.kind) : hostName(undefined), addr };
   };
 
+  // the repository and key a detach names: name, address and provider of the row's remote; the key's title (not for a
+  // shared GitLab key, whose provider title may be another project's) and fingerprint, as the removal preview gave them
+  function keyIdentity() {
+    const r = d.opts.remote;
+    const rl = remoteLine(r);
+    const pv = d.pv;
+    return { repo: r.path + ' (주소 ' + rl.addr + ', ' + rl.host + ')', title: pv.deploy_key_shared ? null : inline(pv.deploy_key_title, 64), fp: inline(pv.deploy_key_fingerprint, 80), shared: pv.deploy_key_shared };
+  }
+  function keyTarget() {
+    const k = keyIdentity();
+    return '원격 저장소 ' + k.repo + '에서 제공자의 배포 키를 먼저 뗍니다: ' + (k.title !== null ? '제목 ' + k.title + ', ' : '') + '지문 ' + k.fp + (k.shared ? ' (GitLab 공용 키)' : '');
+  }
+  const keyRemainsBox = () => warnBox(DEL_TEXT.keyRemains + ' (저장소 ' + d.opts.remote.path + ')', 'key-remains');
+
   function renderChoose() {
     const o = d.opts;
     const id = d.row.id;
@@ -589,8 +650,9 @@ export function makeDelete(ctx, host) {
     const row = d.row;
     const r = d.opts.remote;
     const items = [];
+    if (detachKey()) items.push(['원격 키', keyTarget()]);
     if (d.choice === ACTION_REMOVE_PROJECT || alsoLocal()) {
-      if (d.choice === ACTION_REMOVE_PROJECT) items.push(['등록', '프로젝트 등록(' + inline(row.id, 64) + ')을 등록부에서 지웁니다']);
+      items.push(['등록', '프로젝트 등록(' + inline(row.id, 64) + ')을 등록부에서 지웁니다' + (alsoLocal() ? '(원격 삭제가 끝난 뒤, 같은 서명)' : '')]);
       items.push(['복제본', '서버의 복제본 폴더: ' + inline(row.path, 200) + (pv.folder_exists ? '' : pv.local_removable ? ' (이미 없음)' : ' (확인하지 못함)')]);
       items.push(['키 폴더', '이 프로젝트의 배포 키 폴더(서버): ' + (pv.key_dir_exists ? '있음, 지웁니다' : '없음')]);
     }
@@ -610,9 +672,10 @@ export function makeDelete(ctx, host) {
     const items = [];
     if (d.choice === ACTION_REMOVE_PROJECT) {
       items.push(r ? '원격 저장소 ' + r.path + ': 지워지지 않고 그대로 남습니다' : '원격 저장소: 연결이 없습니다');
+      if (r && !d.opts.gone && !detachKey()) items.push('원격 저장소에 붙은 이 서버의 배포 키: 떼지 않으면 그대로 남습니다');
       items.push('이 서버의 작업 기록은 남습니다');
     } else if (d.choice === ACTION_DELETE_REMOTE_REPO) {
-      items.push(alsoLocal() ? '프로젝트 등록은 "원격 없음" 상태로 남습니다(등록 지우기는 별도 서명)' : '이 서버의 복제본, 배포 키 폴더와 프로젝트 등록은 그대로 남습니다');
+      if (!alsoLocal()) items.push('이 서버의 복제본, 배포 키 폴더와 프로젝트 등록은 그대로 남습니다(등록은 "원격 없음" 상태)');
       items.push('이 서버의 작업 기록은 남습니다');
     } else {
       items.push('원격 저장소와 그 안의 다른 키, 프로젝트 등록(' + inline(row.id, 64) + ')과 서버의 복제본은 그대로입니다');
@@ -654,7 +717,21 @@ export function makeDelete(ctx, host) {
         el('div', { class: 'field' }, [el('div', { class: 'row' }, [d.also, ' ', el('label', { for: 'del-also' }, DEL_TEXT.alsoLabel)]), el('span', { class: 'hint' }, DEL_TEXT.alsoHint)]),
         el('div', { class: 'field' }, [el('label', { for: 'del-typed' }, DEL_TEXT.typedLabel + ': ' + o.remote.name), d.typed, el('span', { class: 'hint', id: 'del-gate-hint' }, DEL_TEXT.typedHint)]),
       ]) : null,
-      pv.remote_key_may_remain && d.choice === ACTION_REMOVE_PROJECT && o.key
+      detachOffered() ? (() => {
+        const k = keyIdentity();
+        return el('div', { class: 'form', 'data-detach': 'option' }, [el('div', { class: 'field' }, [
+          el('div', { class: 'row' }, [d.detach, ' ', el('label', { for: 'del-detach' }, DEL_TEXT.detachLabel)]),
+          el('span', { class: 'hint' }, DEL_TEXT.detachHint),
+          el('ul', { class: 'pfacts', 'aria-label': '떼는 배포 키' }, [
+            factItem('원격 저장소', k.repo, { 'data-key': 'repo' }),
+            k.title !== null ? factItem('키 제목', k.title, { 'data-key': 'title' }) : null,
+            factItem('키 지문', k.fp, { 'data-key': 'fingerprint' }),
+          ].filter(Boolean)),
+          k.shared ? el('span', { class: 'hint' }, DEL_TEXT.detachShared) : null,
+        ].filter(Boolean))]);
+      })() : null,
+      detachOffered() && !detachKey() ? keyRemainsBox() : null,
+      pv.remote_key_may_remain && d.choice === ACTION_REMOVE_PROJECT && o.key && !detachOffered()
         ? el('div', { class: 'trunc', role: 'note', 'data-hint': 'detach-key' }, [el('p', {}, DEL_TEXT.keyHint),
           el('button', { type: 'button', class: 'btn', 'data-focus-key': 'detach-first', on: { click: () => pickChoice(ACTION_REMOVE_DEPLOY_KEY, false) } }, '배포 키 먼저 떼기')]) : null,
       needAck ? el('div', { class: 'form' }, [el('div', { class: 'field' }, [el('div', { class: 'row' }, [d.ack, ' ', el('label', { for: 'del-ack' }, DEL_TEXT.ackLabel)]), g.why === 'ack' ? el('span', { class: 'hint' }, DEL_TEXT.ackNeeded) : null])]) : null,
@@ -722,15 +799,28 @@ export function makeDelete(ctx, host) {
     let lead;
     let warn = null;
     if (s.action === ACTION_REMOVE_PROJECT) {
-      lead = '아래 내용이 전부입니다. 서명하면 이 서버의 프로젝트 등록, 복제본, 배포 키 폴더가 바로 지워집니다. 원격 저장소는 지워지지 않습니다.';
-      facts.push(factItem('프로젝트', s.subject, { 'data-field': 'id' }), factItem('범위', '서버의 복제본과 등록만(원격은 그대로)', { 'data-field': 'scope' }),
+      lead = f.detach_key
+        ? '아래 내용이 전부입니다. 서명하면 먼저 원격 저장소에서 이 서버의 배포 키를 떼고, 그다음 이 서버의 프로젝트 등록, 복제본, 배포 키 폴더가 바로 지워집니다. 원격 저장소 자체는 지워지지 않습니다.'
+        : '아래 내용이 전부입니다. 서명하면 이 서버의 프로젝트 등록, 복제본, 배포 키 폴더가 바로 지워집니다. 원격 저장소는 지워지지 않습니다.';
+      facts.push(factItem('프로젝트', s.subject, { 'data-field': 'id' }), factItem('범위', '서버의 복제본과 등록만(원격 저장소는 그대로)', { 'data-field': 'scope' }),
         factItem('처음부터 있던 프로젝트 확인(legacy_ack)', f.legacy_ack ? '예 — 두 번째 확인을 했습니다' : '아니오', { 'data-field': 'legacy_ack' }));
-      warn = warnBox(DEL_TEXT.irreversible, 'irreversible');
+      const remote = remoteOf(d.row);
+      if (f.detach_key && remote !== null && d.pv && d.pv.detach_key_available === true) {
+        const k = keyIdentity();
+        facts.push(factItem('배포 키도 함께 떼기(detach_key)', '예 — 지우기 전에 먼저 뗍니다', { 'data-field': 'detach_key' }),
+          factItem('키를 떼는 원격 저장소', k.repo, { 'data-field': 'key_repo' }));
+        if (k.title !== null) facts.push(factItem('떼는 키 제목', k.title, { 'data-field': 'key_title' }));
+        else facts.push(factItem('키 확인 방법', DEL_TEXT.detachShared, { 'data-field': 'key_shared' }));
+        facts.push(factItem('떼는 키 지문(서버가 알린 값)', inline(flow.resp.deploy_key_fingerprint, 80), { 'data-field': 'key_fingerprint' }));
+      } else {
+        facts.push(factItem('배포 키도 함께 떼기(detach_key)', '아니오', { 'data-field': 'detach_key' }));
+      }
+      warn = el('div', {}, [warnBox(DEL_TEXT.irreversible, 'irreversible'), !f.detach_key && remote !== null && !d.opts.gone ? keyRemainsBox() : null].filter(Boolean));
     } else if (s.action === ACTION_DELETE_REMOTE_REPO) {
       lead = '아래 내용이 전부입니다. 서명하면 제공자의 원격 저장소가 바로 지워집니다. 되돌릴 수 없습니다.';
       facts.push(factItem('프로젝트', s.subject, { 'data-field': 'id' }), factItem('원격 저장소', f.remote_path, { 'data-field': 'remote_path' }),
         factItem('저장소 번호', f.remote_id, { 'data-field': 'remote_id' }), factItem('입력한 저장소 이름', f.confirm_name, { 'data-field': 'confirm_name' }),
-        factItem('이어서 서버의 복제본과 키 폴더도 지움(also_local)', f.also_local ? '예' : '아니오', { 'data-field': 'also_local' }));
+        factItem('이어서 서버의 복제본, 키 폴더와 프로젝트 등록도 지움(also_local)', f.also_local ? '예 — 같은 서명으로' : '아니오 — 복제본과 등록은 남음', { 'data-field': 'also_local' }));
       warn = warnBox(DEL_TEXT.irreversibleRemote, 'remote-irreversible');
     } else if (s.action === ACTION_REMOVE_DEPLOY_KEY) {
       lead = '아래 내용이 전부입니다. 서명하면 제공자 저장소에서 이 서버의 배포 키만 떼어집니다. 저장소와 다른 키는 그대로입니다.';
@@ -758,6 +848,11 @@ export function makeDelete(ctx, host) {
     const code = err && typeof err.code === 'string' ? err.code : '';
     if (code === 'delete_partial_local') return renderPartialLocal(err, s, back);
     const unknown = isUnknown(err) || code === 'delete_partial' || code === 'outcome_unknown';
+    if (code === 'delete_partial' && s.action === ACTION_REMOVE_PROJECT) {
+      // W3g: only the key detach of a remove_project ends this way; nothing local was touched, the registration stays
+      return panel([el('h1', { id: 'h-projects' }, '배포 키 떼기 결과를 알 수 없습니다'),
+        el('p', { class: ['note', 'err'], role: 'alert', 'data-result': 'unknown' }, DEL_REMOVE_TEXT.partialDetach), back]);
+    }
     if (code === 'delete_partial') {
       return panel([el('h1', { id: 'h-projects' }, '원격 저장소 삭제 결과를 알 수 없습니다'),
         el('p', { class: ['note', 'err'], role: 'alert', 'data-result': 'unknown' }, ERROR_TEXT.delete_partial),
@@ -769,10 +864,11 @@ export function makeDelete(ctx, host) {
     }
     if (unknown) {
       return panel([el('h1', { id: 'h-projects' }, '결과를 알 수 없습니다'),
-        el('p', { class: ['note', 'err'], role: 'alert', 'data-result': 'unknown' }, has(DEL_TEXT.unknown, s.action) ? DEL_TEXT.unknown[s.action] : ERROR_TEXT.outcome_unknown), back]);
+        el('p', { class: ['note', 'err'], role: 'alert', 'data-result': 'unknown' }, s.action === ACTION_REMOVE_PROJECT && s.fields.detach_key ? DEL_REMOVE_TEXT.unknownDetach
+          : has(DEL_TEXT.unknown, s.action) ? DEL_TEXT.unknown[s.action] : ERROR_TEXT.outcome_unknown), back]);
     }
     return panel([el('h1', { id: 'h-projects' }, '지우지 못했습니다'),
-      el('p', { class: ['note', 'err'], role: 'alert', 'data-result': 'error' }, failText(err) || failureText(err)), back]);
+      el('p', { class: ['note', 'err'], role: 'alert', 'data-result': 'error' }, failText(err, s) || failureText(err)), back]);
   }
 
   function localRows(local, also) {
@@ -788,8 +884,15 @@ export function makeDelete(ctx, host) {
   // okShape: the success answer describes what was asked (the same project, the expected state)
   function okShape(data, s) {
     if (!isObj(data)) return false;
-    if (s.action === ACTION_REMOVE_PROJECT) return data.id === s.subject && data.removed === true;
-    if (s.action === ACTION_DELETE_REMOTE_REPO) return data.id === s.subject && (data.remote_state === 'deleted' || data.remote_state === 'requested');
+    if (s.action === ACTION_REMOVE_PROJECT) {
+      // W3g: the answer says whether the key was detached, and how, exactly as signed
+      if (data.id !== s.subject || data.removed !== true || data.detach_key !== s.fields.detach_key) return false;
+      return s.fields.detach_key ? KEY_STATES.includes(data.key_state) : !has(data, 'key_state');
+    }
+    if (s.action === ACTION_DELETE_REMOTE_REPO) {
+      // W3g: also_local removed the registration in the same signature; without it the registration stays
+      return data.id === s.subject && (data.remote_state === 'deleted' || data.remote_state === 'requested') && data.registry === (s.fields.also_local ? 'removed' : 'kept');
+    }
     if (s.action === ACTION_REMOVE_DEPLOY_KEY) return data.id === s.subject && data.key_removed === true;
     return data.provider === s.subject && data.project === s.fields.project && data.cleared === true;
   }
@@ -800,20 +903,30 @@ export function makeDelete(ctx, host) {
     }
     const kids = [el('h1', { id: 'h-projects' }, '완료')];
     if (s.action === ACTION_REMOVE_PROJECT) {
-      kids.push(el('p', { class: ['note', 'ok'], role: 'status', 'data-result': 'ok' }, '프로젝트 ' + inline(s.subject, 64) + '를 이 서버에서 지웠습니다. 원격 저장소는 그대로입니다.'),
-        stepList([['registry', '프로젝트 등록', 'removed', '지웠습니다'], ...localRows(isObj(data) ? data.local : null)]));
+      const detached = s.fields.detach_key === true;
+      kids.push(el('p', { class: ['note', 'ok'], role: 'status', 'data-result': 'ok' }, '프로젝트 ' + inline(s.subject, 64) + '를 이 서버에서 지웠습니다. ' +
+        (detached ? '원격 저장소에서 이 서버의 배포 키도 뗐습니다(저장소 자체는 그대로입니다).' : '원격 저장소는 그대로입니다.')),
+        stepList([...(detached ? [['remote-key', '원격 저장소의 배포 키', data.key_state, KEY_STATE_TEXT[data.key_state]]] : []),
+          ['registry', '프로젝트 등록', 'removed', '지웠습니다'], ...localRows(isObj(data) ? data.local : null)]));
+      const r = remoteOf(d.row);
+      if (!detached && r !== null && !(d.opts && d.opts.gone)) kids.push(el('p', { class: 'note', 'data-note': 'key-remains' }, '이 서버의 배포 키는 원격 저장소 ' + r.path + '에 남아 있습니다. 필요 없으면 제공자 저장소 설정(Deploy keys)에서 직접 지우세요.'));
     } else if (s.action === ACTION_DELETE_REMOTE_REPO) {
       const requested = isObj(data) && data.remote_state === 'requested';
       const known = true;
       kids.push(el('p', { class: ['note', 'ok'], role: 'status', 'data-result': 'ok' }, '원격 저장소 삭제를 요청했습니다' + (requested ? '(제공자가 지연 삭제로 처리할 수 있습니다).' : '.')));
       const rows = [['remote', '원격 저장소 삭제', known ? 'done' : 'unknown', known ? (requested ? '요청됨' : '완료') : '결과를 알 수 없음']];
-      if (s.fields.also_local) rows.push(...localRows(isObj(data) ? data.local : null, true));
-      rows.push(['registry', '프로젝트 등록', 'kept', '남음("원격 없음" 상태)']);
-      kids.push(stepList(rows));
-      kids.push(el('div', { class: 'trunc', role: 'note', 'data-followup': 'remove' }, [
-        el('p', {}, s.fields.also_local ? '프로젝트 등록은 남아 있습니다. 등록까지 지우려면 별도의 서명이 한 번 더 필요하며 자동으로 하지 않습니다.'
-          : '서버의 복제본과 등록은 그대로 남아 있습니다. 지우려면 별도의 서명이 필요하며 자동으로 하지 않습니다.'),
-        el('button', { type: 'button', class: 'btn', 'data-focus-key': 'follow-up', on: { click: startFollowUp } }, '복제본과 등록 지우기…')]));
+      if (s.fields.also_local) {
+        // W3g: the same signature removed the registration: nothing is left to sign
+        rows.push(...localRows(isObj(data) ? data.local : null, true));
+        rows.push(['registry', '프로젝트 등록', 'removed', '지웠습니다(같은 서명)']);
+        kids.push(stepList(rows));
+      } else {
+        rows.push(['registry', '프로젝트 등록', 'kept', '남음("원격 없음" 상태)']);
+        kids.push(stepList(rows));
+        kids.push(el('div', { class: 'trunc', role: 'note', 'data-followup': 'remove' }, [
+          el('p', {}, '서버의 복제본과 등록은 그대로 남아 있습니다. 지우려면 별도의 서명이 필요하며 자동으로 하지 않습니다.'),
+          el('button', { type: 'button', class: 'btn', 'data-focus-key': 'follow-up', on: { click: startFollowUp } }, '복제본과 등록 지우기…')]));
+      }
     } else if (s.action === ACTION_REMOVE_DEPLOY_KEY) {
       kids.push(el('p', { class: ['note', 'ok'], role: 'status', 'data-result': 'ok' }, '이 서버의 배포 키를 제공자 저장소에서 뗐습니다. 저장소와 프로젝트는 그대로입니다.'),
         stepList([['key', '제공자 저장소의 배포 키', 'removed', '뗐습니다']]));
@@ -834,6 +947,7 @@ export function makeDelete(ctx, host) {
       kids.push(el('p', { class: 'note', 'data-note': 'detail-invalid' }, '서버가 알려 준 항목별 상태를 확인할 수 없습니다. 서버 관리자가 서버의 폴더를 확인해야 합니다. 목록을 다시 읽었습니다.'));
     } else {
       kids.push(stepList([
+        ...(det.keyState !== null ? [['remote-key', '원격 저장소의 배포 키', det.keyState, KEY_STATE_TEXT[det.keyState]]] : []),
         ['registry', '프로젝트 등록', det.registryRemoved ? 'removed' : 'kept', det.registryRemoved ? '지웠습니다' : '남아 있습니다'],
         ['remote', '원격 저장소', det.remoteDeleted ? 'removed' : 'kept', det.remoteDeleted ? '이 요청에서 지웠습니다' : '그대로 있습니다'],
         ['clone', '서버의 복제본 폴더', det.clone, CLONE_STATE_TEXT[det.clone]],
@@ -841,7 +955,8 @@ export function makeDelete(ctx, host) {
       ]));
       kids.push(el('p', { class: 'note', 'data-note': 'reason' }, PARTIAL_REASON_TEXT[det.reason]));
       const todo = det.registryRemoved
-        ? '할 일: 등록은 이미 지워져 서버에 폴더가 등록 없이 남았을 수 있습니다. 서버 관리자가 남은 폴더를 직접 지우거나, 같은 경로를 다시 등록한 뒤 "복제본과 등록 지우기"를 새로 서명해 정리하세요(처음부터 있던 프로젝트는 두 번째 확인이 다시 필요합니다).'
+        ? '할 일: 등록은 이미 지워져 서버에 폴더가 등록 없이 남았을 수 있습니다. 서버 관리자가 남은 폴더를 직접 지우거나, 같은 경로를 다시 등록한 뒤 "배포 키도 함께 떼기"를 끄고 "복제본과 등록 지우기"를 새로 서명해 정리하세요(' +
+          (det.keyState !== null ? '배포 키는 이미 처리되었습니다. ' : det.remoteDeleted ? '원격 저장소는 이미 지워졌습니다. ' : '') + '처음부터 있던 프로젝트는 두 번째 확인이 다시 필요합니다).'
         : '할 일: 등록은 남아 있습니다. 목록을 확인한 뒤 "복제본과 등록 지우기"를 새로 서명해 다시 정리하세요. 자동으로 다시 시도하지 않았습니다.';
       kids.push(el('p', { class: 'note', 'data-note': 'todo' }, todo));
       if (det.clone === 'moved_aside' || det.key === 'moved_aside') kids.push(el('p', { class: 'note' }, '.deleting- 이름으로 옮겨진 폴더는 서버를 다시 시작하면 정리되며, 관리자가 직접 지울 수도 있습니다.'));

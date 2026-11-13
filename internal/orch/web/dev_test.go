@@ -874,8 +874,10 @@ func TestDevServer(t *testing.T) {
 	// W3f: the deletion screens. Rows of every origin (a legacy one, created ones with a remote and a
 	// repository number, a linked one, one whose remote is already gone, a busy one, one with unknown
 	// counts), orphans of the three origins, a removal preview per row and the four propose/apply pairs.
-	// Select the apply with /dev-set-w3f?apply=ok|partial_local|partial|unknown|busy_error. Nothing real is
-	// called and no signature is verified: this is a look at the screens.
+	// Select the apply with /dev-set-w3f?apply=ok|partial_local|partial|unknown|busy_error|broker_unavailable|key_unavailable.
+	// W3g: rows with a provider, a remote number and no remote_deleted_at can detach their key (preview and
+	// proposal say so; "lab" is a GitLab shared key); key_unavailable refuses a detach at propose. Nothing real
+	// is called and no signature is verified: this is a look at the screens.
 	var w3fApply = "ok"
 	{
 		projMu.Lock()
@@ -926,6 +928,10 @@ func TestDevServer(t *testing.T) {
 			if gone {
 				body["remote_deleted_at"] = p["remote_deleted_at"]
 			}
+			body["detach_key_available"], body["deploy_key_title"], body["deploy_key_fingerprint"], body["deploy_key_shared"] = false, nil, nil, false
+			if devDetachable(p) {
+				body["detach_key_available"], body["deploy_key_title"], body["deploy_key_fingerprint"], body["deploy_key_shared"] = true, "orchd "+id, repoFP, p["provider"] == "gl"
+			}
 			switch id {
 			case "toy":
 				body["unpushed_commits"], body["changed_files"] = 2, 5
@@ -943,6 +949,22 @@ func TestDevServer(t *testing.T) {
 	devW3fPropose := func(w http.ResponseWriter, r *http.Request) {
 		var in w3cBody
 		_ = stdjson.NewDecoder(r.Body).Decode(&in)
+		detach, _ := in.Fields["detach_key"].(bool)
+		var row map[string]any
+		projMu.Lock()
+		for _, p := range projects {
+			if p["id"] == in.Subject {
+				row = p
+			}
+		}
+		projMu.Unlock()
+		w3cMu.Lock()
+		mode := w3fApply
+		w3cMu.Unlock()
+		if in.Action == "remove_project" && detach && (mode == "key_unavailable" || row == nil || !devDetachable(row)) {
+			devErr(w, 409, "key_unavailable_for_removal")
+			return
+		}
 		change, err := registrymsg.ChangeHash(in.Action, in.Subject, in.Fields)
 		if err != nil {
 			devErr(w, 400, "bad_request")
@@ -957,6 +979,11 @@ func TestDevServer(t *testing.T) {
 		case "remove_project":
 			pv = []string{"프로젝트 '" + in.Subject + "'를 이 서버에서 지웁니다: 프로젝트 등록, 서버의 복제본 폴더(" + path + "), 이 프로젝트의 배포 키 폴더", "원격 저장소는 지워지지 않고 그대로 남습니다",
 				"[중요] 되돌릴 수 없습니다. 원격에 올라가지 않은 커밋과 저장하지 않은 변경은 이 서버의 복제본에만 있으므로 함께 사라집니다", "이 서버의 작업 기록은 남습니다"}
+			if detach {
+				remote, _ := row["gitlab"].(map[string]any)
+				rp, _ := remote["project"].(string)
+				pv = append(pv[:2], append([]string{"먼저 원격 저장소 '" + rp + "'에서 이 서버의 배포 키(지문 " + repoFP + ")를 뗍니다. 키를 떼지 못하거나 결과를 알 수 없으면 프로젝트 등록과 서버의 파일을 지우지 않습니다"}, pv[2:]...)...)
+			}
 			if ack, _ := in.Fields["legacy_ack"].(bool); ack {
 				pv = append(pv, "[중요] 처음부터 있던(legacy) 프로젝트입니다. 지우면 이 저장소로는 더 작업을 낼 수 없습니다(두 번째 확인을 했습니다)")
 			}
@@ -988,6 +1015,12 @@ func TestDevServer(t *testing.T) {
 		if in.Action == "remove_deploy_key" {
 			out["deploy_key_fingerprint"] = repoFP
 		}
+		if in.Action == "remove_project" {
+			out["detach_key_available"] = row != nil && devDetachable(row)
+			if detach {
+				out["deploy_key_title"], out["deploy_key_fingerprint"], out["deploy_key_shared"] = "orchd "+in.Subject, repoFP, row["provider"] == "gl"
+			}
+		}
 		b, _ := stdjson.Marshal(out)
 		serve(w, b)
 	}
@@ -999,6 +1032,7 @@ func TestDevServer(t *testing.T) {
 		defer projMu.Unlock()
 		defer w3cMu.Unlock()
 		time.Sleep(700 * time.Millisecond)
+		detach, _ := in.Fields["detach_key"].(bool)
 		removeRow := func() {
 			for i, p := range projects {
 				if p["id"] == in.Subject {
@@ -1012,21 +1046,29 @@ func TestDevServer(t *testing.T) {
 			devErr(w, 504, "outcome_unknown")
 			return
 		case "partial":
-			if in.Action == "delete_remote_repo" {
+			if in.Action == "delete_remote_repo" || (in.Action == "remove_project" && detach) {
 				devErr(w, 504, "delete_partial")
 				return
 			}
+		case "broker_unavailable":
+			devErr(w, 503, "broker_unavailable")
+			return
 		case "busy_error":
 			devErr(w, 409, "project_busy")
 			return
 		case "partial_local":
 			if in.Action == "remove_project" || in.Action == "delete_remote_repo" {
-				if in.Action == "remove_project" {
-					removeRow()
+				also, _ := in.Fields["also_local"].(bool)
+				if in.Action == "remove_project" || also {
+					removeRow() // W3g: also_local removed the row before the local removal failed
+				}
+				keyExtra := ""
+				if in.Action == "remove_project" && detach {
+					keyExtra = `,"key_state":"removed","key_detached":true`
 				}
 				w.WriteHeader(502)
 				json(w, `{"error":{"code":"delete_partial_local","message":"dev SERVER-WORDS","detail":{"remaining":["clone"],"clone":"kept_in_place","key":"removed","registry_removed":`+
-					strconv.FormatBool(in.Action == "remove_project")+`,"remote_deleted":`+strconv.FormatBool(in.Action == "delete_remote_repo")+`,"reason":"remove_failed"}}}`)
+					strconv.FormatBool(in.Action == "remove_project" || also)+`,"remote_deleted":`+strconv.FormatBool(in.Action == "delete_remote_repo")+`,"reason":"remove_failed"`+keyExtra+`}}}`)
 				return
 			}
 		}
@@ -1034,7 +1076,10 @@ func TestDevServer(t *testing.T) {
 		switch in.Action {
 		case "remove_project":
 			removeRow()
-			out = map[string]any{"id": in.Subject, "removed": true, "local": map[string]any{"clone": "removed", "key": "removed"}}
+			out = map[string]any{"id": in.Subject, "removed": true, "detach_key": detach, "local": map[string]any{"clone": "removed", "key": "removed"}}
+			if detach {
+				out["key_state"] = "removed"
+			}
 		case "delete_remote_repo":
 			also, _ := in.Fields["also_local"].(bool)
 			for _, p := range projects {
@@ -1044,7 +1089,9 @@ func TestDevServer(t *testing.T) {
 				}
 			}
 			out = map[string]any{"id": in.Subject, "remote_state": "deleted", "remote_deleted_at": "2026-11-13T01:02:03Z", "also_local": also, "registry": "kept"}
-			if also {
+			if also { // W3g: the same signature removed the registration
+				removeRow()
+				out["registry"] = "removed"
 				out["local"] = map[string]any{"clone": "removed", "key": "removed"}
 			}
 		case "remove_deploy_key":
@@ -1143,4 +1190,12 @@ func TestDevServer(t *testing.T) {
 	t.Logf("dev console on http://127.0.0.1:%s/ for %ds", port, secs)
 	time.Sleep(time.Duration(secs) * time.Second)
 	_ = srv.Close()
+}
+
+// devDetachable: the dev rows whose deploy key the removal may detach (W3g G-D3): a provider, a remote with a
+// number, no remote_deleted_at.
+func devDetachable(p map[string]any) bool {
+	remote, _ := p["gitlab"].(map[string]any)
+	_, gone := p["remote_deleted_at"]
+	return p["provider"] != nil && remote != nil && remote["project_id"] != nil && !gone
 }
