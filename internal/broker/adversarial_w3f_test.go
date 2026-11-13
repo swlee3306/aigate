@@ -315,7 +315,7 @@ func TestEveryDeletionRequestIsAllowlistedAndBoundToTheProjectW3f(t *testing.T) 
 		run  func(d *delEnv)
 	}
 	keysGH := keysJSON([3]string{"1", "orchd other", delKeyA}, [3]string{"2", "orchd demo-gh", delKeyB}, [3]string{"3", "my laptop", delKeyB})
-	keysGL := keysJSON([3]string{"8", "orchd demo-gl", delKeyA}, [3]string{"9", "orchd demo-gl", delKeyB}, [3]string{"10", "orchd other", delKeyB})
+	keysGL := keysJSON([3]string{"8", "orchd demo-gl", delKeyA}, [3]string{"9", "orchd demo-gl", delKeyB}, [3]string{"10", "orchd other", delKeyC})
 	scenarios := []scenario{
 		{"github delete ok", func(d *delEnv) { d.do("delete_remote_repo", d.delArgs("demo-gh", nil)) }},
 		{"gitlab delete ok", func(d *delEnv) { d.do("delete_remote_repo", d.delArgs("demo-gl", nil)) }},

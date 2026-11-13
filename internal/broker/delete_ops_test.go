@@ -30,6 +30,7 @@ const (
 	delKeyB    = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyB"
 	delKeyC    = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyCKeyCKeyCKeyCKeyCKeyCKeyCKeyCKeyCKeyC"
 	delKeyA    = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyAKeyAKeyAKeyAKeyAKeyAKeyAKeyAKeyAKeyA"
+	delKeyD    = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyDKeyDKeyDKeyDKeyDKeyDKeyDKeyDKeyDKeyD"
 )
 
 // delFake is a scripted GitHub (kind gh: the /api/v3 prefix is stripped) or
@@ -745,21 +746,33 @@ func TestDeleteKeyOnlyMatchingTitleAndFingerprint(t *testing.T) {
 	}
 	d = newDel(t)
 	d.gh.keyPages[1] = list
-	d.wantCode("remove_deploy_key", d.keyArgs("demo-gh", delKeyA), "key_not_found")
+	// (W3g key identity rule: the title is ours but the body is not, so it cannot be told from
+	// "already gone": remove_refused instead of key_not_found; nothing deleted)
+	d.wantCode("remove_deploy_key", d.keyArgs("demo-gh", delKeyA), "remove_refused")
 	if d.gh.deletes() != 0 {
 		t.Fatal("a key that does not match was deleted")
 	}
 	// no titled key at all
 	d = newDel(t)
-	d.gh.keyPages[1] = keysJSON([3]string{"1", "orchd other", delKeyA}, [3]string{"3", "my laptop", delKeyB})
+	d.gh.keyPages[1] = keysJSON([3]string{"1", "orchd other", delKeyA}, [3]string{"3", "my laptop", delKeyC})
 	d.wantCode("remove_deploy_key", d.keyArgs("demo-gh", ""), "key_not_found")
+	if d.gh.deletes() != 0 {
+		t.Fatal("deleted something")
+	}
+	// (W3g) our body under another title is a look-alike: refused, never "not found"
+	d = newDel(t)
+	d.gh.keyPages[1] = keysJSON([3]string{"1", "orchd other", delKeyA}, [3]string{"3", "my laptop", delKeyB})
+	d.wantCode("remove_deploy_key", d.keyArgs("demo-gh", ""), "remove_refused")
 	if d.gh.deletes() != 0 {
 		t.Fatal("deleted something")
 	}
 	// the title must match exactly: case and prefix/suffix variants never do
 	d = newDel(t)
 	d.gh.keyPages[1] = keysJSON([3]string{"1", "ORCHD demo-gh", delKeyB}, [3]string{"2", "orchd demo-gh ", delKeyB}, [3]string{"3", "orchd  demo-gh", delKeyB}, [3]string{"4", "xorchd demo-gh", delKeyB})
-	d.wantCode("remove_deploy_key", d.keyArgs("demo-gh", ""), "key_not_found")
+	d.wantCode("remove_deploy_key", d.keyArgs("demo-gh", ""), "remove_refused") // (W3g) look-alikes: refused, nothing deleted
+	if d.gh.deletes() != 0 {
+		t.Fatal("a look-alike title was deleted")
+	}
 	// two keys with the title AND the body: refuse, delete nothing
 	d = newDel(t)
 	d.gh.keyPages[1] = keysJSON([3]string{"1", "orchd demo-gh", delKeyB}, [3]string{"2", "orchd demo-gh", delKeyB})
@@ -857,13 +870,23 @@ func TestGitLabKeyRemovalOnlyThisProjectsKeyId(t *testing.T) {
 	if p := d.proj("demo-gl"); p.Remote == nil || p.RemoteDeletedAt != nil {
 		t.Fatalf("%+v", p)
 	}
-	// the right title with another key body, and the right body under another title: nothing sent
+	// W3g key identity rule on GitLab: the BODY identifies the key, the title is ignored (a shared key keeps
+	// the first project's title). Body C ("shared deploy") and body A ("demo-gl2") therefore each match
+	// exactly one key, and only that key id is deleted, through the per-project route.
+	for body, id := range map[string]string{delKeyC: "10", delKeyA: "8"} {
+		d2 := newDel(t)
+		d2.gl.keyPages[1] = list
+		d2.wantCode("remove_deploy_key", d2.keyArgs("demo-gl", body), "")
+		if got := d2.gl.all(); got[len(got)-1] != "DELETE /api/v4/projects/21/deploy_keys/"+id || d2.gl.deletes() != 1 {
+			t.Fatalf("body %s: %v", body, got)
+		}
+	}
+	// our title but a body that is in no listed key: cannot be told from "already gone": refused, nothing sent
 	d2 := newDel(t)
 	d2.gl.keyPages[1] = list
-	d2.wantCode("remove_deploy_key", d2.keyArgs("demo-gl", delKeyC), "key_not_found") // 9 has the title, body B
-	d2.wantCode("remove_deploy_key", d2.keyArgs("demo-gl", delKeyA), "key_not_found") // 8 has body A, title demo-gl2
+	d2.wantCode("remove_deploy_key", d2.keyArgs("demo-gl", delKeyD), "remove_refused") // key 9 carries the title "orchd demo-gl" with another body
 	if d2.gl.deletes() != 0 {
-		t.Fatal("a key that does not match both was deleted")
+		t.Fatal("a key that does not match was deleted")
 	}
 	// the key itself is never deleted by a direct call either (no global row)
 	la, _ := newGitLabAPI(Provider{ID: "dgl", Kind: "gitlab", BaseURL: d.gl.URL, SSHURL: "ssh://git@10.0.0.3", TokenRef: "gl-admin"}, d.s.Tokens, d.s.apiSeams)

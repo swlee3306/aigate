@@ -44,13 +44,13 @@ import (
 // token store with ValueOfKind); the ops have no token argument and no other
 // credential exists on this path.
 //
-// remove_deploy_key's key identity. The signed change has only remote_path (and
-// the subject, the project id), so the key cannot be bound by a signed hash. The
-// rule: exactly one key of the repository has the title "orchd <project id>"
-// (more than one: refuse, delete nothing; none: key_not_found). The optional
-// unsigned `deploy_key` argument (orchd's public key line) can only NARROW this:
-// when sent, the matching key must also carry that key body. It is never
-// trusted to widen anything. GitLab: the key is taken off this project only.
+// Key identity (remove_deploy_key and remove_project with detach_key): see
+// classifyKeys. GitHub: title "orchd <project id>" AND the key body of orchd's
+// unsigned `deploy_key` line; GitLab: the key body (the title is ignored, a
+// shared key keeps the first project's title). One match is deleted, two are
+// refused, and when none matches but any key has our title or body the answer
+// is a refusal, never "already gone". The key line can only narrow, never
+// widen. GitLab: the key is taken off this project only.
 
 const (
 	maxDeleteRepoPerDay   = 3 // broker-wide, rolling 24 hours (F-D5)
@@ -97,6 +97,54 @@ func sameRowCore(a, b Project) bool {
 	}
 	return a.ID == b.ID && a.Path == b.Path && a.Kind == b.Kind && a.Origin == b.Origin &&
 		eqStr(a.Provider, b.Provider) && eqRemote(a.Remote, b.Remote) && eqStr(a.RemoteDeletedAt, b.RemoteDeletedAt)
+}
+
+// keyVerdict classifies a provider's key list against OUR key (project id +
+// the public key body orchd supplied). Identity rule (W3g, G-D2):
+//
+//	GitHub  a key is ours iff its title is "orchd <id>" AND its body matches.
+//	GitLab  a key is ours iff its body matches; the title is ignored, because a
+//	        shared deploy key keeps the title of the FIRST project it was made for.
+//
+// Exactly one such key: keyOne. Two or more: keyMany (never guess). None: if ANY
+// listed key has our title OR our body the situation cannot be told from
+// "already gone" and keyLookalike is returned (the caller must refuse and keep
+// everything); only when neither appears is it keyNone ("already gone").
+type keyVerdict int
+
+const (
+	keyNone keyVerdict = iota
+	keyOne
+	keyMany
+	keyLookalike
+)
+
+func classifyKeys(kind, id, wantBody string, keys []DeployKeyInfo) (DeployKeyInfo, keyVerdict) {
+	title := "orchd " + id
+	var match []DeployKeyInfo
+	look := false
+	for _, k := range keys {
+		bodyOK, titleOK := k.Body == wantBody, k.Title == title
+		ours := bodyOK && titleOK
+		if kind == "gitlab" {
+			ours = bodyOK
+		}
+		switch {
+		case ours:
+			match = append(match, k)
+		case bodyOK || titleOK:
+			look = true
+		}
+	}
+	switch {
+	case len(match) == 1:
+		return match[0], keyOne
+	case len(match) > 1:
+		return DeployKeyInfo{}, keyMany
+	case look:
+		return DeployKeyInfo{}, keyLookalike
+	}
+	return DeployKeyInfo{}, keyNone
 }
 
 // ---------- remove_project ----------
@@ -222,15 +270,13 @@ func (s *Server) removeProjectHandler(ctx context.Context, raw json.RawMessage) 
 		if err != nil {
 			return nil, apiFailKind(prov.Kind, err)
 		}
-		title := "orchd " + a.ID
-		var match []DeployKeyInfo
-		for _, k := range keys {
-			if k.Title == title && k.Body == wantBody {
-				match = append(match, k)
-			}
-		}
-		if len(match) > 1 { // not unique: never guess which one is ours; the row stays
-			s.logf("remove_project: more than one key has the title and body, nothing removed")
+		found, verdict := classifyKeys(prov.Kind, a.ID, wantBody, keys)
+		switch verdict {
+		case keyMany: // not unique: never guess which one is ours; the row stays
+			s.logf("remove_project: more than one key matches, nothing removed")
+			return fail("remove_refused")
+		case keyLookalike: // a key with our title or body that is not clearly ours: cannot tell from "already gone"
+			s.logf("remove_project: a similar key exists but none is clearly ours, nothing removed")
 			return fail("remove_refused")
 		}
 		// One slot of the shared local-delete budget per op, spent right before
@@ -239,7 +285,7 @@ func (s *Server) removeProjectHandler(ctx context.Context, raw json.RawMessage) 
 		if !s.allowLocalDelete() {
 			return fail("rate_limited")
 		}
-		if len(match) == 0 {
+		if verdict == keyNone {
 			keyState = "already_gone"
 		} else {
 			defer func() {
@@ -253,7 +299,7 @@ func (s *Server) removeProjectHandler(ctx context.Context, raw json.RawMessage) 
 				}
 			}()
 			keySent = true
-			if err := rp.RemoveDeployKey(ctx, info, match[0]); err != nil {
+			if err := rp.RemoveDeployKey(ctx, info, found); err != nil {
 				return nil, s.deleteFailure("remove_project", prov.Kind, err)
 			}
 			keyState = "removed"
@@ -287,6 +333,7 @@ func (s *Server) removeProjectHandler(ctx context.Context, raw json.RawMessage) 
 			return nil, updateFailure(err)
 		}
 	}
+	s.logf("remove_project: removed project %s from the registry", a.ID)
 	out := map[string]any{"id": a.ID, "removed": true}
 	if detach {
 		out["key_state"] = keyState
@@ -514,6 +561,7 @@ func (s *Server) deleteRemoteRepoHandler(ctx context.Context, raw json.RawMessag
 				return nil, fail1("delete_partial")
 			}
 		}
+		s.logf("delete_remote_repo: removed the remote repository and the registry row of project %s", a.ID)
 		return map[string]any{"id": a.ID, "remote_state": state, "remote_deleted_at": stamp, "registry_removed": true}, nil
 	}
 	// The registry keeps Provider (attach_remote stays blocked by
@@ -637,18 +685,15 @@ func (s *Server) removeDeployKeyHandler(ctx context.Context, raw json.RawMessage
 	if err != nil {
 		return nil, apiFailKind(prov.Kind, err)
 	}
-	title := "orchd " + a.ID
-	var match []DeployKeyInfo
-	for _, k := range keys {
-		if k.Title == title && k.Body == wantBody {
-			match = append(match, k)
-		}
-	}
-	switch {
-	case len(match) == 0:
+	found, verdict := classifyKeys(prov.Kind, a.ID, wantBody, keys)
+	switch verdict {
+	case keyNone:
 		return fail("key_not_found")
-	case len(match) > 1: // not unique: never guess which one is ours
-		s.logf("remove_deploy_key: more than one key has the title, nothing removed")
+	case keyMany: // not unique: never guess which one is ours
+		s.logf("remove_deploy_key: more than one key matches, nothing removed")
+		return fail("remove_refused")
+	case keyLookalike:
+		s.logf("remove_deploy_key: a similar key exists but none is clearly ours, nothing removed")
 		return fail("remove_refused")
 	}
 	if !s.allowLocalDelete() {
@@ -666,7 +711,7 @@ func (s *Server) removeDeployKeyHandler(ctx context.Context, raw json.RawMessage
 		}
 	}()
 	sent = true
-	if err := rp.RemoveDeployKey(ctx, info, match[0]); err != nil {
+	if err := rp.RemoveDeployKey(ctx, info, found); err != nil {
 		return nil, s.deleteFailure("remove_deploy_key", prov.Kind, err)
 	}
 	return map[string]any{"id": a.ID, "key_removed": true}, nil

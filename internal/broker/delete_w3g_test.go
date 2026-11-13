@@ -193,11 +193,10 @@ func TestRemoveProjectDetachKeyOutsideSignatureRefused(t *testing.T) {
 		t.Fatalf("removeProjectKeys %v", removeProjectKeys)
 	}
 	// an unsigned key line changes nothing the signature covers: the title and body decide
-	a := d.rmDetachArgs("demo-gh", false, delKeyA) // another body: no key matches -> already gone
-	if _, oe := d.do("remove_project", a); oe != nil {
-		t.Fatal(oe.Code)
-	}
-	if d.gh.deletes() != 0 {
+	// (a supplied body that matches nothing while a key carries our title cannot be told from "already gone")
+	a := d.rmDetachArgs("demo-gh", false, delKeyA)
+	d.wantCode("remove_project", a, "remove_refused")
+	if d.gh.deletes() != 0 || !d.rowExists("demo-gh") {
 		t.Fatalf("a key was deleted for a body that does not match: %v", d.gh.all())
 	}
 }
@@ -299,15 +298,15 @@ func TestDetachUncertainThenFreshSignatureRecovers(t *testing.T) {
 	}
 }
 
-// What this proves: zero matching keys is "already gone": nothing is deleted,
-// the row is unregistered and the answer says so. A key with the right title
-// but another body, or the right body under another title, is never deleted.
+// What this proves: "already gone" (nothing deleted, row unregistered, answer
+// says so) happens ONLY when no listed key has our title or our body. Any
+// look-alike (our title with another body, our body under another title,
+// title variants) cannot be told from "gone": remove_refused, nothing deleted,
+// the row stays.
 func TestDetachKeyNotFoundContinues(t *testing.T) {
 	for _, list := range []string{
 		`[]`,
-		keysJSON([3]string{"1", "orchd other", delKeyA}, [3]string{"3", "my laptop", delKeyB}),
-		keysJSON([3]string{"1", "orchd demo-gh", delKeyA}),                                                                                       // same title, other body
-		keysJSON([3]string{"1", "ORCHD demo-gh", delKeyB}, [3]string{"2", "orchd demo-gh ", delKeyB}, [3]string{"3", "xorchd demo-gh", delKeyB}), // title variants
+		keysJSON([3]string{"1", "orchd other", delKeyA}, [3]string{"3", "my laptop", delKeyC}), // neither our title nor our body
 	} {
 		d := newDel(t)
 		d.gh.keyPages[1] = list
@@ -322,8 +321,33 @@ func TestDetachKeyNotFoundContinues(t *testing.T) {
 			t.Fatalf("%s: deletes %d, row %v", list, d.gh.deletes(), d.rowExists("demo-gh"))
 		}
 	}
-	// a list that may be incomplete is never used: the row stays
+	for _, list := range []string{
+		keysJSON([3]string{"1", "orchd demo-gh", delKeyA}),                                                                                       // our title, other body
+		keysJSON([3]string{"1", "orchd other", delKeyA}, [3]string{"3", "my laptop", delKeyB}),                                                   // our body, other title
+		keysJSON([3]string{"1", "ORCHD demo-gh", delKeyB}, [3]string{"2", "orchd demo-gh ", delKeyB}, [3]string{"3", "xorchd demo-gh", delKeyB}), // title variants with our body
+	} {
+		d := newDel(t)
+		d.gh.keyPages[1] = list
+		d.wantCode("remove_project", d.rmDetachArgs("demo-gh", false, delKeyB), "remove_refused")
+		if d.gh.deletes() != 0 || !d.rowExists("demo-gh") {
+			t.Fatalf("%s: a look-alike was treated as gone or deleted: %v", list, d.gh.all())
+		}
+	}
+	// GitLab: only keys that have neither our body nor our title -> already gone; our title with another body -> refused
 	d := newDel(t)
+	d.gl.keyPages[1] = keysJSON([3]string{"8", "orchd other", delKeyA}, [3]string{"10", "shared deploy", delKeyC})
+	res, oe := d.do("remove_project", d.rmDetachArgs("demo-gl", false, delKeyB))
+	if oe != nil || res.(map[string]any)["key_state"] != "already_gone" || d.gl.deletes() != 0 || d.rowExists("demo-gl") {
+		t.Fatalf("gitlab other keys only: %v %v %v", res, oe, d.gl.all())
+	}
+	d = newDel(t)
+	d.gl.keyPages[1] = keysJSON([3]string{"9", "orchd demo-gl", delKeyA})
+	d.wantCode("remove_project", d.rmDetachArgs("demo-gl", false, delKeyB), "remove_refused")
+	if d.gl.deletes() != 0 || !d.rowExists("demo-gl") {
+		t.Fatalf("gitlab look-alike: %v", d.gl.all())
+	}
+	// a list that may be incomplete is never used: the row stays
+	d = newDel(t)
 	full := make([][3]string, 100)
 	for i := range full {
 		full[i] = [3]string{fmt.Sprint(i + 10), "k" + fmt.Sprint(i), delKeyA}
@@ -331,7 +355,7 @@ func TestDetachKeyNotFoundContinues(t *testing.T) {
 	for p := 1; p <= apiMaxPages; p++ {
 		d.gh.keyPages[p] = keysJSON(full...)
 	}
-	_, oe := d.do("remove_project", d.rmDetachArgs("demo-gh", false, delKeyB))
+	_, oe = d.do("remove_project", d.rmDetachArgs("demo-gh", false, delKeyB))
 	if oe == nil || !d.rowExists("demo-gh") || d.gh.deletes() != 0 {
 		t.Fatalf("a truncated list let the row go: %v", oe)
 	}
@@ -367,12 +391,93 @@ func TestDetachMultipleOrMismatchedKeyNeverDeleted(t *testing.T) {
 	if got := d.gh.all(); got[len(got)-1] != "DELETE /repos/alice/Demo/keys/2" || d.gh.deletes() != 1 {
 		t.Fatalf("%v", got)
 	}
-	// a stale same-titled key with ANOTHER body never goes (it is not ours to guess)
+	// a stale same-titled key with ANOTHER body never goes, and is not "gone" either: refused, row kept
 	d = newDel(t)
 	d.gh.keyPages[1] = keysJSON([3]string{"1", "orchd demo-gh", delKeyA})
-	d.wantCode("remove_project", d.rmDetachArgs("demo-gh", false, delKeyB), "")
-	if d.gh.deletes() != 0 {
+	d.wantCode("remove_project", d.rmDetachArgs("demo-gh", false, delKeyB), "remove_refused")
+	if d.gh.deletes() != 0 || !d.rowExists("demo-gh") {
 		t.Fatalf("a key with another body was deleted: %v", d.gh.all())
+	}
+}
+
+// What this proves (GitLab, G-D2): a shared deploy key keeps the title of the
+// FIRST project it was created for. On a later project the listing shows
+// "orchd <first-id>" with OUR body: it is matched by body, only that key id is
+// deleted through this project's route, never globally; the title does not
+// matter; two body matches are refused.
+func TestDetachGitLabSharedKeyMatchedByBody(t *testing.T) {
+	d := newDel(t)
+	d.gl.keyPages[1] = keysJSON([3]string{"8", "orchd first-id", delKeyB}, [3]string{"9", "orchd demo-gl", delKeyA}, [3]string{"10", "shared deploy", delKeyC})
+	d.gl.onKeyDel = func() {
+		if !d.rowExists("demo-gl") {
+			t.Error("unregistered before the key DELETE")
+		}
+	}
+	res, oe := d.do("remove_project", d.rmDetachArgs("demo-gl", false, delKeyB))
+	if oe != nil || res.(map[string]any)["key_state"] != "removed" {
+		t.Fatalf("%v %v", res, oe)
+	}
+	if got := d.gl.all(); !reflect.DeepEqual(got, []string{glRepoGetW3g, glKeysPathW3g, "DELETE /api/v4/projects/21/deploy_keys/8"}) {
+		t.Fatalf("trace %v", got)
+	}
+	for _, r := range d.gl.all() {
+		if strings.Contains(r, "/api/v4/deploy_keys") {
+			t.Fatalf("a global key route was used: %s", r)
+		}
+	}
+	if d.rowExists("demo-gl") {
+		t.Fatal("row kept")
+	}
+	// remove_deploy_key uses the same rule
+	d = newDel(t)
+	d.gl.keyPages[1] = keysJSON([3]string{"8", "orchd first-id", delKeyB}, [3]string{"10", "shared deploy", delKeyC})
+	d.wantCode("remove_deploy_key", d.keyArgs("demo-gl", delKeyB), "")
+	if got := d.gl.all(); got[len(got)-1] != "DELETE /api/v4/projects/21/deploy_keys/8" || d.gl.deletes() != 1 {
+		t.Fatalf("remove_deploy_key trace %v", got)
+	}
+	// two keys with our body: refused (any titles)
+	d = newDel(t)
+	d.gl.keyPages[1] = keysJSON([3]string{"8", "orchd first-id", delKeyB}, [3]string{"9", "orchd demo-gl", delKeyB})
+	d.wantCode("remove_project", d.rmDetachArgs("demo-gl", false, delKeyB), "remove_refused")
+	if d.gl.deletes() != 0 || !d.rowExists("demo-gl") {
+		t.Fatalf("%v", d.gl.all())
+	}
+	// remove_deploy_key: nothing at all -> key_not_found; a look-alike -> remove_refused
+	d = newDel(t)
+	d.gl.keyPages[1] = keysJSON([3]string{"10", "shared deploy", delKeyC})
+	d.wantCode("remove_deploy_key", d.keyArgs("demo-gl", delKeyB), "key_not_found")
+	d.gl.keyPages[1] = keysJSON([3]string{"9", "orchd demo-gl", delKeyA})
+	d.wantCode("remove_deploy_key", d.keyArgs("demo-gl", delKeyB), "remove_refused")
+	if d.gl.deletes() != 0 {
+		t.Fatal("deleted")
+	}
+}
+
+// One fixed-wording log line per successful removal, with the project id only
+// (no path, no key, no secret).
+func TestSuccessLogsCarryOnlyTheProjectId(t *testing.T) {
+	d := newDel(t)
+	w3gKeys(d)
+	d.wantCode("remove_project", d.rmDetachArgs("demo-gh", false, delKeyB), "")
+	d.wantCode("delete_remote_repo", alsoArgs(d, "demo-gl", true), "")
+	logs := d.logs.String()
+	if strings.Count(logs, "remove_project: removed project demo-gh from the registry") != 1 ||
+		strings.Count(logs, "delete_remote_repo: removed the remote repository and the registry row of project demo-gl") != 1 {
+		t.Fatalf("logs %q", logs)
+	}
+	for _, bad := range []string{d.root, delKeyB, "AAAA", ghCanary, c3Canary, "alice/Demo", "team/demo"} {
+		if strings.Contains(logs, bad) {
+			t.Fatalf("%q in the logs: %q", bad, logs)
+		}
+	}
+	// a refused or uncertain outcome logs no "removed" line
+	d = newDel(t)
+	w3gKeys(d)
+	d.gh.keyStatus = 500
+	d.wantCode("remove_project", d.rmDetachArgs("demo-gh", false, delKeyB), "delete_partial")
+	d.wantCode("delete_remote_repo", d.delArgs("demo-gl", func(f map[string]any) { f["also_local"] = true; f["remote_id"] = "99" }), "remote_changed")
+	if strings.Contains(d.logs.String(), "removed project") || strings.Contains(d.logs.String(), "removed the remote") {
+		t.Fatalf("a success line for a failure: %q", d.logs.String())
 	}
 }
 
