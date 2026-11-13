@@ -770,3 +770,152 @@ func TestMixedVersionOldBrokerW3g(t *testing.T) {
 		t.Fatalf("W3f also_local answer: %d %s", c, b)
 	}
 }
+
+// G2 review round 1.
+
+func TestDetachedThenLocalFailureReportsKeyStateAndLedger(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	e := newDelEnv(t)
+	path := e.addDel(t, delProject{id: "app-one", origin: "created", prov: "gh", remote: "Octo-Cat/app-one", remoteID: 123, withKey: true})
+	for _, ks := range []string{"removed", "already_gone"} {
+		e.resetDeleteLimits()
+		e.setOverride(func(op string, a json.RawMessage) string {
+			if op == "remove_project" {
+				return `{"ok":true,"result":{"id":"app-one","removed":true,"key_state":"` + ks + `"}}`
+			}
+			return ""
+		})
+		p := e.mustPropose(t, "remove_project", "app-one", rmDetach(true))
+		if err := os.Chmod(e.root, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		c, b := e.applyDel(t, p)
+		os.Chmod(e.root, 0o700)
+		d := detailOf(b)
+		if c != 502 || v1Code(b) != "delete_partial_local" || d["key_state"] != ks || d["key_detached"] != true || d["registry_removed"] != true ||
+			d["remote_deleted"] != false || d["clone"] != "kept_in_place" || d["reason"] != "remove_failed" {
+			t.Fatalf("%s: %d %s", ks, c, b)
+		}
+		if !strings.Contains(string(b), "배포 키는 제공자에서 이미 떼어졌고") || !strings.Contains(string(b), "등록되지 않은 상태") {
+			t.Fatalf("%s: sentence %s", ks, b)
+		}
+		if !exists(filepath.Join(path, ".git")) {
+			t.Fatal("the clone should remain")
+		}
+		// the key folder went in the first round; recreate it for the second
+		if !exists(filepath.Join(e.keysDir(), "app-one")) {
+			e.addKeyDir(t, "app-one")
+		}
+	}
+	led := e.ledgerPayloads(t, "project_remove")
+	var got []string
+	for _, l := range led {
+		got = append(got, fmt.Sprint(l["ok"], ":", l["code"]))
+	}
+	if fmt.Sprint(got) != "[true:ok false:delete_partial_local true:ok false:delete_partial_local]" {
+		t.Fatalf("ledger %v", got)
+	}
+	// without detach the W3f shape stays (no key members)
+	e.resetDeleteLimits()
+	e.setOverride(nil)
+	p := e.mustPropose(t, "remove_project", "app-one", rmDetach(false))
+	os.Chmod(e.root, 0o500)
+	c, b := e.applyDel(t, p)
+	os.Chmod(e.root, 0o700)
+	d := detailOf(b)
+	if _, has := d["key_state"]; c != 502 || has || len(d) != 6 {
+		t.Fatalf("detach off: %d %s", c, b)
+	}
+}
+
+func TestReviewSentencesW3g(t *testing.T) {
+	e := newDelEnv(t)
+	e.addDel(t, delProject{id: "no-key", origin: "created", prov: "gh", remote: "Octo-Cat/no-key", remoteID: 1})
+	e.addDel(t, delProject{id: "app-one", origin: "created", prov: "gh", remote: "Octo-Cat/app-one", remoteID: 2, withKey: true})
+	// the unavailable key line on remove_project says the option can be turned off
+	if c, b := e.proposeDel(t, "remove_project", "no-key", rmDetach(true)); c != 409 || v1Code(b) != "key_unavailable_for_removal" || !strings.Contains(string(b), "배포 키도 함께 떼기") {
+		t.Fatalf("unavailable: %d %s", c, b)
+	}
+	// remove_deploy_key keeps the W3f sentence
+	if c, b := e.proposeDel(t, "remove_deploy_key", "no-key", map[string]any{"remote_path": "Octo-Cat/no-key"}); c != 409 || strings.Contains(string(b), "함께 떼기") {
+		t.Fatalf("remove_deploy_key: %d %s", c, b)
+	}
+	// unknown outcome: with detach the sentence says the key may be gone; without it, the W3f sentence
+	for _, detach := range []bool{true, false} {
+		for _, reply := range []string{"DROP", `{"ok":true,"result":{"id":"other","removed":true}}`} {
+			e.resetDeleteLimits()
+			e.setOverride(func(op string, a json.RawMessage) string {
+				if op == "remove_project" {
+					return reply
+				}
+				return ""
+			})
+			c, b := e.applyDel(t, e.mustPropose(t, "remove_project", "app-one", rmDetach(detach)))
+			mentions := strings.Contains(string(b), "이미 떼어졌을 수 있습니다")
+			if c != 504 || v1Code(b) != "outcome_unknown" || mentions != detach {
+				t.Errorf("detach=%v %s: %d %s", detach, reply, c, b)
+			}
+		}
+	}
+	// broker bad_request on remove_project: unavailable + "state may have changed"
+	e.resetDeleteLimits()
+	e.setOverride(func(op string, a json.RawMessage) string {
+		if op == "remove_project" {
+			return errReply("bad_request")
+		}
+		return ""
+	})
+	if c, b := e.applyDel(t, e.mustPropose(t, "remove_project", "app-one", rmDetach(false))); c != 503 || !strings.Contains(string(b), "그사이 프로젝트 상태가 바뀌었을 수 있습니다") {
+		t.Fatalf("bad_request: %d %s", c, b)
+	}
+}
+
+// (D) the other deletion actions keep their mapping of a broker bad_request.
+func TestBadRequestOnOtherDeleteActionsUnchanged(t *testing.T) {
+	e := newDelEnv(t)
+	e.addDel(t, delProject{id: "app-one", origin: "created", prov: "gh", remote: "Octo-Cat/app-one", remoteID: 123, withKey: true})
+	e.addOrphan("gl", "team/half-made")
+	for _, in := range []struct {
+		action, subject string
+		fields          map[string]any
+	}{
+		{"delete_remote_repo", "app-one", drFields("Octo-Cat/app-one", 123, "app-one", false)},
+		{"delete_remote_repo", "app-one", drFields("Octo-Cat/app-one", 123, "app-one", true)},
+		{"remove_deploy_key", "app-one", map[string]any{"remote_path": "Octo-Cat/app-one"}},
+		{"clear_orphan", "gl", map[string]any{"project": "team/half-made"}},
+	} {
+		e.resetDeleteLimits()
+		e.setOverride(func(op string, a json.RawMessage) string {
+			if op == in.action {
+				return errReply("bad_request")
+			}
+			return ""
+		})
+		c, b := e.applyDel(t, e.mustPropose(t, in.action, in.subject, in.fields))
+		if c != 400 || v1Code(b) != "bad_request" {
+			t.Errorf("%s: %d %s", in.action, c, b)
+		}
+	}
+}
+
+// (G) a proposal without detach carries only detach_key_available.
+func TestProposeWithoutDetachHasNoKeyIdentity(t *testing.T) {
+	e := newDelEnv(t)
+	e.addDel(t, delProject{id: "app-one", origin: "created", prov: "gh", remote: "Octo-Cat/app-one", remoteID: 123, withKey: true})
+	e.addDel(t, delProject{id: "gl-one", origin: "created", prov: "gl", remote: "team/gl-one", remoteID: 3})
+	for _, id := range []string{"app-one", "gl-one"} {
+		c, b := e.proposeDel(t, "remove_project", id, rmDetach(false))
+		var m map[string]any
+		_ = json.Unmarshal(b, &m)
+		if c != 200 || m["detach_key_available"] != true {
+			t.Fatalf("%s: %d %s", id, c, b)
+		}
+		for _, k := range []string{"deploy_key_title", "deploy_key_fingerprint", "deploy_key_shared"} {
+			if _, has := m[k]; has {
+				t.Errorf("%s: %s present without detach_key", id, k)
+			}
+		}
+	}
+}

@@ -81,6 +81,9 @@ var (
 	errKeyUnavailRemoval = apiErr(http.StatusConflict, "key_unavailable_for_removal", "이 프로젝트의 배포 키 공개 키를 서버에서 읽을 수 없어 이 도구로 뗄 수 없습니다. 제공자 화면(저장소 설정의 배포 키)에서 제목이 orchd로 시작하는 키를 직접 제거하세요. 변경 없음")
 	// W3g mixed versions: a broker that does not know the op or the detach_key
 	// argument refuses before looking at the signature. Nothing was deleted.
+	errDeleteBrokerShape = apiErr(http.StatusServiceUnavailable, "broker_unavailable", "등록부 서비스(broker)가 이 삭제 요청의 형식을 받아들이지 않아 처리하지 않았습니다. 서버 구성 요소의 버전이 서로 맞지 않거나, 또는 그사이 프로젝트 상태가 바뀌었을 수 있습니다. 목록을 다시 읽으세요. 아무것도 지우지 않았습니다")
+	// W3g remove_project with detach_key: the key line cannot be read (G-D5)
+	errKeyUnavailDetach = apiErr(http.StatusConflict, "key_unavailable_for_removal", "이 프로젝트의 배포 키 공개 키를 서버에서 읽을 수 없어 배포 키를 함께 뗄 수 없습니다. 키를 원격에 남기고 지우려면 \"배포 키도 함께 떼기\"를 끄고 다시 진행하세요(그 뒤 제공자 화면에서 제목이 orchd로 시작하는 키를 직접 제거하세요). 변경 없음")
 	errDeleteBrokerOld  = apiErr(http.StatusServiceUnavailable, "broker_unavailable", "등록부 서비스(broker)가 이 삭제 요청을 지원하지 않아 처리하지 않았습니다. 서버 구성 요소의 버전이 서로 맞지 않을 수 있습니다. 아무것도 지우지 않았습니다. 서버 관리자가 확인해야 합니다")
 	errNoRemote         = apiErr(http.StatusConflict, "no_remote", "이 프로젝트에는 연결된 원격 저장소가 없어 뗄 배포 키가 없습니다. 변경 없음")
 	errLocalUnsafe      = apiErr(http.StatusConflict, "local_unsafe", "서버의 복제본 폴더가 이 도구가 지울 수 있는 모양이 아닙니다(심볼릭 링크이거나, .git 폴더가 없거나, 허용된 저장소 루트 바로 아래의 프로젝트 이름 폴더가 아닙니다). 안전을 위해 아무것도 지우지 않았습니다. 서버 관리자가 확인해야 합니다. 변경 없음")
@@ -90,10 +93,11 @@ var (
 	errDeleteGLRefused  = apiErr(http.StatusBadGateway, "gitlab_refused", "제공자(GitLab)가 요청을 받아들이지 않았습니다. 토큰 권한과 제공자 설정을 확인하세요. 아무것도 지우지 않았습니다")
 
 	// Outcome unknown, one sentence per action (each says what was NOT done).
-	errRemoveUnknownRes = apiErr(http.StatusGatewayTimeout, "outcome_unknown", "프로젝트 등록이 지워졌는지 알 수 없습니다. 자동으로 다시 시도하지 않았고 서버의 복제본은 지우지 않았습니다. 프로젝트 목록을 다시 읽어 확인하세요")
-	errDeleteUnknownRes = apiErr(http.StatusGatewayTimeout, "outcome_unknown", "원격 저장소가 지워졌는지 알 수 없습니다. 자동으로 다시 시도하지 않았고 서버의 복제본도 지우지 않았습니다. 제공자 화면에서 저장소가 남아 있는지 확인하세요")
-	errKeyUnknownRes    = apiErr(http.StatusGatewayTimeout, "outcome_unknown", "배포 키가 제거되었는지 알 수 없습니다. 자동으로 다시 시도하지 않았습니다. 제공자 화면에서 이 서버의 배포 키(제목이 orchd로 시작)를 확인하세요")
-	errOrphanUnknownRes = apiErr(http.StatusGatewayTimeout, "outcome_unknown", "고아 기록이 지워졌는지 알 수 없습니다. 자동으로 다시 시도하지 않았습니다. 프로젝트 목록(알림 포함)을 다시 읽어 확인하세요")
+	errRemoveUnknownDetach = apiErr(http.StatusGatewayTimeout, "outcome_unknown", "배포 키 떼기와 프로젝트 등록 지우기가 끝났는지 알 수 없습니다. 배포 키는 제공자에서 이미 떼어졌을 수 있습니다. 자동으로 다시 시도하지 않았고 서버의 복제본은 지우지 않았습니다. 프로젝트 목록과 제공자 화면을 확인하세요")
+	errRemoveUnknownRes    = apiErr(http.StatusGatewayTimeout, "outcome_unknown", "프로젝트 등록이 지워졌는지 알 수 없습니다. 자동으로 다시 시도하지 않았고 서버의 복제본은 지우지 않았습니다. 프로젝트 목록을 다시 읽어 확인하세요")
+	errDeleteUnknownRes    = apiErr(http.StatusGatewayTimeout, "outcome_unknown", "원격 저장소가 지워졌는지 알 수 없습니다. 자동으로 다시 시도하지 않았고 서버의 복제본도 지우지 않았습니다. 제공자 화면에서 저장소가 남아 있는지 확인하세요")
+	errKeyUnknownRes       = apiErr(http.StatusGatewayTimeout, "outcome_unknown", "배포 키가 제거되었는지 알 수 없습니다. 자동으로 다시 시도하지 않았습니다. 제공자 화면에서 이 서버의 배포 키(제목이 orchd로 시작)를 확인하세요")
+	errOrphanUnknownRes    = apiErr(http.StatusGatewayTimeout, "outcome_unknown", "고아 기록이 지워졌는지 알 수 없습니다. 자동으로 다시 시도하지 않았습니다. 프로젝트 목록(알림 포함)을 다시 읽어 확인하세요")
 
 	// The "files only partly removed" answers (a copy gets the detail: the state
 	// of each item). Kept: nothing of the remaining items was touched. Moved: a
@@ -126,6 +130,16 @@ func deleteUnknown(action string) *httpError {
 	return errOrphanUnknownRes
 }
 
+// deleteErrorFor narrows a deletion error to the signed change: a
+// remove_project whose signature asked to detach the deploy key gets the
+// unknown-outcome sentence that says the key may already be gone.
+func deleteErrorFor(c registryChange, he *httpError) *httpError {
+	if detach, _ := c.Fields["detach_key"].(bool); detach && c.Action == registrymsg.ActionRemoveProject && he == errRemoveUnknownRes {
+		return errRemoveUnknownDetach
+	}
+	return he
+}
+
 // deleteBrokerError maps a broker failure of a deletion op to a fixed sentence.
 // Only the code is looked at. All four ops are writes: a failure that may have
 // happened, and any code orchd does not know, is an unknown outcome (never a
@@ -141,7 +155,7 @@ func deleteBrokerError(action string, e *broker.OpError) *httpError {
 		// orchd checks every shape rule of remove_project before sending, so a
 		// broker refusing its shape is one that does not know detach_key (W3f)
 		if action == registrymsg.ActionRemoveProject {
-			return errDeleteBrokerOld
+			return errDeleteBrokerShape
 		}
 	case "legacy_ack_required":
 		return errLegacyAckRequired
@@ -357,7 +371,7 @@ func (h *handler) deleteChecks(ctx context.Context, c registryChange) (*delInfo,
 				return nil, errRemoteChanged // what the broker would answer
 			}
 			if !ok {
-				return nil, errKeyUnavailRemoval
+				return nil, errKeyUnavailDetach
 			}
 			// read here, at propose AND again at apply, always before the broker
 			// call and therefore before the key folder can be removed
@@ -518,7 +532,7 @@ func (h *handler) deleteApply(w http.ResponseWriter, r *http.Request, action str
 // checked against what was asked BEFORE any local file is touched; the local
 // removal is decided by the SIGNED fields only (never by anything in the reply).
 func (h *handler) finishDelete(r *http.Request, c registryChange, res json.RawMessage, info *delInfo) (any, error) {
-	unknown := deleteUnknown(c.Action)
+	unknown := deleteErrorFor(c, deleteUnknown(c.Action))
 	switch c.Action {
 	case registrymsg.ActionRemoveProject:
 		var d struct {
@@ -537,7 +551,13 @@ func (h *handler) finishDelete(r *http.Request, c registryChange, res json.RawMe
 		}
 		local, err := h.removeLocal(r.Context(), c.Subject, info.path, true, false)
 		if err != nil {
-			return nil, err
+			if !detach {
+				return nil, err
+			}
+			// the key WAS detached and the row removed: say so in the ledger
+			// before the request is recorded as partial, and in the answer
+			h.recordW3c(store.ActorFrom(r.Context()), c.Action, c.Subject, true, "ok")
+			return nil, detachedPartial(err, *d.KeyState)
 		}
 		body := map[string]any{"id": c.Subject, "removed": true, "detach_key": detach, "local": local}
 		if detach {
@@ -637,6 +657,29 @@ func localPartial(clone, key string, registryRemoved, remoteDeleted bool, reason
 	he.detail = map[string]any{"remaining": remaining, "clone": clone, "key": key,
 		"registry_removed": registryRemoved, "remote_deleted": remoteDeleted, "reason": reason}
 	return &he
+}
+
+// detachedPartial adds to a "files only partly removed" answer of a
+// remove_project that detached the key: how the key ended at the provider,
+// and that the folder left behind is no longer registered.
+func detachedPartial(err error, keyState string) error {
+	he, ok := err.(*httpError)
+	if !ok {
+		return err
+	}
+	det, ok := he.detail.(map[string]any)
+	if !ok {
+		return err
+	}
+	out := *he
+	out.msg += ". 이 서버의 배포 키는 제공자에서 이미 떼어졌고(또는 이미 없었고) 프로젝트 등록도 지워졌습니다. 남은 폴더는 등록되지 않은 상태입니다(복구: 경로를 다시 등록한 뒤 서명된 삭제)"
+	d := map[string]any{}
+	for k, v := range det {
+		d[k] = v
+	}
+	d["key_state"], d["key_detached"] = keyState, true
+	out.detail = d
+	return &out
 }
 
 // removeLocal removes the clone and the key folder of project id. It runs only

@@ -753,6 +753,9 @@ func (h *handler) applyCore(w http.ResponseWriter, r *http.Request, allowed []st
 			}
 		}
 		he := w3cBrokerErrorKind(c.Action, fieldKind(c), oerr, true)
+		if isDeleteAction(c.Action) {
+			he = deleteErrorFor(c, he)
+		}
 		changed := he.v1Code == "outcome_unknown" || he.v1Code == broker.CodeCreatePartial || he.v1Code == broker.CodeLinkPartial || he.v1Code == "delete_partial"
 		switch {
 		case provablyNothing:
