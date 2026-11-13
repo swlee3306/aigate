@@ -427,7 +427,7 @@ export function makeDelete(ctx, host) {
     let sent;
     if (choice === ACTION_REMOVE_PROJECT) {
       if (d.opts.origin === 'legacy') return; // only the second confirmation screen proposes a legacy removal
-      sent = { action: ACTION_REMOVE_PROJECT, subject: row.id, fields: { scope: 'local', legacy_ack: false } };
+      sent = { action: ACTION_REMOVE_PROJECT, subject: row.id, fields: { scope: 'local', legacy_ack: false, detach_key: false } };
     } else if (choice === ACTION_DELETE_REMOTE_REPO) {
       const r = d.opts.remote;
       sent = { action: ACTION_DELETE_REMOTE_REPO, subject: row.id, fields: { remote_path: r.path, remote_id: r.id, confirm_name: d.typed.value, also_local: alsoLocal() } };
@@ -441,7 +441,7 @@ export function makeDelete(ctx, host) {
     if (flow.busy || d.opts.origin !== 'legacy' || d.step !== 'legacy') return;
     const g = gate();
     if (!g.ok || !legacyTypedOk()) return;
-    startFlow({ action: ACTION_REMOVE_PROJECT, subject: d.row.id, fields: { scope: 'local', legacy_ack: true } });
+    startFlow({ action: ACTION_REMOVE_PROJECT, subject: d.row.id, fields: { scope: 'local', legacy_ack: true, detach_key: false } });
   }
 
   const legacyTypedOk = () => !!d.legacyTyped && d.legacyTyped.value === d.row.id;

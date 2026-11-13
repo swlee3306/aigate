@@ -15,8 +15,10 @@ import (
 // W3f (F2): signed deletion ops. This is the first code of the broker that can
 // delete anything at a provider, so every rule below is deliberately narrow.
 //
-//	remove_project      local only: the registry row goes, nothing at the provider
+//	remove_project      the registry row goes; with the signed detach_key=true the
+//	                    project's own deploy key is taken off the remote FIRST (W3g)
 //	delete_remote_repo  the provider repository of a project THIS TOOL created
+//	                    (W3g: with also_local=true the registry row goes as well)
 //	remove_deploy_key   our deploy key (title "orchd <id>") off a project's remote
 //	clear_orphan        one orphan record (no provider call)
 //
@@ -57,7 +59,10 @@ const (
 )
 
 var (
-	removeProjectKeys    = []string{"id", "scope", "legacy_ack", "change", "request", "issued", "signature"}
+	// deploy_key is the unsigned public key line orchd reads from its own key
+	// folder. It is accepted only with detach_key=true (W3g) and, like in
+	// remove_deploy_key, can only narrow which key is taken off, never widen.
+	removeProjectKeys    = []string{"id", "scope", "legacy_ack", "detach_key", "deploy_key", "change", "request", "issued", "signature"}
 	deleteRemoteRepoKeys = []string{"id", "remote_path", "remote_id", "confirm_name", "also_local", "change", "request", "issued", "signature"}
 	removeDeployKeyKeys  = []string{"id", "remote_path", "deploy_key", "change", "request", "issued", "signature"}
 	clearOrphanKeys      = []string{"id", "project", "change", "request", "issued", "signature"}
@@ -100,6 +105,8 @@ type removeProjectArgs struct {
 	ID        string             `json:"id"`
 	Scope     string             `json:"scope"`
 	LegacyAck *bool              `json:"legacy_ack"`
+	DetachKey *bool              `json:"detach_key"` // signed (W3g)
+	DeployKey *string            `json:"deploy_key"` // NOT signed: orchd's key line, only with detach_key=true
 	Change    string             `json:"change"`
 	Request   string             `json:"request"`
 	Issued    string             `json:"issued"`
@@ -107,37 +114,73 @@ type removeProjectArgs struct {
 }
 
 // removeProjectCode: "" or the refusal code. legacy_ack must equal
-// (origin == legacy) in BOTH directions.
-func removeProjectCode(reg *Registry, id string, ack bool) (Project, string) {
+// (origin == legacy) in BOTH directions. detach_key=true needs a row that has a
+// provider and a live remote (provider entry present, remote set with a number,
+// not deleted): anything else is refused (W3g, G-D3). It returns the project
+// and, for detach_key=true, its provider entry.
+func removeProjectCode(reg *Registry, id string, ack, detach bool) (Project, Provider, string) {
 	p, ok := findProject(reg, id)
 	if !ok {
-		return Project{}, "project_unknown"
+		return Project{}, Provider{}, "project_unknown"
 	}
 	legacy := p.Origin == OriginLegacy
 	switch {
 	case legacy && !ack:
-		return p, "legacy_ack_required"
+		return p, Provider{}, "legacy_ack_required"
 	case !legacy && ack:
-		return p, "bad_request" // a second confirmation only exists for legacy projects
+		return p, Provider{}, "bad_request" // a second confirmation only exists for legacy projects
 	}
-	return p, ""
+	if !detach {
+		return p, Provider{}, ""
+	}
+	if p.Provider == nil || p.Remote == nil || p.RemoteDeletedAt != nil {
+		return p, Provider{}, "bad_request" // no remote to take a key from (never linked, legacy, or deleted already)
+	}
+	i := findProvider(reg, *p.Provider)
+	if i < 0 {
+		return p, Provider{}, "provider_unknown"
+	}
+	prov := reg.Providers[i]
+	if !registrymsg.ValidRemotePathForKind(prov.Kind, p.Remote.Path) {
+		return p, prov, "bad_request"
+	}
+	if p.Remote.ID == nil {
+		return p, prov, "remote_changed"
+	}
+	return p, prov, ""
 }
 
-func (s *Server) removeProjectHandler(_ context.Context, raw json.RawMessage) (any, *OpError) {
+func (s *Server) removeProjectHandler(ctx context.Context, raw json.RawMessage) (res any, oe *OpError) {
 	var a removeProjectArgs
-	if !decodeStrict(raw, &a, removeProjectKeys) || a.LegacyAck == nil {
+	if !decodeStrict(raw, &a, removeProjectKeys) || a.LegacyAck == nil || a.DetachKey == nil {
 		return fail("bad_request")
 	}
 	if s.Registry.Err() != nil {
 		return fail("registry_unavailable")
 	}
-	fields := map[string]any{"scope": a.Scope, "legacy_ack": *a.LegacyAck}
+	detach := *a.DetachKey
+	fields := map[string]any{"scope": a.Scope, "legacy_ack": *a.LegacyAck, "detach_key": detach}
+	wantBody := ""
 	shape := func() *OpError {
 		if !registrymsg.ValidSubject(a.ID) || a.Scope != "local" {
 			return fail1("bad_request")
 		}
+		if detach {
+			// orchd's key line is required and must be a key; without detach it
+			// must be absent (nothing is ever sent that no signature covers)
+			if a.DeployKey == nil || !deployKeyRE.MatchString(*a.DeployKey) {
+				return fail1("bad_request")
+			}
+			b, ok := keyBody(*a.DeployKey)
+			if !ok {
+				return fail1("bad_request")
+			}
+			wantBody = b
+		} else if a.DeployKey != nil {
+			return fail1("bad_request")
+		}
 		reg := s.Registry.Snapshot()
-		if _, code := removeProjectCode(&reg, a.ID, *a.LegacyAck); code != "" {
+		if _, _, code := removeProjectCode(&reg, a.ID, *a.LegacyAck, detach); code != "" {
 			return fail1(code)
 		}
 		return nil
@@ -151,11 +194,71 @@ func (s *Server) removeProjectHandler(_ context.Context, raw json.RawMessage) (a
 	}
 	defer s.unlockName(a.ID)
 	snap := s.Registry.Snapshot()
-	before, code := removeProjectCode(&snap, a.ID, *a.LegacyAck)
+	before, prov, code := removeProjectCode(&snap, a.ID, *a.LegacyAck, detach)
 	if code != "" {
 		return fail(code)
 	}
-	if !s.allowLocalDelete() {
+	keyState := ""
+	keySent := false
+	if detach {
+		// W3g: the deploy key goes off the remote BEFORE the row is unregistered.
+		// Nothing is unregistered unless the key is definitely gone (deleted, or
+		// not there). One DELETE at most, never retried.
+		rkey := remoteLockKey(prov.Kind, prov.ID, before.Remote.Path)
+		if !s.lockName(rkey) {
+			return fail("busy")
+		}
+		defer s.unlockName(rkey)
+		// (distinct names: the recover below must assign the NAMED result oe)
+		rp, perr := s.providerForEntry(prov) // ONE instance: its live handles belong to it
+		if perr != nil {
+			return nil, perr
+		}
+		info, lerr := s.liveMatches(ctx, rp, prov.Kind, before)
+		if lerr != nil {
+			return nil, lerr
+		}
+		keys, err := rp.ListDeployKeys(ctx, info)
+		if err != nil {
+			return nil, apiFailKind(prov.Kind, err)
+		}
+		title := "orchd " + a.ID
+		var match []DeployKeyInfo
+		for _, k := range keys {
+			if k.Title == title && k.Body == wantBody {
+				match = append(match, k)
+			}
+		}
+		if len(match) > 1 { // not unique: never guess which one is ours; the row stays
+			s.logf("remove_project: more than one key has the title and body, nothing removed")
+			return fail("remove_refused")
+		}
+		// One slot of the shared local-delete budget per op, spent right before
+		// the first external write (the key DELETE) or, when there is no key to
+		// delete, right before the registry write.
+		if !s.allowLocalDelete() {
+			return fail("rate_limited")
+		}
+		if len(match) == 0 {
+			keyState = "already_gone"
+		} else {
+			defer func() {
+				if rec := recover(); rec != nil {
+					s.logf("remove_project: panic type=%T", rec) // never the value
+					if keySent {
+						res, oe = nil, fail1("delete_partial")
+					} else {
+						res, oe = nil, fail1("internal_error")
+					}
+				}
+			}()
+			keySent = true
+			if err := rp.RemoveDeployKey(ctx, info, match[0]); err != nil {
+				return nil, s.deleteFailure("remove_project", prov.Kind, err)
+			}
+			keyState = "removed"
+		}
+	} else if !s.allowLocalDelete() {
 		return fail("rate_limited")
 	}
 	err := s.Registry.Update(func(reg *Registry) error {
@@ -176,11 +279,19 @@ func (s *Server) removeProjectHandler(_ context.Context, raw json.RawMessage) (a
 		now := s.Registry.Snapshot()
 		if _, still := findProject(&now, a.ID); !still && s.Registry.Err() == nil {
 			s.logf("remove_project: the registry file was written but its directory fsync failed")
+		} else if keySent {
+			// the key was taken off the remote but the row could not be removed
+			s.logf("remove_project: the key was removed at the provider, the registry could not be updated")
+			return nil, fail1("delete_partial")
 		} else {
 			return nil, updateFailure(err)
 		}
 	}
-	return map[string]any{"id": a.ID, "removed": true}, nil
+	out := map[string]any{"id": a.ID, "removed": true}
+	if detach {
+		out["key_state"] = keyState
+	}
+	return out, nil
 }
 
 // ---------- delete_remote_repo ----------
@@ -368,9 +479,45 @@ func (s *Server) deleteRemoteRepoHandler(ctx context.Context, raw json.RawMessag
 	if err := rp.DeleteRepo(ctx, info); err != nil {
 		return nil, s.deleteFailure("delete_remote_repo", prov.Kind, err)
 	}
-	// The repository is gone. The registry keeps Provider (attach_remote stays
-	// blocked by already_linked) and records remote null + the time.
+	state := "deleted"
+	if prov.Kind == "gitlab" {
+		state = "requested" // GitLab may delay the deletion
+	}
 	stamp := s.now().UTC().Format(orphanTimeLayout)
+	if *a.AlsoLocal {
+		// W3g (G-D4): the repository is gone and the signature also covered the
+		// registration: the row is REMOVED (no "remote null" leftover). The same
+		// meaningful-field re-check as before; a failure is delete_partial.
+		err := s.Registry.Update(func(reg *Registry) error {
+			got, ok := findProject(reg, a.ID)
+			if !ok {
+				return opCodeErr("project_unknown")
+			}
+			if !sameRowCore(got, before) { // the row that was checked (flags may change meanwhile)
+				return opCodeErr("remote_changed")
+			}
+			kept := make([]Project, 0, len(reg.Projects))
+			for _, p := range reg.Projects {
+				if p.ID != a.ID {
+					kept = append(kept, p)
+				}
+			}
+			reg.Projects = kept
+			return nil
+		})
+		if err != nil {
+			now := s.Registry.Snapshot()
+			if _, still := findProject(&now, a.ID); !still && s.Registry.Err() == nil {
+				s.logf("delete_remote_repo: the registry file was written but its directory fsync failed")
+			} else {
+				s.logf("delete_remote_repo: deleted at the provider, the registry row could not be removed")
+				return nil, fail1("delete_partial")
+			}
+		}
+		return map[string]any{"id": a.ID, "remote_state": state, "remote_deleted_at": stamp, "registry_removed": true}, nil
+	}
+	// The registry keeps Provider (attach_remote stays blocked by
+	// already_linked) and records remote null + the time.
 	err := s.Registry.Update(func(reg *Registry) error {
 		for i := range reg.Projects {
 			p := &reg.Projects[i]
@@ -396,10 +543,6 @@ func (s *Server) deleteRemoteRepoHandler(ctx context.Context, raw json.RawMessag
 			s.logf("delete_remote_repo: deleted at the provider, the registry could not be updated")
 			return nil, fail1("delete_partial")
 		}
-	}
-	state := "deleted"
-	if prov.Kind == "gitlab" {
-		state = "requested" // GitLab may delay the deletion
 	}
 	return map[string]any{"id": a.ID, "remote_state": state, "remote_deleted_at": stamp}, nil
 }

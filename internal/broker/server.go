@@ -169,8 +169,9 @@ var defaultOpTimeouts = map[string]time.Duration{
 
 	// W3f. A `timeout` reply to a delete means the outcome is UNKNOWN: re-read
 	// `projects` (and look at the provider) before doing anything else; nothing
-	// is retried automatically. remove_deploy_key may page through the key list.
-	"remove_project":     10 * time.Second,
+	// is retried automatically. remove_deploy_key (and remove_project with
+	// detach_key) may page through the key list.
+	"remove_project":     60 * time.Second, // W3g: with detach_key it reads the repository, pages the key list, deletes one key
 	"delete_remote_repo": 45 * time.Second,
 	"remove_deploy_key":  60 * time.Second,
 	"clear_orphan":       10 * time.Second,

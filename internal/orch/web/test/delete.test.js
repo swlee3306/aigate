@@ -513,7 +513,7 @@ test('TestFollowUpRemoveRegistryIsSecondSignedChange', async () => {
   await until(() => byData(ctx.root, 'result', 'ok').length === 1, 'second result');
   assert.equal(auth.gets.length, 2, 'a second, separate signature');
   assert.equal(posts(ctx, '/api/v1/projects/remove/apply').length, 1);
-  assert.deepEqual(posts(ctx, '/api/v1/projects/remove/apply')[0].body.fields, { scope: 'local', legacy_ack: false });
+  assert.deepEqual(posts(ctx, '/api/v1/projects/remove/apply')[0].body.fields, { scope: 'local', legacy_ack: false, detach_key: false });
 });
 
 // ---- legacy -------------------------------------------------------------------------------
@@ -548,14 +548,14 @@ test('TestLegacyDeleteNeedsSecondConfirmationAndLegacyAck', async () => {
   await until(() => !proposeBtn(ctx).hasAttribute('disabled'), 'on');
   click(proposeBtn(ctx));
   await waitSignable(ctx);
-  assert.deepEqual(posts(ctx, '/api/v1/projects/remove/propose')[0].body, { action: 'remove_project', subject: 'toy', fields: { scope: 'local', legacy_ack: true } });
+  assert.deepEqual(posts(ctx, '/api/v1/projects/remove/propose')[0].body, { action: 'remove_project', subject: 'toy', fields: { scope: 'local', legacy_ack: true, detach_key: false } });
   click(signBtn(ctx));
   await until(() => byData(ctx.root, 'result', 'ok').length === 1, 'result');
   assert.equal(posts(ctx, '/api/v1/projects/remove/apply')[0].body.fields.legacy_ack, true, 'the signed legacy_ack travels in the apply');
   // a non-legacy project never sends legacy_ack true
   const c2 = await mountProjects();
   await toConfirm(c2, 'plain', 'local');
-  assert.deepEqual(posts(c2, '/api/v1/projects/remove/propose')[0].body.fields, { scope: 'local', legacy_ack: false });
+  assert.deepEqual(posts(c2, '/api/v1/projects/remove/propose')[0].body.fields, { scope: 'local', legacy_ack: false, detach_key: false });
 });
 
 test('TestLegacyProposalWithoutAckLineIsRefused', async () => {

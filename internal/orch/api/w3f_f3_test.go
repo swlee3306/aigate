@@ -169,7 +169,9 @@ func (d *delEnv) applyDel(t *testing.T, p w3cProposal) (int, []byte) {
 	return d.sockJSON(t, "POST", delPaths[p.Action]+"/apply", jsonBody(d.applyBody(p, webauthnSig)))
 }
 
-func rmFields(ack bool) map[string]any { return map[string]any{"scope": "local", "legacy_ack": ack} }
+func rmFields(ack bool) map[string]any {
+	return map[string]any{"scope": "local", "legacy_ack": ack, "detach_key": false}
+}
 
 func drFields(path string, id int64, confirm string, also bool) map[string]any {
 	return map[string]any{"remote_path": path, "remote_id": fmt.Sprint(id), "confirm_name": confirm, "also_local": also}

@@ -56,12 +56,12 @@ func checkW3fConstants(t *testing.T) {
 	}
 	// the browser's SCHEMA of the four actions is the registrymsg one: exactly these fields and types
 	want := map[string]map[string]string{
-		registrymsg.ActionRemoveProject:    {"scope": "s", "legacy_ack": "b"},
+		registrymsg.ActionRemoveProject:    {"scope": "s", "legacy_ack": "b", "detach_key": "b"},
 		registrymsg.ActionDeleteRemoteRepo: {"remote_path": "s", "remote_id": "s", "confirm_name": "s", "also_local": "b"},
 		registrymsg.ActionRemoveDeployKey:  {"remote_path": "s"},
 		registrymsg.ActionClearOrphan:      {"project": "s"},
 	}
-	sample := map[string]any{"scope": "local", "legacy_ack": false, "remote_path": "octo/hello", "remote_id": "5", "confirm_name": "hello", "also_local": true, "project": "octo/half"}
+	sample := map[string]any{"scope": "local", "legacy_ack": false, "detach_key": false, "remote_path": "octo/hello", "remote_id": "5", "confirm_name": "hello", "also_local": true, "project": "octo/half"}
 	for action, goFields := range want {
 		m := one(prov, `(?m)^\s*\[ACTION_`+strings.ToUpper(action)+`\]: \{([^}]*)\},?\s*$`, "SCHEMA entry of "+action)
 		jsFields := map[string]string{}
@@ -138,7 +138,9 @@ func checkW3fConstants(t *testing.T) {
 		}
 		return n
 	}
-	rpFields := func(ack bool) map[string]any { return map[string]any{"scope": "local", "legacy_ack": ack} }
+	rpFields := func(ack bool) map[string]any {
+		return map[string]any{"scope": "local", "legacy_ack": ack, "detach_key": false}
+	}
 	drFields := func(also bool) map[string]any {
 		return map[string]any{"remote_path": "octo/hello", "remote_id": "5", "confirm_name": "hello", "also_local": also}
 	}

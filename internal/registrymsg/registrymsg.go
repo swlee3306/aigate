@@ -92,7 +92,9 @@ var schema = map[string]map[string]fieldKind{
 	ActionAttachRemote: {"provider": kindString, "remote_path": kindString, "publish": kindString, "deploy_key_sha256": kindString},
 	// W3f (F-D3). Subjects: the EXISTING project id for the first three,
 	// the provider id for clear_orphan.
-	ActionRemoveProject:    {"scope": kindString, "legacy_ack": kindBool},
+	// W3g (G-D1): remove_project also signs detach_key (take our deploy key off
+	// the remote with the removal). All three fields are required.
+	ActionRemoveProject:    {"scope": kindString, "legacy_ack": kindBool, "detach_key": kindBool},
 	ActionDeleteRemoteRepo: {"remote_path": kindString, "remote_id": kindString, "confirm_name": kindString, "also_local": kindBool},
 	ActionRemoveDeployKey:  {"remote_path": kindString},
 	ActionClearOrphan:      {"project": kindString},

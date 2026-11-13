@@ -136,7 +136,7 @@ const SCHEMA = {
   [ACTION_CREATE_PROJECT]: { provider: 's', group_path: 's', template: 's', description: 's', ai_context: 'b', publish: 's', deploy_key_sha256: 's' },
   [ACTION_LINK_PROJECT]: { provider: 's', remote_path: 's', ai_context: 'b', publish: 's', deploy_key_sha256: 's' },
   [ACTION_ATTACH_REMOTE]: { provider: 's', remote_path: 's', publish: 's', deploy_key_sha256: 's' },
-  [ACTION_REMOVE_PROJECT]: { scope: 's', legacy_ack: 'b' },
+  [ACTION_REMOVE_PROJECT]: { scope: 's', legacy_ack: 'b', detach_key: 'b' },
   [ACTION_DELETE_REMOTE_REPO]: { remote_path: 's', remote_id: 's', confirm_name: 's', also_local: 'b' },
   [ACTION_REMOVE_DEPLOY_KEY]: { remote_path: 's' },
   [ACTION_CLEAR_ORPHAN]: { project: 's' },

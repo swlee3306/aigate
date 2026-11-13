@@ -12,7 +12,7 @@ import (
 var regexpNever = regexp.MustCompile(`^zzz$`)
 
 func removeProjectFields() map[string]any {
-	return map[string]any{"scope": "local", "legacy_ack": false}
+	return map[string]any{"scope": "local", "legacy_ack": false, "detach_key": false}
 }
 
 func deleteRemoteFields() map[string]any {
@@ -33,7 +33,7 @@ func TestDeleteActionsInSchema(t *testing.T) {
 		fields          func() map[string]any
 		want            string
 	}{
-		{ActionRemoveProject, "my-proj", removeProjectFields, `{"action":"remove_project","fields":{"legacy_ack":false,"scope":"local"},"subject":"my-proj"}`},
+		{ActionRemoveProject, "my-proj", removeProjectFields, `{"action":"remove_project","fields":{"detach_key":false,"legacy_ack":false,"scope":"local"},"subject":"my-proj"}`},
 		{ActionDeleteRemoteRepo, "my-proj", deleteRemoteFields, `{"action":"delete_remote_repo","fields":{"also_local":true,"confirm_name":"Hello-World","remote_id":"123456789","remote_path":"octo/Hello-World"},"subject":"my-proj"}`},
 		{ActionRemoveDeployKey, "my-proj", removeKeyFields, `{"action":"remove_deploy_key","fields":{"remote_path":"octo/Hello-World"},"subject":"my-proj"}`},
 		{ActionClearOrphan, "gl", clearOrphanFields, `{"action":"clear_orphan","fields":{"project":"team/sub/half-made"},"subject":"gl"}`},
@@ -200,7 +200,7 @@ func TestDeleteActionsInSchema(t *testing.T) {
 		t.Error("remove_deploy_key fields accepted as remove_project")
 	}
 	// ParseFields keeps the types distinct (a string "true" is not a bool)
-	pf, err := ParseFields([]byte(`{"scope":"local","legacy_ack":"true"}`))
+	pf, err := ParseFields([]byte(`{"scope":"local","legacy_ack":"true","detach_key":false}`))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -150,7 +150,7 @@ func TestUnsignedOrForeignSignedDeletionDoesNothingW3f(t *testing.T) {
 	cases := []tc{
 		{"remove_project", "remove_project", func() map[string]any { return d.rmArgs("plain", false) },
 			func(w testSigner) map[string]any {
-				return d.signedArgs(w, registrymsg.ActionRemoveProject, "plain", map[string]any{"scope": "local", "legacy_ack": false})
+				return d.signedArgs(w, registrymsg.ActionRemoveProject, "plain", map[string]any{"scope": "local", "legacy_ack": false, "detach_key": false})
 			}},
 		{"delete_remote_repo", "delete_remote_repo", func() map[string]any { return d.delArgs("demo-gh", nil) },
 			func(w testSigner) map[string]any {

@@ -24,7 +24,7 @@ func TestWebFixturesW3fVectors(t *testing.T) {
 		Change    string         `json:"change,omitempty"`
 	}
 	rp := func(over map[string]any) map[string]any {
-		m := map[string]any{"scope": "local", "legacy_ack": false}
+		m := map[string]any{"scope": "local", "legacy_ack": false, "detach_key": false}
 		for k, v := range over {
 			m[k] = v
 		}
@@ -54,6 +54,9 @@ func TestWebFixturesW3fVectors(t *testing.T) {
 	good := []vec{
 		{Name: "remove_project local", Action: "remove_project", Subject: "my-app", Fields: rp(nil)},
 		{Name: "remove_project legacy acknowledged", Action: "remove_project", Subject: "toy", Fields: rp(map[string]any{"legacy_ack": true})},
+		// W3g (G-D1): detach_key is signed
+		{Name: "remove_project detach key", Action: "remove_project", Subject: "my-app", Fields: rp(map[string]any{"detach_key": true})},
+		{Name: "remove_project legacy acknowledged detach key", Action: "remove_project", Subject: "toy", Fields: rp(map[string]any{"legacy_ack": true, "detach_key": true})},
 		{Name: "delete_remote_repo also local", Action: "delete_remote_repo", Subject: "my-app", Fields: dr(nil)},
 		{Name: "delete_remote_repo remote only", Action: "delete_remote_repo", Subject: "my-app", Fields: dr(map[string]any{"also_local": false})},
 		{Name: "delete_remote_repo gitlab nested", Action: "delete_remote_repo", Subject: "my-app",
@@ -76,6 +79,8 @@ func TestWebFixturesW3fVectors(t *testing.T) {
 		{Name: "remove_project scope upper", Action: "remove_project", Subject: "my-app", Fields: rp(map[string]any{"scope": "Local"})},
 		{Name: "remove_project legacy_ack string", Action: "remove_project", Subject: "my-app", Fields: rp(map[string]any{"legacy_ack": "true"})},
 		{Name: "remove_project without legacy_ack", Action: "remove_project", Subject: "my-app", Fields: rp(map[string]any{"legacy_ack": nil})},
+		{Name: "remove_project detach_key string", Action: "remove_project", Subject: "my-app", Fields: rp(map[string]any{"detach_key": "true"})},
+		{Name: "remove_project without detach_key", Action: "remove_project", Subject: "my-app", Fields: rp(map[string]any{"detach_key": nil})},
 		{Name: "remove_project extra field", Action: "remove_project", Subject: "my-app", Fields: rp(map[string]any{"also_local": true})},
 		{Name: "remove_project subject upper", Action: "remove_project", Subject: "My-App", Fields: rp(nil)},
 		{Name: "remove_project subject empty", Action: "remove_project", Subject: "", Fields: rp(nil)},

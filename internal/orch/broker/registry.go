@@ -30,10 +30,10 @@ func init() {
 	defaultTimeouts[OpProjects] = 15 * time.Second
 	defaultTimeouts[OpRegisterProject] = 15 * time.Second
 	defaultTimeouts[OpSetFlag] = 15 * time.Second
-	// The broker gives these 10 s, 45 s, 60 s and 10 s: the client waits a
+	// The broker gives these 60 s (W3g: detach_key reads, pages and deletes), 45 s, 60 s and 10 s: the client waits a
 	// little longer, so a slow but successful delete is not reported as an
 	// unknown outcome by orchd's own clock.
-	defaultTimeouts[OpRemoveProject] = 15 * time.Second
+	defaultTimeouts[OpRemoveProject] = 70 * time.Second
 	defaultTimeouts[OpDeleteRemoteRepo] = 55 * time.Second
 	defaultTimeouts[OpRemoveDeployKey] = 70 * time.Second
 	defaultTimeouts[OpClearOrphan] = 15 * time.Second

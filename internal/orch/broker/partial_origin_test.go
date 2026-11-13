@@ -34,10 +34,10 @@ func TestParsePartialDetailOrigin(t *testing.T) {
 }
 
 // W3f: the deletion ops have client time limits a little above the broker's own
-// (10, 45, 60, 10 s), so a slow but successful delete is not an unknown outcome
+// (60 since W3g, 45, 60, 10 s), so a slow but successful delete is not an unknown outcome
 // by orchd's clock; and the registry view carries remote_deleted_at.
 func TestDeleteOpTimeoutsExceedTheBrokersAndViewCarriesStamp(t *testing.T) {
-	for op, brokerLimit := range map[string]time.Duration{OpRemoveProject: 10 * time.Second, OpDeleteRemoteRepo: 45 * time.Second,
+	for op, brokerLimit := range map[string]time.Duration{OpRemoveProject: 60 * time.Second, OpDeleteRemoteRepo: 45 * time.Second,
 		OpRemoveDeployKey: 60 * time.Second, OpClearOrphan: 10 * time.Second} {
 		d := defaultTimeouts[op]
 		if d <= brokerLimit || d > brokerLimit+30*time.Second {

@@ -52,6 +52,7 @@ type delFake struct {
 	keyStatus  int // DELETE key (0: 204)
 	keyListSt  int // GET keys (0: 200)
 	extraHdr   map[string]string
+	onKeyDel   func() // W3g: called when a key DELETE arrives (before it is answered)
 }
 
 func newDelFake(t *testing.T, kind string) *delFake {
@@ -159,6 +160,9 @@ func (f *delFake) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		fmt.Fprint(w, `[]`)
 	case r.Method == "DELETE" && kind == "key":
+		if f.onKeyDel != nil {
+			f.onKeyDel()
+		}
 		s := st(f.keyStatus, 204)
 		w.WriteHeader(s)
 		if s >= 400 {
@@ -300,7 +304,17 @@ func (d *delEnv) keyArgs(id string, key string) map[string]any {
 }
 
 func (d *delEnv) rmArgs(id string, ack bool) map[string]any {
-	return d.signedArgs(d.alice, registrymsg.ActionRemoveProject, id, map[string]any{"scope": "local", "legacy_ack": ack})
+	return d.signedArgs(d.alice, registrymsg.ActionRemoveProject, id, map[string]any{"scope": "local", "legacy_ack": ack, "detach_key": false})
+}
+
+// rmDetachArgs: remove_project signed with detach_key=true and (when key != "")
+// the orchd-supplied key line (unsigned, like remove_deploy_key's).
+func (d *delEnv) rmDetachArgs(id string, ack bool, key string) map[string]any {
+	a := d.signedArgs(d.alice, registrymsg.ActionRemoveProject, id, map[string]any{"scope": "local", "legacy_ack": ack, "detach_key": true})
+	if key != "" {
+		a["deploy_key"] = key
+	}
+	return a
 }
 
 func (d *delEnv) hits() int { return len(d.gh.all()) + len(d.gl.all()) }
@@ -1155,7 +1169,7 @@ func TestSignedFieldsCoverEveryDeleteInput(t *testing.T) {
 		{"remove_project", func(d *delEnv) map[string]any {
 			d.putRaw(Project{ID: "plain", Path: d.root + "/plain", Kind: "registered", Origin: OriginUnknown})
 			return d.rmArgs("plain", false)
-		}, []string{"scope", "legacy_ack"}},
+		}, []string{"scope", "legacy_ack", "detach_key"}},
 		{"delete_remote_repo", func(d *delEnv) map[string]any { return d.delArgs("demo-gh", nil) }, []string{"remote_path", "remote_id", "confirm_name", "also_local"}},
 		{"remove_deploy_key", func(d *delEnv) map[string]any { return d.keyArgs("demo-gh", "") }, []string{"remote_path"}},
 		{"clear_orphan", func(d *delEnv) map[string]any {
@@ -1185,6 +1199,11 @@ func TestSignedFieldsCoverEveryDeleteInput(t *testing.T) {
 		hk := append([]string(nil), handlerKeys...)
 		hk2 := hk
 		sort.Strings(hk2)
+		if o.name == "remove_project" {
+			// W3g: the optional unsigned key line (only accepted with detach_key=true)
+			want = append(append([]string(nil), want...), "deploy_key")
+			sort.Strings(want)
+		}
 		if !reflect.DeepEqual(hk2, want) {
 			t.Fatalf("%s: handler accepts %v, want %v", o.name, hk2, want)
 		}

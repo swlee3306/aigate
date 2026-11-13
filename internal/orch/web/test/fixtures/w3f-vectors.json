@@ -71,22 +71,48 @@
       "action": "remove_project",
       "subject": "my-app",
       "fields": {
+        "detach_key": false,
         "legacy_ack": false,
         "scope": "local"
       },
-      "canonical": "{\"action\":\"remove_project\",\"fields\":{\"legacy_ack\":false,\"scope\":\"local\"},\"subject\":\"my-app\"}",
-      "change": "a8d174a4a0d48b1dbe1e5d8caa39c7c2a30d6b38ddbc86cae417dd6944c0edd5"
+      "canonical": "{\"action\":\"remove_project\",\"fields\":{\"detach_key\":false,\"legacy_ack\":false,\"scope\":\"local\"},\"subject\":\"my-app\"}",
+      "change": "054ff8b93db03587af50da175cf6cdd922855bda5813dc13f895ef0c5d073561"
     },
     {
       "name": "remove_project legacy acknowledged",
       "action": "remove_project",
       "subject": "toy",
       "fields": {
+        "detach_key": false,
         "legacy_ack": true,
         "scope": "local"
       },
-      "canonical": "{\"action\":\"remove_project\",\"fields\":{\"legacy_ack\":true,\"scope\":\"local\"},\"subject\":\"toy\"}",
-      "change": "22e2db8f899dde9536c1610013d593a29b306864987c98f4ca1004485a385181"
+      "canonical": "{\"action\":\"remove_project\",\"fields\":{\"detach_key\":false,\"legacy_ack\":true,\"scope\":\"local\"},\"subject\":\"toy\"}",
+      "change": "129db994af0d1291e156e183ffa139f86e2d519d91335ff9a51a6d0cfb7cc106"
+    },
+    {
+      "name": "remove_project detach key",
+      "action": "remove_project",
+      "subject": "my-app",
+      "fields": {
+        "detach_key": true,
+        "legacy_ack": false,
+        "scope": "local"
+      },
+      "canonical": "{\"action\":\"remove_project\",\"fields\":{\"detach_key\":true,\"legacy_ack\":false,\"scope\":\"local\"},\"subject\":\"my-app\"}",
+      "change": "964c185dd06c8b8dc43a6126642f20e5459590c44e8f5cb52e616e97af8c2439"
+    },
+    {
+      "name": "remove_project legacy acknowledged detach key",
+      "action": "remove_project",
+      "subject": "toy",
+      "fields": {
+        "detach_key": true,
+        "legacy_ack": true,
+        "scope": "local"
+      },
+      "canonical": "{\"action\":\"remove_project\",\"fields\":{\"detach_key\":true,\"legacy_ack\":true,\"scope\":\"local\"},\"subject\":\"toy\"}",
+      "change": "148027ff279a7cdc2345c413a3e1eb1d418378676f148a13a005c7ed9f7380fa"
     },
     {
       "name": "delete_remote_repo also local",
@@ -176,21 +202,41 @@
       "name": "remove_project local",
       "action": "remove_project",
       "subject": "my-app",
-      "change": "a8d174a4a0d48b1dbe1e5d8caa39c7c2a30d6b38ddbc86cae417dd6944c0edd5",
+      "change": "054ff8b93db03587af50da175cf6cdd922855bda5813dc13f895ef0c5d073561",
       "request": "00112233445566778899aabbccddeeff",
       "issued": "2026-11-12T10:04:05Z",
-      "text": "aigate-registry-v1\naction: remove_project\nsubject: my-app\nchange: a8d174a4a0d48b1dbe1e5d8caa39c7c2a30d6b38ddbc86cae417dd6944c0edd5\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-12T10:04:05Z\n",
-      "digest": "d2cb9eb637937422f3d2098a30510d03f8da457e0016bb6076d98a0e85122c33"
+      "text": "aigate-registry-v1\naction: remove_project\nsubject: my-app\nchange: 054ff8b93db03587af50da175cf6cdd922855bda5813dc13f895ef0c5d073561\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-12T10:04:05Z\n",
+      "digest": "fe1f81a3e6e69b5cb812462a7e8b808dd71c6492e5f078fbb671db849873ef39"
     },
     {
       "name": "remove_project legacy acknowledged",
       "action": "remove_project",
       "subject": "toy",
-      "change": "22e2db8f899dde9536c1610013d593a29b306864987c98f4ca1004485a385181",
+      "change": "129db994af0d1291e156e183ffa139f86e2d519d91335ff9a51a6d0cfb7cc106",
       "request": "00112233445566778899aabbccddeeff",
       "issued": "2026-11-12T10:04:05Z",
-      "text": "aigate-registry-v1\naction: remove_project\nsubject: toy\nchange: 22e2db8f899dde9536c1610013d593a29b306864987c98f4ca1004485a385181\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-12T10:04:05Z\n",
-      "digest": "d6eafa0520f25c94d34facb1999b96bf05ba2684d0c22b1611e96276c787794a"
+      "text": "aigate-registry-v1\naction: remove_project\nsubject: toy\nchange: 129db994af0d1291e156e183ffa139f86e2d519d91335ff9a51a6d0cfb7cc106\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-12T10:04:05Z\n",
+      "digest": "238f709aaffc5c8c6fa2b415f03093cf12221073a9eb2b877becbc74b1680f06"
+    },
+    {
+      "name": "remove_project detach key",
+      "action": "remove_project",
+      "subject": "my-app",
+      "change": "964c185dd06c8b8dc43a6126642f20e5459590c44e8f5cb52e616e97af8c2439",
+      "request": "00112233445566778899aabbccddeeff",
+      "issued": "2026-11-12T10:04:05Z",
+      "text": "aigate-registry-v1\naction: remove_project\nsubject: my-app\nchange: 964c185dd06c8b8dc43a6126642f20e5459590c44e8f5cb52e616e97af8c2439\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-12T10:04:05Z\n",
+      "digest": "a8e29e81633a0ec862c2c831684f2d3ede46a1b06004808c83d124fc0551a267"
+    },
+    {
+      "name": "remove_project legacy acknowledged detach key",
+      "action": "remove_project",
+      "subject": "toy",
+      "change": "148027ff279a7cdc2345c413a3e1eb1d418378676f148a13a005c7ed9f7380fa",
+      "request": "00112233445566778899aabbccddeeff",
+      "issued": "2026-11-12T10:04:05Z",
+      "text": "aigate-registry-v1\naction: remove_project\nsubject: toy\nchange: 148027ff279a7cdc2345c413a3e1eb1d418378676f148a13a005c7ed9f7380fa\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-12T10:04:05Z\n",
+      "digest": "ad04beaa1c6a8970626b5bb65933ce6a13cd62388a40a834e864c599d73735bf"
     },
     {
       "name": "delete_remote_repo also local",
@@ -319,6 +365,7 @@
       "action": "remove_project",
       "subject": "my-app",
       "fields": {
+        "detach_key": false,
         "legacy_ack": false,
         "scope": "remote"
       }
@@ -328,6 +375,7 @@
       "action": "remove_project",
       "subject": "my-app",
       "fields": {
+        "detach_key": false,
         "legacy_ack": false,
         "scope": "Local"
       }
@@ -337,6 +385,7 @@
       "action": "remove_project",
       "subject": "my-app",
       "fields": {
+        "detach_key": false,
         "legacy_ack": "true",
         "scope": "local"
       }
@@ -346,6 +395,26 @@
       "action": "remove_project",
       "subject": "my-app",
       "fields": {
+        "detach_key": false,
+        "scope": "local"
+      }
+    },
+    {
+      "name": "remove_project detach_key string",
+      "action": "remove_project",
+      "subject": "my-app",
+      "fields": {
+        "detach_key": "true",
+        "legacy_ack": false,
+        "scope": "local"
+      }
+    },
+    {
+      "name": "remove_project without detach_key",
+      "action": "remove_project",
+      "subject": "my-app",
+      "fields": {
+        "legacy_ack": false,
         "scope": "local"
       }
     },
@@ -355,6 +424,7 @@
       "subject": "my-app",
       "fields": {
         "also_local": true,
+        "detach_key": false,
         "legacy_ack": false,
         "scope": "local"
       }
@@ -364,6 +434,7 @@
       "action": "remove_project",
       "subject": "My-App",
       "fields": {
+        "detach_key": false,
         "legacy_ack": false,
         "scope": "local"
       }
@@ -373,6 +444,7 @@
       "action": "remove_project",
       "subject": "",
       "fields": {
+        "detach_key": false,
         "legacy_ack": false,
         "scope": "local"
       }
