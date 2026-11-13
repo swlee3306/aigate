@@ -156,7 +156,7 @@ broker `internal/broker/adversarial_w3g_test.go`(2개), orchd `internal/orch/api
 | `/var/lib/orch-broker/registry.json` | `orch-broker` 0600 | broker만 | **버전 그대로(v4), 마이그레이션 없음.** `remove_project`(떼기 켬)는 키 `DELETE`가 확실히 끝난 뒤에만 행을 지우고, `delete_remote_repo`+`also_local`은 저장소 `DELETE` 뒤 행을 지운다(W3f는 `remote: 없음`으로 남김) | 롤백에 등록부 복원이 필요 없다(W3f broker도 v4를 읽는다). 단 W3g로 지운 행은 롤백해도 되살아나지 않는다 |
 | `/home/orch/orchd/ssh/keys/<id>/id_ed25519.pub` | `orch:orch` 0644 | orchd(읽기만) | GitHub 키 떼기의 키 줄을 **propose와 apply에서 읽는다**(apply는 broker 호출 전, 그러니 폴더 삭제 전). 개인 키는 열지 않는다 | 없거나 모양이 다르면 `key_unavailable_for_removal`(서명 전) |
 | `/home/orch/orchd/ssh/id_gitlab_deploy.pub` (`--git-ssh-key`의 `.pub`) | `orch:orch` | orchd(읽기만) | GitLab 키 떼기의 키 줄(공용 키). **주석에 공백이 있으면 broker 규칙 밖이라 떼기가 불가**(`key_unavailable_for_removal`) | 런북 17.0 (e) |
-| 제공자 API | — | broker | 새 호출 없음: W3f의 저장소 GET·키 목록 GET·키 `DELETE`·저장소 `DELETE`를 **한 서명 안에서 이어서** 한다 | `remove_project` broker 시간 제한 **60초**(이전 10초), orchd client **70초**(이전 15초), 웹 기다림 130초(그대로) |
+| 제공자 API | — | broker | 새 호출 없음: W3f의 저장소 GET·키 목록 GET·키 `DELETE`·저장소 `DELETE`를 **한 서명 안에서 이어서** 한다 | `remove_project` broker 시간 제한 **60초**(이전 10초) < orchd client **70초**(이전 15초) < orchd HTTP 서버의 쓰기 제한 **120초**(`WriteTimeout`, 실제 apply 상한) < 웹 기다림 **130초**(그대로) |
 | `/home/orch/repos/<id>`, `…/keys/<id>/` | `orch:orch` | orchd | W3f와 같은 `removeLocal`(이름 바꾸기 → `RemoveAll`). `also_local`이면 broker가 **등록까지 지운 뒤**에 지운다 | 로컬 정리 실패 시 **등록 없는 폴더**가 남는다(G-D4, 런북 17장 복구) |
 | orchd 원장 | 기존 | orchd | 이벤트 이름·키 그대로(`project_remove`·`remote_delete`, 키 `actor,action,subject,ok,code`). 키를 뗀 뒤 로컬 정리가 실패하면 `ok:true` 줄 다음에 `ok:false code:delete_partial_local` 줄(W3f의 `also_local`과 같은 모양) | 키 줄·지문·경로 없음(시험으로 고정) |
 | broker 로그 | journald | broker | 성공 한 줄: `remove_project: removed project <id> from the registry`, `delete_remote_repo: removed the remote repository and the registry row of project <id>` | id만 |
@@ -173,12 +173,12 @@ broker `internal/broker/adversarial_w3g_test.go`(2개), orchd `internal/orch/api
 | G-D5 | 키 줄은 orchd가 키 폴더(GitHub)·공용 `.pub`(GitLab)에서만 읽고 요청에서 받지 않음, 미리보기에 `detach_key_available`·제목·지문, 한도 둘 다 | — |
 | G-D6 | 새 오류 코드 없음(`bad_request`·`remove_refused`·`delete_partial`·`key_unavailable_for_removal` 재사용, `key_not_found`는 "이미 없음"으로 흡수) | — |
 | G-D7 | 웹 체크 상자 기본 체크, 끄면 "키가 원격에 남습니다. 직접 지우세요", `also_local=true`면 후속 서명 안내 없음 | — |
-| **R-1** (G1 검토 판정, 계획 G-D2 개정) | **키 정체: GitHub은 제목 `orchd <id>`와 키 본문이 둘 다 맞는 키, GitLab은 키 본문만(제목 무시: 공용 키는 첫 프로젝트의 제목으로 남는다).** 일치가 0개인데 목록에 **우리 제목 또는 우리 본문을 가진 키가 하나라도 있으면 "닮은 키"로 `remove_refused`**(행 유지: "찾지 못함"을 "이미 없음"으로 오해하지 않는다), 둘 다 없을 때만 "이미 없음"으로 계속. 둘 이상이면 `remove_refused`. **같은 규칙을 W3f `remove_deploy_key`에도 적용**(GitLab 두 번째 이후 프로젝트에서도 뗄 수 있게) | GitLab: 서명되지 않는 키 줄이 키를 고른다(7장 1). 키를 새로 만든 프로젝트는 옛 키(같은 제목, 다른 본문) 때문에 떼기가 거부된다(사람이 지운 뒤 다시) |
+| **R-1** (G1 검토 판정, 계획 G-D2 개정) | **키 정체: GitHub은 제목 `orchd <id>`와 키 본문이 둘 다 맞는 키, GitLab은 키 본문만(제목 무시: 공용 키는 첫 프로젝트의 제목으로 남는다).** 일치가 0개인데 목록에 **우리 제목 또는 우리 본문을 가진 키가 하나라도 있으면 "닮은 키"로 `remove_refused`**(행 유지: "찾지 못함"을 "이미 없음"으로 오해하지 않는다), 둘 다 없을 때만 "이미 없음"으로 계속. 둘 이상이면 `remove_refused`. **같은 규칙을 W3f `remove_deploy_key`에도 적용**(GitLab 두 번째 이후 프로젝트에서도 뗄 수 있게: 그래서 W3f의 GitLab "제목과 본문" 보장이 "본문"으로 좁아졌다) | GitLab: 서명되지 않는 키 줄이 키를 고른다(7장 1, 8장 1의 열린 결정). 키를 새로 만든 프로젝트는 옛 키(같은 제목, 다른 본문) 때문에 떼기가 거부된다(사람이 지운 뒤 다시) |
 | **R-2** (G3 검토 판정) | **이 페이지 방문 중 그 행의 원격 삭제가 `delete_partial`로 끝났으면 체크 상자가 기본 꺼짐**(안내 "원격 저장소가 이미 지워졌을 수 있습니다…"), 체크하면 서명된다. 새 방문은 다시 기본 체크(메모리에만) | 저장소가 아직 있으면 한 번 더 누름 |
 | R-3 (문장) | `delete_partial`(떼기): "배포 키 떼기가 일부만 처리되었거나 결과를 알 수 없습니다(키는 이미 떼어졌을 수 있습니다). 프로젝트 등록과 서버의 복제본은 지우지 않았습니다…"(원격 삭제 화면과 따로). 떼기를 켠 `outcome_unknown`: "키는 이미 떼어졌을 수 있습니다". 서명 뒤 떼기 거부(`remove_refused`·`remote_changed`·제공자 오류 등): "아무것도 지우지 않았습니다… 키를 남기고 지우려면 '배포 키도 함께 떼기'를 끄고 새 변경에 서명하세요". `key_unavailable_for_removal`(삭제 흐름): 선택지를 끄고 진행할 수 있다. 떼기 뒤 로컬 정리 실패(`delete_partial_local`): 상세에 `key_state`·`key_detached:true`, 문장에 "배포 키는 이미 떼어졌고 등록도 지워졌습니다", 복구 안내는 "경로를 다시 등록 → 떼기를 끄고 '복제본과 등록 지우기'" | 문장만 |
 | R-4 (혼합 버전) | broker의 `unknown_op`·`not_implemented`(모든 삭제)와 `bad_request`(`remove_project`만: orchd가 모든 모양 규칙을 미리 보므로 broker의 모양 거부는 W3f broker이거나 그사이 상태가 바뀐 것)는 `broker_unavailable`(503) + "아무것도 지우지 않았습니다" 문장. 새 코드 없음 | 상태가 바뀐 경우에도 "버전" 문장이 함께 보인다 |
-| R-5 (시간 제한) | broker `remove_project` 10초 → 60초(저장소 GET + 키 목록 + `DELETE`), orchd client 15초 → 70초, 웹 130초(시험으로 "웹 > orchd" 고정) | 실제 지연이 60초를 넘으면 `delete_partial`/시간 초과(안전한 쪽) |
-| R-6 (한도) | `detach_key=true`는 로컬 정리(시간당 10)와 키 떼기(시간당 10) 두 한도를 함께 잡고 하나라도 차면 둘 다 돌려준다. "아무 일 없음"(닿지 못함·`busy`·`forbidden`)만 돌려준다. broker 쪽은 키 `DELETE`(또는 이미 없음이면 등록부 쓰기) 직전에 한 칸 | 옛 broker와 섞이면 시도마다 칸을 쓴다(7장 4) |
+| R-5 (시간 제한) | broker `remove_project` 10초 → 60초(저장소 GET + 키 목록 + `DELETE`) < orchd client 15초 → 70초 < orchd HTTP 서버 `WriteTimeout` 120초(바뀌지 않음: apply의 실제 상한) < 웹 130초(node 시험이 "웹 > orchd client 70초 + 15초"를 고정; 120초는 시험으로 고정하지 않음) | 실제 지연이 60초를 넘으면 `delete_partial`/시간 초과(안전한 쪽) |
+| R-6 (한도) | `detach_key=true`는 로컬 정리(시간당 10)와 키 떼기(시간당 10) 두 한도를 함께 잡고 하나라도 차면 둘 다 돌려준다. "아무 일 없음"(닿지 못함·`busy`·`forbidden`)만 돌려준다. broker 쪽은 키 `DELETE`(또는 이미 없음이면 등록부 쓰기) 직전에 한 칸 | 옛 broker와 섞이면 시도마다 칸을 쓴다(7장 5) |
 | R-7 (웹 결과 모양) | 성공 답의 `detach_key`·`key_state`·`registry`가 서명한 것과 맞아야 "완료", 아니면 "결과를 확인하세요". 제안의 지문이 미리보기의 지문과 다르면 서명 단추가 없다 | 키 파일이 그사이 바뀌면 처음부터 |
 
 ## 6. 실서버·실제 GitHub·GitLab에서 확인하지 못한 것
@@ -186,9 +186,9 @@ broker `internal/broker/adversarial_w3g_test.go`(2개), orchd `internal/orch/api
 **아래 전부는 이 저장소에서 한 번도 확인하지 않았다. 컷오버(런북 17장)에서 처음 확인한다.** 시험은 가짜 GitHub·가짜 GitLab·가짜 broker·임시 폴더로 요청 모양과 흐름만 확인했다.
 - **실제 키 떼기(`detach_key=true`의 `remove_project`)**: GitHub `GET /repos/{o}/{r}/keys`와 `DELETE …/keys/{id}`가 한 서명 안에서 이어지는 것, 키가 실제로 사라지고 다른 키는 그대로인지, 그 뒤 등록·복제본·키 폴더가 지워지는지. W3f 컷오버에서도 `remove_deploy_key`는 실서버에서 실행하지 않았다(29번 9장).
 - **GitHub 키 목록의 `key` 본문 모양**: 로컬 `.pub`의 `type base64`(주석 제외)와 글자 그대로 같은지(우리 비교는 앞 두 조각만 쓴다). 다르면 모든 떼기가 "닮은 키"로 거부된다(안전한 실패).
-- **GitLab 공용 키의 두 번째 프로젝트에서의 제목**: `GET /projects/:id/deploy_keys`가 공용 키를 **첫 프로젝트의 제목(`orchd <첫 id>`)**으로 보이는지(R-1이 이 가정 위에 있다), `key` 본문이 주석 없이 오는지, 그 프로젝트에서만 비활성되고 다른 프로젝트에서는 계속 쓰이는지, 마지막 프로젝트에서 떼면 키 레코드가 지워지는지.
+- **GitLab 공용 키의 두 번째 프로젝트에서의 제목**: `GET /projects/:id/deploy_keys`가 공용 키를 어떤 제목으로 보이는지(첫 등록 때의 제목으로 예상: `id_gitlab_deploy`는 사람이 `sample-collector`에 처음 등록했으므로 `orchd <id>` 꼴이 아닐 수 있다. R-1이 GitLab에서 제목을 보지 않는 이유), `key` 본문이 주석 없이 오는지, 그 프로젝트에서만 비활성되고 다른 프로젝트에서는 계속 쓰이는지, 마지막 프로젝트에서 떼면 키 레코드가 지워지는지.
 - **키 `DELETE`의 실제 상태 코드**: GitHub 204, GitLab 204 가정(다른 2xx는 `delete_partial`).
-- **지연**: 저장소 GET + 키 목록(여러 쪽) + `DELETE`가 broker의 60초 안에 끝나는지, orchd 70초·웹 130초·앞단 프록시 제한시간.
+- **지연**: 저장소 GET + 키 목록(여러 쪽) + `DELETE`가 broker의 60초 안에 끝나는지, orchd client 70초·orchd HTTP 서버 쓰기 제한 120초·웹 130초·앞단 프록시 제한시간.
 - **실제 패스키(WebAuthn)로 만든 `detach_key` 서명과 `also_local` 서명**을 broker가 검증하는지(바뀐 변경 해시 포함).
 - **`also_local=true`가 실서버에서 등록까지 지우는 것**과 그 뒤 orchd의 로컬 삭제, 실패 시 등록 없는 폴더의 실제 모양.
 - **혼합 버전 화면**: `broker_unavailable`·`outcome_unknown`(떼기를 켠 경우의 문장 포함) 화면은 **브라우저로 본 적이 없다**(node 시험의 DOM 문장으로만).
@@ -197,21 +197,22 @@ broker `internal/broker/adversarial_w3g_test.go`(2개), orchd `internal/orch/api
 - W3f(29번 6장)에서 이월된 미확인(GitLab 지연 삭제, 큰 복제본의 미리보기 시간, 실제 Chrome의 IME, 390px 화면 등)은 그대로다.
 
 ## 7. 받아들인 한계 (알고서 둔 것)
-1. **GitLab: 서명되지 않는 키 줄이 뗄 키를 고른다.** R-1이 GitLab에서 제목을 보지 않으므로, orchd가 자기 공용 `.pub`이 아닌 줄을 보내면(orchd가 손상된 경우) broker는 서명된 프로젝트의 다른 키(그 본문을 가진 키)를 그 프로젝트에서 떼고 등록을 지운다. 경로는 서명된 프로젝트의 것뿐이고 키는 하나뿐이며 전역 키 삭제 호출은 없다. W3f(제목+본문)보다 broker 혼자의 보장이 좁다. `TestUnsignedKeyLineNeverWidensBeyondTheSignedProjectW3g`가 이 동작을 고정한다(8장 결정 후보).
+1. **GitLab: 서명되지 않는 키 줄이 뗄 키를 고른다.** R-1이 GitLab에서 제목을 보지 않으므로, orchd가 자기 공용 `.pub`이 아닌 줄을 보내면(orchd가 손상된 경우) broker는 서명된 프로젝트의 다른 키(그 본문을 가진 키)를 그 프로젝트에서 떼고 등록을 지운다. 경로는 서명된 프로젝트의 것뿐이고 키는 하나뿐이며 전역 키 삭제 호출은 없다. W3f(제목+본문)보다 broker 혼자의 보장이 좁다. **이 좁아짐은 W3g의 `remove_project`만이 아니라 W3f의 `remove_deploy_key`에도 적용된다**: 두 op가 같은 `classifyKeys`를 쓰므로(R-1), W3f 때 "제목 `orchd <id>`와 본문이 둘 다 맞는 키만"이던 `remove_deploy_key`의 GitLab 보장도 "본문이 맞는 키"로 바뀌었다. 그래서 G1 1차 수정에서 기존 시험 둘을 다시 썼다: `adversarial_w3f_test.go`의 GitLab 키 목록(`keysGL`)에서 키 10의 본문을 B → C로(그대로 두면 본문 일치가 둘이 되어 거부되고 키 `DELETE` 모양이 시험되지 않음), `TestGitLabKeyRemovalOnlyThisProjectsKeyId`의 "제목과 본문이 둘 다 맞아야" 확인을 GitLab 규칙(본문 C·A가 각각 자기 키 하나만, 본문 D에 우리 제목이 있으면 거부)으로. `TestUnsignedKeyLineNeverWidensBeyondTheSignedProjectW3g`가 이 동작을 고정한다(8장의 열린 결정).
 2. **로컬 정리 실패 = 등록 없는 폴더**(G-D4, W3f의 `remove_project`와 같은 모양). 복구는 다시 등록 → 서명된 삭제(떼기 끔), 또는 사람이 지움(런북 17장).
-3. **키를 새로 만든 프로젝트**(같은 제목 `orchd <id>`, 다른 본문의 옛 키가 남음)는 떼기가 "닮은 키"로 거부된다. 사람이 제공자 화면에서 옛 키를 지운 뒤 다시 하거나, 떼기를 끄고 지운다.
-4. **옛 broker와 섞이면 시도마다 한도 칸을 쓴다**(`bad_request`·`unknown_op`은 "아무 일 없음"으로 보지 않음). 갱신 순서(orchd 정지 → broker → orchd)로 피한다.
-5. **orchd는 broker 답에서 자기가 물은 op의 구성원만 읽는다**: 다른 op의 구성원이 덧붙어 있어도 서명과 모순되지 않으면 받아들인다(broker는 정확한 모양만 보낸다).
-6. **키 파일이 propose와 apply 사이에 바뀌면** 웹은 지문 불일치로 서명 단추를 주지 않고, 그래도 다른 줄이 broker에 가면 "닮은 키"로 거부된다(GitHub). 처음부터 다시.
-7. **`delete_partial` 뒤에는 사람이 제공자 화면을 본다**(자동 재시도 없음). 새 서명은 목록을 먼저 읽으므로 키가 이미 떼어졌으면 "이미 없음"으로 등록을 지운다.
-8. W3f의 한계(29번 7장)가 그대로 적용된다. 단 7장 6(`remove_project`는 등록이 먼저 지워짐)은 떼기를 켜면 "키 떼기 → 등록 → 폴더" 순서가 된다.
+3. **GitLab 공용 `.pub`을 바꾼 경우의 잘못된 "이미 없음"**: 서버의 공용 키 파일을 새 키로 바꾸면 orchd는 새 본문을 보내고, GitLab 목록의 옛 키는 본문이 다르고 제목도 `orchd <id>`가 아니므로(공용 키의 제목은 첫 등록 때의 것) "닮은 키"로도 잡히지 않는다: `key_state: already_gone`, 등록이 지워지고 **옛 키는 그 프로젝트에 붙은 채 남는다**(아무것도 지우지 않았으므로 잃는 것은 없고, 키는 GitLab 화면에서 사람이 뗀다).
+4. **키를 새로 만든 프로젝트**(같은 제목 `orchd <id>`, 다른 본문의 옛 키가 남음)는 떼기가 "닮은 키"로 거부된다. 사람이 제공자 화면에서 옛 키를 지운 뒤 다시 하거나, 떼기를 끄고 지운다.
+5. **옛 broker와 섞이면 시도마다 한도 칸을 쓴다**(`bad_request`·`unknown_op`은 "아무 일 없음"으로 보지 않음). 갱신 순서(orchd 정지 → broker → orchd)로 피한다.
+6. **orchd는 broker 답에서 자기가 물은 op의 구성원만 읽는다**: 다른 op의 구성원이 덧붙어 있어도 서명과 모순되지 않으면 받아들인다(broker는 정확한 모양만 보낸다).
+7. **키 파일이 propose와 apply 사이에 바뀌면** 웹은 지문 불일치로 서명 단추를 주지 않고, 그래도 다른 줄이 broker에 가면 "닮은 키"로 거부된다(GitHub). 처음부터 다시.
+8. **`delete_partial` 뒤에는 사람이 제공자 화면을 본다**(자동 재시도 없음). 새 서명은 목록을 먼저 읽으므로 키가 이미 떼어졌으면 "이미 없음"으로 등록을 지운다.
+9. W3f의 한계(29번 7장)가 그대로 적용된다. 단 7장 6(`remove_project`는 등록이 먼저 지워짐)은 떼기를 켜면 "키 떼기 → 등록 → 폴더" 순서가 된다.
 
 ## 8. 사용자 결정 목록
 
 이미 정해진 것(2026-11-13): 키 떼기 기본 체크(G-D7), 키를 뗄 수 없으면 등록·폴더를 지우지 않고 멈춤(G-D2), `also_local=true`는 등록까지(로컬 실패 시 등록 없는 폴더를 받아들임, G-D4), 복제본 삭제는 사용자가 고를 때만, 판정 R-1·R-2(컨트롤러).
 
 컷오버 때 사용자가 정하거나 해야 하는 것(런북 17.0, 3단계):
-1. **R-1의 GitLab 남은 위험(7장 1)을 받아들일지**, 아니면 GitLab에서도 "제목이 `orchd <이 프로젝트>` 또는 `orchd <첫 프로젝트>`"처럼 제목 조건을 더할지(코드 변경, 다음 단계).
+1. **[열린 결정, 구현하지 않음] R-1의 GitLab 남은 위험(7장 1, `remove_project`와 W3f `remove_deploy_key` 둘 다)을 받아들일지, 아니면 강화할지.** 사실: 공용 키 `id_gitlab_deploy`는 **사람이 `example-group/sample-collector`에 처음 등록했다**(10장의 실제 GitLab push 기록, 14장 ⚠ 5). GitLab의 공용 키 제목은 첫 등록 때의 것이므로 **아마 사람이 붙인 제목이고 `orchd <id>` 꼴이 아니다**. 그래서 제목 조건(`orchd <이 프로젝트>`, `orchd <첫 프로젝트>`, `orchd `로 시작 등)을 더하면 **모든 GitLab 떼기가 거부된다**: 제목은 쓸 수 없다. 건전한 강화는 본문에 기반한 `deploy_key_sha256`을 묶는 것이다. (a) 이미 서명된 `create_project`/`link_project`/`attach_remote`의 `deploy_key_sha256`을 등록부 행에 저장하고, 떼기와 `remove_deploy_key`에서 받은 키 줄의 sha256을 그 값과 상수 시간으로 비교한다(등록부 스키마 변경이 필요: 다음 단계, 옛 행에는 값이 없다). (b) `remove_project`(떼기)·`remove_deploy_key`의 서명 필드에 `deploy_key_sha256`을 더한다(지금 싸다, 변경 해시가 한 번 더 바뀐다; 서명하는 JS를 orchd가 내려주므로 손상된 orchd에 대해서는 심층 방어일 뿐이다). 사용자가 정한다.
 2. **사전 읽기 점검(17.0)을 누가 할지**: GitLab 두 번째 프로젝트의 키 목록 제목, GitHub 키 본문 모양은 사용자 토큰으로 사용자 셸에서(또는 제공자 화면에서) 본다. 토큰 값은 채팅·런북 명령에 넣지 않는다.
 3. **시험용 새 저장소 둘의 이름**(키 떼기용 A, 원격 삭제용 B), 원격 삭제 시험(되돌릴 수 없음)을 할지.
 4. **`sulee_portfolio`에 남았을 수 있는 `orchd sulee-portfolio` 키**(29번 9장): GitHub 화면에서 사람이 지운다(등록이 이미 없으므로 이 도구로는 뗄 수 없다).

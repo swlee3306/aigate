@@ -73,7 +73,7 @@ var (
 	errDeletePartial     = apiErr(http.StatusGatewayTimeout, "delete_partial", "원격 저장소 삭제가 일부만 처리되었거나 결과를 알 수 없습니다. 자동으로 다시 시도하지 않았고 서버의 복제본도 지우지 않았습니다. 제공자 화면과 프로젝트 목록을 확인한 뒤 판단하세요")
 	// W3g: remove_project's delete_partial only comes from the key detach
 	errRemovePartial     = apiErr(http.StatusGatewayTimeout, "delete_partial", "배포 키 떼기가 일부만 처리되었거나 결과를 알 수 없습니다(키는 이미 떼어졌을 수 있습니다). 프로젝트 등록과 서버의 복제본은 지우지 않았고 자동으로 다시 시도하지 않았습니다. 제공자 화면에서 이 서버의 배포 키를 확인한 뒤 새로 서명하세요")
-	errKeyNotFound       = apiErr(http.StatusNotFound, "key_not_found", "제공자의 저장소에서 이 서버의 배포 키(제목이 orchd로 시작하고 공개 키가 같은 것)를 찾지 못했습니다. 이미 제거되었을 수 있습니다. 변경 없음")
+	errKeyNotFound       = apiErr(http.StatusNotFound, "key_not_found", "제공자의 저장소에서 이 서버의 배포 키(GitHub은 제목 'orchd <프로젝트>'와 공개 키가 둘 다 같은 것, GitLab은 공개 키가 같은 것)를 찾지 못했습니다. 이미 제거되었을 수 있습니다. 변경 없음")
 	errRemoveRefused     = apiErr(http.StatusBadGateway, "remove_refused", "제공자가 삭제 요청을 받아들이지 않았거나 대상이 하나로 정해지지 않아 아무것도 지우지 않았습니다. 토큰 권한과 제공자 화면을 확인하세요")
 	errOrphanNone        = apiErr(http.StatusNotFound, "orphan_unknown", "그런 고아 기록이 없습니다(이미 지워졌을 수 있습니다). 목록을 다시 읽으세요. 변경 없음")
 	errDeleteLockBusy    = apiErr(http.StatusConflict, "busy", "같은 프로젝트나 저장소에 대한 다른 변경이 진행 중입니다. 잠시 후 다시 시도하세요. 변경 없음")
