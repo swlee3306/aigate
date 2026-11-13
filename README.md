@@ -1,3 +1,5 @@
+**English** | [한국어](README.ko.md)
+
 # aigate: a verified AI-coding workflow with signed approvals
 
 A personal "AI-native" development environment. Subscription models (Claude, Codex) write the code. A deterministic **gate** decides whether the work is actually done. Anything irreversible needs a **human signature** made with a passkey in a web console.
