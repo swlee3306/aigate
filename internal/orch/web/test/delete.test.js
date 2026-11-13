@@ -1850,3 +1850,42 @@ test('TestDetachA11yAndLegacyScreenR1', async () => {
     assert.ok(on ? f.includes('예') && f.includes('octo/Old-Repo') && f.includes(FP) : f.includes('아니오') && f.includes('남습니다'), f);
   }
 });
+
+// ---- G4 adversarial (W3g) -------------------------------------------------------------------------
+
+// What is signed is what the confirmation screen shows, even if the option's checkbox (which stays in
+// the page's memory after the preview) is flipped AFTER the proposal: by a stray event, a script, or
+// a quick double click. Both directions: the confirmation and the passkey message stay those of the
+// proposal, the apply body carries the proposal's detach_key and the browser's own hash of it, and no
+// second proposal is made behind the person's back. The proposal's detach_key is the one the box had
+// when "propose" was pressed.
+test('TestDetachToggledAfterProposeNeverChangesWhatIsSignedW3g', async () => {
+  for (const startOn of [true, false]) {
+    const ctx = await mountProjects(pvAvail('mine'));
+    await openDelete(ctx, 'mine');
+    await pick(ctx, 'local');
+    const box = detachBox(ctx);
+    if (!startOn) await setDetach(ctx, false);
+    click(proposeBtn(ctx));
+    await waitSignable(ctx);
+    const shown = factsOf(ctx).detach_key;
+    assert.ok(shown.includes(startOn ? '예' : '아니오'), shown);
+    // flip the (detached) checkbox behind the confirmation screen
+    box.checked = !startOn;
+    fire(box, 'change');
+    await sleep(20);
+    // (observed: the confirmation stays; the page does not repaint into the preview)
+    assert.ok(signBtn(ctx), 'the confirmation of the proposal stays');
+    assert.ok(factsOf(ctx).detach_key.includes(startOn ? '예' : '아니오'), 'the confirmation still shows what will be signed');
+    await sign(ctx);
+    await until(() => byData(ctx.root, 'result', 'ok').length + byData(ctx.root, 'result', 'check').length === 1, 'result');
+    const applied = posts(ctx, '/api/v1/projects/remove/apply');
+    assert.equal(applied.length, 1);
+    const want = { scope: 'local', legacy_ack: false, detach_key: startOn };
+    assert.deepEqual(applied[0].body.fields, want, 'the signed fields are the proposal\'s');
+    assert.equal(applied[0].body.change, await P.computeChange('remove_project', 'mine', want));
+    assert.equal(auth.gets.length, startOn ? 1 : 2, 'one passkey prompt per signature');
+    assert.equal(posts(ctx, '/api/v1/projects/remove/propose').length, 1, 'no proposal behind the person\'s back');
+    assert.deepEqual(posts(ctx, '/api/v1/projects/remove/propose')[0].body.fields.detach_key, startOn);
+  }
+});
