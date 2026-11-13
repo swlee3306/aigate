@@ -303,7 +303,8 @@ func (d *Daemon) httpHandler() http.Handler {
 	h = originCheck(d.cfg.Origin, h)
 	h = noCORS(h)
 	h = hostCheck(d.allowedHosts, h)
-	return secureHeaders(h)
+	// H-D6: outermost, so every 403 of this listener is logged once
+	return logRefusals(secureHeaders(h))
 }
 
 // splitWeb sends /api and /api/... to the API (auth, JSON errors) and
@@ -323,8 +324,10 @@ func splitWeb(api, console http.Handler) http.Handler {
 }
 
 // socketHandler keeps the socket as it was (trusted by peer uid): only the
-// body cap is added.
-func (d *Daemon) socketHandler() http.Handler { return limitBody(MaxBodyBytes, d.handler) }
+// body cap and the 403 log (H-D6) are added.
+func (d *Daemon) socketHandler() http.Handler {
+	return logRefusals(limitBody(MaxBodyBytes, d.handler))
+}
 
 // purge deletes expired auth rows once.
 func (d *Daemon) purge(ctx context.Context) {

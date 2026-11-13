@@ -1889,3 +1889,40 @@ test('TestDetachToggledAfterProposeNeverChangesWhatIsSignedW3g', async () => {
     assert.deepEqual(posts(ctx, '/api/v1/projects/remove/propose')[0].body.fields.detach_key, startOn);
   }
 });
+
+// ===== W3h H2 =====
+
+test('TestDeployKeyMismatchTextForDetach', async () => {
+  const t = D.DEL_FAIL.deploy_key_mismatch;
+  assert.ok(typeof t === 'string' && t.includes('아무것도 지우지 않았습니다') && t.includes('Deploy keys') && t.includes('GitLab'), t);
+  assert.ok(!/만들|생성|만드는|처음부터 다시/.test(t), t);
+  // remove_deploy_key: refused at propose (orchd, before the signature) and at apply (the broker): the removal's own sentence
+  const c1 = await mountProjects({ 'POST /api/v1/projects/remove-key/propose': () => { throw apiError(409, 'deploy_key_mismatch', SECRET); } });
+  await openDelete(c1, 'linked-app');
+  await pick(c1, 'key');
+  click(proposeBtn(c1));
+  await until(() => byData(c1.root, 'note', 'del').length === 1, 'refused at propose');
+  assert.equal(text(byData(c1.root, 'note', 'del')[0]), t);
+  assert.equal(posts(c1, '/api/v1/projects/remove-key/apply').length, 0);
+  const c2 = await mountProjects({ 'POST /api/v1/projects/remove-key/apply': () => { throw apiError(409, 'deploy_key_mismatch', SECRET); } });
+  await toConfirm(c2, 'linked-app', 'key');
+  await sign(c2);
+  await until(() => byData(c2.root, 'result', 'error').length === 1, 'refused at apply');
+  assert.equal(text(byData(c2.root, 'result', 'error')[0]), t);
+  assert.ok(!text(c2.root).includes('SERVER-WORDS'));
+  // remove_project with detach_key: the detach refusal sentence (nothing removed, turn the option off), at propose and at apply
+  const RT = D.DEL_REMOVE_TEXT;
+  const c3 = await mountProjects({ ...pvAvail('mine'), 'POST /api/v1/projects/remove/propose': () => { throw apiError(409, 'deploy_key_mismatch', SECRET); } });
+  await openDelete(c3, 'mine');
+  await pick(c3, 'local');
+  assert.equal(detachBox(c3).checked, true);
+  await ackIfAsked(c3);
+  click(proposeBtn(c3));
+  await until(() => byData(c3.root, 'note', 'del').length === 1, 'detach refused at propose');
+  assert.equal(text(byData(c3.root, 'note', 'del')[0]), RT.detachRefused);
+  const c4 = await mountProjects({ ...pvAvail('mine'), 'POST /api/v1/projects/remove/apply': () => { throw apiError(409, 'deploy_key_mismatch', SECRET); } });
+  await toConfirm(c4, 'mine', 'local');
+  await sign(c4);
+  await until(() => byData(c4.root, 'result', 'error').length === 1, 'detach refused at apply');
+  assert.equal(text(byData(c4.root, 'result', 'error')[0]), RT.detachRefused);
+});

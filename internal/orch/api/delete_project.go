@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -85,12 +86,18 @@ var (
 	// W3g remove_project with detach_key: the key line cannot be read (G-D5)
 	errKeyUnavailDetach = apiErr(http.StatusConflict, "key_unavailable_for_removal", "이 프로젝트의 배포 키 공개 키를 서버에서 읽을 수 없어 배포 키를 함께 뗄 수 없습니다. 키를 원격에 남기고 지우려면 \"배포 키도 함께 떼기\"를 끄고 다시 진행하세요(그 뒤 제공자 화면에서 제목이 orchd로 시작하는 키를 직접 제거하세요). 변경 없음")
 	errDeleteBrokerOld  = apiErr(http.StatusServiceUnavailable, "broker_unavailable", "등록부 서비스(broker)가 이 삭제 요청을 지원하지 않아 처리하지 않았습니다. 서버 구성 요소의 버전이 서로 맞지 않을 수 있습니다. 아무것도 지우지 않았습니다. 서버 관리자가 확인해야 합니다")
-	errNoRemote         = apiErr(http.StatusConflict, "no_remote", "이 프로젝트에는 연결된 원격 저장소가 없어 뗄 배포 키가 없습니다. 변경 없음")
-	errLocalUnsafe      = apiErr(http.StatusConflict, "local_unsafe", "서버의 복제본 폴더가 이 도구가 지울 수 있는 모양이 아닙니다(심볼릭 링크이거나, .git 폴더가 없거나, 허용된 저장소 루트 바로 아래의 프로젝트 이름 폴더가 아닙니다). 안전을 위해 아무것도 지우지 않았습니다. 서버 관리자가 확인해야 합니다. 변경 없음")
-	errRepoBeingRemoved = apiErr(http.StatusConflict, "repo_being_removed", "이 프로젝트의 서버 폴더를 지우는 중이라 지금은 작업을 내거나 복제할 수 없습니다. 잠시 후 다시 시도하세요. 변경 없음")
-	errDeleteNeutralBad = apiErr(http.StatusBadRequest, "bad_url", "제공자 주소가 허용되지 않습니다. 주소 모양과 접속 대상을 확인하세요. 변경 없음")
-	errDeleteGHRefused  = apiErr(http.StatusBadGateway, "github_refused", "제공자(GitHub)가 요청을 받아들이지 않았습니다. 토큰 권한과 제공자 설정을 확인하세요. 아무것도 지우지 않았습니다")
-	errDeleteGLRefused  = apiErr(http.StatusBadGateway, "gitlab_refused", "제공자(GitLab)가 요청을 받아들이지 않았습니다. 토큰 권한과 제공자 설정을 확인하세요. 아무것도 지우지 않았습니다")
+	// W3h: the key line orchd read does not hash to the key_sha256 signed when
+	// the remote was registered (or the GitLab row has none). Refused before
+	// the signature by orchd, or by the broker before it verifies the signature
+	// or uses the request ID: definite, nothing changed.
+	errKeyMismatchDetach  = apiErr(http.StatusConflict, "deploy_key_mismatch", "이 서버의 배포 키가 이 프로젝트를 등록할 때 서명한 키와 다르거나(키 파일이 바뀜), 등록 때의 키 기록이 없는 GitLab 프로젝트라 이 도구로 배포 키를 뗄 수 없습니다. 키를 원격에 남기고 지우려면 \"배포 키도 함께 떼기\"를 끄고 다시 진행하세요(그 뒤 제공자 화면에서 제목이 orchd로 시작하는 키를 직접 제거하세요). 변경 없음")
+	errKeyMismatchRemoval = apiErr(http.StatusConflict, "deploy_key_mismatch", "이 서버의 배포 키가 이 프로젝트를 등록할 때 서명한 키와 다르거나(키 파일이 바뀜), 등록 때의 키 기록이 없는 GitLab 프로젝트라 이 도구로 뗄 수 없습니다. 제공자 화면(저장소 설정의 배포 키)에서 제목이 orchd로 시작하는 키를 직접 제거하세요. 변경 없음")
+	errNoRemote           = apiErr(http.StatusConflict, "no_remote", "이 프로젝트에는 연결된 원격 저장소가 없어 뗄 배포 키가 없습니다. 변경 없음")
+	errLocalUnsafe        = apiErr(http.StatusConflict, "local_unsafe", "서버의 복제본 폴더가 이 도구가 지울 수 있는 모양이 아닙니다(심볼릭 링크이거나, .git 폴더가 없거나, 허용된 저장소 루트 바로 아래의 프로젝트 이름 폴더가 아닙니다). 안전을 위해 아무것도 지우지 않았습니다. 서버 관리자가 확인해야 합니다. 변경 없음")
+	errRepoBeingRemoved   = apiErr(http.StatusConflict, "repo_being_removed", "이 프로젝트의 서버 폴더를 지우는 중이라 지금은 작업을 내거나 복제할 수 없습니다. 잠시 후 다시 시도하세요. 변경 없음")
+	errDeleteNeutralBad   = apiErr(http.StatusBadRequest, "bad_url", "제공자 주소가 허용되지 않습니다. 주소 모양과 접속 대상을 확인하세요. 변경 없음")
+	errDeleteGHRefused    = apiErr(http.StatusBadGateway, "github_refused", "제공자(GitHub)가 요청을 받아들이지 않았습니다. 토큰 권한과 제공자 설정을 확인하세요. 아무것도 지우지 않았습니다")
+	errDeleteGLRefused    = apiErr(http.StatusBadGateway, "gitlab_refused", "제공자(GitLab)가 요청을 받아들이지 않았습니다. 토큰 권한과 제공자 설정을 확인하세요. 아무것도 지우지 않았습니다")
 
 	// Outcome unknown, one sentence per action (each says what was NOT done).
 	errRemoveUnknownDetach = apiErr(http.StatusGatewayTimeout, "outcome_unknown", "배포 키 떼기와 프로젝트 등록 지우기가 끝났는지 알 수 없습니다. 배포 키는 제공자에서 이미 떼어졌을 수 있습니다. 자동으로 다시 시도하지 않았고 서버의 복제본은 지우지 않았습니다. 프로젝트 목록과 제공자 화면을 확인하세요")
@@ -180,6 +187,15 @@ func deleteBrokerError(action string, e *broker.OpError) *httpError {
 		return errOrphanNone
 	case "busy":
 		return errDeleteLockBusy
+	case "deploy_key_mismatch":
+		// W3h: the broker refuses a key line that does not hash to the row's
+		// signed key_sha256 before it verifies the signature: nothing changed
+		switch action {
+		case registrymsg.ActionRemoveProject:
+			return errKeyMismatchDetach
+		case registrymsg.ActionRemoveDeployKey:
+			return errKeyMismatchRemoval
+		}
 	case "rate_limited":
 		return errDeleteRateLimited
 	case "provider_unknown":
@@ -247,18 +263,38 @@ type delInfo struct {
 // detachKeyInfo is what remove_project's detach_key needs (G-D3, G-D5):
 // eligible when the row has a provider of a known kind and a remote that was
 // not deleted; ok when, in addition, the remote has its number (the broker
-// checks the repository by it) and orchd can read a public key line the broker
-// accepts. The line is read from the project's key folder (GitHub) or the
-// shared key's .pub (GitLab), never from a request.
-func (h *handler) detachKeyInfo(id string, p *broker.Project, kind string) (eligible, ok bool, line, fp string) {
+// checks the repository by it), orchd can read a public key line the broker
+// accepts, and that line is the one the row was registered with (W3h,
+// keyLineMatchesRow; mismatch reports a readable line that is not). The line is
+// read from the project's key folder (GitHub) or the shared key's .pub
+// (GitLab), never from a request.
+func (h *handler) detachKeyInfo(id string, p *broker.Project, kind string) (eligible, ok, mismatch bool, line, fp string) {
 	if p.Provider == nil || p.Remote == nil || p.RemoteDeletedAt != nil || kind == "" {
-		return false, false, "", ""
+		return false, false, false, "", ""
 	}
 	if p.Remote.ID == nil {
-		return true, false, "", ""
+		return true, false, false, "", ""
 	}
 	line, fp, ok = h.deployKeyLine(id, kind)
-	return true, ok, line, fp
+	if !ok {
+		return true, false, false, "", ""
+	}
+	if !keyLineMatchesRow(kind, p.Remote, line) {
+		return true, false, true, "", ""
+	}
+	return true, true, false, line, fp
+}
+
+// keyLineMatchesRow is the broker's W3h key-line rule, checked here before
+// anything is signed so the console never offers a key removal the broker can
+// only refuse: when the row has the key_sha256 signed at create/link, the line
+// must hash to it (constant time); without one a GitHub row keeps the W3g rule
+// (title and body, checked by the broker) and a GitLab row is refused.
+func keyLineMatchesRow(kind string, r *broker.RemoteLink, line string) bool {
+	if r.KeySHA256 == "" {
+		return kind == "github"
+	}
+	return subtle.ConstantTimeCompare([]byte(keyHash(line)), []byte(r.KeySHA256)) == 1
 }
 
 // keyTitle is the title this tool gives a project's deploy key at the provider.
@@ -361,7 +397,7 @@ func (h *handler) deleteChecks(ctx context.Context, c registryChange) (*delInfo,
 		if !info.legacy && ack {
 			return nil, errProjBadBody
 		}
-		eligible, ok, line, fp := h.detachKeyInfo(c.Subject, p, info.kind)
+		eligible, ok, mismatch, line, fp := h.detachKeyInfo(c.Subject, p, info.kind)
 		info.detachAvailable = ok
 		if detach, _ := c.Fields["detach_key"].(bool); detach {
 			if !eligible {
@@ -369,6 +405,9 @@ func (h *handler) deleteChecks(ctx context.Context, c registryChange) (*delInfo,
 			}
 			if p.Remote.ID == nil {
 				return nil, errRemoteChanged // what the broker would answer
+			}
+			if mismatch {
+				return nil, errKeyMismatchDetach // what the broker would answer (W3h)
 			}
 			if !ok {
 				return nil, errKeyUnavailDetach
@@ -418,6 +457,9 @@ func (h *handler) deleteChecks(ctx context.Context, c registryChange) (*delInfo,
 		line, fp, ok := h.deployKeyLine(c.Subject, info.kind)
 		if !ok {
 			return nil, errKeyUnavailRemoval
+		}
+		if !keyLineMatchesRow(info.kind, p.Remote, line) {
+			return nil, errKeyMismatchRemoval // what the broker would answer (W3h)
 		}
 		info.keyLine, info.keyFP = line, fp
 		if err := h.projectBusy(ctx, p.Path); err != nil {
@@ -808,7 +850,7 @@ func (h *handler) removalPreview(w http.ResponseWriter, r *http.Request) {
 	}
 	// W3g: whether remove_project may detach the key (the same checks as its
 	// propose), and the key's public identity; null when it may not
-	_, detachOK, _, keyFP := h.detachKeyInfo(id, p, kind)
+	_, detachOK, _, _, keyFP := h.detachKeyInfo(id, p, kind)
 	var keyTitleV, keyFPV any
 	if detachOK {
 		keyTitleV, keyFPV = keyTitle(id), keyFP

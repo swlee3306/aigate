@@ -813,12 +813,6 @@ func parseRegistry(data []byte) (r Registry, migrated bool, err error) {
 			r.Projects = append(r.Projects, Project{ID: p.ID, Path: p.Path, Kind: p.Kind, AIContext: p.AIContext, Provider: p.Provider,
 				Remote: p.Remote.toRemote(), AutoMerge: p.AutoMerge, Origin: p.Origin, RemoteDeletedAt: p.RemoteDeletedAt})
 		}
-		if r.Providers == nil {
-			r.Providers = []Provider{}
-		}
-		if r.Orphans == nil {
-			r.Orphans = []Orphan{}
-		}
 		migrated = true
 		if r.Providers == nil {
 			r.Providers = []Provider{}

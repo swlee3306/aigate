@@ -1291,11 +1291,15 @@ func TestConcurrentDeleteOfOneProjectSendsOneDelete(t *testing.T) {
 	d := newDel(t)
 	d.gh.delHold = make(chan struct{})
 	d.gh.delSeen = make(chan struct{}, 4)
-	var wg sync.WaitGroup
-	wg.Add(1)
+	// H-D7: release the held DELETE however the test ends (a failed check must
+	// not leave the fake provider's handler, and so its server's Close, waiting)
+	var release sync.Once
+	releaseHold := func() { release.Do(func() { close(d.gh.delHold) }) }
+	t.Cleanup(releaseHold)
+	done := make(chan struct{})
 	var first string
 	go func() {
-		defer wg.Done()
+		defer close(done)
 		_, oe := d.do("delete_remote_repo", d.delArgs("demo-gh", nil))
 		first = codeOf(oe)
 	}()
@@ -1310,8 +1314,12 @@ func TestConcurrentDeleteOfOneProjectSendsOneDelete(t *testing.T) {
 	// another project id of the same remote is held by the remote lock
 	d.put("twin", "dgh", "alice/Demo", 77, OriginCreated)
 	d.wantCode("delete_remote_repo", d.signedArgs(d.alice, registrymsg.ActionDeleteRemoteRepo, "twin", d.delFields("alice/Demo", "77", "Demo")), "busy")
-	close(d.gh.delHold)
-	wg.Wait()
+	releaseHold()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the first delete did not finish after its DELETE was released")
+	}
 	if first != "" || d.gh.deletes() != 1 {
 		t.Fatalf("first=%q deletes=%d", first, d.gh.deletes())
 	}

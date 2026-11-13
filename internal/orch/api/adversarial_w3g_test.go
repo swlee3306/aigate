@@ -237,6 +237,9 @@ func TestSharedKeyLineWithASpacedCommentIsUnavailableBeforeSignatureW3g(t *testi
 		{parts[0] + " " + parts[1], true},
 	} {
 		writeFile(t, e.key+".pub", c.line+"\n")
+		// W3h: the row holds the hash of the line it was registered with; this
+		// test is about the line's shape, so each case is its own registered line
+		e.setKeySHA(t, "gl-one", keyHash(c.line))
 		e.resetDeleteLimits()
 		code, b := e.sockJSON(t, "GET", "/api/v1/projects/gl-one/removal-preview", "")
 		var pv map[string]any

@@ -91,6 +91,11 @@ type delProject struct {
 	remoteID                 int64
 	deletedAt                string
 	noClone, withKey         bool
+	// W3h: keySHA is the remote's key_sha256. A GitLab ("gl") row without one
+	// gets the hash of the shared key's .pub line (what a W3h broker stores at
+	// create/link), unless noKeySHA: an older row without a hash.
+	keySHA   string
+	noKeySHA bool
 }
 
 // addDel registers a project row (path under the repo root) and makes its clone
@@ -108,7 +113,13 @@ func (d *delEnv) addDel(t *testing.T, p delProject) string {
 		if p.remoteID != 0 {
 			id = p.remoteID
 		}
-		row["remote"] = map[string]any{"path": p.remote, "id": id}
+		rem := map[string]any{"path": p.remote, "id": id}
+		if h := p.keySHA; h != "" {
+			rem["key_sha256"] = h
+		} else if p.prov == "gl" && !p.noKeySHA {
+			rem["key_sha256"] = keyHash(d.pubLine)
+		}
+		row["remote"] = rem
 	}
 	if p.deletedAt != "" {
 		row["remote_deleted_at"] = p.deletedAt
@@ -126,6 +137,29 @@ func (d *delEnv) addDel(t *testing.T, p delProject) string {
 		d.addKeyDir(t, p.id)
 	}
 	return path
+}
+
+// setKeySHA replaces the key_sha256 of a registered row's remote ("" removes it).
+func (d *delEnv) setKeySHA(t *testing.T, id, hash string) {
+	t.Helper()
+	d.wb.mu.Lock()
+	defer d.wb.mu.Unlock()
+	for _, row := range d.wb.projects {
+		if row["id"] != id {
+			continue
+		}
+		rem, ok := row["remote"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s has no remote", id)
+		}
+		if hash == "" {
+			delete(rem, "key_sha256")
+		} else {
+			rem["key_sha256"] = hash
+		}
+		return
+	}
+	t.Fatalf("no row %s", id)
 }
 
 func (d *delEnv) addKeyDir(t *testing.T, id string) (line string) {

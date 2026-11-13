@@ -111,6 +111,9 @@ export const DEL_FAIL = {
   token_ref_unknown: '제공자가 쓸 토큰이 없거나 쓸 수 없어 아무것도 지우지 않았습니다. 토큰 화면에서 확인하세요.',
   provider_rate_limited: '제공자가 요청 한도를 넘었다고 응답했습니다. 아무것도 지우지 않았습니다. 한참 뒤에 다시 시도하세요. 자동으로 다시 시도하지 않았습니다.',
   remove_refused: '제공자가 삭제 요청을 받아들이지 않았거나 지울 대상이 하나로 정해지지 않아 아무것도 지우지 않았습니다. 토큰 권한과 제공자 화면을 확인하세요.',
+  // W3h: the key line is not the one signed when the project was registered (remove_deploy_key; a detach of a removal
+  // gets DEL_REMOVE_TEXT.detachRefused). The shared text is about creating ("start over and sign again"), which cannot help here.
+  deploy_key_mismatch: '이 서버의 배포 키가 이 프로젝트를 등록할 때 서명한 키와 다르거나(키 파일이 바뀜), 등록 때의 키 기록이 없는 GitLab 프로젝트라 이 도구로 배포 키를 뗄 수 없습니다. 아무것도 지우지 않았습니다. 제공자 저장소 설정(Deploy keys)에서 제목이 orchd로 시작하는 키를 직접 지우세요.',
 };
 // W3g: the remove flow's own sentences (G-D6 reuses the codes; the page words them for this flow).
 export const DEL_REMOVE_TEXT = {

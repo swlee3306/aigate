@@ -41,10 +41,13 @@ func init() {
 
 // RemoteLink is a project's remote repository (registry v3): Path is
 // group/…/name (GitLab) or owner/repo (GitHub), ID the provider's numeric id
-// when it confirmed one.
+// when it confirmed one. KeySHA256 (registry v5, W3h) is the lowercase hex
+// SHA-256 of the deploy key line signed when the remote was registered; empty
+// when the row has none (an older row, or an older broker that does not send it).
 type RemoteLink struct {
-	Path string `json:"path"`
-	ID   *int64 `json:"id"`
+	Path      string `json:"path"`
+	ID        *int64 `json:"id"`
+	KeySHA256 string `json:"key_sha256,omitempty"`
 }
 
 // AutoMerge is a project's auto-merge setting (always off in W3a).
