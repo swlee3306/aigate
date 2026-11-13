@@ -20,6 +20,11 @@ W3g는 GitLab 배포 키를 **본문**으로만 찾는다(공용 키는 첫 프�
 - **H-D6 거부 진단 로그.** orchd가 HTTP 403으로 거부할 때(서명·세션·소켓 사용자 거부) 사유 코드와 메서드·경로를 고정 문구 한 줄로 로그에 남긴다(`orchd: refused 403 <code> <METHOD> <path>`). 쿼리·본문·헤더·서명·토큰은 남기지 않는다. 원장은 바꾸지 않는다.
 - **H-D7 멈추는 시험.** `TestConcurrentDeleteOfOneProjectSendsOneDelete`의 기다림에 시간 제한을 둔다(운영 코드 변경 없음).
 
+## H1 검토 후 갱신 (2026-11-14, 컨트롤러 판정)
+- **H-D5 확장(Task 2).** (1) orchd의 `deleteBrokerError`가 `deploy_key_mismatch`를 **확정 거부(409, 아무것도 바뀌지 않음, 요청 ID 소모 없음)**로 매핑한다(`remove_project` 떼기와 `remove_deploy_key` 둘 다). 지금은 "결과 알 수 없음"으로 보인다. (2) 서명 **전** 미리보기 단계(`detachKeyInfo`)에서 `detach_key_available`을 더 엄격히 정한다: 행에 `key_sha256`이 있으면 orchd가 읽은 키 줄의 SHA-256이 같을 때만 `true`, 해시가 없는 GitLab 행은 `false`, 해시가 없는 GitHub 행은 W3g처럼 `true`. 그러면 화면이 서명한 뒤에야 반드시 거부되는 떼기를 제안하지 않는다(웹은 `detach_key_available=false`일 때 이미 체크 상자를 숨긴다). (3) 시험: 해시 불일치·해시 없는 GitLab에서 미리보기가 `detach_key_available=false`, 서명 후 `deploy_key_mismatch`는 409 확정 거부.
+- **정리(Task 2, 작은 변경).** broker `registry.go`의 `case "4"` 안에 같은 nil 검사 블록이 두 번 있다: 하나로 합친다(동작 변경 없음, H1 시험이 보호).
+- **런북·적대 시험(Task 3).** 롤백 서술을 고친다: `.v4.bak` 복원은 전환 **이후의 등록부 변경 전부**(만든·연결한 행, 지운 행)를 되돌린다. 대안: 해시 있는 행이 없으면 version만 5→4로 고치면 W3g가 읽는다, 있으면 `key_sha256`을 지운 뒤 version을 4로. 롤백 뒤 재전환 전에는 낡은 `.v4.bak`을 옆으로 옮긴다. 키 교체(주석만 바뀌어도 해시가 달라진다)의 영향과 수동 절차. 변이 표에 잠금 뒤 재대조 생략(MF), 거부 코드 우선순위(MC)를 더하고 MF는 경쟁 seam 시험으로 잡는다.
+
 ## 검토 초점 (개별 시험이 놓치기 쉬운 것, 가능성 순)
 1. 해시가 있는 GitHub·GitLab 행에서 orchd가 **다른 키 줄**을 보내면(본문이 달라도, 같은 프로젝트의 다른 키여도) 서명 전에 거부되고 DELETE가 0번인가.
 2. 해시가 없는 GitLab 행(옛 행·마이그레이션된 행)은 거부되고 GitHub 행은 W3g처럼 동작하는가.
