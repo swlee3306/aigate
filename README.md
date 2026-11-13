@@ -1,88 +1,87 @@
-**English** | [한국어](README.ko.md)
+**한국어** | [English](README.en.md)
 
-# aigate: a verified AI-coding workflow with signed approvals
+# aigate: 검증된 AI 코딩 워크플로우와 서명 승인
 
-A personal "AI-native" development environment. Subscription models (Claude, Codex) write the code. A deterministic **gate** decides whether the work is actually done. Anything irreversible needs a **human signature** made with a passkey in a web console.
+개인용 "AI 네이티브" 개발 환경입니다. 구독형 모델(Claude, Codex)이 코드를 쓰고, 일이 정말 끝났는지는 **결정적 게이트**가 판정합니다. 되돌릴 수 없는 작업은 웹 콘솔에서 패스키로 만든 **사람의 서명**이 있어야 진행됩니다.
 
-It is a one-person system running on a home OpenStack lab. It is also an engineering exercise in making an automated agent safe to leave unattended: small trusted components, fail-closed behavior and tests that try to break the rules.
+집에 있는 OpenStack 실습 환경에서 혼자 쓰는 시스템입니다. 동시에 자동화된 에이전트를 사람 없이 돌려도 안전하게 만드는 엔지니어링 연습이기도 합니다. 신뢰해야 하는 구성 요소를 작게 유지하고, 애매하면 막고(fail-closed), 규칙을 깨뜨리려는 테스트를 함께 둡니다.
 
-> Language note: the design documents in `docs/` are written in Korean, because they are working documents for the author. This README, the code identifiers and the operator-facing UI strings tell you what you need; the docs have the full reasoning.
+> 언어 안내: `docs/`의 설계 문서는 작성자의 작업 문서라서 한국어로 되어 있습니다. 이 README, 코드 식별자, 운영자용 UI 문구로 필요한 내용을 파악할 수 있고, 전체 근거는 문서에 있습니다.
 
-## What it does
+## 하는 일
 
 ```
- you ──passkey──▶ web console ┐
-                              ▼
+ 사용자 ──패스키──▶ 웹 콘솔 ┐
+                            ▼
         ┌───────────────  orchd (Go, SQLite)  ───────────────┐
-        │  job queue · state machine · policy · approvals    │
+        │  작업 큐 · 상태 머신 · 정책 · 승인                  │
         └───┬──────────────────┬──────────────────┬──────────┘
-            │ ssh (limited key) │ ssh (limited key) │ unix socket
+            │ ssh (제한 키)     │ ssh (제한 키)     │ 유닉스 소켓
             ▼                   ▼                   ▼
-      agent VM             test VM            orch-broker
-      Claude / Codex       restored from      holds the model API key,
-      commits locally      a snapshot per     provider tokens and the
-      only                 job, no secrets    project registry
+      에이전트 VM           검사 VM             orch-broker
+      Claude / Codex        작업마다 스냅샷     모델 API 키, 제공자 토큰,
+      로컬 커밋만 함        에서 복원, 비밀 없음 프로젝트 등록부를 보관
 ```
 
-1. **Gate (`aigate`)** runs tests on the base commit and on the head commit and compares. Verdicts: `ok`, `behavior_failure`, `verification_incomplete`, `check_weakened`. A test that passed on base must still run and pass on head. Weakening a test is allowed but flagged, and needs a human to approve the diff hash.
-2. **Orchestrator (`orchd`)** queues jobs, runs the agent in an isolated VM, sends the result to a separate test VM restored from a clean snapshot, and records evidence. Publishing is limited to an allowlist of actions (for example pushing a work branch, never `main`).
-3. **Broker (`orch-broker`)** is the only component that holds credentials. It checks every request against a strict schema and an allowlist of provider API calls, and it changes the project registry only after verifying a **WebAuthn signature** over the exact change.
-4. **Web console** is plain JavaScript embedded in the `orchd` binary (no framework, no build step, no browser storage). The browser recomputes the hash of every change it is asked to sign and refuses if the server's description does not match.
+1. **게이트(`aigate`)** 는 기준(base) 커밋과 결과(head) 커밋에서 각각 테스트를 돌려 비교합니다. 판정은 `ok`, `behavior_failure`, `verification_incomplete`, `check_weakened`입니다. base에서 통과하던 테스트는 head에서도 실행되고 통과해야 합니다. 테스트를 약하게 만드는 것은 허용하지만 표시되고, 사람이 diff 해시를 승인해야 합니다.
+2. **오케스트레이터(`orchd`)** 는 작업을 큐에 넣고, 격리된 VM에서 에이전트를 실행하고, 결과를 깨끗한 스냅샷에서 복원한 별도의 검사 VM으로 보내 증거를 남깁니다. 게시(publish)는 허용 목록에 있는 행동으로 제한됩니다(예: 작업 브랜치 push는 가능, `main`은 불가).
+3. **브로커(`orch-broker`)** 는 자격증명을 가진 유일한 구성 요소입니다. 모든 요청을 엄격한 스키마와 제공자 API 허용 목록으로 검사하고, 정확한 변경 내용에 대한 **WebAuthn 서명**을 검증한 뒤에만 프로젝트 등록부를 바꿉니다.
+4. **웹 콘솔**은 `orchd` 바이너리에 내장된 순수 JavaScript입니다(프레임워크, 빌드 단계, 브라우저 저장소 없음). 브라우저는 서명을 요청받은 변경의 해시를 스스로 다시 계산하고, 서버의 설명과 맞지 않으면 거부합니다.
 
-## Design choices worth reading
+## 읽어볼 만한 설계 선택
 
-- **Evidence over claims.** The gate never reads model output; it runs and compares. "Done" requires a report.
-- **Separation of duties.** The component that runs untrusted code has no credentials. The component with credentials never runs untrusted code and exposes only a narrow, schema-checked interface.
-- **Signed, bounded changes.** Registry changes (create, link, delete, key removal) are canonical JSON, hashed, and signed with a passkey. The broker verifies freshness, single use and equality before acting.
-- **Irreversible actions are narrow.** Deleting a remote repository or a deploy key is only possible for resources this tool created or registered, after a live identity check, with hourly and daily caps, and never as an automatic retry.
-- **Fail closed.** Ambiguous results (timeouts, partial failures) stop the flow and leave the state readable; the UI says what may have happened and nothing retries on its own.
-- **Adversarial tests.** Each milestone ships a suite that tries to break its own rules, plus a mutation table (mutants run on a copy; survivors are explained).
+- **주장보다 증거.** 게이트는 모델의 출력을 읽지 않고 직접 실행해서 비교합니다. "완료"에는 보고서가 필요합니다.
+- **역할 분리.** 신뢰할 수 없는 코드를 실행하는 구성 요소는 자격증명이 없습니다. 자격증명을 가진 구성 요소는 신뢰할 수 없는 코드를 실행하지 않고, 좁고 스키마 검사를 거친 인터페이스만 제공합니다.
+- **서명된, 범위가 정해진 변경.** 등록부 변경(생성, 연결, 삭제, 키 제거)은 정규화된 JSON으로 만들어 해시하고 패스키로 서명합니다. 브로커는 최신성, 1회성, 동일성을 확인한 뒤에 동작합니다.
+- **되돌릴 수 없는 행동은 좁게.** 원격 저장소나 배포 키 삭제는 이 도구가 만들었거나 등록한 자원에만, 실시간 신원 확인을 거치고, 시간당·일일 상한 아래에서, 자동 재시도 없이만 가능합니다.
+- **애매하면 막기(fail-closed).** 결과가 불확실한 경우(시간 초과, 부분 실패)에는 흐름을 멈추고 상태를 읽을 수 있게 남깁니다. UI는 무슨 일이 일어났을 수 있는지 알려 주고, 스스로 재시도하지 않습니다.
+- **적대적 테스트.** 마일스톤마다 자기 규칙을 깨뜨리려는 테스트 묶음과 변이(mutation) 표가 함께 나옵니다(변이는 복사본에서 실행하고, 살아남은 것은 이유를 설명합니다).
 
-## Repository map
+## 저장소 구조
 
-| Path | Contents |
+| 경로 | 내용 |
 |---|---|
-| `cmd/aigate`, `internal/gate`, `internal/adapter` | The gate and its test-runner adapters (Go `go test`, pytest, vitest/jest) |
-| `cmd/orchd`, `internal/orch/*` | Orchestrator: API, store (SQLite), VM control, publishing, project clone/removal, embedded web console (`internal/orch/web`) |
-| `cmd/orch-broker`, `internal/broker`, `internal/registrymsg` | Credential broker, provider clients (GitLab, GitHub), signed registry messages |
-| `cmd/orch` | Operator CLI |
-| `internal/webauthn`, `internal/approval`, `internal/ledger` | Passkey verification, approval records, append-only history |
-| `e2e/` | End-to-end scenarios for the gate |
-| `infra/` | Provisioning scripts (OpenStack VMs, nftables egress rules, cloud-init, systemd units) and their offline tests |
-| `docs/` | Numbered requirements, designs, plans, results and operations runbooks (Korean) |
+| `cmd/aigate`, `internal/gate`, `internal/adapter` | 게이트와 테스트 러너 어댑터(Go `go test`, pytest, vitest/jest) |
+| `cmd/orchd`, `internal/orch/*` | 오케스트레이터: API, 저장소(SQLite), VM 제어, 게시, 프로젝트 복제·삭제, 내장 웹 콘솔(`internal/orch/web`) |
+| `cmd/orch-broker`, `internal/broker`, `internal/registrymsg` | 자격증명 브로커, 제공자 클라이언트(GitLab, GitHub), 서명된 등록부 메시지 |
+| `cmd/orch` | 운영자 CLI |
+| `internal/webauthn`, `internal/approval`, `internal/ledger` | 패스키 검증, 승인 기록, 추가 전용 이력 |
+| `e2e/` | 게이트의 종단 간 시나리오 |
+| `infra/` | 프로비저닝 스크립트(OpenStack VM, nftables 외부 접속 규칙, cloud-init, systemd 유닛)와 오프라인 테스트 |
+| `docs/` | 번호가 붙은 요구사항, 설계, 계획, 결과, 운영 런북(한국어) |
 
-## Build and test
+## 빌드와 테스트
 
-Requires Go (see `go.mod`) and Node.js for the web-console tests.
+Go(`go.mod` 참고)와 웹 콘솔 테스트용 Node.js가 필요합니다.
 
 ```
 make build                                  # bin/aigate
-go test ./internal/... ./cmd/... -count=1   # unit and integration tests
+go test ./internal/... ./cmd/... -count=1   # 단위·통합 테스트
 node --test "internal/orch/web/test/*.test.js"
-go test ./e2e -count=1                      # gate end-to-end scenarios
+go test ./e2e -count=1                      # 게이트 종단 간 시나리오
 ```
 
-At the time of the last full run (2026-11-13): 1,787 top-level Go tests across 38 packages with `-race`, and 317 web-console tests, all passing.
+마지막 전체 실행(2026-11-13) 기준으로 `-race`를 켠 38개 패키지에서 최상위 Go 테스트 1,787개와 웹 콘솔 테스트 317개가 모두 통과했습니다.
 
-## Install and operate
+## 설치와 운영
 
-Provisioning and installation are scripted and documented, not one-click:
+프로비저닝과 설치는 스크립트와 문서로 되어 있고, 한 번에 끝나는 설치는 아닙니다.
 
-- `infra/README.md` covers creating the three VMs on OpenStack, the egress firewall that must be verified before any agent runs, and the systemd units.
-- `docs/10-OPERATIONS-orchestrator.md` holds the step-by-step runbooks, written as a series of cutovers (backup, stop, upgrade in a fixed order, verify, roll back). Each says which results were observed on the real server and which are only expected from the code.
+- `infra/README.md`: OpenStack에 VM 3대를 만드는 방법, 에이전트를 실행하기 전에 반드시 검증해야 하는 외부 접속 차단 방화벽, systemd 유닛을 다룹니다.
+- `docs/10-OPERATIONS-orchestrator.md`: 단계별 런북이 있고, 컷오버의 연속으로 쓰여 있습니다(백업, 중지, 정해진 순서로 갱신, 검증, 롤백). 각 단계는 실제 서버에서 관찰한 결과와 코드에서 예상만 한 결과를 구분해 적습니다.
 
-## Status and verification boundaries
+## 상태와 검증의 경계
 
-This is a working personal system, built in milestones (gate, orchestrator, web console W1 to W3g). The results documents separate what was **observed** from what was **inferred**.
+실제로 쓰는 개인 시스템이며 마일스톤(게이트, 오케스트레이터, 웹 콘솔 W1~W3g)으로 만들었습니다. 결과 문서는 **관찰한 것**과 **추정한 것**을 구분합니다.
 
-- Observed on the real server: signed project creation and linking for GitLab and GitHub, per-repository deploy keys, clone, publish, and (W3g) deleting a remote repository, the local copy and the registry entry with one signature, and detaching a deploy key together with the removal. See `docs/29` and `docs/31`.
-- Not verified, and said so in the docs: removing a shared GitLab deploy key from a second project on a real GitLab, real-passkey signing for every screen, and some error screens that were only exercised against fakes.
-- Known open decision: binding the deploy-key fingerprint into the signed change for GitLab (`docs/31` section 8).
+- 실제 서버에서 관찰한 것: GitLab·GitHub에 대한 서명된 프로젝트 생성과 연결, 저장소별 배포 키, 복제, 게시, 그리고(W3g) 서명 한 번으로 원격 저장소·로컬 복사본·등록 항목을 함께 삭제하는 것과 삭제할 때 배포 키를 함께 떼는 것. `docs/29`, `docs/31` 참고.
+- 검증하지 못했다고 문서에 적은 것: 실제 GitLab에서 공용 배포 키를 두 번째 프로젝트에서 떼는 일, 모든 화면에 대한 실제 패스키 서명, 가짜 환경에서만 실행해 본 일부 오류 화면.
+- 열린 결정: GitLab에서 배포 키 지문을 서명되는 변경에 묶을지 여부(`docs/31` 8절).
 
-## Not included
+## 포함하지 않은 것
 
-This repository has no real credentials, hostnames or addresses. Network values in docs and scripts are examples. Provider tokens live only in the broker's token store on the server and are entered through a web screen, never through the command line.
+이 저장소에는 실제 자격증명, 호스트 이름, 주소가 없습니다. 문서와 스크립트의 네트워크 값은 예시입니다. 제공자 토큰은 서버의 브로커 토큰 저장소에만 있고, 명령줄이 아니라 웹 화면으로 입력합니다.
 
-## License
+## 라이선스
 
-MIT. See `LICENSE`.
+MIT. `LICENSE` 참고.
