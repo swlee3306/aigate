@@ -290,7 +290,7 @@
         "template": "go"
       },
       "canonical": "{\"action\":\"create_project\",\"fields\":{\"ai_context\":false,\"deploy_key_sha256\":\"abababababababababababababababababababababababababababababababab\",\"description\":\"첫 프로젝트\",\"group_path\":\"SampleUser\",\"provider\":\"gl\",\"publish\":\"write\",\"template\":\"go\"},\"subject\":\"app-one\"}",
-      "change": "6df0531c43c988ffed86c65d71fbe30dad0ec3198408567757b7438a0f8566d5"
+      "change": "6023d03d16cdbbdf0fef9f81871a443bf05643b9f4d0a2a48b1bbff3e27f7ea0"
     },
     {
       "name": "create_project owner underscore",
