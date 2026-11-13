@@ -1753,6 +1753,8 @@ test('TestRemoveFlowErrorTextsW3g', async () => {
 test('TestDetachRefusedAfterSignatureSaysNothingChangedR1', async () => {
   const RT = D.DEL_REMOVE_TEXT;
   assert.ok(RT.detachRefused.includes('등록과 서버의 파일은 그대로') && RT.detachRefused.includes('"배포 키도 함께 떼기"를 끄고') && RT.detachRefused.includes('새 변경'), RT.detachRefused);
+  // W3h: one more possible cause in the same sentence (deploy_key_mismatch), no per-cause branching
+  assert.ok(RT.detachRefused.includes('이 서버의 배포 키가 등록할 때의 키와 다름'), RT.detachRefused);
   for (const [code, status] of [['remove_refused', 502], ['remote_changed', 409], ['provider_unreachable', 502], ['provider_rate_limited', 429], ['github_refused', 502], ['gitlab_refused', 502], ['key_not_found', 404], ['deploy_key_mismatch', 409]]) {
     const c = await mountProjects({ ...pvAvail('mine'), 'POST /api/v1/projects/remove/apply': () => { throw apiError(status, code, SECRET); } });
     await toConfirm(c, 'mine', 'local');

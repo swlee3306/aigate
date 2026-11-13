@@ -1,0 +1,191 @@
+[
+ {
+  "kind": "github",
+  "stored": "",
+  "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyB",
+  "ok": true,
+  "why": "no hash: only GitHub keeps the W3g rule"
+ },
+ {
+  "kind": "github",
+  "stored": "",
+  "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyCKeyCKeyCKeyCKeyCKeyCKeyCKeyCKeyCKeyC",
+  "ok": true,
+  "why": "no hash: the line is not compared (GitHub: title and body decide later)"
+ },
+ {
+  "kind": "github",
+  "stored": "10ceff3c68a46a406bce3acdf5cea0c50732878823abe5756649009142d9713c",
+  "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyB",
+  "ok": true,
+  "why": "hash present and equal"
+ },
+ {
+  "kind": "github",
+  "stored": "10ceff3c68a46a406bce3acdf5cea0c50732878823abe5756649009142d9713c",
+  "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyCKeyCKeyCKeyCKeyCKeyCKeyCKeyCKeyCKeyC",
+  "ok": false,
+  "why": "hash present, another key"
+ },
+ {
+  "kind": "github",
+  "stored": "10ceff3c68a46a406bce3acdf5cea0c50732878823abe5756649009142d9713c",
+  "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyB orchd-deploy",
+  "ok": false,
+  "why": "hash present, same body with a comment: the hash covers the whole line"
+ },
+ {
+  "kind": "github",
+  "stored": "bd49f97d6af9a46529c52177f6f1ff716a5f851da18c34997f2f1cb0ae592522",
+  "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyB",
+  "ok": false,
+  "why": "hash of the commented line, line without the comment"
+ },
+ {
+  "kind": "github",
+  "stored": "bd49f97d6af9a46529c52177f6f1ff716a5f851da18c34997f2f1cb0ae592522",
+  "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyB orchd-deploy",
+  "ok": true,
+  "why": "hash present and equal (with comment)"
+ },
+ {
+  "kind": "github",
+  "stored": "10CEFF3C68A46A406BCE3ACDF5CEA0C50732878823ABE5756649009142D9713C",
+  "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyB",
+  "ok": false,
+  "why": "stored hash in upper case never matches (the broker also refuses such a file)"
+ },
+ {
+  "kind": "github",
+  "stored": "10ceff3c68a46a406bce3acdf5cea0c50732878823abe5756649009142d9713c",
+  "line": "",
+  "ok": false,
+  "why": "hash present, empty line"
+ },
+ {
+  "kind": "gitlab",
+  "stored": "",
+  "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyB",
+  "ok": false,
+  "why": "no hash: only GitHub keeps the W3g rule"
+ },
+ {
+  "kind": "gitlab",
+  "stored": "",
+  "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyCKeyCKeyCKeyCKeyCKeyCKeyCKeyCKeyCKeyC",
+  "ok": false,
+  "why": "no hash: the line is not compared (GitHub: title and body decide later)"
+ },
+ {
+  "kind": "gitlab",
+  "stored": "10ceff3c68a46a406bce3acdf5cea0c50732878823abe5756649009142d9713c",
+  "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyB",
+  "ok": true,
+  "why": "hash present and equal"
+ },
+ {
+  "kind": "gitlab",
+  "stored": "10ceff3c68a46a406bce3acdf5cea0c50732878823abe5756649009142d9713c",
+  "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyCKeyCKeyCKeyCKeyCKeyCKeyCKeyCKeyCKeyC",
+  "ok": false,
+  "why": "hash present, another key"
+ },
+ {
+  "kind": "gitlab",
+  "stored": "10ceff3c68a46a406bce3acdf5cea0c50732878823abe5756649009142d9713c",
+  "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyB orchd-deploy",
+  "ok": false,
+  "why": "hash present, same body with a comment: the hash covers the whole line"
+ },
+ {
+  "kind": "gitlab",
+  "stored": "bd49f97d6af9a46529c52177f6f1ff716a5f851da18c34997f2f1cb0ae592522",
+  "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyB",
+  "ok": false,
+  "why": "hash of the commented line, line without the comment"
+ },
+ {
+  "kind": "gitlab",
+  "stored": "bd49f97d6af9a46529c52177f6f1ff716a5f851da18c34997f2f1cb0ae592522",
+  "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyB orchd-deploy",
+  "ok": true,
+  "why": "hash present and equal (with comment)"
+ },
+ {
+  "kind": "gitlab",
+  "stored": "10CEFF3C68A46A406BCE3ACDF5CEA0C50732878823ABE5756649009142D9713C",
+  "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyB",
+  "ok": false,
+  "why": "stored hash in upper case never matches (the broker also refuses such a file)"
+ },
+ {
+  "kind": "gitlab",
+  "stored": "10ceff3c68a46a406bce3acdf5cea0c50732878823abe5756649009142d9713c",
+  "line": "",
+  "ok": false,
+  "why": "hash present, empty line"
+ },
+ {
+  "kind": "gitea",
+  "stored": "",
+  "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyB",
+  "ok": false,
+  "why": "no hash: only GitHub keeps the W3g rule"
+ },
+ {
+  "kind": "gitea",
+  "stored": "",
+  "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyCKeyCKeyCKeyCKeyCKeyCKeyCKeyCKeyCKeyC",
+  "ok": false,
+  "why": "no hash: the line is not compared (GitHub: title and body decide later)"
+ },
+ {
+  "kind": "gitea",
+  "stored": "10ceff3c68a46a406bce3acdf5cea0c50732878823abe5756649009142d9713c",
+  "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyB",
+  "ok": true,
+  "why": "hash present and equal"
+ },
+ {
+  "kind": "gitea",
+  "stored": "10ceff3c68a46a406bce3acdf5cea0c50732878823abe5756649009142d9713c",
+  "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyCKeyCKeyCKeyCKeyCKeyCKeyCKeyCKeyCKeyC",
+  "ok": false,
+  "why": "hash present, another key"
+ },
+ {
+  "kind": "gitea",
+  "stored": "10ceff3c68a46a406bce3acdf5cea0c50732878823abe5756649009142d9713c",
+  "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyB orchd-deploy",
+  "ok": false,
+  "why": "hash present, same body with a comment: the hash covers the whole line"
+ },
+ {
+  "kind": "gitea",
+  "stored": "bd49f97d6af9a46529c52177f6f1ff716a5f851da18c34997f2f1cb0ae592522",
+  "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyB",
+  "ok": false,
+  "why": "hash of the commented line, line without the comment"
+ },
+ {
+  "kind": "gitea",
+  "stored": "bd49f97d6af9a46529c52177f6f1ff716a5f851da18c34997f2f1cb0ae592522",
+  "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyB orchd-deploy",
+  "ok": true,
+  "why": "hash present and equal (with comment)"
+ },
+ {
+  "kind": "gitea",
+  "stored": "10CEFF3C68A46A406BCE3ACDF5CEA0C50732878823ABE5756649009142D9713C",
+  "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyBKeyB",
+  "ok": false,
+  "why": "stored hash in upper case never matches (the broker also refuses such a file)"
+ },
+ {
+  "kind": "gitea",
+  "stored": "10ceff3c68a46a406bce3acdf5cea0c50732878823abe5756649009142d9713c",
+  "line": "",
+  "ok": false,
+  "why": "hash present, empty line"
+ }
+]

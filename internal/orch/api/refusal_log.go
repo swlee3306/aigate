@@ -75,6 +75,14 @@ func refusalCode(b []byte) string {
 }
 
 // refusalWriter records the status and keeps (bounded) the body of a 403 only.
+//
+// Known side effect (W3h review, accepted, no behavior change intended here):
+// http.MaxBytesReader signals "request too large" to net/http through a private
+// interface it type-asserts on the ResponseWriter it was given (no Unwrap
+// chain). Behind this wrapper that assertion fails, so for an oversized body
+// net/http does not mark the connection to close at once: after the handler it
+// drains up to 256 KB of the unread body (its post-handler read limit) and only
+// then closes the connection. The answer to the request is the same.
 type refusalWriter struct {
 	http.ResponseWriter
 	status int
