@@ -35,7 +35,8 @@ const PARTIAL_REASONS = ['project_busy', 'busy_check_failed', 'in_progress', 're
 // The members of the removal-preview answer (internal/orch/api removalPreview; TestConstantsAgreeWithWeb
 // reads them from the Go source).
 export const PREVIEW_KEYS = ['id', 'origin', 'legacy', 'has_remote', 'remote_key_may_remain', 'remote_deleted_at', 'static_remote', 'busy', 'busy_unknown',
-  'folder_exists', 'is_git_repo', 'local_removable', 'key_dir_exists', 'size_bytes', 'size_known', 'unpushed_commits', 'unpushed_known', 'changed_files', 'changed_known'];
+  'folder_exists', 'is_git_repo', 'local_removable', 'key_dir_exists', 'size_bytes', 'size_known', 'unpushed_commits', 'unpushed_known', 'changed_files', 'changed_known',
+  'detach_key_available', 'deploy_key_title', 'deploy_key_fingerprint', 'deploy_key_shared'];
 
 // --- fixed sentences ---------------------------------------------------------
 
@@ -108,6 +109,7 @@ export const DEL_LINES = {
   stamp: '서명하면 이 변경이 바로 적용됩니다. 이 서명은 5분 안에 한 번만 쓸 수 있습니다',
   rp1: "프로젝트 '{id}'를 이 서버에서 지웁니다: 프로젝트 등록, 서버의 복제본 폴더({path}), 이 프로젝트의 배포 키 폴더",
   rp2: '원격 저장소는 지워지지 않고 그대로 남습니다',
+  rpDetach: "먼저 원격 저장소 '{remote}'에서 이 서버의 배포 키(지문 {fp})를 뗍니다. 키를 떼지 못하거나 결과를 알 수 없으면 프로젝트 등록과 서버의 파일을 지우지 않습니다",
   rp3: '[중요] 되돌릴 수 없습니다. 원격에 올라가지 않은 커밋과 저장하지 않은 변경은 이 서버의 복제본에만 있으므로 함께 사라집니다',
   rp4: '이 서버의 작업 기록은 남습니다',
   rpLegacy: '[중요] 처음부터 있던(legacy) 프로젝트입니다. 지우면 이 저장소로는 더 작업을 낼 수 없습니다(두 번째 확인을 했습니다)',
@@ -117,7 +119,7 @@ export const DEL_LINES = {
   dr3: '삭제가 확실히 끝난 뒤에만 다음 단계를 합니다. 결과를 알 수 없으면 아무것도 더 하지 않고 자동으로 다시 시도하지 않습니다',
   drAlso1: '원격 삭제가 끝나면 이 서버의 복제본 폴더({path})와 이 프로젝트의 배포 키 폴더도 지웁니다',
   drAlso2: '[중요] 원격이 지워지면 이 서버의 복제본이 유일한 사본일 수 있습니다. 원격에 올라가지 않은 커밋과 변경은 복제본과 함께 사라집니다',
-  drAlso3: "프로젝트 등록은 '원격 없음' 상태로 남습니다. 등록까지 지우려면 별도로 서명하는 프로젝트 삭제가 한 번 더 필요합니다",
+  drAlso3: '원격 삭제가 끝나면 프로젝트 등록도 같은 서명으로 지웁니다. 서버의 파일을 지우지 못하면 등록 없는 폴더가 남을 수 있습니다(관리자가 정리)',
   drKeep: "이 서버의 복제본과 프로젝트 등록은 그대로 남습니다(등록은 '원격 없음' 상태가 됩니다)",
   dk1: "프로젝트 '{id}'의 저장소 '{remote}'에서 이 서버의 배포 키만 뗍니다(지문 {fp})",
   dk2: '저장소와 다른 키는 지워지지 않습니다. 프로젝트 등록과 서버의 복제본은 그대로입니다',
@@ -135,7 +137,15 @@ export function expectedLines(sent, row, pv, resp) {
   const path = isObj(row) ? row.path : null;
   let out;
   if (sent.action === ACTION_REMOVE_PROJECT) {
-    out = [fill(L.rp1, { id: sent.subject, path }), L.rp2, L.rp3, L.rp4];
+    out = [fill(L.rp1, { id: sent.subject, path }), L.rp2];
+    if (f.detach_key) {
+      // the key's fingerprint is the server's (from the key folder); the repository is the row's
+      const fp = isObj(resp) ? resp.deploy_key_fingerprint : null;
+      const r = remoteOf(row);
+      if (typeof fp !== 'string' || !FP_RE.test(fp) || r === null) return null;
+      out.push(fill(L.rpDetach, { remote: r.path, fp }));
+    }
+    out.push(L.rp3, L.rp4);
     if (f.legacy_ack) out.push(L.rpLegacy);
     if (pv && pv.static_remote) out.push(L.rpStatic);
   } else if (sent.action === ACTION_DELETE_REMOTE_REPO) {

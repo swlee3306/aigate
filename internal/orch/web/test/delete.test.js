@@ -89,7 +89,8 @@ const pvBody = (id, over, rowOver) => {
   return {
     id, origin: r.origin, legacy: r.origin === 'legacy', has_remote: r.gitlab !== null, remote_key_may_remain: r.gitlab !== null, remote_deleted_at: r.remote_deleted_at || null,
     static_remote: false, busy: false, busy_unknown: false, folder_exists: true, is_git_repo: true, local_removable: true, key_dir_exists: true,
-    size_bytes: 3 * 1024 * 1024, size_known: true, unpushed_commits: 0, unpushed_known: true, changed_files: 0, changed_known: true, ...(over || {}),
+    size_bytes: 3 * 1024 * 1024, size_known: true, unpushed_commits: 0, unpushed_known: true, changed_files: 0, changed_known: true,
+    detach_key_available: false, deploy_key_title: null, deploy_key_fingerprint: null, deploy_key_shared: false, ...(over || {}),
   };
 };
 
@@ -108,7 +109,7 @@ function previewFor(action, subject, f) {
       '삭제가 확실히 끝난 뒤에만 다음 단계를 합니다. 결과를 알 수 없으면 아무것도 더 하지 않고 자동으로 다시 시도하지 않습니다'];
     if (f.also_local) {
       out.push('원격 삭제가 끝나면 이 서버의 복제본 폴더(' + path + ')와 이 프로젝트의 배포 키 폴더도 지웁니다', '[중요] 원격이 지워지면 이 서버의 복제본이 유일한 사본일 수 있습니다. 원격에 올라가지 않은 커밋과 변경은 복제본과 함께 사라집니다',
-        "프로젝트 등록은 '원격 없음' 상태로 남습니다. 등록까지 지우려면 별도로 서명하는 프로젝트 삭제가 한 번 더 필요합니다");
+        '원격 삭제가 끝나면 프로젝트 등록도 같은 서명으로 지웁니다. 서버의 파일을 지우지 못하면 등록 없는 폴더가 남을 수 있습니다(관리자가 정리)');
     } else out.push("이 서버의 복제본과 프로젝트 등록은 그대로 남습니다(등록은 '원격 없음' 상태가 됩니다)");
     return [...out, STAMP];
   }

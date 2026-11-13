@@ -57,8 +57,16 @@ func newDelEnv(t *testing.T, opts ...func(*Config)) *delEnv {
 		ok := func(v any) string { b, _ := json.Marshal(map[string]any{"ok": true, "result": v}); return string(b) }
 		switch op {
 		case "remove_project":
+			// W3g broker: a signed detach_key answers how the key ended
+			if m["detach_key"] == true {
+				return ok(map[string]any{"id": m["id"], "removed": true, "key_state": "removed"})
+			}
 			return ok(map[string]any{"id": m["id"], "removed": true})
 		case "delete_remote_repo":
+			// W3g broker: a signed also_local also removes the registry row
+			if m["also_local"] == true {
+				return ok(map[string]any{"id": m["id"], "remote_state": "deleted", "remote_deleted_at": delStamp, "registry_removed": true})
+			}
 			return ok(map[string]any{"id": m["id"], "remote_state": "deleted", "remote_deleted_at": delStamp})
 		case "remove_deploy_key":
 			return ok(map[string]any{"id": m["id"], "key_removed": true})
@@ -591,7 +599,8 @@ func TestOrderRemoteBeforeLocal(t *testing.T) {
 	var out map[string]any
 	_ = json.Unmarshal(b, &out)
 	loc, _ := out["local"].(map[string]any)
-	if out["remote_state"] != "deleted" || out["also_local"] != true || out["registry"] != "kept" || loc["clone"] != "removed" || loc["key"] != "removed" || out["remote_deleted_at"] != delStamp {
+	// W3g: the signed also_local removed the row at the broker (registry_removed in its answer)
+	if out["remote_state"] != "deleted" || out["also_local"] != true || out["registry"] != "removed" || loc["clone"] != "removed" || loc["key"] != "removed" || out["remote_deleted_at"] != delStamp {
 		t.Fatalf("%s", b)
 	}
 	if exists(path) || exists(keyDir) {
@@ -717,7 +726,8 @@ func TestDeletePartialShowsStateAndRetry(t *testing.T) {
 	t.Cleanup(func() { os.Chmod(e.root, 0o700) })
 	c, b := e.applyDel(t, p)
 	d := detailOf(b)
-	if c != 502 || v1Code(b) != "delete_partial_local" || d["remote_deleted"] != true || d["registry_removed"] != false {
+	// W3g: with also_local the broker removed the row too, so the detail says so
+	if c != 502 || v1Code(b) != "delete_partial_local" || d["remote_deleted"] != true || d["registry_removed"] != true {
 		t.Fatalf("%d %s", c, b)
 	}
 	// the clone and the key folder are attempted independently: the key folder
@@ -737,7 +747,9 @@ func TestDeletePartialShowsStateAndRetry(t *testing.T) {
 	if len(led) != 2 || led[0]["ok"] != true || led[0]["code"] != "ok" || led[1]["ok"] != false || led[1]["code"] != "delete_partial_local" {
 		t.Fatalf("ledger: %v", led)
 	}
-	// the retry is a NEW signature on remove_project; the row (remote gone) is still there
+	// the retry is a NEW signature on remove_project. W3g: the real broker removed the row,
+	// so the path is registered again first (G-D4 recovery); the fake keeps the row, which
+	// stands in for that re-registration
 	if err := os.Chmod(e.root, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1084,7 +1096,7 @@ func TestUnpushedWorkWarning(t *testing.T) {
 			t.Errorf("the preview leaks %q: %s", secret, raw)
 		}
 	}
-	// only these keys exist, all counts or flags
+	// only these keys exist, all counts or flags (W3g: plus the deploy key's public title and fingerprint)
 	keys := []string{}
 	for k := range m {
 		if k != "_raw" {
@@ -1092,7 +1104,7 @@ func TestUnpushedWorkWarning(t *testing.T) {
 		}
 	}
 	sort.Strings(keys)
-	want := "busy,busy_unknown,changed_files,changed_known,folder_exists,has_remote,id,is_git_repo,key_dir_exists,legacy,local_removable,origin,remote_deleted_at,remote_key_may_remain,size_bytes,size_known,static_remote,unpushed_commits,unpushed_known"
+	want := "busy,busy_unknown,changed_files,changed_known,deploy_key_fingerprint,deploy_key_shared,deploy_key_title,detach_key_available,folder_exists,has_remote,id,is_git_repo,key_dir_exists,legacy,local_removable,origin,remote_deleted_at,remote_key_may_remain,size_bytes,size_known,static_remote,unpushed_commits,unpushed_known"
 	if strings.Join(keys, ",") != want {
 		t.Fatalf("preview keys:\n%s\nwant\n%s", strings.Join(keys, ","), want)
 	}

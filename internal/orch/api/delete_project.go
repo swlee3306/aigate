@@ -28,14 +28,17 @@ import (
 // under the repository roots and the project's key folder), and it runs only
 // AFTER the broker has answered ok to a signed change that asks for it:
 //
-//   - remove_project: broker removes the registry row, then orchd removes the
-//     clone and the key folder;
-//   - delete_remote_repo: broker deletes the remote repository (the row stays,
-//     remote null, remote_deleted_at set, Provider kept); with the SIGNED
-//     also_local the clone and key folder are removed afterwards. Unregistering
-//     the row needs a second, separately signed remove_project (the broker has
-//     no op that does both): the files are then already gone and that call is
-//     idempotent;
+//   - remove_project: with the SIGNED detach_key (W3g) the broker first removes
+//     this server's deploy key from the repository (orchd supplies the public
+//     key line, read from the project's key folder or the GitLab shared .pub
+//     BEFORE anything local is removed; never from the request), then it
+//     removes the registry row; orchd then removes the clone and the key folder;
+//   - delete_remote_repo: broker deletes the remote repository. Without
+//     also_local the row stays (remote null, remote_deleted_at set, Provider
+//     kept). With the SIGNED also_local (W3g) the broker also removes the
+//     registry row in the same signed op, and orchd removes the clone and key
+//     folder afterwards; if that local part fails an unregistered folder is
+//     left (recovery: register the path again, then a signed remove_project);
 //   - remove_deploy_key: broker removes this server's key from the repository;
 //   - clear_orphan: broker drops one orphan record (no provider call).
 //
@@ -68,18 +71,23 @@ var (
 	errRemoteChanged     = apiErr(http.StatusConflict, "remote_changed", "등록된 원격 저장소 정보와 요청이 다르거나, 제공자의 저장소가 바뀌었거나, 이미 원격이 없습니다. 프로젝트 목록을 다시 읽어 확인하세요. 변경 없음")
 	errConfirmMismatch   = apiErr(http.StatusBadRequest, "confirm_mismatch", "입력한 저장소 이름이 등록된 저장소 이름과 글자 그대로(대소문자 포함) 같지 않습니다. 변경 없음")
 	errDeletePartial     = apiErr(http.StatusGatewayTimeout, "delete_partial", "원격 저장소 삭제가 일부만 처리되었거나 결과를 알 수 없습니다. 자동으로 다시 시도하지 않았고 서버의 복제본도 지우지 않았습니다. 제공자 화면과 프로젝트 목록을 확인한 뒤 판단하세요")
+	// W3g: remove_project's delete_partial only comes from the key detach
+	errRemovePartial     = apiErr(http.StatusGatewayTimeout, "delete_partial", "배포 키 떼기가 일부만 처리되었거나 결과를 알 수 없습니다(키는 이미 떼어졌을 수 있습니다). 프로젝트 등록과 서버의 복제본은 지우지 않았고 자동으로 다시 시도하지 않았습니다. 제공자 화면에서 이 서버의 배포 키를 확인한 뒤 새로 서명하세요")
 	errKeyNotFound       = apiErr(http.StatusNotFound, "key_not_found", "제공자의 저장소에서 이 서버의 배포 키(제목이 orchd로 시작하고 공개 키가 같은 것)를 찾지 못했습니다. 이미 제거되었을 수 있습니다. 변경 없음")
 	errRemoveRefused     = apiErr(http.StatusBadGateway, "remove_refused", "제공자가 삭제 요청을 받아들이지 않았거나 대상이 하나로 정해지지 않아 아무것도 지우지 않았습니다. 토큰 권한과 제공자 화면을 확인하세요")
 	errOrphanNone        = apiErr(http.StatusNotFound, "orphan_unknown", "그런 고아 기록이 없습니다(이미 지워졌을 수 있습니다). 목록을 다시 읽으세요. 변경 없음")
 	errDeleteLockBusy    = apiErr(http.StatusConflict, "busy", "같은 프로젝트나 저장소에 대한 다른 변경이 진행 중입니다. 잠시 후 다시 시도하세요. 변경 없음")
 	errDeleteRateLimited = apiErr(http.StatusTooManyRequests, "delete_rate_limited", "서버 전체의 삭제 횟수 한도(시간당·하루)에 도달했습니다. 나중에 다시 시도하세요. 변경 없음")
 	errKeyUnavailRemoval = apiErr(http.StatusConflict, "key_unavailable_for_removal", "이 프로젝트의 배포 키 공개 키를 서버에서 읽을 수 없어 이 도구로 뗄 수 없습니다. 제공자 화면(저장소 설정의 배포 키)에서 제목이 orchd로 시작하는 키를 직접 제거하세요. 변경 없음")
-	errNoRemote          = apiErr(http.StatusConflict, "no_remote", "이 프로젝트에는 연결된 원격 저장소가 없어 뗄 배포 키가 없습니다. 변경 없음")
-	errLocalUnsafe       = apiErr(http.StatusConflict, "local_unsafe", "서버의 복제본 폴더가 이 도구가 지울 수 있는 모양이 아닙니다(심볼릭 링크이거나, .git 폴더가 없거나, 허용된 저장소 루트 바로 아래의 프로젝트 이름 폴더가 아닙니다). 안전을 위해 아무것도 지우지 않았습니다. 서버 관리자가 확인해야 합니다. 변경 없음")
-	errRepoBeingRemoved  = apiErr(http.StatusConflict, "repo_being_removed", "이 프로젝트의 서버 폴더를 지우는 중이라 지금은 작업을 내거나 복제할 수 없습니다. 잠시 후 다시 시도하세요. 변경 없음")
-	errDeleteNeutralBad  = apiErr(http.StatusBadRequest, "bad_url", "제공자 주소가 허용되지 않습니다. 주소 모양과 접속 대상을 확인하세요. 변경 없음")
-	errDeleteGHRefused   = apiErr(http.StatusBadGateway, "github_refused", "제공자(GitHub)가 요청을 받아들이지 않았습니다. 토큰 권한과 제공자 설정을 확인하세요. 아무것도 지우지 않았습니다")
-	errDeleteGLRefused   = apiErr(http.StatusBadGateway, "gitlab_refused", "제공자(GitLab)가 요청을 받아들이지 않았습니다. 토큰 권한과 제공자 설정을 확인하세요. 아무것도 지우지 않았습니다")
+	// W3g mixed versions: a broker that does not know the op or the detach_key
+	// argument refuses before looking at the signature. Nothing was deleted.
+	errDeleteBrokerOld  = apiErr(http.StatusServiceUnavailable, "broker_unavailable", "등록부 서비스(broker)가 이 삭제 요청을 지원하지 않아 처리하지 않았습니다. 서버 구성 요소의 버전이 서로 맞지 않을 수 있습니다. 아무것도 지우지 않았습니다. 서버 관리자가 확인해야 합니다")
+	errNoRemote         = apiErr(http.StatusConflict, "no_remote", "이 프로젝트에는 연결된 원격 저장소가 없어 뗄 배포 키가 없습니다. 변경 없음")
+	errLocalUnsafe      = apiErr(http.StatusConflict, "local_unsafe", "서버의 복제본 폴더가 이 도구가 지울 수 있는 모양이 아닙니다(심볼릭 링크이거나, .git 폴더가 없거나, 허용된 저장소 루트 바로 아래의 프로젝트 이름 폴더가 아닙니다). 안전을 위해 아무것도 지우지 않았습니다. 서버 관리자가 확인해야 합니다. 변경 없음")
+	errRepoBeingRemoved = apiErr(http.StatusConflict, "repo_being_removed", "이 프로젝트의 서버 폴더를 지우는 중이라 지금은 작업을 내거나 복제할 수 없습니다. 잠시 후 다시 시도하세요. 변경 없음")
+	errDeleteNeutralBad = apiErr(http.StatusBadRequest, "bad_url", "제공자 주소가 허용되지 않습니다. 주소 모양과 접속 대상을 확인하세요. 변경 없음")
+	errDeleteGHRefused  = apiErr(http.StatusBadGateway, "github_refused", "제공자(GitHub)가 요청을 받아들이지 않았습니다. 토큰 권한과 제공자 설정을 확인하세요. 아무것도 지우지 않았습니다")
+	errDeleteGLRefused  = apiErr(http.StatusBadGateway, "gitlab_refused", "제공자(GitLab)가 요청을 받아들이지 않았습니다. 토큰 권한과 제공자 설정을 확인하세요. 아무것도 지우지 않았습니다")
 
 	// Outcome unknown, one sentence per action (each says what was NOT done).
 	errRemoveUnknownRes = apiErr(http.StatusGatewayTimeout, "outcome_unknown", "프로젝트 등록이 지워졌는지 알 수 없습니다. 자동으로 다시 시도하지 않았고 서버의 복제본은 지우지 않았습니다. 프로젝트 목록을 다시 읽어 확인하세요")
@@ -127,6 +135,14 @@ func deleteBrokerError(action string, e *broker.OpError) *httpError {
 		return deleteUnknown(action)
 	}
 	switch e.Code {
+	case "unknown_op", "not_implemented":
+		return errDeleteBrokerOld
+	case "bad_request":
+		// orchd checks every shape rule of remove_project before sending, so a
+		// broker refusing its shape is one that does not know detach_key (W3f)
+		if action == registrymsg.ActionRemoveProject {
+			return errDeleteBrokerOld
+		}
 	case "legacy_ack_required":
 		return errLegacyAckRequired
 	case "origin_unknown":
@@ -138,6 +154,9 @@ func deleteBrokerError(action string, e *broker.OpError) *httpError {
 	case "confirm_mismatch":
 		return errConfirmMismatch
 	case "delete_partial":
+		if action == registrymsg.ActionRemoveProject {
+			return errRemovePartial
+		}
 		return errDeletePartial
 	case "key_not_found":
 		return errKeyNotFound
@@ -202,7 +221,36 @@ type delInfo struct {
 	static  bool
 	keyLine string
 	keyFP   string
+	// W3g remove_project: detach is the signed detach_key; remote the
+	// registry's remote path (for the preview line).
+	detach bool
+	remote string
+	// detachAvailable: detach_key=true would pass the checks (for the
+	// propose answer, whatever was asked)
+	detachAvailable bool
 }
+
+// detachKeyInfo is what remove_project's detach_key needs (G-D3, G-D5):
+// eligible when the row has a provider of a known kind and a remote that was
+// not deleted; ok when, in addition, the remote has its number (the broker
+// checks the repository by it) and orchd can read a public key line the broker
+// accepts. The line is read from the project's key folder (GitHub) or the
+// shared key's .pub (GitLab), never from a request.
+func (h *handler) detachKeyInfo(id string, p *broker.Project, kind string) (eligible, ok bool, line, fp string) {
+	if p.Provider == nil || p.Remote == nil || p.RemoteDeletedAt != nil || kind == "" {
+		return false, false, "", ""
+	}
+	if p.Remote.ID == nil {
+		return true, false, "", ""
+	}
+	line, fp, ok = h.deployKeyLine(id, kind)
+	return true, ok, line, fp
+}
+
+// keyTitle is the title this tool gives a project's deploy key at the provider.
+// GitLab's shared key keeps the title of the first project that registered it,
+// so for GitLab the fingerprint is the identity (deploy_key_shared).
+func keyTitle(id string) string { return "orchd " + id }
 
 // localPlan is the dry run of the local removal: the registry path must be the
 // project's own folder directly under a root, and the clone and key folder (if
@@ -299,6 +347,22 @@ func (h *handler) deleteChecks(ctx context.Context, c registryChange) (*delInfo,
 		if !info.legacy && ack {
 			return nil, errProjBadBody
 		}
+		eligible, ok, line, fp := h.detachKeyInfo(c.Subject, p, info.kind)
+		info.detachAvailable = ok
+		if detach, _ := c.Fields["detach_key"].(bool); detach {
+			if !eligible {
+				return nil, errProjBadBody // G-D3: nothing to detach (the broker says bad_request too)
+			}
+			if p.Remote.ID == nil {
+				return nil, errRemoteChanged // what the broker would answer
+			}
+			if !ok {
+				return nil, errKeyUnavailRemoval
+			}
+			// read here, at propose AND again at apply, always before the broker
+			// call and therefore before the key folder can be removed
+			info.detach, info.keyLine, info.keyFP, info.remote = true, line, fp, p.Remote.Path
+		}
 		if err := h.projectBusy(ctx, p.Path); err != nil {
 			return nil, err
 		}
@@ -360,9 +424,13 @@ func deletePreview(c registryChange, info *delInfo) []string {
 		out := []string{
 			"프로젝트 '" + c.Subject + "'를 이 서버에서 지웁니다: 프로젝트 등록, 서버의 복제본 폴더(" + info.path + "), 이 프로젝트의 배포 키 폴더",
 			"원격 저장소는 지워지지 않고 그대로 남습니다",
-			"[중요] 되돌릴 수 없습니다. 원격에 올라가지 않은 커밋과 저장하지 않은 변경은 이 서버의 복제본에만 있으므로 함께 사라집니다",
-			"이 서버의 작업 기록은 남습니다",
 		}
+		if detach, _ := c.Fields["detach_key"].(bool); detach {
+			out = append(out, "먼저 원격 저장소 '"+info.remote+"'에서 이 서버의 배포 키(지문 "+info.keyFP+")를 뗍니다. 키를 떼지 못하거나 결과를 알 수 없으면 프로젝트 등록과 서버의 파일을 지우지 않습니다")
+		}
+		out = append(out,
+			"[중요] 되돌릴 수 없습니다. 원격에 올라가지 않은 커밋과 저장하지 않은 변경은 이 서버의 복제본에만 있으므로 함께 사라집니다",
+			"이 서버의 작업 기록은 남습니다")
 		if info.legacy {
 			out = append(out, "[중요] 처음부터 있던(legacy) 프로젝트입니다. 지우면 이 저장소로는 더 작업을 낼 수 없습니다(두 번째 확인을 했습니다)")
 		}
@@ -380,7 +448,7 @@ func deletePreview(c registryChange, info *delInfo) []string {
 			out = append(out,
 				"원격 삭제가 끝나면 이 서버의 복제본 폴더("+info.path+")와 이 프로젝트의 배포 키 폴더도 지웁니다",
 				"[중요] 원격이 지워지면 이 서버의 복제본이 유일한 사본일 수 있습니다. 원격에 올라가지 않은 커밋과 변경은 복제본과 함께 사라집니다",
-				"프로젝트 등록은 '원격 없음' 상태로 남습니다. 등록까지 지우려면 별도로 서명하는 프로젝트 삭제가 한 번 더 필요합니다")
+				"원격 삭제가 끝나면 프로젝트 등록도 같은 서명으로 지웁니다. 서버의 파일을 지우지 못하면 등록 없는 폴더가 남을 수 있습니다(관리자가 정리)")
 		} else {
 			out = append(out, "이 서버의 복제본과 프로젝트 등록은 그대로 남습니다(등록은 '원격 없음' 상태가 됩니다)")
 		}
@@ -415,6 +483,12 @@ func (h *handler) deletePropose(w http.ResponseWriter, r *http.Request, action s
 		if c.Action == registrymsg.ActionRemoveDeployKey {
 			extra["deploy_key_fingerprint"] = i.keyFP
 		}
+		if c.Action == registrymsg.ActionRemoveProject {
+			extra["detach_key_available"] = i.detachAvailable
+			if i.detach {
+				extra["deploy_key_title"], extra["deploy_key_fingerprint"], extra["deploy_key_shared"] = keyTitle(c.Subject), i.keyFP, i.kind != "github"
+			}
+		}
 		return extra, nil
 	}, nil, func(c registryChange) []string { return deletePreview(c, info) })
 }
@@ -429,8 +503,9 @@ func (h *handler) deleteApply(w http.ResponseWriter, r *http.Request, action str
 			return err
 		}
 		info = i
-		if c.Action == registrymsg.ActionRemoveDeployKey {
-			// an argument of the broker op, not a signed field: orchd's own key line, fresh
+		if c.Action == registrymsg.ActionRemoveDeployKey || (c.Action == registrymsg.ActionRemoveProject && i.detach) {
+			// an argument of the broker op, not a signed field: orchd's own key
+			// line, fresh (for remove_project: read before the folder can go)
 			args["deploy_key"] = i.keyLine
 		}
 		return nil
@@ -447,22 +522,34 @@ func (h *handler) finishDelete(r *http.Request, c registryChange, res json.RawMe
 	switch c.Action {
 	case registrymsg.ActionRemoveProject:
 		var d struct {
-			ID      string `json:"id"`
-			Removed bool   `json:"removed"`
+			ID       string  `json:"id"`
+			Removed  bool    `json:"removed"`
+			KeyState *string `json:"key_state"`
 		}
 		if json.Unmarshal(res, &d) != nil || d.ID != c.Subject || !d.Removed {
+			return nil, unknown
+		}
+		// a signed detach must say how the key ended; without one the reply
+		// must not talk about a key (an answer to something else)
+		detach, _ := c.Fields["detach_key"].(bool)
+		if detach != (d.KeyState != nil) || (detach && *d.KeyState != "removed" && *d.KeyState != "already_gone") {
 			return nil, unknown
 		}
 		local, err := h.removeLocal(r.Context(), c.Subject, info.path, true, false)
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"id": c.Subject, "removed": true, "local": local}, nil
+		body := map[string]any{"id": c.Subject, "removed": true, "detach_key": detach, "local": local}
+		if detach {
+			body["key_state"] = *d.KeyState
+		}
+		return body, nil
 	case registrymsg.ActionDeleteRemoteRepo:
 		var d struct {
 			ID              string `json:"id"`
 			RemoteState     string `json:"remote_state"`
 			RemoteDeletedAt string `json:"remote_deleted_at"`
+			RegistryRemoved *bool  `json:"registry_removed"`
 		}
 		if json.Unmarshal(res, &d) != nil || d.ID != c.Subject || (d.RemoteState != "deleted" && d.RemoteState != "requested") {
 			return nil, unknown
@@ -470,11 +557,21 @@ func (h *handler) finishDelete(r *http.Request, c registryChange, res json.RawMe
 		if t, err := time.Parse(registryTimeFormat, d.RemoteDeletedAt); err != nil || t.Location() != time.UTC || t.Format(registryTimeFormat) != d.RemoteDeletedAt {
 			return nil, unknown
 		}
+		// also_local signed: the broker removed the row in the same op and must
+		// say so (a W3f broker does not: unknown, nothing local is touched);
+		// without it the row stays and the reply must not say otherwise
 		also, _ := c.Fields["also_local"].(bool)
-		body := map[string]any{"id": c.Subject, "remote_state": d.RemoteState, "remote_deleted_at": d.RemoteDeletedAt,
-			"also_local": also, "registry": "kept"}
+		if also != (d.RegistryRemoved != nil) || (also && !*d.RegistryRemoved) {
+			return nil, unknown
+		}
+		registry := "kept"
 		if also {
-			local, err := h.removeLocal(r.Context(), c.Subject, info.path, false, true)
+			registry = "removed"
+		}
+		body := map[string]any{"id": c.Subject, "remote_state": d.RemoteState, "remote_deleted_at": d.RemoteDeletedAt,
+			"also_local": also, "registry": registry}
+		if also {
+			local, err := h.removeLocal(r.Context(), c.Subject, info.path, true, true)
 			if err != nil {
 				// the remote delete DID happen: say so in the ledger before the
 				// request is recorded as partial
@@ -658,8 +755,24 @@ func (h *handler) removalPreview(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, errProjBrokerBad)
 		return
 	}
+	kind := ""
+	if p.Provider != nil {
+		for _, pr := range rv.Providers {
+			if pr.ID == *p.Provider {
+				kind = pr.Kind
+			}
+		}
+	}
+	// W3g: whether remove_project may detach the key (the same checks as its
+	// propose), and the key's public identity; null when it may not
+	_, detachOK, _, keyFP := h.detachKeyInfo(id, p, kind)
+	var keyTitleV, keyFPV any
+	if detachOK {
+		keyTitleV, keyFPV = keyTitle(id), keyFP
+	}
 	body := map[string]any{
 		"id": id, "origin": view.Origin, "legacy": view.Origin == "legacy", "has_remote": p.Remote != nil, "remote_key_may_remain": p.Remote != nil,
+		"detach_key_available": detachOK, "deploy_key_title": keyTitleV, "deploy_key_fingerprint": keyFPV, "deploy_key_shared": detachOK && kind != "github",
 		"remote_deleted_at": view.RemoteDeletedAt, "static_remote": h.staticRepos[filepath.Clean(p.Path)],
 		"busy": false, "busy_unknown": false,
 		"folder_exists": false, "is_git_repo": false, "local_removable": false, "key_dir_exists": false,

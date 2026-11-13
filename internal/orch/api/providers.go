@@ -599,6 +599,17 @@ func (h *handler) w3cLimiter(action string) *actorLimiter {
 	return h.providerLimit
 }
 
+// w3cLimiters is every bucket an apply takes a slot from: the action's own,
+// and for a remove_project that also detaches the deploy key (W3g, G-D5) the
+// key-removal bucket as well.
+func (h *handler) w3cLimiters(c registryChange) []*actorLimiter {
+	out := []*actorLimiter{h.w3cLimiter(c.Action)}
+	if detach, _ := c.Fields["detach_key"].(bool); detach && c.Action == registrymsg.ActionRemoveProject {
+		out = append(out, h.removeKeyLimit)
+	}
+	return out
+}
+
 // applyCore is the shared body of the two apply endpoints. The server
 // recomputes the change from the fields, checks the request is
 // self-consistent, runs `pre` (local checks that cost nothing and may add
@@ -715,11 +726,16 @@ func (h *handler) applyCore(w http.ResponseWriter, r *http.Request, allowed []st
 		}
 	}
 	actor := store.ActorFrom(r.Context())
-	limiter := h.w3cLimiter(c.Action)
-	if !limiter.take(actor, started) {
-		sf(c, keyKept)
-		writeErr(w, errProjRateLimited)
-		return
+	limiters := h.w3cLimiters(c)
+	for i, l := range limiters {
+		if !l.take(actor, started) {
+			for _, taken := range limiters[:i] {
+				taken.refund(actor, started)
+			}
+			sf(c, keyKept)
+			writeErr(w, errProjRateLimited)
+			return
+		}
 	}
 	// The write goes on even if the browser goes away: closing the socket
 	// early would leave a change that may have happened unrecorded. The
@@ -732,7 +748,9 @@ func (h *handler) applyCore(w http.ResponseWriter, r *http.Request, allowed []st
 		// completely left, or the broker refused before looking at it.
 		provablyNothing := oerr.Unsent || oerr.Code == "busy" || oerr.Code == "forbidden"
 		if provablyNothing {
-			limiter.refund(actor, started)
+			for _, l := range limiters {
+				l.refund(actor, started)
+			}
 		}
 		he := w3cBrokerErrorKind(c.Action, fieldKind(c), oerr, true)
 		changed := he.v1Code == "outcome_unknown" || he.v1Code == broker.CodeCreatePartial || he.v1Code == broker.CodeLinkPartial || he.v1Code == "delete_partial"

@@ -178,8 +178,8 @@ func checkW3fConstants(t *testing.T) {
 		raw = raw[1 : len(raw)-1]
 		tpl[m[1]] = raw
 	}
-	if len(tpl) != 19 {
-		t.Fatalf("DEL_LINES has %d templates, want 19: %v", len(tpl), tpl)
+	if len(tpl) != 20 {
+		t.Fatalf("DEL_LINES has %d templates, want 20: %v", len(tpl), tpl)
 	}
 	fp := "SHA256:" + strings.Repeat("a", 43)
 	fill := func(k string, v map[string]string) string {
@@ -197,6 +197,10 @@ func checkW3fConstants(t *testing.T) {
 	}
 	idp := map[string]string{"id": "my-app", "path": "/r/my-app"}
 	eq("remove_project", rp(false), []string{fill("rp1", idp), tpl["rp2"], tpl["rp3"], tpl["rp4"], tpl["stamp"]})
+	// W3g: a signed detach_key adds one line naming the repository and the key's fingerprint
+	eq("remove_project detach_key", deletePreview(registryChange{Action: "remove_project", Subject: "my-app", Fields: map[string]any{"scope": "local", "legacy_ack": false, "detach_key": true}},
+		&delInfo{path: "/r/my-app", detach: true, remote: "octo/hello", keyFP: fp}),
+		[]string{fill("rp1", idp), tpl["rp2"], fill("rpDetach", map[string]string{"remote": "octo/hello", "fp": fp}), tpl["rp3"], tpl["rp4"], tpl["stamp"]})
 	eq("remove_project legacy", rp(true), []string{fill("rp1", idp), tpl["rp2"], tpl["rp3"], tpl["rp4"], tpl["rpLegacy"], tpl["stamp"]})
 	eq("remove_project static", deletePreview(registryChange{Action: "remove_project", Subject: "my-app", Fields: rpFields(false)}, &delInfo{path: "/r/my-app", static: true}),
 		[]string{fill("rp1", idp), tpl["rp2"], tpl["rp3"], tpl["rp4"], tpl["rpStatic"], tpl["stamp"]})
