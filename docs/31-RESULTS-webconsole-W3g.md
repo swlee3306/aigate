@@ -219,4 +219,18 @@ broker `internal/broker/adversarial_w3g_test.go`(2개), orchd `internal/orch/api
 5. 시험 뒤 GitHub 토큰의 삭제 권한을 줄일지, `/root/backup-w3g`를 언제 지울지.
 
 ## 9. 컷오버 기록
-컷오버 때 채운다(런북 17장의 관찰 기록을 옮긴다).
+2026-11-13 22:24 KST, 사용자 요청("W3g 병합하고 서버 반영까지 진행해줘")으로 main(6bc81b4)에 fast-forward 병합(push 안 함)하고 서버에 반영했다. 아래는 **실제로 본 것**과 **보지 못한 것**이다.
+
+**본 것 (컨트롤러가 서버에서 읽기 전용으로 확인)**
+- 사전 점검: W3f 상태(broker·orchd active, 등록부 `"version":4`), 키 폴더 비어 있음, 공용 `.pub` 필드 3개(17.0 a·b·e 통과), 실행·대기·승인 대기 작업 없음(마지막 작업 `45 cancelled`뿐).
+- 단계 1·2: 백업 `/root/backup-w3g`(옛 바이너리 4개, 등록부 사본, 폴더 목록), 새 바이너리 해시가 Mac 빌드와 일치, 샌드박스 `-check` 통과, **등록부 sha256 불변**(`cb9a3f67…`, v4), orchd `approvals: mode signed`, 로그인 없는 `removal-preview`·`propose` 401, 시작 뒤 오류·패닉 0건.
+- **3-3 (원격 삭제 + 복제본 + 등록, 서명 한 번)**: 시험 저장소 `w3s-0114`(사용자가 새로 만듦). broker 로그 `delete_remote_repo: removed the remote repository and the registry row of project w3s-0114`, `op=delete_remote_repo ok dur=1.253s`(60초 한도 안), 후속 `remove_project` 호출 없음. 서버: 폴더·키 폴더 없음, 등록부 v4에 `toy`·`sample-app`만 남음(W3f처럼 `remote_deleted_at` 행이 남지 않음). 화면은 "프로젝트 등록 — 지웠습니다(같은 서명)"이고 후속 안내 없음(사용자 보고).
+- **3-2 (키 떼기 + 복제본·등록 정리, 서명 한 번)**: 시험 저장소 `test-4`(GitHub, 사용자가 새로 만듦). broker 로그 `remove_project: removed project test-4 from the registry`, `op=remove_project ok dur=1.336s`. 서버: 폴더·키 폴더 없음, 등록부에 `test-4` 없음. 사용자가 "키 떼기 시험 성공"이라고 보고했다. **GitHub 화면의 Deploy keys에서 `orchd test-4`가 사라졌고 저장소는 남았는지는 사용자 확인이 필요하다(컨트롤러는 GitHub 화면을 보지 않았다).**
+- 3-5 누출 점검: 로그에 키 본문(`AAAAC3Nza`)·`PRIVATE KEY` 0건, `.deleting-*`·`.remove-refused-*` 없음.
+
+**일어난 일 (원인 미확정)**
+- 3-3 첫 시도에서 화면에 "이 변경을 할 권한이 없습니다"(HTTP 403의 일반 문구)가 나왔다. 그 시도는 broker 로그에 호출이 없고 서버에도 거부 기록이 없어(서명·세션 거부는 로그에 남지 않는다) **원인을 특정하지 못했다.** 사용자가 새로고침·재로그인한 뒤 같은 삭제가 성공했다. 오래된 화면 파일·세션 만료가 의심되지만 확인하지 못했다. 같은 일이 되풀이되면 진단 로그를 넣는다(미결).
+
+**아직 보지 못한 것**
+- 17.0 (c) GitLab 두 번째 프로젝트의 키 제목, 17.0 (d) GitHub 키 본문·지문 비교, 3-4 GitLab 키 떼기, 3-1 회귀 화면(사용자가 봤는지 확인하지 못함), 3-6 `broker_unavailable` 화면, 키 `DELETE`의 실제 상태 코드(204 가정; broker 로그에는 성공으로만 남는다).
+- 컷오버 뒤 정리: GitHub의 `w3s-0114`는 삭제됐고 `test-4` 저장소는 남아 있을 것이다(사용자가 지우거나 둔다).
