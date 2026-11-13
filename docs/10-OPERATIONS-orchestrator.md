@@ -1695,7 +1695,7 @@ sudo grep -o '"version": *[0-9]*' $B/registry.json.w3g                  # "versi
 sudo sha256sum $B/registry.json.w3g /var/lib/orch-broker/registry.json   # 같아야 한다(기록)
 sudo install -o root -g root -m 0755 /tmp/w3h/orch-broker /usr/local/bin/orch-broker
 ```
-(정지한 뒤 1-4가 실패하면 broker는 멈춘 채로 남는다: 곧바로 단계 4. 등록부는 아직 v4이므로 단계 4의 A-1·A-2만 하면 된다.)
+(정지한 뒤 1-4가 실패하면 broker는 멈춘 채로 남고, 이 시점에는 새 W3h 바이너리가 이미 설치되어 있다: 곧바로 단계 4. 등록부는 아직 v4이므로 **A-3(등록부 편집)은 건너뛰고** A-4의 W3g 바이너리 복원과 `-check`, A-6의 broker 시작, 이어서 B(orchd)를 한다. A-1·A-2만 하면 broker가 멈춘 채로 남는다. A-3을 실수로 돌려도 "version 5가 아님"으로 아무것도 바꾸지 않고 멈춘다.)
 
 **1-4. 샌드박스 안 `-check`(시작 전).** 16장 1-4와 같은 명령:
 ```
@@ -1771,6 +1771,7 @@ sudo journalctl -u orchd --since '1 hour ago' --no-pager | grep 'orchd: refused 
 | 조합 | 동작 |
 |---|---|
 | **W3h broker + W3g orchd** | 서명·인자가 같으므로 만들기·연결·삭제가 동작하고, 새 행은 해시를 갖는다. 떼기는 broker가 대조한다: W3g orchd는 미리보기에서 해시를 보지 않으므로 **해시 없는 GitLab 행에도 선택지를 보이고**, 서명 뒤 broker가 모양 단계에서 `deploy_key_mismatch`로 거부한다(아무것도 바뀌지 않음, 요청 ID 소모 없음). W3g orchd는 이 코드를 모르므로 화면은 **"결과를 알 수 없음"**이고 한도 칸을 쓴다. 403 진단 로그는 없다 |
+| **W3h orchd + W3g broker** | W3g broker는 등록부 `projects` 읽기에 `key_sha256`을 싣지 않으므로 W3h orchd가 해시를 보지 못한다: **해시 없는 GitLab 행의 떼기 선택지를 숨기고**(닫힌 실패, 안전), GitHub 행은 W3g처럼 동작한다. 등록부는 v4 그대로 읽는다. 이 조합은 broker만 먼저 되돌렸을 때 생긴다 |
 | **W3g broker + v5 등록부**(바이너리만 되돌린 롤백) | **`-check`가 거부하고, 시작하면 등록부를 읽거나 쓰는 모든 op가 `registry_unavailable`**(등록부에 기대는 orchd 기능 전부가 막힌다). 단계 4의 등록부 편집 없이는 쓸 수 없다 |
 | **W3g orchd + W3h broker의 웹 화면** | 웹은 orchd 안에 있으므로 W3g 화면이다(`detachRefused` 문장의 새 원인 없음). 기능 차이는 위 첫 줄과 같다 |
 
@@ -1804,7 +1805,7 @@ sudo install -o root -g root -m 0600 $R $B/registry.json.w3h-before-rollback-$(d
 sudo grep -o '"version": *[0-9]*' $R                 # "version":5
 sudo grep -o key_sha256 $R | wc -l                   # 해시를 가진 행의 수(0이면 버전만 바뀐다)
 ```
-3. **등록부 편집(root, `python3`).** `key_sha256`을 모두 지우고 `version`을 4로, 임시 파일에 쓴 뒤 원자적으로 바꾼다(소유자 `orch-broker`·모드 600 유지, 파일·폴더 fsync). 시험 `TestRunbookRollbackEditMakesAW3gRegistryW3h`가 이 스크립트를 글자 그대로 돌려 W3g 로더가 받아들이고 그 밖의 값이 그대로인지 확인한다(그 시험의 `rollbackScript`와 같아야 한다). 버전이 5가 아니면 아무것도 바꾸지 않고 멈춘다.
+3. **등록부 편집(root, `python3`).** `key_sha256`을 모두 지우고 `version`을 4로, 임시 파일에 쓴 뒤 원자적으로 바꾼다(소유자 `orch-broker`·모드 600 유지, 파일·폴더 fsync). 시험 `TestRunbookRollbackEditMakesAW3gRegistryW3h`가 이 스크립트를 글자 그대로 돌려 W3g 로더(시험 안의 복제)가 받아들이고, 최종 검토에서 실제 W3g 코드(`git archive 84d15f0`의 `OpenRegistry`)로도 같은 결과를 확인했다(서버에서 돌린 것은 아니다): 그 밖의 값이 그대로인지 확인한다(그 시험의 `rollbackScript`와 같아야 한다). 버전이 5가 아니면 아무것도 바꾸지 않고 멈춘다.
 ```
 sudo python3 -I - /var/lib/orch-broker/registry.json <<'EOF'
 import json, os, sys
