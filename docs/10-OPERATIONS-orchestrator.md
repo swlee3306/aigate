@@ -1639,3 +1639,231 @@ sudo journalctl -u orch-broker -u orchd --since '1 hour ago' --no-pager | grep -
 | 3-2 떼기 끄기 경고 | 굵은 경고, 키가 대상에서 빠짐 | | |
 | 3-3 원격+복제본+등록 한 서명 | B 404, 행 없음, 후속 없음 | | |
 | 3-5 원장·로그 | 키 5개뿐·0건 | | |
+
+## 18. W3h 컷오버 런북 (배포 키 떼기를 등록 때 서명된 키 해시에 묶기: 등록부 v5, 403 거부 진단 로그, `orch-broker`·`orchd` 갱신)
+계획은 `32-PLAN-webconsole-W3h.md`, 결과·시험·한계는 `33-RESULTS-webconsole-W3h.md`(**배포 현실 표**와 "실서버에서 확인하지 못한 것"은 거기 4·6장). **이 절차는 아직 실제 서버에서 한 번도 실행하지 않았다.** 아래 "예상"은 코드와 이 저장소의 시험(가짜 서명자·가짜 GitHub·가짜 GitLab·가짜 broker·임시 폴더)을 읽고 쓴 것이지 서버나 실제 GitHub·GitLab에서 본 출력이 아니다(11~17장과 같은 원칙). 표기·경로·비밀 취급은 17장과 같다(**[사용자]**, **[컨트롤러]** 읽기 전용, **[되돌림 가능]**, **[주의]**; 리다이렉트는 `sudo sh -c '…'`; **토큰·개인 키 값은 어떤 명령에도 넣지 않고 출력하지 않으며 채팅·터미널에 붙이지 않는다**. 키 줄과 그 sha256은 공개 정보지만 로그·채팅에는 sha256 앞 8자리까지만 옮긴다).
+
+**바뀌는 것.** broker가 프로젝트를 만들거나(`create_project`) 연결할 때(`link_project`, `attach_remote`) 이미 서명·검증된 `deploy_key_sha256`을 등록 행의 `remote.key_sha256`으로 저장한다(**등록부 v4 → v5**, 시작할 때 한 번 마이그레이션, `registry.json.v4.bak`을 한 번만 쓴다). 키 떼기(`remove_project`의 `detach_key=true`, `remove_deploy_key`)는 orchd가 보낸 키 줄의 sha256이 그 값과 같아야 하고(서명 검증·요청 ID 소모 전에 확인), **해시가 없는 GitLab 행은 떼기가 거부된다**(`deploy_key_mismatch`, 409). GitHub 행은 해시가 없으면 W3g 규칙(제목+본문) 그대로다. orchd는 같은 규칙을 **서명 전에** 먼저 보고(미리보기의 `detach_key_available`, propose·apply의 409), broker의 `deploy_key_mismatch`를 "결과 알 수 없음"이 아닌 확정 거부(409, 변경 없음)로 보인다. orchd는 HTTP 403으로 거부할 때마다 고정 모양 한 줄 `orchd: refused 403 <코드> <메서드> <경로>`를 로그에 남긴다(쿼리·헤더·본문·서명·토큰 없음). 웹은 떼기 거부 문장(`detachRefused`)의 원인 목록에 "이 서버의 배포 키가 등록할 때의 키와 다름"이 하나 늘었다. **바뀌지 않는 것: 서명 필드·변경 해시(W3g 화면에서 만든 서명도 W3h broker에서 그대로 검증된다), `REGISTRY_MESSAGE_RE`·웹 벡터, orchd DB 스키마(v8), 유닛·플래그·`broker.json`·방화벽·정책·`known_hosts_gitlab`, 허용 목록(새 호출 행 없음), 오류 코드 목록(`deploy_key_mismatch`는 기존 코드), 원장 모양.**
+
+> **⚠ 먼저 읽을 것.**
+> 1. **갱신 순서는 W3g와 같다: orchd 정지 → 백업 → broker → orchd.**
+> 2. **등록부가 v5로 올라간다. W3g broker는 v5를 읽지 못한다**(`-check`가 "프로젝트 등록부를 신뢰할 수 없습니다"로 거부하고, 그대로 시작하면 등록부를 쓰는 모든 op가 `registry_unavailable`). 그래서 롤백(단계 4)에는 바이너리와 함께 **등록부 편집**이 필요하다. **`registry.json.v4.bak`을 그대로 되살리는 것은 권하지 않는다**: 전환 뒤의 등록부 변경 **전부**(만들거나 연결한 행, 지운 행)가 함께 되돌아간다(단계 4).
+> 3. **전환 전에 만든 GitLab 행은 이 도구로 배포 키를 뗄 수 없게 된다**(의도한 닫힌 실패: 해시가 없다). 그런 프로젝트는 "배포 키도 함께 떼기"가 보이지 않고, 지울 때는 떼기 없이 지운 뒤 GitLab 화면에서 키를 사람이 뗀다. 지금 서버에는 그런 행이 없다고 예상한다(`toy`·`sample-app`는 제공자 없는 legacy 행: 31번 9장).
+> 4. **해시는 `.pub` 줄 전체(주석 포함)의 sha256이다.** GitLab 공용 `.pub`(또는 GitHub 프로젝트의 키 폴더 `.pub`)을 바꾸면, **주석만 바꿔도**, 그 전에 만든 행의 떼기가 거부된다(아래 "키 교체"). 컷오버 중에는 키 파일을 건드리지 않는다.
+> 5. **이 컷오버 자체는 아무것도 지우지 않는다.** 시험(단계 3)은 새로 만든 시험 저장소로만 한다(사용자 결정).
+
+### 18.0 시작 전에 모두 참이어야 하는 것
+- **출발점: W3g 컷오버가 끝난 상태(17장, 31번 9장).** broker·orchd가 W3g(main `6bc81b4`), 등록부 `"version":4`, 프로젝트 `toy`·`sample-app`(legacy), 제공자 `example-group-gitlab`·`swlee3306-github`(31번 9장의 기록: 아래 (a)로 다시 본다).
+- **실행 중·대기·게시 대기·승인 대기 작업이 없고, 보류 중인 삭제 서명이 없다**(`orch list`, `orch approvals`). 서명 정의는 바뀌지 않지만, 갱신 중 orchd가 멈추므로 열린 화면의 제안은 처음부터 다시 한다.
+- **백업은 `/root/backup-w3h`(root 0700)에만**: `sudo install -d -m 0700 -o root -g root /root/backup-w3h /root/backup-w3h/bin`. 복사는 모두 `cp -an`(덮어쓰지 않음).
+- **사전 점검(단계 1 전, 전부 읽기 전용, [컨트롤러]가 서버에서). 하나라도 예상과 다르면 시작하지 않고 보고한다.**
+  - **(a) W3g 상태.** `systemctl is-active orch-broker orchd` → `active` 둘. `sudo sha256sum /usr/local/bin/orch-broker /usr/local/lib/aigate/orchd /var/lib/orch-broker/registry.json`(기록: 1-5·롤백 비교에 쓴다). `sudo grep -o '"version": *[0-9]*' /var/lib/orch-broker/registry.json` → **`"version":4`**. 16장 1-6의 `projects` 읽기(아래 1-6과 같은 명령)로 프로젝트 목록을 `/root/backup-w3h/projects-before.json`에 저장한다(`sudo tee`, 값 없음). 예상: `toy`·`sample-app`만.
+  - **(b) 낡은 `.v4.bak`이 없다.** `sudo ls -la /var/lib/orch-broker/` → `registry.json.v2.bak`·`registry.json.v3.bak`은 있을 수 있고 **`registry.json.v4.bak`은 없어야 한다**(W3g까지는 그 이름을 쓰지 않는다). 있으면(이전 시도·롤백의 잔재) 단계 1 전에 옮긴다: `sudo mv /var/lib/orch-broker/registry.json.v4.bak /root/backup-w3h/registry.json.v4.bak.stale-$(date +%Y%m%d-%H%M%S)`. **그대로 두면 broker는 그 파일을 덮어쓰지 않고 새 백업을 쓰지 않는다**(1-5의 sha256 비교가 어긋난다).
+  - **(c) 키 파일 기준값(키 교체를 알아보는 데 쓴다).** `sudo sha256sum /home/orch/orchd/ssh/id_gitlab_deploy.pub`(기록), `sudo awk '{print NF}' /home/orch/orchd/ssh/id_gitlab_deploy.pub` → **`2` 또는 `3`**(17.0 (e)와 같다). `sudo find /home/orch/orchd/ssh/keys -mindepth 1 -maxdepth 2 -printf '%y %u:%g %m %p\n'`(지금은 비어 있을 것으로 예상).
+  - **(d) 아무것도 돌고 있지 않다.** `orch list`, `orch approvals`.
+
+### 컷오버에서만 확인할 수 있는 것 (사전 목록: 결과 문서 33번 6장에 "확인함/못 함"으로 남긴다)
+1. **실제 등록부의 v4 → v5 마이그레이션**: 행이 바뀌지 않고 버전만 5가 되는지, `registry.json.v4.bak`이 한 번 생기고 그 sha256이 전환 직전 사본과 같은지.
+2. **실제 GitHub(그리고 고르면 GitLab)에서 새로 만든 행이 해시를 갖고, 그 해시로 키 떼기가 되는지**(17장 3-2와 같은 흐름).
+3. **403 진단 로그**가 운영 리스너(HTTPS 앞단 뒤)에서 한 줄만 남고 쿼리·헤더가 없는지.
+4. **GitLab 키 떼기**(17장 3-4: W3g 컷오버에서도 하지 않았다)는 여전히 실서버에서 해 본 적이 없다.
+
+### 단계 1. broker 갱신·등록부 마이그레이션 [사용자][주의: 등록부가 버전 5로 올라간다 → 롤백은 단계 4]
+**순서: (Mac) 게이트·빌드 → orchd 정지 → 백업 → 옛 broker 정지 → 등록부 사본 → 새 바이너리 설치 → 샌드박스 안 `-check` → 시작 → 읽기 점검.** `broker.json`은 바뀌지 않는다.
+
+**1-0. 빌드 전 게이트 (Mac, 저장소에서).** 16장 1-0과 같은 명령(`TestConstantsAgreeWithWeb` PASS·SKIP 없음, `gofmt -l` 출력 없음, vet 셋, `go test ./internal/... ./cmd/... -count=1 -race -timeout 30m`, `node --test "internal/orch/web/test/*.test.js"`). 결과 문서 33번 2장의 숫자와 같은 커밋인지 본다.
+
+**1-1. 새 바이너리 (Mac).** `GOOS=linux GOARCH=amd64 go build -o /tmp/w3h/<이름> ./cmd/<이름>`을 `orch-broker`, `orchd`, `orch`, `aigate`에 대해 하고 `scp`로 VM `/tmp/w3h/`에 보낸다. **아직 설치하지 않는다.**
+
+**1-2. orchd 정지와 백업. [사용자]** 작업이 없는지 본 뒤 `sudo systemctl stop orchd`(이 시점부터 단계 2 끝까지 웹 콘솔이 멈춘다).
+```
+B=/root/backup-w3h
+sudo install -d -m 0700 -o root -g root $B $B/bin
+sudo stat -c '%U:%G %a %n' $B          # root:root 700
+sudo cp -an /usr/local/bin/orch-broker $B/bin/orch-broker
+for f in orchd orch aigate; do sudo cp -an /usr/local/lib/aigate/$f $B/bin/$f; done
+sudo sh -c "sha256sum $B/bin/* > $B/bin.sha256"
+sudo sh -c "find /home/orch/orchd/ssh/keys /home/orch/repos -mindepth 1 -maxdepth 2 -printf '%y %u:%g %m %p\n' > $B/tree-before.txt"
+```
+(개인 키·토큰은 복사하지 않는다. W3h는 설정·유닛을 바꾸지 않으므로 그것들은 `/root/backup-w3f`의 사본으로 충분하다.)
+
+**1-3. 옛 broker 정지 → 등록부 사본 → 새 바이너리 설치.** **옛 broker를 반드시 먼저 멈춘다**(사본이 실행 중인 broker의 쓰기와 겹치지 않게).
+```
+sudo systemctl stop orch-broker
+sudo cp -an /var/lib/orch-broker/registry.json $B/registry.json.w3g     # v4 사본: 1-5의 .v4.bak 비교와 롤백 판단에 쓴다
+sudo grep -o '"version": *[0-9]*' $B/registry.json.w3g                  # "version":4
+sudo sha256sum $B/registry.json.w3g /var/lib/orch-broker/registry.json   # 같아야 한다(기록)
+sudo install -o root -g root -m 0755 /tmp/w3h/orch-broker /usr/local/bin/orch-broker
+```
+(정지한 뒤 1-4가 실패하면 broker는 멈춘 채로 남는다: 곧바로 단계 4. 등록부는 아직 v4이므로 단계 4의 A-1·A-2만 하면 된다.)
+
+**1-4. 샌드박스 안 `-check`(시작 전).** 16장 1-4와 같은 명령:
+```
+sudo systemd-run --wait --pipe -p User=orch-broker -p Group=orch-broker -p SupplementaryGroups=orch -p ProtectSystem=strict -p ProtectHome=yes -p SystemCallFilter=@system-service /usr/local/bin/orch-broker -check -config /etc/orch-broker/broker.json -state-dir /var/lib/orch-broker
+```
+예상: `orch-broker: 점검 통과 (…)` 한 줄과 `Finished with result: success`(종료 코드 0). **`-check`는 등록부를 쓰지 않는다**: 끝난 뒤에도 `sudo grep -o '"version": *[0-9]*' /var/lib/orch-broker/registry.json`이 **`"version":4`**이고 `registry.json.v4.bak`이 없다. 실패하면 시작하지 않는다 → 단계 4.
+
+**1-5. 시작(등록부가 여기서 버전 5로 올라간다).**
+```
+sudo systemctl start orch-broker
+systemctl status orch-broker --no-pager; sudo journalctl -u orch-broker -n 30 --no-pager
+sudo stat -c '%U:%G %a %n' /var/lib/orch-broker/registry.json /var/lib/orch-broker/registry.json.v4.bak
+sudo grep -o '"version": *[0-9]*' /var/lib/orch-broker/registry.json
+sudo sha256sum /var/lib/orch-broker/registry.json.v4.bak /root/backup-w3h/registry.json.w3g
+sudo grep -o key_sha256 /var/lib/orch-broker/registry.json | wc -l
+sudo ls -a /var/lib/orch-broker | grep -c '^\.state-' || true
+```
+예상: 유닛 `active (running)`, 로그에 오류 없음. `registry.json`은 `orch-broker:orch-broker 600`이고 **`"version":5`**, **`registry.json.v4.bak`이 `orch-broker:orch-broker 600`으로 있고 1-3의 사본과 sha256이 같다**(다르면 낡은 `.v4.bak`이 있었던 것: 멈추고 보고, 18.0 (b)), `key_sha256`은 **0개**(전환 전의 행은 해시를 받지 않는다), 임시 파일 `.state-*` 없음(0). **버전이 4 그대로이거나 broker가 시작하지 않으면 멈춘다 → 단계 4.**
+
+**1-6. 읽기 op와 회귀.** `orch` 계정이 소켓으로 호출한다(값을 찍지 않는 읽기, 16장 1-6과 같은 명령):
+```
+for op in providers projects status tokens; do sudo -u orch python3 -c 'import socket,sys;s=socket.socket(socket.AF_UNIX);s.connect("/run/orch-broker/broker.sock");s.sendall(("{\"v\":1,\"op\":\""+sys.argv[1]+"\"}\n").encode());print(s.makefile().readline())' $op; done
+```
+예상: `providers` 두 제공자(내용 불변). `projects`는 18.0 (a)의 `projects-before.json`과 **같은 프로젝트·`ai_context`·`provider`·`remote`·`origin`**이고 어느 `remote`에도 `key_sha256`이 없다. `status`·`tokens`는 이전과 같다. **다르면 멈춘다 → 단계 4.**
+
+**검증 체크리스트:** 1-4 통과(등록부 아직 v4), 1-5의 active·`"version":5`·`.v4.bak` 600과 sha256 일치·해시 0개, 1-6의 읽기 응답. **그래도 안 되면:** 단계 4. orchd는 멈춘 상태다(1-2).
+
+### 단계 2. orchd 갱신 [사용자]
+```
+sudo systemctl is-active orchd          # inactive
+for f in orchd orch aigate; do sudo install -o root -g root -m 0755 /tmp/w3h/$f /usr/local/lib/aigate/$f; done
+sudo systemctl start orchd
+journalctl -u orchd -n 40 --no-pager
+sudo sha256sum /usr/local/lib/aigate/orchd /tmp/w3h/orchd
+```
+**검증:** 로그 오류 없음, `approvals: mode signed`, `orch list`의 마지막 번호 그대로, 해시 일치, 로그인 없이 `curl -sk -o /dev/null -w '%{http_code}\n' https://<FQDN>/api/v1/projects/toy/removal-preview`가 **401**(같은 방식으로 `POST /api/v1/projects/remove/propose`, `POST /api/v1/projects/remove-key/propose`도 401: "로그인 없이는 닫혀 있다"는 것만 증명하고 버전은 위 해시로 본다).
+
+**2-1. 403 진단 로그(일부러 만든 403 하나). [컨트롤러]** 로그인하지 않은 채 다른 출처를 주장하는 요청 한 번(아무것도 바꾸지 않는 읽기 경로, 쿼리에 표식 문자열):
+```
+curl -sk -o /dev/null -w '%{http_code}\n' -H 'Origin: https://w3h-probe.invalid' 'https://<FQDN>/api/v1/auth/session?probe=w3hmarker'
+sudo journalctl -u orchd --since '5 min ago' --no-pager | grep 'orchd: refused 403'
+sudo journalctl -u orchd --since '5 min ago' --no-pager | grep -c w3hmarker
+```
+예상: 응답 **403**, 거부 줄이 **정확히 한 줄** `orchd: refused 403 bad_origin GET /api/v1/auth/session`(시각 접두어 뒤), 표식 `w3hmarker`는 **0건**(종료 코드 1: 정상; 쿼리·헤더는 로그에 남지 않는다). 앞단 프록시가 `Origin`을 바꾸거나 지우면 403이 아닐 수 있다: 그때는 기록만 하고 넘어간다(결과 문서 33번 6장). **로그인한 사용자의 정상 사용 중에는 이 줄이 나오지 않아야 한다**: 나오면 코드(`csrf_failed`·`bad_signature` 등)를 기록해 보고한다(W3g 컷오버 3-3 첫 시도의 원인 미확정 403을 다시 보면 이 줄로 원인을 본다: 31번 9장).
+
+### 단계 3. 웹에서 확인 [사용자]
+**전제:** 단계 1·2 통과. 패스키로 로그인. "예상"은 `internal/broker/delete_w3h_test.go`·`adversarial_w3h_test.go`, `internal/orch/api/w3h_h2_test.go`·`adversarial_w3h_test.go`, `internal/orch/web/test/delete.test.js`에서 읽은 것이다. **새로 만든 시험 저장소로만 한다**(이름은 사용자 결정, 예: `w3h-smoke-a`, `^[a-z][a-z0-9-]{1,39}$`, GitHub, 공개, 템플릿 `basic`).
+
+| # | 할 일 | 예상(코드·시험 기준) | 다르면 |
+|---|---|---|---|
+| 3-1 | **회귀.** `#/projects`, `#/providers` | 목록이 단계 1 전과 같다. `toy`·`sample-app`의 "삭제…" → "복제본과 등록 지우기…" 미리보기에 **"배포 키도 함께 떼기"가 없다**(원격·제공자 없음, W3g와 같음) — 확인만 하고 취소 | 체크 상자가 보이면 멈추고 보고 |
+| 3-2 | **[사용자] 새 저장소 A: 만들기 → 해시 확인 → 키 떼기 + 복제본·등록 정리(서명 한 번).** (a) "새 프로젝트 만들기"로 A를 만든다(15장 3-6과 같다, 복제 `cloned`). (b) **[컨트롤러]** 아래 "3-2 (b) 명령"으로 A의 `remote.key_sha256`이 있고(64자리 소문자 16진) **A의 키 폴더 `.pub` 줄의 sha256과 같다**는 것을 본다(앞 8자리만 기록). (c) 17장 3-2 (b)~(d)와 같은 흐름: 미리보기에 "배포 키도 함께 떼기"가 체크되어 있고 저장소·키 제목 `orchd <A>`·지문이 보인다 → 확인 → 서명 | 17장 3-2와 같다: 결과 "완료", 키만 사라지고 A는 GitHub에 **남는다**, 등록·복제본·키 폴더 지움, broker 로그 `remove_project: removed project <A> from the registry`. 거부 줄(`orchd: refused 403`) 없음 | 해시가 없거나 `.pub`의 sha256과 다르면 **떼기를 하지 않고 보고**(서명 전 `deploy_key_mismatch`가 날 것이다). `deploy_key_mismatch`(409): 키 파일이 등록 때와 다르다 — 아무것도 지우지 않았다, 보고. 그 밖은 17장 3-2의 "다르면" |
+| 3-3 | **[있을 때만] 전환 전에 만든 GitLab 행.** 제공자가 GitLab이고 원격이 있는 행이 1-6에 있으면(지금은 없을 것으로 예상) 그 행의 "복제본과 등록 지우기…" 미리보기만 연다 | **"배포 키도 함께 떼기"가 보이지 않는다**(해시 없는 GitLab 행: `detach_key_available:false`). 확인만 하고 취소 | 보이면 멈추고 보고(H-D3 위반) |
+| 3-4 | **[선택, 17장 3-4의 조건을 모두 만족할 때만] GitLab 키 떼기.** 이 도구로 **전환 뒤에** 만든 GitLab 시험 프로젝트에서 3-2와 같은 흐름(3-2 (b)의 해시 확인은 공용 `.pub`으로) | 17장 3-4와 같다(그 프로젝트에서만 키가 사라지고 `sample-collector`에서는 그대로) | 17장 3-4의 "다르면"과 복구 |
+| 3-5 | **[컨트롤러] 누출 점검.** 17장 3-5와 같은 명령, 그리고 아래 "3-5 추가 명령" | 원장 키 `action,actor,code,ok,subject`뿐, 로그에 토큰·`PRIVATE KEY`·키 본문(`AAAAC3Nza…`) 0건, 거부 줄은 모두 `orchd: refused 403 <코드> <메서드> <경로>` 모양(물음표 없음) | 보이면 멈추고 보고 |
+
+**3-2 (b) 명령**(표 안에 `|`를 쓰지 않으려고 표 밖에 둔다. `<A>`는 프로젝트 이름):
+```
+sudo -u orch python3 -c 'import socket,json,sys;s=socket.socket(socket.AF_UNIX);s.connect("/run/orch-broker/broker.sock");s.sendall(b"{\"v\":1,\"op\":\"projects\"}\n");r=json.loads(s.makefile().readline());p=[x for x in r["result"]["projects"] if x["id"]==sys.argv[1]][0];print((p["remote"] or {}).get("key_sha256","(없음)"))' <A>
+sudo -u orch sh -c 'head -n 1 /home/orch/orchd/ssh/keys/<A>/id_ed25519.pub | tr -d "\n" | sha256sum'
+```
+예상: 두 값이 같다(키 줄은 orchd가 `.pub`의 한 줄을 끝 줄바꿈 없이 보낸 것이므로; 코드 기준 예상, 서버 미확인). GitLab(3-4)은 두 번째 명령의 경로가 `/home/orch/orchd/ssh/id_gitlab_deploy.pub`.
+
+**3-5 추가 명령**(`grep -c`가 0이면 종료 코드 1: 정상):
+```
+sudo journalctl -u orch-broker -u orchd --since '1 hour ago' --no-pager | grep -c AAAAC3Nza
+sudo journalctl -u orchd --since '1 hour ago' --no-pager | grep 'orchd: refused 403' | grep -c '?'
+```
+
+**검증 체크리스트(요약):** 1-5(v5, `.v4.bak` 일치, 해시 0개), 2-1(403 한 줄, 표식 0건), 3-2(새 행에 해시, 그 해시로 떼기), 3-3(있으면: 옛 GitLab 행에 선택지 없음), 3-5. 결과는 결과 문서 33번 9장에 남긴다.
+
+### 혼합 버전 (순서를 지키면 생기지 않는다)
+| 조합 | 동작 |
+|---|---|
+| **W3h broker + W3g orchd** | 서명·인자가 같으므로 만들기·연결·삭제가 동작하고, 새 행은 해시를 갖는다. 떼기는 broker가 대조한다: W3g orchd는 미리보기에서 해시를 보지 않으므로 **해시 없는 GitLab 행에도 선택지를 보이고**, 서명 뒤 broker가 모양 단계에서 `deploy_key_mismatch`로 거부한다(아무것도 바뀌지 않음, 요청 ID 소모 없음). W3g orchd는 이 코드를 모르므로 화면은 **"결과를 알 수 없음"**이고 한도 칸을 쓴다. 403 진단 로그는 없다 |
+| **W3g broker + v5 등록부**(바이너리만 되돌린 롤백) | **`-check`가 거부하고, 시작하면 등록부를 읽거나 쓰는 모든 op가 `registry_unavailable`**(등록부에 기대는 orchd 기능 전부가 막힌다). 단계 4의 등록부 편집 없이는 쓸 수 없다 |
+| **W3g orchd + W3h broker의 웹 화면** | 웹은 orchd 안에 있으므로 W3g 화면이다(`detachRefused` 문장의 새 원인 없음). 기능 차이는 위 첫 줄과 같다 |
+
+### 복구 (서버에서 일부러 만들지 않는다)
+- **(a) 1-5에서 `.v4.bak`의 sha256이 1-3 사본과 다르다.** 낡은 `.v4.bak`이 있었다(18.0 (b)를 건너뜀). 등록부 자체는 정상일 수 있다. 멈추고 보고한다. 롤백할 때는 `.v4.bak`을 믿지 않는다(단계 4는 어차피 `.v4.bak`을 쓰지 않는다).
+- **(b) 전환 뒤 만든 행의 떼기가 `deploy_key_mismatch`.** 키 파일이 등록 때와 다르다: `sudo sha256sum /home/orch/orchd/ssh/id_gitlab_deploy.pub`를 18.0 (c)의 값과 비교한다(GitHub은 그 프로젝트의 키 폴더 `.pub`). 바뀌었으면 아래 "키 교체"를 따른다. 아무것도 지워지지 않았다(서명 전 거부).
+- **(c) 로그인한 정상 사용 중 403.** `sudo journalctl -u orchd --since '10 min ago' --no-pager | grep 'orchd: refused 403'`의 코드로 원인을 본다: `csrf_failed`(오래된 화면·세션: 강력 새로고침·재로그인), `bad_origin`(주소창의 주소가 콘솔 주소와 다름), `bad_signature`·`stale_signature`·`unknown_signer`(서명·시계·서명자 목록), `forbidden_uid`(소켓 사용자: 같은 시각의 `socket peer uid N refused` 줄도 함께 남는다). 로그 줄이 없는데 403이면 orchd가 W3h가 아니다(해시를 본다).
+- **(d) 롤백 뒤 `registry_unavailable`.** W3g broker가 v5 등록부를 읽고 있다: 단계 4 A-3을 하지 않았다.
+- W3g의 복구(17장 "복구" (a)~(e))는 그대로다.
+
+### 키 교체 (공용 GitLab `.pub` 또는 프로젝트 키 폴더를 바꾼 경우) [사용자][주의]
+해시는 등록할 때의 `.pub` **줄 전체**(종류·본문·주석)의 sha256이다. 그래서 **키를 새로 만들거나 주석만 고쳐도** 그 전에 만든 행은 떼기가 거부된다(미리보기에 선택지가 없고, `remove_deploy_key`는 서명 전 409 `deploy_key_mismatch`). 이것은 의도한 안전한 실패이고 이 도구로 해시를 다시 채우는 길은 없다.
+1. 키 파일을 바꾸기 전에 `projects` 읽기로 **어떤 행이 그 키의 해시를 가졌는지** 적는다(GitLab: 해시가 공용 `.pub`의 sha256과 같은 행).
+2. 바꾼 뒤 그 행을 지울 때는 **"배포 키도 함께 떼기"를 끈 채로** "복제본과 등록 지우기"(떼기 없이)를 서명한다.
+3. 옛 키는 **제공자 화면에서 사람이 뗀다**: GitLab은 그 프로젝트의 Settings > Repository > Deploy keys에서 옛 키를 그 프로젝트에서만 비활성(다른 프로젝트가 아직 옛 공용 키로 게시하면 그 프로젝트에서는 떼지 않는다), GitHub은 그 저장소의 Settings > Deploy keys.
+4. 바꾼 뒤 새로 만들거나 연결한 행은 새 키의 해시를 갖고 정상으로 떼어진다.
+(GitLab 공용 키는 다른 프로젝트의 게시가 쓰므로 키 파일 교체 자체는 이 런북의 범위가 아니다: 17.0 (e)와 같이 파일을 고치지 않는 것이 기본이다.)
+
+### 단계 4. 롤백 [사용자][주의]
+**순서: orchd 먼저 멈춤 → broker 멈춤 → 지금 등록부의 사본 → 등록부 편집(필요할 때) → W3g broker 바이너리 → 샌드박스 `-check` → 낡은 `.v4.bak` 치우기 → broker 시작 → orchd.** **전제:** `orch list`와 `orch approvals`에 작업이 없다.
+
+**왜 `.v4.bak` 복원이 아닌가.** `registry.json.v4.bak`은 **전환 직전의 등록부 그대로**다. 그것을 되살리면 전환 뒤의 등록부 변경이 **모두** 되돌아간다: 전환 뒤 만들거나 연결한 프로젝트의 행이 사라져 그 폴더가 **등록 없는 폴더**가 되고(게시가 기본 `--git-remote`로 간다), 전환 뒤 지운 행이 되살아난다(폴더·키·원격은 없다). 그래서 **지금 등록부를 W3g가 읽을 수 있게 고치는 쪽**을 쓴다: 해시를 가진 행이 없으면 `version`만 5 → 4로, 있으면 `key_sha256` 구성원을 지운 뒤 `version`을 4로(행·순서·그 밖의 값은 그대로). 아래 스크립트는 두 경우를 함께 처리한다(해시가 0개면 버전만 바꾼다). `.v4.bak` 복원은 등록부 파일이 깨진 경우의 마지막 수단이고, 그때는 위 부작용을 사람이 정리한다(16장 단계 4 A-6과 같은 문제).
+
+**A. broker (등록부 편집 + W3g 바이너리).**
+1. `sudo systemctl stop orchd`, 이어서 `sudo systemctl stop orch-broker`.
+2. **지금 등록부의 사본(되돌릴 수 있게)과 상태 확인:**
+```
+B=/root/backup-w3h
+R=/var/lib/orch-broker/registry.json
+sudo install -o root -g root -m 0600 $R $B/registry.json.w3h-before-rollback-$(date +%Y%m%d-%H%M%S)
+sudo grep -o '"version": *[0-9]*' $R                 # "version":5
+sudo grep -o key_sha256 $R | wc -l                   # 해시를 가진 행의 수(0이면 버전만 바뀐다)
+```
+3. **등록부 편집(root, `python3`).** `key_sha256`을 모두 지우고 `version`을 4로, 임시 파일에 쓴 뒤 원자적으로 바꾼다(소유자 `orch-broker`·모드 600 유지, 파일·폴더 fsync). 시험 `TestRunbookRollbackEditMakesAW3gRegistryW3h`가 이 스크립트를 글자 그대로 돌려 W3g 로더가 받아들이고 그 밖의 값이 그대로인지 확인한다(그 시험의 `rollbackScript`와 같아야 한다). 버전이 5가 아니면 아무것도 바꾸지 않고 멈춘다.
+```
+sudo python3 -I - /var/lib/orch-broker/registry.json <<'EOF'
+import json, os, sys
+p = sys.argv[1]
+with open(p, encoding="utf-8") as f:
+    r = json.load(f)
+if r.get("version") != 5:
+    sys.exit("not a version 5 registry: nothing changed")
+n = 0
+for x in r["projects"]:
+    rem = x.get("remote")
+    if isinstance(rem, dict) and "key_sha256" in rem:
+        del rem["key_sha256"]
+        n += 1
+r["version"] = 4
+st = os.stat(p)
+tmp = p + ".rollback-tmp"
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(fd, "w", encoding="utf-8") as f:
+    json.dump(r, f, ensure_ascii=False, separators=(",", ":"))
+    f.write("\n")
+    f.flush()
+    os.fsync(f.fileno())
+os.chown(tmp, st.st_uid, st.st_gid)
+os.replace(tmp, p)
+dfd = os.open(os.path.dirname(p) or ".", os.O_RDONLY)
+os.fsync(dfd)
+os.close(dfd)
+print("removed key_sha256 from", n, "rows; version 4")
+EOF
+sudo grep -o '"version": *[0-9]*' /var/lib/orch-broker/registry.json      # "version":4
+sudo grep -o key_sha256 /var/lib/orch-broker/registry.json | wc -l        # 0
+sudo stat -c '%U:%G %a %n' /var/lib/orch-broker/registry.json             # orch-broker:orch-broker 600
+sudo ls -a /var/lib/orch-broker | grep -c rollback-tmp || true            # 0
+```
+(스크립트가 `.rollback-tmp`가 이미 있다고 멈추면 이전 시도의 잔재다: 내용을 보고 `/root/backup-w3h`로 옮긴 뒤 다시.)
+4. **W3g broker 바이너리와 `-check`:** `sudo install -o root -g root -m 0755 /root/backup-w3h/bin/orch-broker /usr/local/bin/orch-broker` → 1-4와 같은 `systemd-run … -check`. 예상: **통과**(W3g broker가 고친 v4 등록부를 받아들인다). 거부("프로젝트 등록부를 신뢰할 수 없습니다")면 시작하지 않고 2에서 만든 사본과 함께 보고한다.
+5. **낡은 `.v4.bak` 치우기(다시 올릴 때를 위해):** `sudo mv /var/lib/orch-broker/registry.json.v4.bak /root/backup-w3h/registry.json.v4.bak.rolledback-$(date +%Y%m%d-%H%M%S)`. 그대로 두면 다음 W3h 전환이 그 파일을 덮어쓰지 않아 새 백업이 생기지 않는다(18.0 (b)).
+6. `sudo systemctl start orch-broker`; 1-6의 읽기가 단계 4 직전과 같은 프로젝트를 주고(`key_sha256`만 없다) 오류가 없는지 본다.
+7. **경고:** 롤백 뒤에는 전환 뒤 만든 행도 해시가 없다. 그 행은 W3g 규칙으로 떼어진다(GitLab은 본문만: W3g의 남은 위험, 31번 7장 1이 다시 열린다). **다시 W3h로 올리면** 그 행들은 해시 없는 행이 되어 GitLab 떼기가 거부된다(⚠ 3과 같은 처리).
+
+**B. orchd·CLI.** `for f in orchd orch aigate; do sudo install -o root -g root -m 0755 /root/backup-w3h/bin/$f /usr/local/lib/aigate/$f; done` → `sudo systemctl start orchd`. 브라우저는 강력 새로고침(웹은 orchd 안에 있다).
+
+**검증:** `journalctl -u orch-broker -u orchd`에 오류 없음, `sudo sha256sum /usr/local/bin/orch-broker /usr/local/lib/aigate/orchd`가 18.0 (a)의 값과 같음, `orch list`가 그대로, 로그인한 화면에서 `#/projects`가 보인다. **그래도 안 되면:** 아무것도 더 지우지 말고 `journalctl -u orch-broker -n 80`과 `sudo ls -lR /root/backup-w3h | head -50`을 보고한다. 등록부를 마지막 수단으로 `.v4.bak`이나 `$B/registry.json.w3g`(같은 내용)에서 되살리는 것은 위 "왜 `.v4.bak` 복원이 아닌가"의 부작용을 사용자가 받아들일 때만 한다.
+
+### 관찰 기록 (컷오버 때 채운다: 결과 문서 33번 9장으로 옮긴다)
+| 항목 | 예상 | 본 것 | 판정 |
+|---|---|---|---|
+| 18.0 (a) 등록부 | `"version":4`, `toy`·`sample-app`만 | | |
+| 18.0 (b) `registry.json.v4.bak` | 없음 | | |
+| 18.0 (c) 공용 `.pub` 필드 수, sha256 앞 8자리 | 2 또는 3, (기록) | | |
+| 1-4 `-check` | 통과, 등록부 v4 그대로 | | |
+| 1-5 등록부 | `"version":5`, `.v4.bak` 600·sha256이 1-3 사본과 같음, `key_sha256` 0개 | | |
+| 1-6 읽기 | 프로젝트·`remote`·`origin` 불변 | | |
+| 2 로그인 없는 요청 | 401 | | |
+| 2-1 일부러 만든 403 | 403, 거부 줄 한 줄 `bad_origin GET /api/v1/auth/session`, 표식 0건 | | |
+| 3-1 원격 없는 행 | 선택지 없음 | | |
+| 3-2 새 행의 해시 | 있음, `.pub` 줄의 sha256과 같음(앞 8자리) | | |
+| 3-2 키 떼기(실제 상태·지연) | 키만 사라짐, 등록·폴더 지움, 60초 안 | | |
+| 3-3 전환 전 GitLab 행 | (없을 것으로 예상) 있으면 선택지 없음 | | |
+| 3-4 GitLab 키 떼기 | (선택) | | |
+| 3-5 원장·로그 | 키 5개뿐·키 본문 0건·거부 줄에 `?` 0건 | | |
