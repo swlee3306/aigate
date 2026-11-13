@@ -31,7 +31,7 @@ func TestRegistryV3MigratesToV4Atomically(t *testing.T) {
 		p := writeRegFile(t, dir, v3Want, 0o600)
 		st := mustOpen(t, dir, LegacySource{ContextRepos: []string{"/srv/ignored"}})
 		reg := st.Snapshot()
-		if reg.Version != 4 || len(reg.Providers) != 1 || len(reg.Projects) != 4 || len(reg.Orphans) != 2 || reg.AutoMergeGlobal.MaxPerDay != 9 {
+		if reg.Version != 5 || len(reg.Providers) != 1 || len(reg.Projects) != 4 || len(reg.Orphans) != 2 || reg.AutoMergeGlobal.MaxPerDay != 9 {
 			t.Fatalf("shape %+v", reg)
 		}
 		wantOrigin := map[string]string{"app-one": OriginUnknown, "legacy-a": OriginLegacy, "plain": OriginUnknown, "nolink": OriginUnknown}
@@ -45,13 +45,13 @@ func TestRegistryV3MigratesToV4Atomically(t *testing.T) {
 			t.Fatalf("mode %v %v", fi, err)
 		}
 		data := readFile(t, p)
-		if string(data) != v4Want {
-			t.Fatalf("file differs from the expected v4:\n%s\n%s", data, v4Want)
+		if string(data) != v5Want {
+			t.Fatalf("file differs from the expected v5:\n%s\n%s", data, v5Want)
 		}
 		// everything except the version number and the new origin key is byte-identical to the v3 file
 		stripped := strings.NewReplacer(`,"origin":"unknown"}`, `}`, `,"origin":"legacy"}`, `}`).Replace(string(data))
 		// (the orphan records' own "origin":"created" is part of the v3 file: the replacer only matched project tails)
-		if strings.Replace(stripped, `"version":4`, `"version":3`, 1) != v3Want {
+		if strings.Replace(stripped, `"version":5`, `"version":3`, 1) != v3Want {
 			t.Fatalf("migration changed more than version and origin:\n%s\n%s", stripped, v3Want)
 		}
 		// project rows keep their ai_context, links and provider (never widened or narrowed)
@@ -102,7 +102,7 @@ func TestRegistryV3MigratesToV4Atomically(t *testing.T) {
 			}
 			if stage == "dir-synced" { // the rename already happened: v4 on disk, retry is a plain open
 				after := readFile(t, p)
-				if string(after) != v4Want {
+				if string(after) != v5Want {
 					t.Fatalf("dir-synced: %s", after)
 				}
 				mustOpen(t, dir, LegacySource{})
@@ -117,7 +117,7 @@ func TestRegistryV3MigratesToV4Atomically(t *testing.T) {
 			if left := tempLeftovers(t, dir); len(left) != 0 {
 				t.Fatalf("%s: temp files left: %v", stage, left)
 			}
-			if st := mustOpen(t, dir, LegacySource{}); st.Snapshot().Version != 4 || string(readFile(t, p)) != v4Want {
+			if st := mustOpen(t, dir, LegacySource{}); st.Snapshot().Version != 5 || string(readFile(t, p)) != v5Want {
 				t.Fatalf("%s: retry did not migrate", stage)
 			}
 		}
@@ -146,7 +146,7 @@ func TestRegistryV3MigratesToV4Atomically(t *testing.T) {
 			dir := stateDirFor(t)
 			p := writeRegFile(t, dir, c.sample, 0o600)
 			st := mustOpen(t, dir, LegacySource{})
-			if st.Snapshot().Version != 4 || !strings.Contains(string(readFile(t, p)), `"version":4`) || strings.Contains(string(readFile(t, p)), `"gitlab":`) {
+			if st.Snapshot().Version != 5 || !strings.Contains(string(readFile(t, p)), `"version":5`) || strings.Contains(string(readFile(t, p)), `"gitlab":`) {
 				t.Fatalf("%s: %s", name, readFile(t, p))
 			}
 			for _, pr := range st.Snapshot().Projects {
@@ -165,7 +165,7 @@ func TestRegistryV3MigratesToV4Atomically(t *testing.T) {
 		dir := stateDirFor(t)
 		p := writeRegFile(t, dir, v2Sample, 0o600)
 		mustOpen(t, dir, LegacySource{})
-		if string(readFile(t, p)) != v4Want {
+		if string(readFile(t, p)) != v5Want {
 			t.Fatalf("v2 -> v4 differs from v3 -> v4:\n%s", readFile(t, p))
 		}
 	})
@@ -185,7 +185,7 @@ func TestRegistryV3MigratesToV4Atomically(t *testing.T) {
 			"truncated":              `{"version":3,"providers":[],"projects":[`,
 			"version as string":      `{"version":"3","providers":[],"projects":[],` + tail,
 			"mixed-case Version":     `{"version":3,"Version":4,"providers":[],"projects":[],` + tail,
-			"unknown version 5":      `{"version":5,"providers":[],"projects":[],` + tail,
+			"unknown version 6":      `{"version":6,"providers":[],"projects":[],` + tail,
 			"unknown version 0":      `{"version":0,"providers":[],"projects":[],` + tail,
 			"remote id w/o provider": `{"version":3,"providers":[],"projects":[{"id":"a","path":"/x/a","kind":"k","ai_context":false,"provider":null,"remote":{"path":"o/r","id":5},"auto_merge":{"enabled":false}}],` + tail,
 		}
@@ -256,7 +256,7 @@ func TestV3ToV4WritesBackupOnceNeverOverwritten(t *testing.T) {
 	if fi, _ := os.Stat(bak); fi.Mode().Perm() != 0o600 {
 		t.Fatalf("backup mode %v", fi.Mode())
 	}
-	if string(readFile(t, p)) != v4Want {
+	if string(readFile(t, p)) != v5Want {
 		t.Fatal("registry not migrated")
 	}
 	// later writes and starts never touch the backup
@@ -326,10 +326,10 @@ func TestV3ToV4WritesBackupOnceNeverOverwritten(t *testing.T) {
 // nothing: rolling the binary back needs registry.json.v3.bak. This pins the
 // constants and replays a copy of the W3e strict loader on a real v4 file.
 func TestOldBrokerRefusesV4(t *testing.T) {
-	if registryVersion != 4 || registryVersionV3 != 3 || registryVersionV2 != 2 || registryVersionV1 != 1 {
+	if registryVersion != 5 || registryVersionV3 != 3 || registryVersionV2 != 2 || registryVersionV1 != 1 {
 		t.Fatalf("version constants moved: current=%d v3=%d v2=%d v1=%d", registryVersion, registryVersionV3, registryVersionV2, registryVersionV1)
 	}
-	if emptyRegistry().Version != 4 {
+	if emptyRegistry().Version != 5 {
 		t.Fatal("fresh registry is not v4")
 	}
 	// W3e loader, copied: strict decode into the v3 shape (no origin), then version == 3.
@@ -367,7 +367,7 @@ func TestOldBrokerRefusesV4(t *testing.T) {
 	// with a project in it, forcing the version back to 3 still fails on the new key
 	var f map[string]any
 	json.Unmarshal(data, &f)
-	if f["version"] != float64(4) {
+	if f["version"] != float64(5) {
 		t.Fatalf("file version %v", f["version"])
 	}
 	if ps, _ := f["projects"].([]any); len(ps) != 1 {
@@ -417,8 +417,9 @@ func TestRegistryV4StrictParser(t *testing.T) {
 			t.Errorf("%s refused: %v", name, err)
 			continue
 		}
-		if string(readFile(t, p)) != content {
-			t.Errorf("%s: a valid v4 file was rewritten", name)
+		// W3h: a valid v4 file is migrated to v5 with nothing but the version changed
+		if string(readFile(t, p)) != v5Of(content)+"\n" { // (the broker writes a final newline)
+			t.Errorf("%s: a valid v4 file was not migrated as it is", name)
 		}
 	}
 	bad := map[string]string{
@@ -442,7 +443,7 @@ func TestRegistryV4StrictParser(t *testing.T) {
 		"v3 style gitlab key in v4":       strings.Replace(file(row("registered", `"unknown"`, ``)), `"remote":null`, `"gitlab":null`, 1),
 		"trailing data":                   file(row("registered", `"unknown"`, ``)) + `{}`,
 		"auto merge on":                   strings.Replace(file(row("registered", `"unknown"`, ``)), `"auto_merge":{"enabled":false}`, `"auto_merge":{"enabled":true}`, 1),
-		"version 5":                       strings.Replace(file(), `"version":4`, `"version":5`, 1),
+		"version 6":                       strings.Replace(file(), `"version":4`, `"version":6`, 1),
 		"version as float":                strings.Replace(file(), `"version":4`, `"version":4.0`, 1),
 		"two version keys":                strings.Replace(file(), `"version":4`, `"version":4,"version":4`, 1),
 	}

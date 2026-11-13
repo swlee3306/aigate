@@ -182,12 +182,14 @@ func TestEveryDetachAndAlsoLocalRequestIsAllowlistedAndBoundW3g(t *testing.T) {
 //     (our title is listed), nothing is deleted and the row stays.
 //
 // The request ID is spent by the first attempt (replay is request_reused).
-// Known residual (docs/31 §7, pinned here so a change is noticed): on GitLab
-// the title is ignored (G-D2), so the unsigned line alone chooses WHICH key of
-// the signed project is taken off (here the "my laptop" key), and the row is
-// then unregistered although the key titled "orchd demo-gl" stays listed. The
-// route stays the signed project's, at most one key, never a global key route.
-// Only an orchd that sends a line other than its own .pub can do this.
+// W3h closed the residual this test used to pin (docs/31 §7: on GitLab the
+// title is ignored, so the unsigned line alone chose WHICH key of the signed
+// project was taken off). demo-gl now carries the signed key_sha256 of its
+// registration (newDel), so every foreign line is refused in the shape stage
+// with deploy_key_mismatch: no provider request, no ID burnt (the replay is
+// refused the same way). GitHub (demo-gh, a row without a hash) keeps the W3g
+// rule. TestUnsignedKeyLineWideningNowRefusedW3h covers hashed GitHub rows and
+// hashless GitLab rows.
 func TestUnsignedKeyLineNeverWidensBeyondTheSignedProjectW3g(t *testing.T) {
 	ghList := [][3]string{{"1", "orchd other", delKeyA}, {"2", "orchd demo-gh", delKeyB}, {"3", "my laptop", delKeyC}, {"4", "ci", delKeyD}}
 	glList := [][3]string{{"8", "orchd demo-gl", delKeyB}, {"10", "my laptop", delKeyC}, {"11", "ci", delKeyD}}
@@ -249,13 +251,15 @@ func TestUnsignedKeyLineNeverWidensBeyondTheSignedProjectW3g(t *testing.T) {
 			if p.kind == "github" && (oe == nil || oe.Code != "remove_refused" || len(dels) != 0 || !d.rowExists(p.id)) {
 				t.Fatalf("github %s: a foreign line must be a look-alike refusal: %v %v", line, oe, dels)
 			}
-			if p.kind == "gitlab" && strings.HasPrefix(line, delKeyC) && (oe != nil || fmt.Sprint(dels) != "[DELETE /api/v4/projects/21/deploy_keys/10]" || d.rowExists(p.id)) {
-				t.Fatalf("the pinned GitLab residual changed (update docs/31 §7): %v %v", oe, dels)
+			if p.kind == "gitlab" && (oe == nil || oe.Code != "deploy_key_mismatch" || len(fake.all()) != 0 || !d.rowExists(p.id)) {
+				t.Fatalf("gitlab %s: a foreign line must be refused before any request (W3h): %v %v", line, oe, fake.all())
 			}
 			n := len(fake.all())
 			replay := "request_reused"
 			if oe == nil {
 				replay = "project_unknown" // the row is gone: refused in the shape stage
+			} else if oe.Code == "deploy_key_mismatch" {
+				replay = "deploy_key_mismatch" // refused in the shape stage: the ID was not burnt
 			}
 			d.wantCode("remove_project", a, replay)
 			if len(fake.all()) != n {

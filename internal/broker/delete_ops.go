@@ -2,6 +2,9 @@ package broker
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -44,13 +47,19 @@ import (
 // token store with ValueOfKind); the ops have no token argument and no other
 // credential exists on this path.
 //
-// Key identity (remove_deploy_key and remove_project with detach_key): see
-// classifyKeys. GitHub: title "orchd <project id>" AND the key body of orchd's
-// unsigned `deploy_key` line; GitLab: the key body (the title is ignored, a
-// shared key keeps the first project's title). One match is deleted, two are
-// refused, and when none matches but any key has our title or body the answer
-// is a refusal, never "already gone". The key line can only narrow, never
-// widen. GitLab: the key is taken off this project only.
+// Key identity (remove_deploy_key and remove_project with detach_key). First
+// (W3h, keyLineCode, in the shape stage: no ID burnt, no provider contact) the
+// unsigned `deploy_key` line orchd sends is bound to the registration: a row
+// that carries remote.key_sha256 (the signed deploy_key_sha256 of its
+// create/link/attach) needs sha256(line) to equal it; a row without one is
+// refused on GitLab (the body alone would let the unsigned line pick any key of
+// the project) and keeps the W3g rule on GitHub (the title is part of it). All
+// refusals are deploy_key_mismatch. Then classifyKeys, unchanged: GitHub: title
+// "orchd <project id>" AND the key body of the line; GitLab: the key body (the
+// title is ignored, a shared key keeps the first project's title). One match
+// is deleted, two are refused, and when none matches but any key has our title
+// or body the answer is a refusal, never "already gone". GitLab: the key is
+// taken off this project only.
 
 const (
 	maxDeleteRepoPerDay   = 3 // broker-wide, rolling 24 hours (F-D5)
@@ -61,7 +70,8 @@ const (
 var (
 	// deploy_key is the unsigned public key line orchd reads from its own key
 	// folder. It is accepted only with detach_key=true (W3g) and, like in
-	// remove_deploy_key, can only narrow which key is taken off, never widen.
+	// remove_deploy_key, must hash to the row's signed key_sha256 (W3h; a
+	// GitLab row without one is refused, a GitHub row keeps the W3g rule).
 	removeProjectKeys    = []string{"id", "scope", "legacy_ack", "detach_key", "deploy_key", "change", "request", "issued", "signature"}
 	deleteRemoteRepoKeys = []string{"id", "remote_path", "remote_id", "confirm_name", "also_local", "change", "request", "issued", "signature"}
 	removeDeployKeyKeys  = []string{"id", "remote_path", "deploy_key", "change", "request", "issued", "signature"}
@@ -93,10 +103,32 @@ func sameRowCore(a, b Project) bool {
 		if x == nil {
 			return true
 		}
-		return x.Path == y.Path && (x.ID == nil) == (y.ID == nil) && (x.ID == nil || *x.ID == *y.ID)
+		return x.Path == y.Path && (x.ID == nil) == (y.ID == nil) && (x.ID == nil || *x.ID == *y.ID) && eqStr(x.KeySHA256, y.KeySHA256)
 	}
 	return a.ID == b.ID && a.Path == b.Path && a.Kind == b.Kind && a.Origin == b.Origin &&
 		eqStr(a.Provider, b.Provider) && eqRemote(a.Remote, b.Remote) && eqStr(a.RemoteDeletedAt, b.RemoteDeletedAt)
+}
+
+// keyLineCode binds orchd's unsigned key line to the row (W3h, H-D3): "" or
+// deploy_key_mismatch. With remote.key_sha256 the line must hash to it
+// (constant-time compare of the lowercase hex). Without it only a GitHub row
+// passes (its W3g rule needs our title as well); every other kind is refused.
+// Pure: the caller has already checked that p has a remote.
+func keyLineCode(prov Provider, p Project, line string) string {
+	if p.Remote == nil {
+		return "deploy_key_mismatch"
+	}
+	if p.Remote.KeySHA256 != nil {
+		sum := sha256.Sum256([]byte(line))
+		if subtle.ConstantTimeCompare([]byte(hex.EncodeToString(sum[:])), []byte(*p.Remote.KeySHA256)) != 1 {
+			return "deploy_key_mismatch"
+		}
+		return ""
+	}
+	if prov.Kind != "github" {
+		return "deploy_key_mismatch"
+	}
+	return ""
 }
 
 // keyVerdict classifies a provider's key list against OUR key (project id +
@@ -164,9 +196,10 @@ type removeProjectArgs struct {
 // removeProjectCode: "" or the refusal code. legacy_ack must equal
 // (origin == legacy) in BOTH directions. detach_key=true needs a row that has a
 // provider and a live remote (provider entry present, remote set with a number,
-// not deleted): anything else is refused (W3g, G-D3). It returns the project
-// and, for detach_key=true, its provider entry.
-func removeProjectCode(reg *Registry, id string, ack, detach bool) (Project, Provider, string) {
+// not deleted): anything else is refused (W3g, G-D3), and orchd's key line
+// must be bound to the row (keyLineCode, W3h). It returns the project and, for
+// detach_key=true, its provider entry.
+func removeProjectCode(reg *Registry, id string, ack, detach bool, keyLine string) (Project, Provider, string) {
 	p, ok := findProject(reg, id)
 	if !ok {
 		return Project{}, Provider{}, "project_unknown"
@@ -195,6 +228,9 @@ func removeProjectCode(reg *Registry, id string, ack, detach bool) (Project, Pro
 	if p.Remote.ID == nil {
 		return p, prov, "remote_changed"
 	}
+	if code := keyLineCode(prov, p, keyLine); code != "" {
+		return p, prov, code
+	}
 	return p, prov, ""
 }
 
@@ -208,7 +244,7 @@ func (s *Server) removeProjectHandler(ctx context.Context, raw json.RawMessage) 
 	}
 	detach := *a.DetachKey
 	fields := map[string]any{"scope": a.Scope, "legacy_ack": *a.LegacyAck, "detach_key": detach}
-	wantBody := ""
+	wantBody, keyLine := "", ""
 	shape := func() *OpError {
 		if !registrymsg.ValidSubject(a.ID) || a.Scope != "local" {
 			return fail1("bad_request")
@@ -223,12 +259,12 @@ func (s *Server) removeProjectHandler(ctx context.Context, raw json.RawMessage) 
 			if !ok {
 				return fail1("bad_request")
 			}
-			wantBody = b
+			wantBody, keyLine = b, *a.DeployKey
 		} else if a.DeployKey != nil {
 			return fail1("bad_request")
 		}
 		reg := s.Registry.Snapshot()
-		if _, _, code := removeProjectCode(&reg, a.ID, *a.LegacyAck, detach); code != "" {
+		if _, _, code := removeProjectCode(&reg, a.ID, *a.LegacyAck, detach, keyLine); code != "" {
 			return fail1(code)
 		}
 		return nil
@@ -242,7 +278,7 @@ func (s *Server) removeProjectHandler(ctx context.Context, raw json.RawMessage) 
 	}
 	defer s.unlockName(a.ID)
 	snap := s.Registry.Snapshot()
-	before, prov, code := removeProjectCode(&snap, a.ID, *a.LegacyAck, detach)
+	before, prov, code := removeProjectCode(&snap, a.ID, *a.LegacyAck, detach, keyLine)
 	if code != "" {
 		return fail(code)
 	}
@@ -600,7 +636,7 @@ func (s *Server) deleteRemoteRepoHandler(ctx context.Context, raw json.RawMessag
 type removeDeployKeyArgs struct {
 	ID         string             `json:"id"`
 	RemotePath string             `json:"remote_path"`
-	DeployKey  *string            `json:"deploy_key"` // REQUIRED, NOT signed: the key must match it too (never widens)
+	DeployKey  *string            `json:"deploy_key"` // REQUIRED, NOT signed: bound to the row's key_sha256 (W3h), and the key must match it
 	Change     string             `json:"change"`
 	Request    string             `json:"request"`
 	Issued     string             `json:"issued"`
@@ -625,6 +661,9 @@ func removeKeyCode(reg *Registry, a removeDeployKeyArgs) (Project, Provider, str
 	}
 	if !SameRepoPath(prov.Kind, a.RemotePath, p.Remote.Path) || p.Remote.ID == nil {
 		return p, prov, "remote_changed"
+	}
+	if code := keyLineCode(prov, p, *a.DeployKey); code != "" { // W3h: the line must be the registered one
+		return p, prov, code
 	}
 	return p, prov, ""
 }

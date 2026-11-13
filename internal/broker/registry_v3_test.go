@@ -39,7 +39,7 @@ func TestRegistryV2MigratesToV3Atomically(t *testing.T) {
 		p := writeRegFile(t, dir, v2Sample, 0o600)
 		st := mustOpen(t, dir, LegacySource{ContextRepos: []string{"/srv/ignored"}})
 		reg := st.Snapshot()
-		if reg.Version != 4 || len(reg.Providers) != 1 || len(reg.Projects) != 4 || len(reg.Orphans) != 2 || reg.AutoMergeGlobal.MaxPerDay != 9 {
+		if reg.Version != 5 || len(reg.Providers) != 1 || len(reg.Projects) != 4 || len(reg.Orphans) != 2 || reg.AutoMergeGlobal.MaxPerDay != 9 {
 			t.Fatalf("shape %+v", reg)
 		}
 		a := reg.Projects[0]
@@ -57,8 +57,8 @@ func TestRegistryV2MigratesToV3Atomically(t *testing.T) {
 			t.Fatalf("mode %v %v", fi, err)
 		}
 		data := readFile(t, p)
-		if string(data) != v4Want {
-			t.Fatalf("file differs from the expected v4:\n%s\n%s", data, v4Want)
+		if string(data) != v5Want {
+			t.Fatalf("file differs from the expected v4:\n%s\n%s", data, v5Want)
 		}
 		if left := tempLeftovers(t, dir); len(left) != 0 {
 			t.Fatalf("temp files left: %v", left)
@@ -108,7 +108,7 @@ func TestRegistryV2MigratesToV3Atomically(t *testing.T) {
 			}
 			if stage == "dir-synced" { // the rename already happened: v3 on disk, retry is a plain open
 				after := readFile(t, p)
-				if string(after) != v4Want {
+				if string(after) != v5Want {
 					t.Fatalf("dir-synced: %s", after)
 				}
 				mustOpen(t, dir, LegacySource{})
@@ -123,7 +123,7 @@ func TestRegistryV2MigratesToV3Atomically(t *testing.T) {
 			if left := tempLeftovers(t, dir); len(left) != 0 {
 				t.Fatalf("%s: temp files left: %v", stage, left)
 			}
-			if st := mustOpen(t, dir, LegacySource{}); st.Snapshot().Version != 4 || string(readFile(t, p)) != v4Want {
+			if st := mustOpen(t, dir, LegacySource{}); st.Snapshot().Version != 5 || string(readFile(t, p)) != v5Want {
 				t.Fatalf("%s: retry did not migrate", stage)
 			}
 		}
@@ -151,7 +151,7 @@ func TestRegistryV2MigratesToV3Atomically(t *testing.T) {
 		dir := stateDirFor(t)
 		p := writeRegFile(t, dir, v1Sample, 0o600)
 		st := mustOpen(t, dir, LegacySource{})
-		if st.Snapshot().Version != 4 || !strings.Contains(string(readFile(t, p)), `"version":4`) || strings.Contains(string(readFile(t, p)), `"gitlab"`) {
+		if st.Snapshot().Version != 5 || !strings.Contains(string(readFile(t, p)), `"version":5`) || strings.Contains(string(readFile(t, p)), `"gitlab"`) {
 			t.Fatalf("%s", readFile(t, p))
 		}
 	})
@@ -226,10 +226,10 @@ func TestRegistryV2MigratesToV3Atomically(t *testing.T) {
 // nothing: rolling the binary back needs the pre-migration registry backup.
 // This pins the constants and replays the W3c strict loader on a real v3 file.
 func TestOldBrokerRefusesV3(t *testing.T) {
-	if registryVersion != 4 || registryVersionV3 != 3 || registryVersionV2 != 2 || registryVersionV1 != 1 {
+	if registryVersion != 5 || registryVersionV3 != 3 || registryVersionV2 != 2 || registryVersionV1 != 1 {
 		t.Fatalf("version constants moved: current=%d v3=%d v2=%d v1=%d", registryVersion, registryVersionV3, registryVersionV2, registryVersionV1)
 	}
-	if emptyRegistry().Version != 4 {
+	if emptyRegistry().Version != 5 {
 		t.Fatal("fresh registry is not v4")
 	}
 	// W3c loader, copied: strict decode into the v2 shape, then version == 2.
@@ -275,7 +275,7 @@ func TestOldBrokerRefusesV3(t *testing.T) {
 	data = readFile(t, filepath.Join(dir, RegistryFileName))
 	var f map[string]any
 	json.Unmarshal(data, &f)
-	if f["version"] != float64(4) {
+	if f["version"] != float64(5) {
 		t.Fatalf("file version %v", f["version"])
 	}
 	f["version"] = 2
@@ -286,7 +286,7 @@ func TestOldBrokerRefusesV3(t *testing.T) {
 	// and a v3 file that no project uses the key in still carries version 3
 	var empty map[string]any
 	json.Unmarshal(mustMarshalRegistry(emptyRegistry()), &empty)
-	if empty["version"] != float64(4) {
+	if empty["version"] != float64(5) {
 		t.Fatal("empty registry version")
 	}
 }
@@ -436,7 +436,7 @@ func TestV2ToV3WritesBackupOnceNeverOverwritten(t *testing.T) {
 	if fi, _ := os.Stat(bak); fi.Mode().Perm() != 0o600 {
 		t.Fatalf("backup mode %v", fi.Mode())
 	}
-	if string(readFile(t, p)) != v4Want {
+	if string(readFile(t, p)) != v5Want {
 		t.Fatal("registry not migrated")
 	}
 	// later writes and starts never touch the backup

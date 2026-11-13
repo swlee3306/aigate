@@ -320,6 +320,9 @@ func (s *Server) linkOrAttach(ctx context.Context, r remoteReq) (res any, oe *Op
 	// (5) the registry entry comes LAST; a failure here leaves an orphan record
 	step = stepRegister
 	provID := r.provider
+	// W3h: the signed deploy_key_sha256 (checked against the key line in the
+	// shape stage) is kept with the remote, for a new row and an attach alike.
+	keyHash := r.keySHA256
 	var entry Project
 	err = s.Registry.Update(func(reg *Registry) error {
 		// the provider the calls used must still be the stored one
@@ -331,7 +334,7 @@ func (s *Server) linkOrAttach(ctx context.Context, r remoteReq) (res any, oe *Op
 		}
 		if !r.attach {
 			entry = Project{ID: r.id, Path: projPath, Kind: "registered", AIContext: *r.aiContext, Provider: &provID,
-				Remote: &RemoteLink{Path: remote, ID: &id}, Origin: OriginLinked}
+				Remote: &RemoteLink{Path: remote, ID: &id, KeySHA256: &keyHash}, Origin: OriginLinked}
 			reg.Projects = append(reg.Projects, entry)
 			return nil
 		}
@@ -345,7 +348,7 @@ func (s *Server) linkOrAttach(ctx context.Context, r remoteReq) (res any, oe *Op
 				return opCodeErr("project_unknown")
 			}
 			p.Provider = &provID
-			p.Remote = &RemoteLink{Path: remote, ID: &id}
+			p.Remote = &RemoteLink{Path: remote, ID: &id, KeySHA256: &keyHash}
 			entry = *p
 			return nil
 		}

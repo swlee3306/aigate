@@ -59,7 +59,7 @@ func TestRegistryV1MigratesToV2Atomically(t *testing.T) {
 		// legacy source must be ignored
 		st := mustOpen(t, dir, LegacySource{ContextRepos: []string{"/srv/ignored"}})
 		reg := st.Snapshot()
-		if reg.Version != 4 || len(reg.Providers) != 0 || len(reg.Orphans) != 0 || reg.AutoMergeGlobal.MaxPerDay != 7 || len(reg.Projects) != 2 {
+		if reg.Version != 5 || len(reg.Providers) != 0 || len(reg.Orphans) != 0 || reg.AutoMergeGlobal.MaxPerDay != 7 || len(reg.Projects) != 2 {
 			t.Fatalf("shape %+v", reg)
 		}
 		a, b := reg.Projects[0], reg.Projects[1]
@@ -79,8 +79,8 @@ func TestRegistryV1MigratesToV2Atomically(t *testing.T) {
 		if err := json.Unmarshal(data, &raw); err != nil {
 			t.Fatal(err)
 		}
-		if string(raw["version"]) != "4" || string(raw["providers"]) != "[]" || string(raw["orphans"]) != "[]" {
-			t.Fatalf("file not v4: %s", data)
+		if string(raw["version"]) != "5" || string(raw["providers"]) != "[]" || string(raw["orphans"]) != "[]" {
+			t.Fatalf("file not v5: %s", data)
 		}
 		// the project entries carry the same values; only the link key is the v3+ one and the origin is new
 		var v1raw map[string]json.RawMessage
@@ -120,11 +120,11 @@ func TestRegistryV1MigratesToV2Atomically(t *testing.T) {
 			if stage == "dir-synced" {
 				// the rename already happened: the file is v2 now, and a retry must see the same content
 				after := readFile(t, p)
-				if !bytes.Contains(after, []byte(`"version":4`)) {
+				if !bytes.Contains(after, []byte(`"version":5`)) {
 					t.Fatalf("dir-synced: file not v4: %s", after)
 				}
 				st2 := mustOpen(t, dir, LegacySource{})
-				if !bytes.Equal(after, readFile(t, p)) || st2.Snapshot().Version != 4 || len(st2.Snapshot().Projects) != 2 {
+				if !bytes.Equal(after, readFile(t, p)) || st2.Snapshot().Version != 5 || len(st2.Snapshot().Projects) != 2 {
 					t.Fatal("dir-synced: retry changed or misread the file")
 				}
 				continue
@@ -136,7 +136,7 @@ func TestRegistryV1MigratesToV2Atomically(t *testing.T) {
 				t.Fatalf("%s: temp files left: %v", stage, left)
 			}
 			// a later run without the fault migrates normally
-			if st := mustOpen(t, dir, LegacySource{}); st.Snapshot().Version != 4 {
+			if st := mustOpen(t, dir, LegacySource{}); st.Snapshot().Version != 5 {
 				t.Fatalf("%s: retry did not migrate", stage)
 			}
 		}
@@ -153,7 +153,7 @@ func TestRegistryV1MigratesToV2Atomically(t *testing.T) {
 			"v1 duplicate id":       `{"version":1,"providers":[],"projects":[{"id":"a","path":"/x/a","kind":"k"},{"id":"a","path":"/x/b","kind":"k"}],"auto_merge_global":{"enabled":false,"max_per_day":5}}`,
 			"v1 truncated":          `{"version":1,"providers":[],"proj`,
 			"version 0":             `{"version":0,` + good + `,"orphans":[]}`,
-			"version 5":             `{"version":5,` + good + `,"orphans":[]}`,
+			"version 6":             `{"version":6,` + good + `,"orphans":[]}`,
 			"version -1":            `{"version":-1,` + good + `,"orphans":[]}`,
 			"version missing":       `{` + good + `,"orphans":[]}`,
 			"version string":        `{"version":"2",` + good + `,"orphans":[]}`,
@@ -470,10 +470,10 @@ func TestOrphansBounded(t *testing.T) {
 // stays true: changing registryVersion back to 1, or letting v2 look like v1,
 // fails here.
 func TestOldBrokerVersionRefusesV2(t *testing.T) {
-	if registryVersion != 4 || registryVersionV3 != 3 || registryVersionV2 != 2 || registryVersionV1 != 1 {
+	if registryVersion != 5 || registryVersionV3 != 3 || registryVersionV2 != 2 || registryVersionV1 != 1 {
 		t.Fatalf("version constants moved: current=%d v3=%d v2=%d v1=%d", registryVersion, registryVersionV3, registryVersionV2, registryVersionV1)
 	}
-	if got := emptyRegistry().Version; got != 4 {
+	if got := emptyRegistry().Version; got != 5 {
 		t.Fatalf("fresh registry version %d", got)
 	}
 	dir := stateDirFor(t)
@@ -510,7 +510,7 @@ func TestOldBrokerVersionRefusesV2(t *testing.T) {
 	}
 	var f map[string]any
 	json.Unmarshal(data, &f)
-	if f["version"] != float64(4) {
+	if f["version"] != float64(5) {
 		t.Fatalf("file version %v", f["version"])
 	}
 	// the replica does accept a genuine v1 file (so the check above is meaningful)

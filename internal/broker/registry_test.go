@@ -49,7 +49,7 @@ func TestRegistryFreshStartMigratesLegacyConfig(t *testing.T) {
 	l := legacyFor("/srv")
 	st := mustOpen(t, dir, l)
 	reg := st.Snapshot()
-	if reg.Version != 4 || len(reg.Providers) != 0 || reg.AutoMergeGlobal.Enabled || reg.AutoMergeGlobal.MaxPerDay != 5 {
+	if reg.Version != 5 || len(reg.Providers) != 0 || reg.AutoMergeGlobal.Enabled || reg.AutoMergeGlobal.MaxPerDay != 5 {
 		t.Fatalf("shape %+v", reg)
 	}
 	got := st.AIContextPaths()
@@ -142,8 +142,8 @@ func TestRegistryBrokenIsFailClosedNotMigrated(t *testing.T) {
 	}{
 		"broken json":      {content: `{"version":1,`, mode: 0o600},
 		"empty file":       {content: ``, mode: 0o600},
-		"unknown key":      {content: strings.Replace(good, `"version":4`, `"version":4,"extra":true`, 1), mode: 0o600},
-		"version mismatch": {content: strings.Replace(good, `"version":4`, `"version":5`, 1), mode: 0o600},
+		"unknown key":      {content: strings.Replace(good, `"version":5`, `"version":5,"extra":true`, 1), mode: 0o600},
+		"version mismatch": {content: strings.Replace(good, `"version":5`, `"version":6`, 1), mode: 0o600},
 		"trailing data":    {content: good + `{}`, mode: 0o600},
 		"duplicate id":     {content: `{"version":1,"providers":[],"projects":[{"id":"a","path":"/x/a","kind":"k"},{"id":"a","path":"/x/b","kind":"k"}],"auto_merge_global":{"enabled":false,"max_per_day":5}}`, mode: 0o600},
 		"auto merge on":    {content: `{"version":1,"providers":[],"projects":[{"id":"a","path":"/x/a","kind":"k","auto_merge":{"enabled":true}}],"auto_merge_global":{"enabled":false,"max_per_day":5}}`, mode: 0o600},

@@ -25,32 +25,38 @@ import (
 //
 // Fail closed: only a truly missing file starts a fresh registry (and migrates
 // the legacy broker.json entries once). A file that is broken, unknown-keyed,
-// of a version other than 1, 2, 3 or 4, not owned by the broker account or not
+// of a version other than 1, 2, 3, 4 or 5, not owned by the broker account or not
 // 0600 is never treated as "absent": the broker keeps running but every read
 // and write that depends on the registry answers registry_unavailable.
 //
-// Versions. The file is version 4 (W3f: every project carries its origin,
-// created|linked|unknown|legacy, and may carry remote_deleted_at). Version 3
+// Versions. The file is version 5 (W3h: a remote may carry key_sha256, the
+// signed deploy_key_sha256 of the registration that linked it). Version 4 (W3f)
+// gave every project its origin, created|linked|unknown|legacy, and
+// remote_deleted_at. Version 3
 // (W3e) added provider kinds gitlab and github, per-project remote:{path,id}
 // and orphan records. A valid version 1 (W3a/W3b), version 2 (W3c,
-// gitlab:{project,project_id} links) or version 3 file is migrated to 4 when it
-// is opened: same content and meaning (only the origin is new), rewritten
+// gitlab:{project,project_id} links), version 3 or version 4 file is migrated
+// to 5 when it is opened: same content and meaning (v1-v3 rows get their
+// origin; v4 rows are kept as they are, with no key hash), rewritten
 // atomically as 0600 (temp file, fsync, rename), after a byte-exact backup
 // registry.json.v<N>.bak that is never overwritten; if either write fails the
-// old file is untouched and the open is a start failure. A W3e broker accepts
-// only version 3 and refuses unknown keys, so it treats a version 4 file as
-// broken (fail closed): rolling the broker back means restoring the registry
-// from that backup.
+// old file is untouched and the open is a start failure. An older broker
+// accepts only its own version and refuses unknown keys, so it treats a newer
+// file as broken (fail closed): rolling the broker back means restoring the
+// registry from that backup (W3g: registry.json.v4.bak).
 
 const (
 	// RegistryFileName and UsedRequestsFileName live in the state directory.
 	RegistryFileName     = "registry.json"
 	UsedRequestsFileName = "used-requests.json"
 
-	// registryVersion is what this code writes. registryVersionV3, V2 and V1 are
-	// the older versions it still reads (and migrates). TestOldBrokerRefusesV4,
-	// TestOldBrokerRefusesV3 and TestOldBrokerVersionRefusesV2 pin them.
-	registryVersion = 4
+	// registryVersion is what this code writes. registryVersionV4, V3, V2 and V1
+	// are the older versions it still reads (and migrates). TestOldBrokerRefusesV5,
+	// TestOldBrokerRefusesV4, TestOldBrokerRefusesV3 and
+	// TestOldBrokerVersionRefusesV2 pin them.
+	registryVersion = 5
+	// registryVersionV4 is the W3f/W3g file shape: remotes have no key_sha256.
+	registryVersionV4 = 4
 	// registryVersionV3 is the W3e file shape: projects have no origin.
 	registryVersionV3 = 3
 	// registryVersionV2 is the W3c file shape: project links are
@@ -73,6 +79,7 @@ var (
 	projectIDRE   = regexp.MustCompile(`^[a-z][a-z0-9-]{0,39}$`)
 	projectKindRE = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 	orphanStepRE  = regexp.MustCompile(`^[a-z][a-z_]{0,31}$`)
+	keySHA256RE   = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
 // orphanTimeLayout is the only accepted form of Orphan.At (UTC, whole seconds).
@@ -82,7 +89,7 @@ const orphanTimeLayout = "2006-01-02T15:04:05Z"
 // broker.json (the old config knows no classes).
 const legacyKind = "legacy"
 
-// Registry is the D1 shape (version 4).
+// Registry is the D1 shape (version 5).
 type Registry struct {
 	Version         int           `json:"version"`
 	Providers       []Provider    `json:"providers"`
@@ -211,9 +218,18 @@ type Project struct {
 // or owner/repo (GitHub); ID is the provider's numeric id (null for a link
 // without a provider, such as a migrated broker.json entry, or when the
 // provider did not confirm it).
+//
+// KeySHA256 (version 5, W3h) is the signed deploy_key_sha256 of the
+// create_project/link_project/attach_remote that registered this remote:
+// lowercase hex SHA-256 of the whole public key line the deploy key was made
+// from. Only with a provider. Absent on rows registered before W3h. A detach
+// (remove_project detach_key, remove_deploy_key) requires the key line orchd
+// sends to hash to it. It lives inside the remote, so a remote set to null
+// (remote deleted) takes it along.
 type RemoteLink struct {
-	Path string `json:"path"`
-	ID   *int64 `json:"id"`
+	Path      string  `json:"path"`
+	ID        *int64  `json:"id"`
+	KeySHA256 *string `json:"key_sha256,omitempty"`
 }
 
 // gitlabLinkV2 is the link shape of version 1 and 2 files: gitlab:{project,project_id}.
@@ -318,16 +334,16 @@ func OpenRegistry(dir string, legacy LegacySource, o RegistryOptions) (*Registry
 				return st, ErrRegistryBroken
 			}
 			if migrated {
-				// v1/v2/v3 -> v4: same content, atomic replace (never exclusive:
-				// the old file is the one being replaced). First a byte-exact
-				// backup registry.json.v<N>.bak (0600, only if absent, never
-				// overwritten, fsynced): a W3e broker cannot read v4, so a
-				// rollback restores it. Any error is a start failure. Per
+				// v1/v2/v3/v4 -> v5: same content, atomic replace (never
+				// exclusive: the old file is the one being replaced). First a
+				// byte-exact backup registry.json.v<N>.bak (0600, only if absent,
+				// never overwritten, fsynced): an older broker cannot read v5, so
+				// a rollback restores it. Any error is a start failure. Per
 				// stage: before the rename (temp write, fsync) the old file is
 				// untouched; after the rename (only the directory fsync can
-				// still fail) the file is already v4 and the next start reads
-				// it as a normal v4 file. There is no lock between reading the
-				// old file and renaming v4: stop the old broker first.
+				// still fail) the file is already v5 and the next start reads
+				// it as a normal v5 file. There is no lock between reading the
+				// old file and renaming v5: stop the old broker first.
 				if berr := writeBackupOnce(st.path, data, string(topLevelVersion(data))); berr != nil {
 					return nil, errors.New("프로젝트 등록부의 백업을 저장할 수 없습니다")
 				}
@@ -529,6 +545,10 @@ func cloneRegistry(r Registry) Registry {
 				id := *g.ID
 				g.ID = &id
 			}
+			if g.KeySHA256 != nil {
+				h := *g.KeySHA256
+				g.KeySHA256 = &h
+			}
 			p.Remote = &g
 		}
 		if p.Provider != nil {
@@ -561,8 +581,48 @@ func mustMarshalRegistry(r Registry) []byte {
 	return append(b, '\n')
 }
 
-// registryV3 is the exact version 3 file shape (W3e): the current shape without
-// the project origin and remote_deleted_at.
+// remoteLinkV4 is the remote of version 3 and 4 files: no key_sha256.
+type remoteLinkV4 struct {
+	Path string `json:"path"`
+	ID   *int64 `json:"id"`
+}
+
+func (g *remoteLinkV4) toRemote() *RemoteLink {
+	if g == nil {
+		return nil
+	}
+	r := &RemoteLink{Path: g.Path}
+	if g.ID != nil {
+		id := *g.ID
+		r.ID = &id
+	}
+	return r
+}
+
+// registryV4 is the exact version 4 file shape (W3f/W3g): the current shape
+// without the remote's key_sha256.
+type registryV4 struct {
+	Version         int           `json:"version"`
+	Providers       []Provider    `json:"providers"`
+	Projects        []projectV4   `json:"projects"`
+	AutoMergeGlobal AutoMergeGlob `json:"auto_merge_global"`
+	Orphans         []Orphan      `json:"orphans"`
+}
+
+type projectV4 struct {
+	ID              string        `json:"id"`
+	Path            string        `json:"path"`
+	Kind            string        `json:"kind"`
+	AIContext       bool          `json:"ai_context"`
+	Provider        *string       `json:"provider"`
+	Remote          *remoteLinkV4 `json:"remote"`
+	AutoMerge       AutoMerge     `json:"auto_merge"`
+	Origin          string        `json:"origin"`
+	RemoteDeletedAt *string       `json:"remote_deleted_at,omitempty"`
+}
+
+// registryV3 is the exact version 3 file shape (W3e): the version 4 shape
+// without the project origin and remote_deleted_at.
 type registryV3 struct {
 	Version         int           `json:"version"`
 	Providers       []Provider    `json:"providers"`
@@ -572,13 +632,13 @@ type registryV3 struct {
 }
 
 type projectV3 struct {
-	ID        string      `json:"id"`
-	Path      string      `json:"path"`
-	Kind      string      `json:"kind"`
-	AIContext bool        `json:"ai_context"`
-	Provider  *string     `json:"provider"`
-	Remote    *RemoteLink `json:"remote"`
-	AutoMerge AutoMerge   `json:"auto_merge"`
+	ID        string        `json:"id"`
+	Path      string        `json:"path"`
+	Kind      string        `json:"kind"`
+	AIContext bool          `json:"ai_context"`
+	Provider  *string       `json:"provider"`
+	Remote    *remoteLinkV4 `json:"remote"`
+	AutoMerge AutoMerge     `json:"auto_merge"`
 }
 
 // registryV1 is the exact version 1 file shape (W3a/W3b): no orphans, empty
@@ -621,7 +681,7 @@ type projectV2 struct {
 }
 
 // topLevelVersion is the raw version token of a file parseRegistry accepted
-// ("1", "2" or "3" when it is being migrated).
+// ("1", "2", "3" or "4" when it is being migrated).
 func topLevelVersion(data []byte) string {
 	head, _ := topLevelKeys(data)
 	return string(head["version"])
@@ -632,7 +692,7 @@ func topLevelVersion(data []byte) string {
 // is never replaced, fsynced (file and directory). An existing backup is not an
 // error.
 func writeBackupOnce(path string, data []byte, version string) error {
-	if version != "1" && version != "2" && version != "3" {
+	if version != "1" && version != "2" && version != "3" && version != "4" {
 		return errors.New("unexpected version")
 	}
 	bak := path + ".v" + version + ".bak"
@@ -705,12 +765,14 @@ func topLevelKeys(data []byte) (map[string]json.RawMessage, bool) {
 	return out, true
 }
 
-// parseRegistry decodes and validates a registry file. Only versions 1, 2, 3
-// and 4 are known; all are decoded strictly (unknown keys, trailing data and
-// wrong types are refused). migrated reports that data was a valid version 1, 2
-// or 3 file that was converted to the version 4 shape in memory (content and
-// meaning unchanged; each project gets the origin legacy when its kind is
-// legacy and unknown otherwise): the caller rewrites it.
+// parseRegistry decodes and validates a registry file. Only versions 1 to 5
+// are known; all are decoded strictly, each in its own shape (unknown keys,
+// trailing data and wrong types are refused; a key_sha256 in a version 3 or 4
+// file is an unknown key). migrated reports that data was a valid version 1, 2,
+// 3 or 4 file that was converted to the version 5 shape in memory (content and
+// meaning unchanged; each project of a version 1-3 file gets the origin legacy
+// when its kind is legacy and unknown otherwise; version 4 rows are kept as
+// they are, without a key hash): the caller rewrites it.
 func parseRegistry(data []byte) (r Registry, migrated bool, err error) {
 	head, ok := topLevelKeys(data)
 	if !ok {
@@ -725,11 +787,39 @@ func parseRegistry(data []byte) (r Registry, migrated bool, err error) {
 		_, terr := dec.Token()
 		return terr == io.EOF
 	}
+	needOrigin := false // versions 1-3 have no project origin
 	switch string(head["version"]) {
-	case "4":
+	case "5":
 		if !strict(&r) || r.Version != registryVersion {
 			return Registry{}, false, ErrRegistryBroken
 		}
+		if r.Providers == nil {
+			r.Providers = []Provider{}
+		}
+		if r.Projects == nil {
+			r.Projects = []Project{}
+		}
+		if r.Orphans == nil {
+			r.Orphans = []Orphan{}
+		}
+	case "4":
+		var v4 registryV4
+		if !strict(&v4) || v4.Version != registryVersionV4 {
+			return Registry{}, false, ErrRegistryBroken
+		}
+		r = Registry{Version: registryVersion, Providers: v4.Providers, AutoMergeGlobal: v4.AutoMergeGlobal, Orphans: v4.Orphans}
+		r.Projects = []Project{}
+		for _, p := range v4.Projects {
+			r.Projects = append(r.Projects, Project{ID: p.ID, Path: p.Path, Kind: p.Kind, AIContext: p.AIContext, Provider: p.Provider,
+				Remote: p.Remote.toRemote(), AutoMerge: p.AutoMerge, Origin: p.Origin, RemoteDeletedAt: p.RemoteDeletedAt})
+		}
+		if r.Providers == nil {
+			r.Providers = []Provider{}
+		}
+		if r.Orphans == nil {
+			r.Orphans = []Orphan{}
+		}
+		migrated = true
 		if r.Providers == nil {
 			r.Providers = []Provider{}
 		}
@@ -748,7 +838,7 @@ func parseRegistry(data []byte) (r Registry, migrated bool, err error) {
 		r.Projects = []Project{}
 		for _, p := range v3.Projects {
 			r.Projects = append(r.Projects, Project{ID: p.ID, Path: p.Path, Kind: p.Kind, AIContext: p.AIContext, Provider: p.Provider,
-				Remote: p.Remote, AutoMerge: p.AutoMerge})
+				Remote: p.Remote.toRemote(), AutoMerge: p.AutoMerge})
 		}
 		if r.Providers == nil {
 			r.Providers = []Provider{}
@@ -756,7 +846,7 @@ func parseRegistry(data []byte) (r Registry, migrated bool, err error) {
 		if r.Orphans == nil {
 			r.Orphans = []Orphan{}
 		}
-		migrated = true
+		migrated, needOrigin = true, true
 	case "2":
 		var v2 registryV2
 		if !strict(&v2) || v2.Version != registryVersionV2 {
@@ -779,7 +869,7 @@ func parseRegistry(data []byte) (r Registry, migrated bool, err error) {
 		if r.Orphans == nil {
 			r.Orphans = []Orphan{}
 		}
-		migrated = true
+		migrated, needOrigin = true, true
 	case "1":
 		var v1 registryV1
 		if !strict(&v1) || v1.Version != registryVersionV1 || len(v1.Providers) != 0 {
@@ -793,12 +883,12 @@ func parseRegistry(data []byte) (r Registry, migrated bool, err error) {
 			}
 			r.Projects = append(r.Projects, Project{ID: p.ID, Path: p.Path, Kind: p.Kind, AIContext: p.AIContext, Remote: p.GitLab.toRemote(), AutoMerge: p.AutoMerge})
 		}
-		migrated = true
+		migrated, needOrigin = true, true
 	default:
 		return Registry{}, false, ErrRegistryBroken
 	}
-	// projects of older files have no origin: legacy kind -> legacy, else unknown
-	if migrated {
+	// projects of v1-v3 files have no origin: legacy kind -> legacy, else unknown
+	if needOrigin {
 		for i := range r.Projects {
 			r.Projects[i].Origin = originForKind(r.Projects[i].Kind)
 		}
@@ -896,6 +986,11 @@ func validateRegistry(r *Registry) error {
 			// A repository id belongs to a provider. A link without a provider is
 			// only the legacy form (migrated from broker.json or a v1 file).
 			if g.ID != nil && (p.Provider == nil || *g.ID <= 0) {
+				return errRegProject
+			}
+			// The signed key hash of the registration (v5) belongs to a
+			// provider link: lowercase hex, 64 characters.
+			if g.KeySHA256 != nil && (p.Provider == nil || !keySHA256RE.MatchString(*g.KeySHA256)) {
 				return errRegProject
 			}
 		}

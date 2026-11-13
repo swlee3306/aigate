@@ -1073,7 +1073,7 @@ func TestRegistryV2BrokenFailsClosedAndDoesNotWidenAIContext(t *testing.T) {
 		"auto merge on":          `{"version":2,"providers":[],"projects":[{"id":"a","path":"/x/a","kind":"k","ai_context":true,"provider":null,"gitlab":null,"auto_merge":{"enabled":true}}],"orphans":[],` + tail + `}`,
 		"orphan bad":             `{"version":2,"providers":[],"projects":[],"orphans":[{"provider":"gl","project":"../x","project_id":null,"step":"project","at":"2026-11-11T00:00:00Z"}],` + tail + `}`,
 		"project id no provider": `{"version":2,"providers":[],"projects":[{"id":"a","path":"/x/a","kind":"k","ai_context":true,"provider":null,"gitlab":{"project":"g/a","project_id":5},"auto_merge":{"enabled":false}}],"orphans":[],` + tail + `}`,
-		"version 5":              `{"version":5,"providers":[],"projects":[],"orphans":[],` + tail + `}`,
+		"version 6":              `{"version":6,"providers":[],"projects":[],"orphans":[],` + tail + `}`,
 		"trailing data":          `{"version":2,"providers":[],"projects":[],"orphans":[],` + tail + `}{"x":1}`,
 	}
 	oa := newFakeHTTP(t, okHandler(goodPlan, 10, 10))

@@ -325,8 +325,11 @@ func (s *Server) createWritePhase(ctx context.Context, a createProjectArgs, rp R
 	// (g) the registry entry comes LAST; a failure here leaves an orphan record
 	step = stepRegister
 	provID := a.Provider
+	// W3h: the signed deploy_key_sha256 (checked against the key line in the
+	// shape stage) is kept: a later detach must send a line with this hash.
+	keyHash := a.DeployKeySHA256
 	entry := Project{ID: a.ID, Path: projPath, Kind: "registered", AIContext: *a.AIContext, Provider: &provID,
-		Remote: &RemoteLink{Path: full, ID: &id}, Origin: OriginCreated}
+		Remote: &RemoteLink{Path: full, ID: &id, KeySHA256: &keyHash}, Origin: OriginCreated}
 	err = s.Registry.Update(func(r *Registry) error {
 		if registryHasProject(r, a.ID, projPath) {
 			return opCodeErr("project_name_taken")

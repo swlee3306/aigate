@@ -222,6 +222,9 @@ func keysJSON(items ...[3]string) string { // id, title, key
 // newDel builds the kit: providers dgh (GitHub) and dgl (GitLab) pointing at the
 // fakes, a stored OTHER token of each kind (never the provider's own), projects
 // demo-gh (alice/Demo, id 77) and demo-gl (team/demo, id 21), both origin created.
+// W3h: demo-gl is a row a W3h broker registered with delKeyB (it carries
+// key_sha256 = sha256(delKeyB)): a GitLab row without the hash cannot be
+// detached at all any more. demo-gh has none (a pre-W3h row: the W3g rule).
 func newDel(t *testing.T) *delEnv {
 	t.Helper()
 	e := newE3(t)
@@ -241,7 +244,7 @@ func newDel(t *testing.T) *delEnv {
 		t.Fatal(err)
 	}
 	d.put("demo-gh", "dgh", "alice/Demo", 77, OriginCreated)
-	d.put("demo-gl", "dgl", "team/demo", 21, OriginCreated)
+	d.putHashed("demo-gl", "dgl", "team/demo", 21, OriginCreated, delKeyB)
 	return d
 }
 
@@ -873,9 +876,14 @@ func TestGitLabKeyRemovalOnlyThisProjectsKeyId(t *testing.T) {
 	// W3g key identity rule on GitLab: the BODY identifies the key, the title is ignored (a shared key keeps
 	// the first project's title). Body C ("shared deploy") and body A ("demo-gl2") therefore each match
 	// exactly one key, and only that key id is deleted, through the per-project route.
+	// W3h: the line must also be the one the row was registered with, so each case
+	// registers demo-gl with that line (a line other than the registered one is
+	// refused first: deploy_key_mismatch, nothing sent).
 	for body, id := range map[string]string{delKeyC: "10", delKeyA: "8"} {
 		d2 := newDel(t)
 		d2.gl.keyPages[1] = list
+		d2.refusedNoBurn("remove_deploy_key", d2.keyArgs("demo-gl", body), "deploy_key_mismatch")
+		d2.putHashed("demo-gl", "dgl", "team/demo", 21, OriginCreated, body)
 		d2.wantCode("remove_deploy_key", d2.keyArgs("demo-gl", body), "")
 		if got := d2.gl.all(); got[len(got)-1] != "DELETE /api/v4/projects/21/deploy_keys/"+id || d2.gl.deletes() != 1 {
 			t.Fatalf("body %s: %v", body, got)
@@ -884,6 +892,7 @@ func TestGitLabKeyRemovalOnlyThisProjectsKeyId(t *testing.T) {
 	// our title but a body that is in no listed key: cannot be told from "already gone": refused, nothing sent
 	d2 := newDel(t)
 	d2.gl.keyPages[1] = list
+	d2.putHashed("demo-gl", "dgl", "team/demo", 21, OriginCreated, delKeyD)            // W3h: registered with D
 	d2.wantCode("remove_deploy_key", d2.keyArgs("demo-gl", delKeyD), "remove_refused") // key 9 carries the title "orchd demo-gl" with another body
 	if d2.gl.deletes() != 0 {
 		t.Fatal("a key that does not match was deleted")
@@ -1538,6 +1547,8 @@ func TestSameRowCoreComparesOnlyMeaningfulFields(t *testing.T) {
 		"id":       func(p *Project) { r2 := int64(8); p.Remote = &RemoteLink{Path: "o/a", ID: &r2} },
 		"gone":     func(p *Project) { p.Remote = nil },
 		"deleted":  func(p *Project) { p.RemoteDeletedAt = strp("2026-11-10T01:02:03Z") },
+		// W3h: the signed key hash is part of the remote a detach was checked against
+		"key hash added": func(p *Project) { p.Remote = &RemoteLink{Path: "o/a", ID: &rid, KeySHA256: strp(hashOfLine(delKeyB))} },
 	}
 	for n, m := range mods {
 		c := base
@@ -1545,6 +1556,15 @@ func TestSameRowCoreComparesOnlyMeaningfulFields(t *testing.T) {
 		if sameRowCore(base, c) {
 			t.Errorf("%s change not noticed", n)
 		}
+	}
+	hashed := base
+	hashed.Remote = &RemoteLink{Path: "o/a", ID: &rid, KeySHA256: strp(hashOfLine(delKeyB))}
+	other := hashed
+	other.Remote = &RemoteLink{Path: "o/a", ID: &rid, KeySHA256: strp(hashOfLine(delKeyC))}
+	same := hashed
+	same.Remote = &RemoteLink{Path: "o/a", ID: &rid, KeySHA256: strp(hashOfLine(delKeyB))}
+	if sameRowCore(hashed, other) || sameRowCore(hashed, base) || !sameRowCore(hashed, same) {
+		t.Error("the key hash must be compared by value")
 	}
 }
 
