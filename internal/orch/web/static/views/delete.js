@@ -79,6 +79,7 @@ export const DEL_TEXT = {
   detachLabel: '배포 키도 함께 떼기',
   detachHint: '지우기 전에 먼저 원격 저장소에서 이 서버의 배포 키를 뗍니다(같은 서명 한 번). 키를 떼지 못하거나 결과를 알 수 없으면 등록과 파일은 지우지 않습니다.',
   detachShared: 'GitLab 공용 키: 제공자 화면의 키 제목은 처음 등록한 프로젝트의 이름일 수 있어, 지문으로 이 서버의 키를 확인합니다.',
+  detachMaybeGone: '원격 저장소가 이미 지워졌을 수 있습니다. 저장소가 지워졌으면 이 서버의 배포 키도 함께 사라졌으므로 "배포 키도 함께 떼기"를 꺼 두었습니다. 저장소가 아직 있으면 체크하세요.',
   keyRemains: '[중요] 키가 원격에 남습니다. 직접 지우세요. 원격 저장소 설정(Deploy keys)에서 이 서버의 배포 키를 제거해야 합니다.',
   legacyBody: '이것은 처음부터 있던 프로젝트입니다. 서버의 복제본과 등록이 지워지고, 이 서버의 작업 기록은 남지만 이 저장소로는 더 작업을 낼 수 없습니다. 원격 저장소는 이 도구가 지우지 않고 그대로 남습니다.',
   legacyTyped: '프로젝트 이름을 한 번 더 직접 입력하세요',
@@ -116,12 +117,17 @@ export const DEL_REMOVE_TEXT = {
   keyUnavailable: '이 프로젝트의 배포 키 공개 키를 서버에서 읽을 수 없어 키를 함께 뗄 수 없습니다. 아무것도 지우지 않았습니다. "배포 키도 함께 떼기"를 끄고 진행할 수 있으며, 그러면 키는 원격에 남으니 제공자 저장소 설정(Deploy keys)에서 직접 지우세요.',
   brokerUnavailable: '서버 구성 요소(broker와 orchd)의 버전이 서로 맞지 않거나 그사이 프로젝트 상태가 바뀌었거나 등록부 서비스에 연결하지 못해 처리하지 않았습니다. 아무것도 지우지 않았습니다. 목록을 다시 읽은 뒤 다시 시도하세요.',
   unknownDetach: '배포 키 떼기와 프로젝트 등록 지우기가 끝났는지 알 수 없습니다. 키는 이미 떼어졌을 수 있습니다. 자동으로 다시 시도하지 않았습니다. 제공자 저장소 설정(Deploy keys)과 목록을 확인하고, 필요하면 처음부터 새로 서명하세요.',
+  detachRefused: '배포 키를 떼지 못해(제공자가 거부했거나, 연결하지 못했거나, 원격 정보가 바뀌었거나, 뗄 키가 하나로 정해지지 않음) 아무것도 지우지 않았습니다. 프로젝트 등록과 서버의 파일은 그대로입니다. 토큰 권한과 제공자 저장소 설정(Deploy keys)을 확인하세요. 키를 원격에 남겨 두고 지우려면 "배포 키도 함께 떼기"를 끄고 새 변경에 서명하세요.',
   partialDetach: '배포 키 떼기가 일부만 처리되었거나 결과를 알 수 없습니다(키는 이미 떼어졌을 수 있습니다). 프로젝트 등록과 서버의 복제본은 지우지 않았습니다. 자동으로 다시 시도하지 않았습니다. 제공자 저장소 설정(Deploy keys)에서 확인한 뒤 "복제본과 등록 지우기"를 새로 서명하세요(키가 이미 없으면 "배포 키도 함께 떼기"를 끄고).',
 };
+const DETACH_REFUSALS = ['remove_refused', 'remote_changed', 'provider_unreachable', 'provider_rate_limited', 'github_refused', 'gitlab_refused', 'bad_url', 'token_ref_unknown',
+  'key_not_found', 'deploy_key_mismatch', 'no_remote'];
 const failText = (err, sent) => {
   const code = err && typeof err.code === 'string' ? err.code : '';
   if (code === 'broker_unavailable') return DEL_REMOVE_TEXT.brokerUnavailable;
   if (code === 'key_unavailable_for_removal' && sent && sent.action === ACTION_REMOVE_PROJECT) return DEL_REMOVE_TEXT.keyUnavailable;
+  // a refusal of the key detach of a signed removal: nothing changed (G-D2: the registration and the files stay)
+  if (DETACH_REFUSALS.includes(code) && sent && sent.action === ACTION_REMOVE_PROJECT && isObj(sent.fields) && sent.fields.detach_key === true) return DEL_REMOVE_TEXT.detachRefused;
   return has(DEL_FAIL, code) ? DEL_FAIL[code] : null;
 };
 
@@ -232,7 +238,7 @@ export function deleteOptions(row) {
 
 // checkPreview: the removal-preview body, every member checked; null when anything is off or when it
 // does not describe the row this page started from.
-export function checkPreview(pv, id, row) {
+export function checkPreview(pv, id, row, kind) {
   if (!isObj(pv) || pv.id !== id) return null;
   const bools = ['legacy', 'has_remote', 'remote_key_may_remain', 'static_remote', 'busy', 'busy_unknown', 'folder_exists', 'is_git_repo', 'local_removable', 'key_dir_exists', 'size_known', 'unpushed_known', 'changed_known'];
   if (!bools.every((k) => typeof pv[k] === 'boolean')) return null;
@@ -246,6 +252,8 @@ export function checkPreview(pv, id, row) {
   if (typeof pv.detach_key_available !== 'boolean' || typeof pv.deploy_key_shared !== 'boolean') return null;
   if (pv.detach_key_available) {
     if (!deleteOptions(row).key || pv.deploy_key_title !== 'orchd ' + id || typeof pv.deploy_key_fingerprint !== 'string' || !FP_RE.test(pv.deploy_key_fingerprint)) return null;
+    // GitLab's key is shared (identity = fingerprint), GitHub's is the project's own; the row's provider decides
+    if (kind !== undefined && !((kind === 'gitlab' && pv.deploy_key_shared === true) || (kind === 'github' && pv.deploy_key_shared === false))) return null;
   } else if (pv.deploy_key_title !== null || pv.deploy_key_fingerprint !== null || pv.deploy_key_shared !== false) return null;
   return pv;
 }
@@ -260,7 +268,7 @@ export function sizeText(n) {
 }
 
 // partialDetail: the per-item facts of a delete_partial_local refusal, checked member by member (null when off).
-export function partialDetail(err) {
+export function partialDetail(err, sent) {
   const d = err && err.detail;
   if (!isObj(d) || !Array.isArray(d.remaining) || d.remaining.length > 2 || !d.remaining.every((x) => x === 'clone' || x === 'key') ||
       new Set(d.remaining).size !== d.remaining.length) return null;
@@ -268,8 +276,12 @@ export function partialDetail(err) {
   if (!okState(d.clone) || !okState(d.key) || typeof d.registry_removed !== 'boolean' || typeof d.remote_deleted !== 'boolean' ||
       typeof d.reason !== 'string' || !PARTIAL_REASONS.includes(d.reason)) return null;
   // W3g: the key was detached at the provider before the local removal failed (both members, or neither)
-  if (has(d, 'key_state') || has(d, 'key_detached')) {
-    if (d.key_detached !== true || !KEY_STATES.includes(d.key_state) || d.registry_removed !== true) return null;
+  const keyMembers = has(d, 'key_state') || has(d, 'key_detached');
+  if (keyMembers && (d.key_detached !== true || !KEY_STATES.includes(d.key_state) || d.registry_removed !== true)) return null;
+  // present exactly when the signed change was a removal that detaches the key
+  if (sent !== undefined) {
+    const detachSigned = isObj(sent) && sent.action === ACTION_REMOVE_PROJECT && isObj(sent.fields) && sent.fields.detach_key === true;
+    if (keyMembers !== detachSigned) return null;
   }
   return { remaining: d.remaining, clone: d.clone, key: d.key, registryRemoved: d.registry_removed, remoteDeleted: d.remote_deleted, reason: d.reason,
     keyState: has(d, 'key_state') ? d.key_state : null };
@@ -370,7 +382,8 @@ export function makeDelete(ctx, host) {
       return;
     }
     if (gone() || my !== d.seq) return;
-    const pv = checkPreview(body, d.row.id, d.row);
+    const prov = host.providers().find((p) => isObj(p) && isObj(d.row) && p.id === d.row.provider);
+    const pv = checkPreview(body, d.row.id, d.row, prov ? prov.kind : null);
     if (pv === null) {
       d.step = 'fail';
       d.note = { error: true, text: DEL_TEXT.previewBad };
@@ -391,8 +404,9 @@ export function makeDelete(ctx, host) {
     d.also = el('input', { type: 'checkbox', id: 'del-also', 'data-focus-key': 'also', on: { change: () => { gateChanged(true); } } });
     d.also.checked = false;
     // W3g: checked by default; shown (and sent as true) only when the preview says the key can be detached
-    d.detach = el('input', { type: 'checkbox', id: 'del-detach', 'data-focus-key': 'detach', on: { change: () => { gateChanged(true); } } });
-    d.detach.checked = true;
+    // unchecked when the remote deletion may already have happened in this visit (the key goes with a deleted repository)
+    d.detach = el('input', { type: 'checkbox', id: 'del-detach', 'data-focus-key': 'detach', 'aria-describedby': 'del-detach-hint del-detach-keys', on: { change: () => { gateChanged(true); } } });
+    d.detach.checked = !(!!d.row && partialIds.has(d.row.id));
     d.typed = el('input', { type: 'text', id: 'del-typed', class: 'mono', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off', maxlength: '120', 'data-focus-key': 'typed', on: { input: gateChanged } });
     d.typed.value = '';
     d.legacyTyped = el('input', { type: 'text', id: 'del-legacy-typed', class: 'mono', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off', maxlength: '60', 'data-focus-key': 'ltyped', on: { input: gateChanged } });
@@ -610,7 +624,7 @@ export function makeDelete(ctx, host) {
     const k = keyIdentity();
     return '원격 저장소 ' + k.repo + '에서 제공자의 배포 키를 먼저 뗍니다: ' + (k.title !== null ? '제목 ' + k.title + ', ' : '') + '지문 ' + k.fp + (k.shared ? ' (GitLab 공용 키)' : '');
   }
-  const keyRemainsBox = () => warnBox(DEL_TEXT.keyRemains + ' (저장소 ' + d.opts.remote.path + ')', 'key-remains');
+  const keyRemainsBox = (live) => el('div', { class: 'trunc', role: live ? 'alert' : 'note', 'data-emph': 'key-remains' }, [el('strong', {}, DEL_TEXT.keyRemains + ' (저장소 ' + d.opts.remote.path + ')')]);
 
   function renderChoose() {
     const o = d.opts;
@@ -721,8 +735,9 @@ export function makeDelete(ctx, host) {
         const k = keyIdentity();
         return el('div', { class: 'form', 'data-detach': 'option' }, [el('div', { class: 'field' }, [
           el('div', { class: 'row' }, [d.detach, ' ', el('label', { for: 'del-detach' }, DEL_TEXT.detachLabel)]),
-          el('span', { class: 'hint' }, DEL_TEXT.detachHint),
-          el('ul', { class: 'pfacts', 'aria-label': '떼는 배포 키' }, [
+          el('span', { class: 'hint', id: 'del-detach-hint' }, DEL_TEXT.detachHint),
+          partialIds.has(d.row.id) ? el('p', { class: 'note', 'data-note': 'detach-maybe-gone' }, DEL_TEXT.detachMaybeGone) : null,
+          el('ul', { class: 'pfacts', id: 'del-detach-keys', 'aria-label': '떼는 배포 키' }, [
             factItem('원격 저장소', k.repo, { 'data-key': 'repo' }),
             k.title !== null ? factItem('키 제목', k.title, { 'data-key': 'title' }) : null,
             factItem('키 지문', k.fp, { 'data-key': 'fingerprint' }),
@@ -730,7 +745,7 @@ export function makeDelete(ctx, host) {
           k.shared ? el('span', { class: 'hint' }, DEL_TEXT.detachShared) : null,
         ].filter(Boolean))]);
       })() : null,
-      detachOffered() && !detachKey() ? keyRemainsBox() : null,
+      detachOffered() && !detachKey() ? keyRemainsBox(true) : null,
       pv.remote_key_may_remain && d.choice === ACTION_REMOVE_PROJECT && o.key && !detachOffered()
         ? el('div', { class: 'trunc', role: 'note', 'data-hint': 'detach-key' }, [el('p', {}, DEL_TEXT.keyHint),
           el('button', { type: 'button', class: 'btn', 'data-focus-key': 'detach-first', on: { click: () => pickChoice(ACTION_REMOVE_DEPLOY_KEY, false) } }, '배포 키 먼저 떼기')]) : null,
@@ -753,7 +768,8 @@ export function makeDelete(ctx, host) {
         factItem('복제본 폴더', inline(row.path, 200), { 'data-field': 'path' }),
         factItem('원격에 올라가지 않은 커밋', pv.unpushed_known ? pv.unpushed_commits + '개' : '알 수 없음 — 있을 수 있습니다', { 'data-field': 'unpushed' }),
         factItem('수정한 파일', pv.changed_known ? pv.changed_files + '개' : '알 수 없음 — 변경이 있을 수 있습니다', { 'data-field': 'changed' }),
-      ]),
+        detachOffered() ? factItem('배포 키도 함께 떼기', detachKey() ? '예 — 원격 저장소 ' + keyTarget().replace(/^원격 저장소 /, '') : '아니오 — 키는 원격 저장소 ' + d.opts.remote.path + '에 남습니다. 직접 지우세요', { 'data-field': 'detach' }) : null,
+      ].filter(Boolean)),
       pv.static_remote ? el('p', { class: 'note', 'data-note': 'static' }, DEL_TEXT.legacyStatic) : null,
       warnBox(DEL_TEXT.irreversible, 'irreversible'),
       el('div', { class: 'form' }, [el('div', { class: 'field' }, [el('label', { for: 'del-legacy-typed' }, DEL_TEXT.legacyTyped + ': ' + row.id), d.legacyTyped,
@@ -940,7 +956,7 @@ export function makeDelete(ctx, host) {
 
   // the per-item screen of delete_partial_local: what is gone, what remains, what to do
   function renderPartialLocal(err, s, back) {
-    const det = partialDetail(err);
+    const det = partialDetail(err, s);
     const kids = [el('h1', { id: 'h-projects' }, '서버의 파일을 일부만 지웠습니다'),
       el('p', { class: ['note', 'err'], role: 'alert', 'data-result': 'partial-local' }, ERROR_TEXT.delete_partial_local)];
     if (det === null) {

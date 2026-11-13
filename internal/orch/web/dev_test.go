@@ -950,18 +950,23 @@ func TestDevServer(t *testing.T) {
 		var in w3cBody
 		_ = stdjson.NewDecoder(r.Body).Decode(&in)
 		detach, _ := in.Fields["detach_key"].(bool)
-		var row map[string]any
+		// the row's values are copied under projMu (the apply handler changes rows in place)
+		var found, detachable, isGL bool
+		var remotePath string
 		projMu.Lock()
 		for _, p := range projects {
 			if p["id"] == in.Subject {
-				row = p
+				found, detachable, isGL = true, devDetachable(p), p["provider"] == "gl"
+				if remote, ok := p["gitlab"].(map[string]any); ok {
+					remotePath, _ = remote["project"].(string)
+				}
 			}
 		}
 		projMu.Unlock()
 		w3cMu.Lock()
 		mode := w3fApply
 		w3cMu.Unlock()
-		if in.Action == "remove_project" && detach && (mode == "key_unavailable" || row == nil || !devDetachable(row)) {
+		if in.Action == "remove_project" && detach && (mode == "key_unavailable" || !found || !detachable) {
 			devErr(w, 409, "key_unavailable_for_removal")
 			return
 		}
@@ -980,9 +985,7 @@ func TestDevServer(t *testing.T) {
 			pv = []string{"프로젝트 '" + in.Subject + "'를 이 서버에서 지웁니다: 프로젝트 등록, 서버의 복제본 폴더(" + path + "), 이 프로젝트의 배포 키 폴더", "원격 저장소는 지워지지 않고 그대로 남습니다",
 				"[중요] 되돌릴 수 없습니다. 원격에 올라가지 않은 커밋과 저장하지 않은 변경은 이 서버의 복제본에만 있으므로 함께 사라집니다", "이 서버의 작업 기록은 남습니다"}
 			if detach {
-				remote, _ := row["gitlab"].(map[string]any)
-				rp, _ := remote["project"].(string)
-				pv = append(pv[:2], append([]string{"먼저 원격 저장소 '" + rp + "'에서 이 서버의 배포 키(지문 " + repoFP + ")를 뗍니다. 키를 떼지 못하거나 결과를 알 수 없으면 프로젝트 등록과 서버의 파일을 지우지 않습니다"}, pv[2:]...)...)
+				pv = append(pv[:2], append([]string{"먼저 원격 저장소 '" + remotePath + "'에서 이 서버의 배포 키(지문 " + repoFP + ")를 뗍니다. 키를 떼지 못하거나 결과를 알 수 없으면 프로젝트 등록과 서버의 파일을 지우지 않습니다"}, pv[2:]...)...)
 			}
 			if ack, _ := in.Fields["legacy_ack"].(bool); ack {
 				pv = append(pv, "[중요] 처음부터 있던(legacy) 프로젝트입니다. 지우면 이 저장소로는 더 작업을 낼 수 없습니다(두 번째 확인을 했습니다)")
@@ -1016,9 +1019,9 @@ func TestDevServer(t *testing.T) {
 			out["deploy_key_fingerprint"] = repoFP
 		}
 		if in.Action == "remove_project" {
-			out["detach_key_available"] = row != nil && devDetachable(row)
+			out["detach_key_available"] = found && detachable
 			if detach {
-				out["deploy_key_title"], out["deploy_key_fingerprint"], out["deploy_key_shared"] = "orchd "+in.Subject, repoFP, row["provider"] == "gl"
+				out["deploy_key_title"], out["deploy_key_fingerprint"], out["deploy_key_shared"] = "orchd "+in.Subject, repoFP, isGL
 			}
 		}
 		b, _ := stdjson.Marshal(out)
