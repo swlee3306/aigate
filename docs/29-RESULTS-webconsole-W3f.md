@@ -241,4 +241,20 @@ F1~F4가 각자 적은 표를 모았다. **이 표의 모든 "예상"은 코드�
 11. **W3d(PR·MR, 조건부 자동 병합)로 갈지**(빈 `checks`를 통과로 세지 않는 규칙: 컷오버에서 작업 #47이 이미 보여 줬다).
 
 ## 9. 컷오버 기록
-아직 없음(컷오버 전). 컷오버를 하면 이 장에 서버에서 본 것만 적는다(21·23·25·27번 문서와 같은 방식). 런북 16장 끝의 "관찰 기록" 표를 옮긴다.
+**2026-11-13, 실서버 orch-vm, 사용자 승인("W3f 병합하고 서버 반영까지 진행해줘"). 아래는 컨트롤러가 서버에서 읽기 전용으로 본 것과 사용자가 알려 준 것이다(사용자 보고는 그렇다고 표시).**
+
+**서버 반영(10:15~10:16 KST):**
+- 사전 점검 전부 예상대로: 등록부 v3, 프로젝트 경로가 모두 `<루트>/<id>`, 폴더·키 폴더 소유자 `orch:orch`, 키 폴더 700, 마운트 없음·같은 파일 시스템(`2049`), 샌드박스 쓰기 가능(`writable`), `git` 2.43, 정책 `registered`와 `[ssh.github.com]:443` 항목 있음, 작업 #47 `failed`·#48 `done`(둘 다 `project_busy` 원인이 아님), `registry.json.v3.bak` 없음.
+- `main`을 263d0e1로 fast-forward(로컬, push 안 함). 바이너리 4개 빌드·업로드(해시 일치). orchd 정지 → 백업(`/root/backup-w3f`, root 0700, `cp -an`) → broker 정지 → 상태 폴더 백업 → 새 broker 설치 → 샌드박스 안 `-check` 통과(종료 코드 0, 등록부 여전히 v3) → 시작: **등록부 `"version":4`, 모드 600, `registry.json.v3.bak`(600)이 root 백업의 `registry.json`과 sha256 일치**, 임시 파일 없음 → orchd 교체·시작(설치 바이너리 해시 일치, 정책 해시 불변, 작업 번호 그대로).
+- 읽기 응답: 프로젝트 목록·`ai_context`·`remote` 불변, **`origin`: `toy`·`sample-app` = `legacy`, 스모크 둘 = `unknown`**. 새 엔드포인트 5개는 로그인 없이 401. 로그의 키·토큰 관련 단어 0건.
+
+**웹에서 한 시험(2026-11-13 오전, 서버 기록으로 확인한 것):**
+- **로컬 정리(3-2):** `w3e-smoke-1112`와 `w3e-smoke-1113`에 `remove_project`가 `ok`(원장 `project_remove`). 복제본·키 폴더·등록이 지워졌고 `.deleting-*`·`.remove-refused-*` 찌꺼기 없음. (사용자 보고: 두 저장소의 GitHub 쪽은 사용자가 직접 지움.)
+- **원격 삭제(3-4):** 새 시험 저장소 `w3e-smoke-1114`를 `create_project`로 만들고(`ok`, 13.5초) `delete_remote_repo`가 `ok`(1.1초, 원장 `remote_delete`), 이어서 `remove_project`(두 번째 서명, "등록 지우기")가 `ok`. **원격 삭제의 실제 응답과 삭제 권한(사용자 보고: 토큰에 삭제 권한을 줌)이 서버에서 확인됨.**
+- **연결·정리:** `link_project`로 `swlee3306/sulee_portfolio`를 프로젝트 이름 `sulee-portfolio`로 연결(`ok`, 1.2초: **프로젝트 이름과 저장소 이름이 다른 연결이 서버에서 확인됨**), 이어서 `remove_project`로 등록을 지움. **이때 "배포 키만 떼기"를 하지 않아 GitHub 저장소에 배포 키 `orchd sulee-portfolio`가 남았을 수 있다**(원장에 `key_remove` 없음, 서버의 개인 키 폴더는 지워짐). 사용자가 GitHub에서 직접 지워야 한다.
+- **레거시 두 번째 확인(3-6):** `toy`·`sample-app`에 대한 삭제 서명은 기록에 없다(서명 전에 취소: 사용자 보고로는 화면 확인 성공). 두 프로젝트·폴더·등록은 그대로.
+- 최종 상태: 등록부 프로젝트 `toy`·`sample-app`(둘 다 `legacy`), 고아 기록 없음, `/home/orch/repos`는 `toy`·`sample-app`·`remote.git`, 키 폴더 비어 있음, broker·orchd `active`, 로그의 키·토큰 단어 0건.
+
+**이 기록으로 확인된 §6 항목:** GitHub `DELETE`의 실제 성공과 권한(토큰 종류는 사용자 몫으로 남음), orchd의 실제 유닛 샌드박스에서 이름 바꾸기+삭제, 등록부 v3→v4 마이그레이션(백업 일치, `origin` 매핑), 실제 패스키 서명(`remove_project`·`delete_remote_repo`, 그리고 `create_project`·`link_project`), `.deleting-*` 찌꺼기 없음. **아직 확인하지 못한 것:** `remove_deploy_key`(키 떼기)와 `clear_orphan`의 실서버 실행, GitLab 쪽 삭제·키 비활성(지연 삭제), 큰 복제본의 미리보기 시간, 실제 Chrome의 IME·포커스, 390px 화면.
+
+**시험에서 드러난 개선점(W3g로 이어짐, docs/30):** (1) 복제본·등록을 지울 때 배포 키를 자동으로 떼지 않아 키가 남았다. (2) 원격 삭제 뒤 등록을 지우려면 서명이 한 번 더 필요하다(`also_local`을 골라도 등록은 남음).
