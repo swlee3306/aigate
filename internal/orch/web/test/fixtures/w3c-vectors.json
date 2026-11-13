@@ -181,7 +181,7 @@
         "token_ref": "gitlab-main"
       },
       "canonical": "{\"action\":\"set_provider\",\"fields\":{\"base_url\":\"http://100.64.0.10:18082\",\"kind\":\"gitlab\",\"ssh_url\":\"ssh://git@100.64.0.10\",\"token_ref\":\"gitlab-main\"},\"subject\":\"gl\"}",
-      "change": "4d4649fb75f35cb05681158ba7de1afa88205f3803c3d3e15e299aadb1100f9c"
+      "change": "886247089c1e354336cad6dbc98bb7841c37c31bba0903583da820f48ab9f22b"
     },
     {
       "name": "set_provider https host",
@@ -533,11 +533,11 @@
     {
       "action": "set_provider",
       "subject": "gl",
-      "change": "4d4649fb75f35cb05681158ba7de1afa88205f3803c3d3e15e299aadb1100f9c",
+      "change": "886247089c1e354336cad6dbc98bb7841c37c31bba0903583da820f48ab9f22b",
       "request": "00112233445566778899aabbccddeeff",
       "issued": "2026-11-09T10:04:05Z",
-      "text": "aigate-registry-v1\naction: set_provider\nsubject: gl\nchange: 4d4649fb75f35cb05681158ba7de1afa88205f3803c3d3e15e299aadb1100f9c\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-09T10:04:05Z\n",
-      "digest": "e275a01a0645f3e51c54cad0e3385b26cc46b1684c6027aa3f6260e055a62684"
+      "text": "aigate-registry-v1\naction: set_provider\nsubject: gl\nchange: 886247089c1e354336cad6dbc98bb7841c37c31bba0903583da820f48ab9f22b\nrequest: 00112233445566778899aabbccddeeff\nissued: 2026-11-09T10:04:05Z\n",
+      "digest": "63fd2babaf76168d30d4cb91911df45fbf8784de5a23aeffacd4378ef9134d2b"
     },
     {
       "action": "delete_provider",
