@@ -204,4 +204,20 @@ broker `internal/broker/adversarial_w3h_test.go`(5개), orchd `internal/orch/api
 4. `/root/backup-w3h`를 언제 지울지.
 
 ## 9. 컷오버 기록
-아직 없다(배포하지 않음). 컷오버 때 런북 18장의 관찰 기록 표를 여기로 옮긴다.
+2026-11-14 15:13~15:15 KST, 사용자 요청("1": 병합 + 서버 반영)으로 main(`ac2c1ec`)에 fast-forward 병합(push 안 함)하고 서버(orch-vm)에 반영했다. 아래는 컨트롤러가 서버에서 읽기 전용으로 **실제로 본 것**이다. 단계 3(웹 시험)은 아직 하지 않았다.
+
+**본 것**
+- 사전 점검(18.0 a~d): broker·orchd active(W3g), 등록부 `"version":4`(sha256 `cb9a3f67…`, W3g 반영 직후와 같음), `registry.json.v4.bak` 없음, 공용 `.pub` 필드 3개, 키 폴더 비어 있음, 실행·대기·승인 대기 작업 없음(마지막 작업 `48 done`).
+- 새 바이너리 4개의 해시가 Mac 빌드와 일치(orchd `d5e5abc6…`, orch-broker `07e0ed24…`).
+- 1-2·1-3: `/root/backup-w3h`(root 0700)에 옛 바이너리 4개(해시 기록)·`tree-before.txt`·`registry.json.w3g`(v4 사본, 원본과 해시 같음). **일어난 일:** 처음 실행에서 `tree-before.txt`를 쓰는 한 줄이 리다이렉트 권한 오류로 멈췄다(`set -e`: orchd만 멈추고 바이너리 백업만 끝난 상태, broker·등록부는 건드리지 않음). `sudo tee`로 다시 만들고 이어서 진행했다. 런북의 해당 명령 모양은 이 서버에서 그대로는 안 된다(아래 "런북 보완").
+- 1-4 샌드박스 `-check`: 통과, 종료 후에도 `"version":4`, `.v4.bak` 없음, 등록부 sha256 불변(= `-check`가 등록부를 쓰지 않음).
+- 1-5 시작: `active`, 등록부 `"version":5`, `registry.json`·`registry.json.v4.bak` 모두 `orch-broker:orch-broker 600`, **`.v4.bak`의 sha256이 전환 직전 사본과 같음**(`cb9a3f67…`), `key_sha256` 0개, `.state-*` 임시 파일 0개.
+- 1-6 읽기 op: 제공자 `example-group-gitlab`·`swlee3306-github`, 프로젝트 `toy`·`sample-app`(둘 다 `origin: legacy`, `provider`·`remote` 없음), orphan 0개, `status`·`tokens` ok. W3g와 같다.
+- 단계 2: orchd `active`, 로그에 `approvals: mode signed (3 signers)`·HTTP 리스너·소켓 uid, 오류 없음, `orch list` 마지막 번호 48 그대로, 해시 일치. 로그인 없이 `removal-preview`·`remove/propose`·`remove-key/propose`가 **401**(서버 안에서 프록시가 보내는 `Host`·`Origin`을 붙여 호출).
+- **2-1 403 진단 로그**: 일부러 만든 `bad_origin` 403 하나에서 로그에 `orchd: refused 403 bad_origin GET /api/v1/auth/session`이 **정확히 한 줄**, 쿼리 표식 `w3hmarker`는 **0건**, 시작 뒤 오류 줄 0건. (서버 안에서 직접 호출했으므로 HTTPS 앞단 프록시를 거친 경로는 보지 않았다.)
+
+**런북 보완(다음 개정에서 고칠 것)**: 1-2의 `sudo sh -c "find … -printf '…\n' > $B/tree-before.txt"` 모양은 원격 셸 인용 때문에 리다이렉트가 바깥 셸에서 실행되어 권한 오류가 났다. `sudo sh -c "find …" | sudo tee $B/tree-before.txt`로 쓰면 된다.
+
+**아직 보지 못한 것**
+- 단계 3 전체: 새로 만든 행이 해시를 갖는지(3-2 (b)), 그 해시로 키 떼기가 되는지(실제 GitHub), `toy`·`sample-app`의 "삭제…" 화면에 떼기 선택지가 없는지(3-1), 3-5 누출 점검.
+- 로그인한 정상 사용 중 403 로그, GitLab 키 떼기(3-4), HTTPS 앞단 프록시를 거친 403 로그 모양.
