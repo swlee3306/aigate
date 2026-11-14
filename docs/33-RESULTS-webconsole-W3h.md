@@ -218,6 +218,12 @@ broker `internal/broker/adversarial_w3h_test.go`(5개), orchd `internal/orch/api
 
 **런북 보완(다음 개정에서 고칠 것)**: 1-2의 `sudo sh -c "find … -printf '…\n' > $B/tree-before.txt"` 모양은 원격 셸 인용 때문에 리다이렉트가 바깥 셸에서 실행되어 권한 오류가 났다. `sudo sh -c "find …" | sudo tee $B/tree-before.txt`로 쓰면 된다.
 
+**단계 3 시험 (2026-11-14 15:46~15:49 KST, 사용자가 웹에서 수행, 컨트롤러가 서버에서 확인)**
+- **3-2 (a)(b) 새 행의 해시:** 시험 저장소 `w3h-smoke-a`(GitHub, 사용자가 새로 만듦). broker 로그 `op=create_project ok dur=9.561s`. 등록 행: `origin: created`, 제공자 `swlee3306-github`, 원격 `swlee3306/w3h-smoke-a`, **`remote.key_sha256`이 64자(앞 8자리 `cf3b37fa…`)로 저장되어 있고, 키 폴더 `.pub` 줄(필드 3개, 끝 줄바꿈 제거)의 sha256과 일치**(런북의 "코드 기준 예상"이 서버에서 맞았다).
+- **3-2 (c) 해시를 가진 행으로 키 떼기 + 복제본·등록 정리(서명 한 번):** 사용자 보고 "키 떼기 시험 성공"(GitHub 화면 확인은 사용자가 했고 컨트롤러는 GitHub를 보지 않았다). 서버: broker 로그 `remove_project: removed project w3h-smoke-a from the registry`, `op=remove_project ok dur=1.259s`(60초 한도 안), 폴더·키 폴더 없음, `.deleting-*`·`.remove-refused-*` 없음, 등록부에서 행이 사라져 프로젝트는 `toy`·`sample-app`뿐이고 orphan 0개.
+- **3-5 누출 점검:** 반영 시점부터 로그에 키 본문(`AAAAC3Nza`) 0건, `PRIVATE KEY` 0건, 거부 줄은 총 1줄(2-1에서 일부러 만든 `bad_origin` 하나)이고 `?`가 들어간 거부 줄 0건. 로그인한 정상 사용 중에는 403 거부 줄이 나오지 않았다.
+
 **아직 보지 못한 것**
-- 단계 3 전체: 새로 만든 행이 해시를 갖는지(3-2 (b)), 그 해시로 키 떼기가 되는지(실제 GitHub), `toy`·`sample-app`의 "삭제…" 화면에 떼기 선택지가 없는지(3-1), 3-5 누출 점검.
+- 3-1 회귀 화면(`toy`·`sample-app`에 떼기 선택지가 없는지)은 사용자가 봤는지 확인하지 못했다.
+- (이전 단락의) 단계 3 중 남은 것: 새로 만든 행이 해시를 갖는지(3-2 (b)), 그 해시로 키 떼기가 되는지(실제 GitHub), `toy`·`sample-app`의 "삭제…" 화면에 떼기 선택지가 없는지(3-1), 3-5 누출 점검.
 - 로그인한 정상 사용 중 403 로그, GitLab 키 떼기(3-4), HTTPS 앞단 프록시를 거친 403 로그 모양.
